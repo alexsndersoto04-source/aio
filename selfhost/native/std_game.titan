@@ -1,0 +1,141 @@
+// std::game: reloj monótono para el tiempo real entre cuadros y colisiones
+// AABB. Es un motor 2D sin ventana; no inventa cuadros ni dibuja por pantalla.
+// Estado global en globals+3128; el reloj es clock_gettime(CLOCK_MONOTONIC).
+
+fn gm_global() -> int {
+    std::raw::globals() + 3128
+}
+
+fn gm_existing() -> int {
+    std::raw::load(gm_global())
+}
+
+fn gm_state() -> int {
+    let g = gm_global()
+    let state = std::raw::load(g)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(72)
+    std::raw::store(g, created)
+    created
+}
+
+fn std__game__init(title: any, width: any, height: any) -> any {
+    let function = "std::game::init"
+    rt_expect_str(title, function)
+    rt_expect_int(width, function)
+    rt_expect_int(height, function)
+    let title_bytes = rt_slen(title)
+    let w = std::raw::bits(width)
+    let h = std::raw::bits(height)
+    if title_bytes > 65536 || w < 1 || w > 16384 || h < 1 || h > 16384 {
+        return false
+    }
+
+    let state = gm_state()
+    let old_title_tag = std::raw::load(state + 56)
+    if old_title_tag != 0 {
+        std::raw::release(old_title_tag, std::raw::load(state + 64))
+    }
+    std::raw::store(state + 56, std::raw::tag(title))
+    std::raw::store(state + 64, std::raw::keep(title))
+    let (seconds, nanoseconds) = rt_clock(1)
+    std::raw::store(state, 1)
+    std::raw::store(state + 8, w)
+    std::raw::store(state + 16, h)
+    std::raw::store(state + 24, seconds)
+    std::raw::store(state + 32, nanoseconds)
+    std::raw::store(state + 40, 0)
+    std::raw::store(state + 48, 60)
+    true
+}
+
+fn std__game__step() -> any {
+    let state = gm_existing()
+    if state == 0 || std::raw::load(state) == 0 { return rt_float(0) }
+
+    let previous_seconds = std::raw::load(state + 24)
+    let previous_nanoseconds = std::raw::load(state + 32)
+    let (seconds, nanoseconds) = rt_clock(1)
+    let mut delta_seconds = seconds - previous_seconds
+    let mut delta_nanoseconds = nanoseconds - previous_nanoseconds
+    if delta_nanoseconds < 0 {
+        delta_seconds -= 1
+        delta_nanoseconds += 1000000000
+    }
+    let delta = std::raw::fadd(
+        std::raw::ffromint(delta_seconds),
+        std::raw::fdiv(std::raw::ffromint(delta_nanoseconds), std::raw::ffromint(1000000000)),
+    )
+    std::raw::store(state + 24, seconds)
+    std::raw::store(state + 32, nanoseconds)
+
+    if std::raw::fcmp(delta, 0) > 0 {
+        let frames_per_second = std::raw::fdiv(4607182418800017408, delta)
+        let rounded = std::raw::ftoint(std::raw::fadd(frames_per_second, 4602678819172646912))
+        std::raw::store(state + 48, rounded)
+    }
+    let frames = std::raw::load(state + 40)
+    if frames != -1 {
+        std::raw::store(state + 40, std::raw::wadd(frames, 1))
+    }
+    rt_float(delta)
+}
+
+fn std__game__fps() -> any {
+    let state = gm_existing()
+    if state == 0 || std::raw::load(state) == 0 { return 0 }
+    std::raw::load(state + 48)
+}
+
+fn gm_float(value: any, function: string) -> int {
+    rt_expect_number(value, function)
+}
+
+fn std__game__check_collision(x1v: any, y1v: any, w1v: any, h1v: any, x2v: any, y2v: any, w2v: any, h2v: any) -> any {
+    let function = "std::game::check_collision"
+    let x1 = gm_float(x1v, function)
+    let y1 = gm_float(y1v, function)
+    let w1 = gm_float(w1v, function)
+    let h1 = gm_float(h1v, function)
+    let x2 = gm_float(x2v, function)
+    let y2 = gm_float(y2v, function)
+    let w2 = gm_float(w2v, function)
+    let h2 = gm_float(h2v, function)
+
+    if !rt_is_finite(x1) || !rt_is_finite(y1) || !rt_is_finite(w1) || !rt_is_finite(h1)
+        || !rt_is_finite(x2) || !rt_is_finite(y2) || !rt_is_finite(w2) || !rt_is_finite(h2)
+        || std::raw::fcmp(w1, 0) < 0 || std::raw::fcmp(h1, 0) < 0
+        || std::raw::fcmp(w2, 0) < 0 || std::raw::fcmp(h2, 0) < 0 {
+        return false
+    }
+
+    let right1 = std::raw::fadd(x1, w1)
+    let bottom1 = std::raw::fadd(y1, h1)
+    let right2 = std::raw::fadd(x2, w2)
+    let bottom2 = std::raw::fadd(y2, h2)
+    if !rt_is_finite(right1) || !rt_is_finite(bottom1) || !rt_is_finite(right2) || !rt_is_finite(bottom2) {
+        return false
+    }
+    std::raw::fcmp(x1, right2) < 0
+        && std::raw::fcmp(right1, x2) > 0
+        && std::raw::fcmp(y1, bottom2) < 0
+        && std::raw::fcmp(bottom1, y2) > 0
+}
+
+fn std__game__shutdown() -> any {
+    let state = gm_existing()
+    if state == 0 { return false }
+    std::raw::store(state, 0)
+    std::raw::store(state + 24, 0)
+    std::raw::store(state + 32, 0)
+    std::raw::store(state + 40, 0)
+    std::raw::store(state + 48, 0)
+    let title_tag = std::raw::load(state + 56)
+    if title_tag != 0 {
+        std::raw::release(title_tag, std::raw::load(state + 64))
+    }
+    let empty = ""
+    std::raw::store(state + 56, std::raw::tag(empty))
+    std::raw::store(state + 64, std::raw::keep(empty))
+    true
+}

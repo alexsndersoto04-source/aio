@@ -1,0 +1,166 @@
+// std::archive::zip_unpack: datos rotos que la versión en Rust anterior daba
+// por buenos si la CRC coincidía (ver "Defecto real" de archive en
+// selfhost/ESTADO.md). Ahora son errores.
+// Generado por selfhost/native/archive/gen_tests.py.
+
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+
+fn entries_text(v: any) -> string {
+    let a: array = v
+    let mut out = ""
+    let mut i = 0
+    while i < len(a) {
+        let m = a[i]
+        let name: string = std::map::get(m, "name")
+        let data: bytes = std::map::get(m, "bytes")
+        if i > 0 {
+            out = out + ","
+        }
+        if len(data) <= 40 {
+            out = out + name + "=" + std::encoding::hex_encode(data)
+        } else {
+            let n = len(data)
+            let c = std::checksum::crc32(data)
+            out = out + name + "=len" + "{n}" + "crc" + "{c}"
+        }
+        i += 1
+    }
+    out
+}
+
+fn show_b(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let b: bytes = v
+            let n = len(b)
+            let c = std::checksum::crc32(b)
+            "Ok(len={n} crc={c})"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn show_e(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok(" + entries_text(v) + ")",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn show_n(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let a: array = v
+            let mut out = ""
+            let mut i = 0
+            while i < len(a) {
+                let s: string = a[i]
+                if i > 0 {
+                    out = out + ","
+                }
+                out = out + s
+                i += 1
+            }
+            "Ok(" + out + ")"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn anyv(x: any) -> any {
+    x
+}
+
+fn entry(name: any, data: any) -> any {
+    let m = std::map::insert(std::map::new(), "name", name)
+    std::map::insert(m, "bytes", data)
+}
+
+fn parse_list(s: string) -> array {
+    let mut out = []
+    if s == "" {
+        return out
+    }
+    let items = std::text::lines(std::text::replace(s, ",", "\n"))
+    let mut i = 0
+    while i < len(items) {
+        let kv = std::text::lines(std::text::replace(items[i], ":", "\n"))
+        let name = std::encoding::utf8_decode(std::encoding::hex_decode(kv[0]))
+        let mut d = ""
+        if len(kv) > 1 {
+            d = kv[1]
+        }
+        if std::text::starts_with(d, "s") {
+            let h = std::text::replace(d, "s", "")
+            out = std::array::push(out, entry(name, std::encoding::utf8_decode(std::encoding::hex_decode(h))))
+        } else {
+            out = std::array::push(out, entry(name, std::encoding::hex_decode(d)))
+        }
+        i += 1
+    }
+    out
+}
+
+fn t(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_e(std::try::catch(|| { std::archive::tar_unpack(data) })))
+}
+
+fn z(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_e(std::try::catch(|| { std::archive::zip_unpack(data) })))
+}
+
+fn l(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_n(std::try::catch(|| { std::archive::zip_list(data) })))
+}
+
+fn tp(s: string) {
+    let e = parse_list(s)
+    let r = std::try::catch(|| { std::archive::tar_pack(e) })
+    println(show_b(r))
+    match r {
+        Result::Ok(v) => println(show_e(std::try::catch(|| { std::archive::tar_unpack(v) }))),
+        Result::Err(e) => println("-"),
+    }
+}
+
+fn zp(s: string) {
+    let e = parse_list(s)
+    let r = std::try::catch(|| { std::archive::zip_pack(e) })
+    println(show_b(r))
+    match r {
+        Result::Ok(v) => {
+            println(show_e(std::try::catch(|| { std::archive::zip_unpack(v) })))
+            println(show_n(std::try::catch(|| { std::archive::zip_list(v) })))
+        }
+        Result::Err(e) => println("-"),
+    }
+}
+
+fn main() {
+    println("deflate cortado (la versión anterior daba Ok con la mitad)")
+    z("504b030414000000080000002100823555c80e000000cc01000005000000612e747874cbc8cf4954c82dcd4bc9d751c800504b0102140314000000080000002100823555c80e000000cc010000050000000000000000000000000000000000612e747874504b0506000000000100010033000000310000000000")
+    l("504b030414000000080000002100823555c80e000000cc01000005000000612e747874cbc8cf4954c82dcd4bc9d751c800504b0102140314000000080000002100823555c80e000000cc010000050000000000000000000000000000000000612e747874504b0506000000000100010033000000310000000000")
+    println("distancia a antes del principio (daba Ok con ceros)")
+    z("504b0304140000000800000021009c1538de040000000400000005000000622e7478744b044200504b01021403140000000800000021009c1538de0400000004000000050000000000000000000000000000000000622e747874504b0506000000000100010033000000270000000000")
+    l("504b0304140000000800000021009c1538de040000000400000005000000622e7478744b044200504b01021403140000000800000021009c1538de0400000004000000050000000000000000000000000000000000622e747874504b0506000000000100010033000000270000000000")
+    println("deflate sin bloque final")
+    z("504b03041400000008000000210000000000000000000000000005000000632e747874504b0102140314000000080000002100000000000000000000000000050000000000000000000000000000000000632e747874504b0506000000000100010033000000230000000000")
+    l("504b03041400000008000000210000000000000000000000000005000000632e747874504b0102140314000000080000002100000000000000000000000000050000000000000000000000000000000000632e747874504b0506000000000100010033000000230000000000")
+    println("almacenado al que le faltan bytes")
+    z("504b030414000000000000002100c241243540420f000300000005000000642e747874616263504b0102140314000000000000002100c241243540420f0003000000050000000000000000000000000000000000642e747874504b0506000000000100010033000000260000000000")
+    l("504b030414000000000000002100c241243540420f000300000005000000642e747874616263504b0102140314000000000000002100c241243540420f0003000000050000000000000000000000000000000000642e747874504b0506000000000100010033000000260000000000")
+    println("flujo con código inválido")
+    z("504b03041400000008000000210000000000040000000000000005000000652e747874ffffffff504b0102140314000000080000002100000000000400000000000000050000000000000000000000000000000000652e747874504b0506000000000100010033000000270000000000")
+    l("504b03041400000008000000210000000000040000000000000005000000652e747874ffffffff504b0102140314000000080000002100000000000400000000000000050000000000000000000000000000000000652e747874504b0506000000000100010033000000270000000000")
+    println("CRC incorrecta de datos completos")
+    z("504b030414000000080000002100d20400001c000000cc01000005000000662e747874cbc8cf4954c82dcd4bc9d751c800b1433c431cfd20cc51e1a1250c00504b0102140314000000080000002100d20400001c000000cc010000050000000000000000000000000000000000662e747874504b05060000000001000100330000003f0000000000")
+    l("504b030414000000080000002100d20400001c000000cc01000005000000662e747874cbc8cf4954c82dcd4bc9d751c800b1433c431cfd20cc51e1a1250c00504b0102140314000000080000002100d20400001c000000cc010000050000000000000000000000000000000000662e747874504b05060000000001000100330000003f0000000000")
+    println("tamaño comprimido 0 por un campo zip64 cortado")
+    z("504b03041400000008000000210088f9a06f06000000040000000100000078cbc8cf490400504b010214031400000008000000210088f9a06f06000000040000000100180000000000000000000000000000007801001c000000000000000000000000000000000000000000504b0506000000000100010047000000250000000000")
+    l("504b03041400000008000000210088f9a06f06000000040000000100000078cbc8cf490400504b010214031400000008000000210088f9a06f06000000040000000100180000000000000000000000000000007801001c000000000000000000000000000000000000000000504b0506000000000100010047000000250000000000")
+}

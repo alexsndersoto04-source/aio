@@ -1,0 +1,747 @@
+// Backend nativo de KV: snapshot JSON versionado en el directorio de Sled.
+// La implementación Rust de std::kv importa/exporta este snapshot con Sled
+// bajo el mismo flock; el checksum detecta cambios del lado Sled. Titan no
+// interpreta directamente el pagecache privado de Sled: si aún no existe
+// snapshot, un directorio Sled previo debe inicializarse desde el backend VM.
+// flock(LOCK_EX) serializa cada lectura-modificación-escritura y atomic_write
+// sincroniza tanto el archivo temporal como el rename del directorio.
+const KV_DB_LIMIT: int = 8
+const KV_TREE_HANDLE_LIMIT: int = 32
+const KV_NAMED_TREE_LIMIT: int = 64
+const KV_PATH_LIMIT: int = 16384
+const KV_TREE_NAME_LIMIT: int = 1024
+const KV_KEY_LIMIT: int = 65536
+const KV_VALUE_LIMIT: int = 8388608
+const KV_DB_BYTES_LIMIT: int = 134217728
+const KV_DB_ENTRIES_LIMIT: int = 262144
+const KV_LIST_KEYS_LIMIT: int = 65536
+const KV_LIST_BYTES_LIMIT: int = 8388608
+const KV_SNAPSHOT_LIMIT: int = 402653184
+const KV_LOCK_TIMEOUT_MS: int = 30000
+const KV_NEXT_ID_SLOT: int = 3184
+const KV_DB_SLOTS: int = 3200
+const KV_TREE_SLOTS: int = 3264
+
+fn kv_fail(function: string, message: string) -> any {
+    rt_native_fail(function, message)
+}
+
+fn kv_wrapped_error(function: string, error: any) -> any {
+    let mut message = rt_to_string(error)
+    let nested_prefix = "native function '" + function + "' failed: "
+    if std::text::starts_with(message, nested_prefix) {
+        message = std::text::replace(message, nested_prefix, "")
+    }
+    kv_fail(function, "sled error: " + message)
+}
+
+fn kv_path_check(path: any, function: string) {
+    let n = rt_slen(path)
+    if n == 0 {
+        kv_fail(function, "invalid key-value argument: database path must not be empty")
+    }
+    if n > KV_PATH_LIMIT {
+        kv_fail(function, "key-value database path bytes exceeds limit 16384")
+    }
+    let p = std::raw::bits(path) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 0 {
+            kv_fail(function, "sled error: file name contained an unexpected NUL byte")
+        }
+        i += 1
+    }
+}
+
+fn kv_tree_name_check(name: string, function: string) {
+    let n = rt_slen(name)
+    if n == 0 {
+        kv_fail(function, "invalid key-value argument: tree name must not be empty")
+    }
+    if n > KV_TREE_NAME_LIMIT {
+        kv_fail(function, "key-value tree name bytes exceeds limit 1024")
+    }
+}
+
+fn kv_key_check(key: any, function: string) {
+    let n = rt_slen(key)
+    if n > KV_KEY_LIMIT {
+        kv_fail(function, "key-value key bytes exceeds limit 65536")
+    }
+}
+
+fn kv_value_check(value: any, function: string) {
+    let n = rt_slen(value)
+    if n > KV_VALUE_LIMIT {
+        kv_fail(function, "key-value value bytes exceeds limit 8388608")
+    }
+}
+
+fn kv_store_file(path: any) -> any {
+    rt_concat(path, "/.titan-kv-v1.json")
+}
+
+fn kv_lock_file(path: any) -> any {
+    rt_concat(path, "/.titan-kv.lock")
+}
+
+fn kv_sync_state_file(path: any) -> any {
+    rt_concat(path, "/.titan-kv-sled-state")
+}
+
+fn kv_has_foreign_files(path: any) -> bool {
+    let names = rt_read_dir(path)
+    if std::raw::tag(names) == 1 { return true }
+    let count = rt_seq_len(names)
+    let mut i = 0
+    while i < count {
+        let name = rt_seq_get(names, i)
+        if name != ".titan-kv.lock" { return true }
+        i += 1
+    }
+    false
+}
+
+fn kv_empty_store() -> any {
+    let trees = std::map::insert(std::map::new(), "", std::map::new())
+    let store = std::map::insert(std::map::new(), "format", "titan-kv-v1")
+    let store = std::map::insert(store, "trees", trees)
+    std::map::insert(store, "sled_checksum", nil)
+}
+
+fn kv_validate_store(store: any, function: string) -> (int, int) {
+    if std::raw::tag(store) != 9 || std::map::get(store, "format") != "titan-kv-v1" {
+        kv_fail(function, "sled error: invalid or unsupported Titan KV snapshot")
+    }
+    let sled_checksum = std::map::get(store, "sled_checksum")
+    if sled_checksum != nil {
+        if std::raw::tag(sled_checksum) != 1 {
+            kv_fail(function, "sled error: invalid Titan KV synchronization checksum")
+        }
+        let checksum = std::raw::bits(sled_checksum)
+        if checksum < 0 || checksum > 4294967295 {
+            kv_fail(function, "sled error: invalid Titan KV synchronization checksum")
+        }
+    }
+    let trees = std::map::get(store, "trees")
+    if std::raw::tag(trees) != 9 || !std::map::contains(trees, "") {
+        kv_fail(function, "sled error: invalid Titan KV tree table")
+    }
+    if len(std::map::keys(trees)) - 1 > KV_NAMED_TREE_LIMIT {
+        kv_fail(function, "named trees per database exceeds limit 64")
+    }
+
+    let mut logical_bytes = 0
+    let mut entries = 0
+    let tree_keys = std::map::keys(trees)
+    let tree_key_count = rt_seq_len(tree_keys)
+    let mut tree_index = 0
+    while tree_index < tree_key_count {
+        let tree_hex = rt_seq_get(tree_keys, tree_index)
+        let tree_name = std::encoding::hex_decode(tree_hex)
+        if tree_hex != "" {
+            if std::encoding::hex_encode(tree_name) != tree_hex || std::bytes::length(tree_name) == 0 || std::bytes::length(tree_name) > KV_TREE_NAME_LIMIT {
+                kv_fail(function, "sled error: invalid Titan KV tree name")
+            }
+            if tree_hex == "5f5f736c65645f5f64656661756c74" {
+                kv_fail(function, "sled error: reserved Sled default-tree name encoded as a named tree")
+            }
+        }
+        let values = std::map::get(trees, tree_hex)
+        if std::raw::tag(values) != 9 {
+            kv_fail(function, "sled error: invalid Titan KV tree contents")
+        }
+        let value_keys = std::map::keys(values)
+        let value_key_count = rt_seq_len(value_keys)
+        let mut value_index = 0
+        while value_index < value_key_count {
+            let key_hex = rt_seq_get(value_keys, value_index)
+            let key = std::encoding::hex_decode(key_hex)
+            if std::encoding::hex_encode(key) != key_hex {
+                kv_fail(function, "sled error: non-canonical Titan KV key hex")
+            }
+            let key_len = std::bytes::length(key)
+            if key_len > KV_KEY_LIMIT {
+                kv_fail(function, "key-value key bytes exceeds limit 65536")
+            }
+            let encoded_value = std::map::get(values, key_hex)
+            if std::raw::tag(encoded_value) != 5 {
+                kv_fail(function, "sled error: invalid Titan KV value encoding")
+            }
+            let value = std::encoding::base64_decode(encoded_value)
+            let value_len = std::bytes::length(value)
+            if value_len > KV_VALUE_LIMIT {
+                kv_fail(function, "key-value value bytes exceeds limit 8388608")
+            }
+            logical_bytes += key_len + value_len
+            entries += 1
+            if logical_bytes > KV_DB_BYTES_LIMIT {
+                kv_fail(function, "database logical bytes exceeds limit 134217728")
+            }
+            if entries > KV_DB_ENTRIES_LIMIT {
+                kv_fail(function, "database entries exceeds limit 262144")
+            }
+            value_index += 1
+        }
+        tree_index += 1
+    }
+    return (logical_bytes, entries)
+}
+
+fn kv_load_store(path: any, function: string) -> any {
+    let file = kv_store_file(path)
+    if !std__fs__exists(file) {
+        return kv_empty_store()
+    }
+    let size = std__fs__file_size(file)
+    if size > KV_SNAPSHOT_LIMIT {
+        kv_fail(function, "sled error: Titan KV snapshot exceeds its 402653184-byte safety limit")
+    }
+    let bytes = std__fs__read_bytes(file)
+    let text = std::encoding::utf8_decode(bytes)
+    let store = std::json::parse(text)
+    let (_logical_bytes, _entries) = kv_validate_store(store, function)
+    store
+}
+
+fn kv_sync_dir(path: any, function: string) {
+    // O_RDONLY | O_DIRECTORY | O_CLOEXEC. Persist the rename itself, not only
+    // the bytes in the temporary file written by std::fs::atomic_write.
+    let fd = rt_open(path, 589824, 0)
+    if fd < 0 {
+        kv_fail(function, "sled error: cannot open database directory for sync: " + rt_os_error(0 - fd))
+    }
+    let synced = std::raw::syscall(74, fd, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if synced < 0 {
+        kv_fail(function, "sled error: cannot sync database directory: " + rt_os_error(0 - synced))
+    }
+}
+
+fn kv_save_store(path: any, store: any, function: string) {
+    let (_logical_bytes, _entries) = kv_validate_store(store, function)
+    let text = std::json::stringify(store)
+    let bytes = std::encoding::utf8_encode(text)
+    if std::bytes::length(bytes) > KV_SNAPSHOT_LIMIT {
+        kv_fail(function, "sled error: Titan KV snapshot exceeds its 402653184-byte safety limit")
+    }
+    std__fs__atomic_write(kv_store_file(path), bytes)
+    kv_sync_dir(path, function)
+}
+
+fn kv_open_store(path: any, function: string) -> any {
+    if std__fs__exists(kv_sync_state_file(path)) {
+        kv_fail(function, "sled error: Sled synchronization needs recovery; reopen through the VM backend")
+    }
+    let file = kv_store_file(path)
+    if !std__fs__exists(file) && kv_has_foreign_files(path) {
+        kv_fail(function, "sled error: existing Sled database has no Titan interoperability snapshot; open it through the VM backend first")
+    }
+    let store = kv_load_store(path, function)
+    if !std__fs__exists(file) {
+        kv_save_store(path, store, function)
+    }
+    store
+}
+
+fn kv_canonical_path(path: any, function: string) -> any {
+    let (error, canonical) = rt_canonical_path(path)
+    if error != 0 {
+        kv_fail(function, "sled error: Titan KV interoperability: " + rt_os_error(error))
+    }
+    canonical
+}
+
+fn kv_lock(path: any, function: string) -> int {
+    let lock_path = kv_lock_file(path)
+    // O_RDWR | O_CREAT | O_CLOEXEC, mode 0600. flock is process-safe and the
+    // kernel releases it automatically if Titan exits or crashes.
+    let fd = rt_open(lock_path, 524354, 384)
+    if fd < 0 {
+        kv_fail(function, "sled error: cannot open Titan KV lock: " + rt_os_error(0 - fd))
+    }
+    let started = std::raw::bits(std__time__unix_millis())
+    loop {
+        // LOCK_EX | LOCK_NB; retry EWOULDBLOCK until the bounded deadline.
+        let acquired = std::raw::syscall(73, fd, 6, 0, 0, 0, 0)
+        if acquired == 0 { return fd }
+        if acquired != -4 && acquired != -11 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            kv_fail(function, "sled error: could not lock Titan KV database: " + rt_os_error(0 - acquired))
+        }
+        let elapsed = std::raw::bits(std__time__unix_millis()) - started
+        if elapsed >= KV_LOCK_TIMEOUT_MS {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            kv_fail(function, "sled error: timed out waiting for another Titan KV writer")
+        }
+        std__time__sleep_ms(2)
+    }
+    -1
+}
+
+fn kv_finish_locked(lock: int, function: string, attempted: any) -> any {
+    let unlocked = std::raw::syscall(73, lock, 8, 0, 0, 0, 0)
+    let closed = std::raw::syscall(3, lock, 0, 0, 0, 0, 0)
+    if unlocked < 0 {
+        kv_fail(function, "sled error: could not release Titan KV lock: " + rt_os_error(0 - unlocked))
+    }
+    if closed < 0 {
+        kv_fail(function, "sled error: could not close Titan KV lock: " + rt_os_error(0 - closed))
+    }
+    match attempted {
+        Result::Ok(value) => value,
+        Result::Err(error) => kv_wrapped_error(function, error),
+        other => kv_wrapped_error(function, other),
+    }
+}
+
+fn kv_prepare_path(path: any, function: string) {
+    kv_path_check(path, function)
+    if std__fs__exists(path) {
+        if !std__fs__is_dir(path) {
+            kv_fail(function, "sled error: database path exists and is not a directory")
+        }
+    } else {
+        match std::try::catch(|| std__fs__create_dir(path)) {
+            Result::Ok(_) => (),
+            Result::Err(error) => kv_wrapped_error(function, error),
+        }
+    }
+}
+
+fn kv_trees(store: any) -> any {
+    std::map::get(store, "trees")
+}
+
+fn kv_tree_values(store: any, tree_hex: string) -> any {
+    let values = std::map::get(kv_trees(store), tree_hex)
+    if std::raw::tag(values) == 9 { values } else { std::map::new() }
+}
+
+fn kv_store_tree(store: any, tree_hex: string, values: any) -> any {
+    let trees = std::map::insert(kv_trees(store), tree_hex, values)
+    std::map::insert(store, "trees", trees)
+}
+
+fn kv_lookup(store: any, tree_hex: string, key: any) -> any {
+    let key_hex = std::encoding::hex_encode(key)
+    let values = kv_tree_values(store, tree_hex)
+    if !std::map::contains(values, key_hex) { return nil }
+    std::encoding::base64_decode(std::map::get(values, key_hex))
+}
+
+fn kv_set_value(store: any, tree_hex: string, key: any, value: any) -> any {
+    let key_hex = std::encoding::hex_encode(key)
+    let encoded_value = std::encoding::base64_encode(value)
+    let values = std::map::insert(kv_tree_values(store, tree_hex), key_hex, encoded_value)
+    kv_store_tree(store, tree_hex, values)
+}
+
+fn kv_remove_value(store: any, tree_hex: string, key: any) -> any {
+    let key_hex = std::encoding::hex_encode(key)
+    let values = std::map::remove(kv_tree_values(store, tree_hex), key_hex)
+    kv_store_tree(store, tree_hex, values)
+}
+
+fn kv_read_value(path: any, tree_hex: string, key: any, function: string) -> any {
+    kv_lookup(kv_load_store(path, function), tree_hex, key)
+}
+
+fn kv_insert_locked(path: any, tree_hex: string, key: any, value: any, function: string) -> any {
+    let store = kv_load_store(path, function)
+    let old = kv_lookup(store, tree_hex, key)
+    let updated = kv_set_value(store, tree_hex, key, value)
+    kv_save_store(path, updated, function)
+    old
+}
+
+fn kv_remove_locked(path: any, tree_hex: string, key: any, function: string) -> any {
+    let store = kv_load_store(path, function)
+    let old = kv_lookup(store, tree_hex, key)
+    if old != nil {
+        kv_save_store(path, kv_remove_value(store, tree_hex, key), function)
+    }
+    old
+}
+
+fn kv_clear_locked(path: any, tree_hex: string, function: string) {
+    let store = kv_load_store(path, function)
+    let values = kv_tree_values(store, tree_hex)
+    if len(std::map::keys(values)) > 0 {
+        kv_save_store(path, kv_store_tree(store, tree_hex, std::map::new()), function)
+    }
+}
+
+fn kv_contains_locked(path: any, tree_hex: string, key: any, function: string) -> bool {
+    kv_lookup(kv_load_store(path, function), tree_hex, key) != nil
+}
+
+fn kv_len_locked(path: any, tree_hex: string, function: string) -> int {
+    len(std::map::keys(kv_tree_values(kv_load_store(path, function), tree_hex)))
+}
+
+fn kv_keys_locked(path: any, tree_hex: string, function: string) -> any {
+    let store = kv_load_store(path, function)
+    let values = kv_tree_values(store, tree_hex)
+    let mut out = []
+    let mut listed_bytes = 0
+    let key_hexes = std::map::keys(values)
+    let key_count = rt_seq_len(key_hexes)
+    let mut key_index = 0
+    while key_index < key_count {
+        let key_hex = rt_seq_get(key_hexes, key_index)
+        let key = std::encoding::hex_decode(key_hex)
+        let key_len = std::bytes::length(key)
+        if rt_valid_utf8(std::raw::bits(key) + 16, key_len) {
+            if len(out) >= KV_LIST_KEYS_LIMIT {
+                kv_fail(function, "listed key count exceeds limit 65536")
+            }
+            listed_bytes += key_len
+            if listed_bytes > KV_LIST_BYTES_LIMIT {
+                kv_fail(function, "listed key bytes exceeds limit 8388608")
+            }
+            out = std::array::push(out, std::encoding::utf8_decode(key))
+        }
+        key_index += 1
+    }
+    out
+}
+
+fn kv_cas_locked(path: any, tree_hex: string, key: any, expected: any, replacement: any, function: string) -> bool {
+    let store = kv_load_store(path, function)
+    let current = kv_lookup(store, tree_hex, key)
+    let expect_none = std::bytes::length(expected) == 0
+    let replacement_none = std::bytes::length(replacement) == 0
+    let matches = if expect_none { current == nil } else { current != nil && current == expected }
+    if !matches { return false }
+    if replacement_none {
+        if current != nil {
+            kv_save_store(path, kv_remove_value(store, tree_hex, key), function)
+        }
+    } else {
+        kv_save_store(path, kv_set_value(store, tree_hex, key, replacement), function)
+    }
+    true
+}
+
+fn kv_ensure_tree_locked(path: any, tree_hex: string, function: string) {
+    let store = kv_load_store(path, function)
+    let trees = kv_trees(store)
+    if std::map::contains(trees, tree_hex) { return }
+    if len(std::map::keys(trees)) - 1 >= KV_NAMED_TREE_LIMIT {
+        kv_fail(function, "named trees per database exceeds limit 64")
+    }
+    kv_save_store(path, kv_store_tree(store, tree_hex, std::map::new()), function)
+}
+
+fn kv_default_context(handle: int, function: string) -> (any, string) {
+    let state = kv_find_db(handle)
+    if state == 0 {
+        kv_fail(function, "unknown database handle " + rt_int_to_str(handle))
+    }
+    return (kv_path_from_state(state), "")
+}
+
+fn kv_tree_context(handle: int, function: string) -> (any, string) {
+    let tree = kv_find_tree(handle)
+    if tree == 0 {
+        kv_fail(function, "unknown tree handle " + rt_int_to_str(handle))
+    }
+    let db_handle = std::raw::load(tree + 8)
+    let db = kv_find_db(db_handle)
+    if db == 0 {
+        kv_fail(function, "unknown tree handle " + rt_int_to_str(handle))
+    }
+    let name_len = std::raw::load(tree + 16)
+    let name_ptr = rt_str_alloc(name_len)
+    rt_copy(name_ptr + 16, tree + 24, name_len)
+    let tree_name: any = rt_sval(name_ptr)
+    let tree_hex = if tree_name == "__sled__default" { "" } else { std::encoding::hex_encode(std::encoding::utf8_encode(tree_name)) }
+    return (kv_path_from_state(db), tree_hex)
+}
+
+fn kv_find_db(handle: int) -> int {
+    let mut i = 0
+    while i < KV_DB_LIMIT {
+        let state = std::raw::load(std::raw::globals() + KV_DB_SLOTS + 8 * i)
+        if state != 0 && std::raw::load(state) == handle { return state }
+        i += 1
+    }
+    0
+}
+
+fn kv_find_tree(handle: int) -> int {
+    let mut i = 0
+    while i < KV_TREE_HANDLE_LIMIT {
+        let state = std::raw::load(std::raw::globals() + KV_TREE_SLOTS + 8 * i)
+        if state != 0 && std::raw::load(state) == handle { return state }
+        i += 1
+    }
+    0
+}
+
+fn kv_free_db_slot() -> int {
+    let mut i = 0
+    while i < KV_DB_LIMIT {
+        let slot = std::raw::globals() + KV_DB_SLOTS + 8 * i
+        if std::raw::load(slot) == 0 { return slot }
+        i += 1
+    }
+    0
+}
+
+fn kv_free_tree_slot() -> int {
+    let mut i = 0
+    while i < KV_TREE_HANDLE_LIMIT {
+        let slot = std::raw::globals() + KV_TREE_SLOTS + 8 * i
+        if std::raw::load(slot) == 0 { return slot }
+        i += 1
+    }
+    0
+}
+
+fn kv_next_handle(function: string) -> int {
+    let slot = std::raw::globals() + KV_NEXT_ID_SLOT
+    let mut id = std::raw::load(slot)
+    if id == 0 { id = 1 }
+    if id < 0 || id >= 9223372036854775807 {
+        kv_fail(function, "key-value handle space exhausted")
+    }
+    std::raw::store(slot, id + 1)
+    id
+}
+
+fn kv_path_from_state(state: int) -> any {
+    let n = std::raw::load(state + 8)
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, state + 16, n)
+    rt_sval(p)
+}
+
+fn kv_register_db(path: string, function: string) -> int {
+    let slot = kv_free_db_slot()
+    if slot == 0 {
+        kv_fail(function, "key-value database handles exceeds limit 8")
+    }
+    let n = rt_slen(path)
+    let state = rt_alloc(16 + n)
+    let id = kv_next_handle(function)
+    std::raw::store(state, id)
+    std::raw::store(state + 8, n)
+    rt_copy(state + 16, std::raw::bits(path) + 16, n)
+    std::raw::store(slot, state)
+    id
+}
+
+fn kv_register_tree(db_handle: int, name: string, function: string) -> int {
+    let slot = kv_free_tree_slot()
+    if slot == 0 {
+        kv_fail(function, "key-value tree handles exceeds limit 32")
+    }
+    let n = rt_slen(name)
+    let state = rt_alloc(24 + n)
+    let id = kv_next_handle(function)
+    std::raw::store(state, id)
+    std::raw::store(state + 8, db_handle)
+    std::raw::store(state + 16, n)
+    rt_copy(state + 24, std::raw::bits(name) + 16, n)
+    std::raw::store(slot, state)
+    id
+}
+
+// Cada mutación ya pasa por atomic_write (escritura + fsync), así que no hay
+// bytes pendientes que flush deba volver a sincronizar; aquí se valida el
+// snapshot bajo el mismo bloqueo y se devuelve 0 como bytes nuevos vaciados.
+fn kv_flush_locked(path: any, function: string) -> int {
+    let _store = kv_load_store(path, function)
+    kv_sync_dir(path, function)
+    0
+}
+
+fn kv_flush_path(path: any, function: string) -> int {
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_flush_locked(path, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__open(path: string) -> any {
+    let function = "std::kv::open"
+    kv_prepare_path(path, function)
+    let canonical_path = kv_canonical_path(path, function)
+    if kv_free_db_slot() == 0 {
+        kv_fail(function, "key-value database handles exceeds limit 8")
+    }
+    let lock = kv_lock(canonical_path, function)
+    let attempted = std::try::catch(|| kv_open_store(canonical_path, function))
+    let _store = kv_finish_locked(lock, function, attempted)
+    kv_register_db(canonical_path, function)
+}
+
+fn std__kv__close(handle: int) -> any {
+    let function = "std::kv::close"
+    let state = kv_find_db(handle)
+    if state == 0 { return nil }
+    let path = kv_path_from_state(state)
+    let flushed = std::try::catch(|| kv_flush_path(path, function))
+
+    let mut i = 0
+    while i < KV_TREE_HANDLE_LIMIT {
+        let slot = std::raw::globals() + KV_TREE_SLOTS + 8 * i
+        let tree = std::raw::load(slot)
+        if tree != 0 && std::raw::load(tree + 8) == handle {
+            std::raw::store(slot, 0)
+            rt_free_block(tree)
+        }
+        i += 1
+    }
+    i = 0
+    while i < KV_DB_LIMIT {
+        let slot = std::raw::globals() + KV_DB_SLOTS + 8 * i
+        if std::raw::load(slot) == state {
+            std::raw::store(slot, 0)
+            rt_free_block(state)
+            break
+        }
+        i += 1
+    }
+    match flushed {
+        Result::Ok(_) => nil,
+        Result::Err(error) => kv_wrapped_error(function, error),
+    }
+}
+
+fn std__kv__flush(handle: int) -> any {
+    let function = "std::kv::flush"
+    let (path, _tree) = kv_default_context(handle, function)
+    kv_flush_path(path, function)
+}
+
+fn std__kv__insert(handle: int, key: any, value: any) -> any {
+    let function = "std::kv::insert"
+    kv_key_check(key, function)
+    kv_value_check(value, function)
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_insert_locked(path, tree_hex, key, value, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__get(handle: int, key: any) -> any {
+    let function = "std::kv::get"
+    kv_key_check(key, function)
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_read_value(path, tree_hex, key, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__remove(handle: int, key: any) -> any {
+    let function = "std::kv::remove"
+    kv_key_check(key, function)
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_remove_locked(path, tree_hex, key, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__contains(handle: int, key: any) -> any {
+    let function = "std::kv::contains"
+    kv_key_check(key, function)
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_contains_locked(path, tree_hex, key, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__len(handle: int) -> any {
+    let function = "std::kv::len"
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_len_locked(path, tree_hex, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__clear(handle: int) -> any {
+    let function = "std::kv::clear"
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_clear_locked(path, tree_hex, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__keys(handle: int) -> any {
+    let function = "std::kv::keys"
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_keys_locked(path, tree_hex, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__compare_and_swap(handle: int, key: any, expected: any, replacement: any) -> any {
+    let function = "std::kv::compare_and_swap"
+    kv_key_check(key, function)
+    kv_value_check(expected, function)
+    kv_value_check(replacement, function)
+    let (path, tree_hex) = kv_default_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_cas_locked(path, tree_hex, key, expected, replacement, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__open_tree(db_handle: int, name: string) -> any {
+    let function = "std::kv::open_tree"
+    kv_tree_name_check(name, function)
+    if kv_free_tree_slot() == 0 {
+        kv_fail(function, "key-value tree handles exceeds limit 32")
+    }
+    let (path, _default_tree) = kv_default_context(db_handle, function)
+    let tree_hex = if name == "__sled__default" { "" } else { std::encoding::hex_encode(std::encoding::utf8_encode(name)) }
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_ensure_tree_locked(path, tree_hex, function))
+    let _result = kv_finish_locked(lock, function, attempted)
+    kv_register_tree(db_handle, name, function)
+}
+
+fn std__kv__tree_insert(handle: int, key: any, value: any) -> any {
+    let function = "std::kv::tree_insert"
+    kv_key_check(key, function)
+    kv_value_check(value, function)
+    let (path, tree_hex) = kv_tree_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_insert_locked(path, tree_hex, key, value, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__tree_get(handle: int, key: any) -> any {
+    let function = "std::kv::tree_get"
+    kv_key_check(key, function)
+    let (path, tree_hex) = kv_tree_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_read_value(path, tree_hex, key, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__tree_remove(handle: int, key: any) -> any {
+    let function = "std::kv::tree_remove"
+    kv_key_check(key, function)
+    let (path, tree_hex) = kv_tree_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_remove_locked(path, tree_hex, key, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__tree_len(handle: int) -> any {
+    let function = "std::kv::tree_len"
+    let (path, tree_hex) = kv_tree_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_len_locked(path, tree_hex, function))
+    kv_finish_locked(lock, function, attempted)
+}
+
+fn std__kv__tree_keys(handle: int) -> any {
+    let function = "std::kv::tree_keys"
+    let (path, tree_hex) = kv_tree_context(handle, function)
+    let lock = kv_lock(path, function)
+    let attempted = std::try::catch(|| kv_keys_locked(path, tree_hex, function))
+    kv_finish_locked(lock, function, attempted)
+}

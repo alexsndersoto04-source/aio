@@ -1,0 +1,1 @@
+type Count = int fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Count = 0 let result: Count = [1, 2].fold(initial, combine) result }

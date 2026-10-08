@@ -1,0 +1,562 @@
+fn wav_u16(value: int) -> any {
+    std::bytes::from_array([value & 255, (value / 256) & 255])
+}
+
+fn wav_u32(value: int) -> any {
+    std::bytes::write_u32_le(value)
+}
+
+fn wav_u32_be(value: int) -> any {
+    std::bytes::from_array([(value / 16777216) & 255, (value / 65536) & 255, (value / 256) & 255, value & 255])
+}
+
+fn wav_chunk(name: string, payload: any) -> any {
+    let length = std::bytes::length(payload)
+    let chunk = std::bytes::concat(std::bytes::concat(std::encoding::utf8_encode(name), wav_u32(length)), payload)
+    if length % 2 == 0 { chunk } else { std::bytes::concat(chunk, std::bytes::from_array([0])) }
+}
+
+fn info_item(name: string, value: string) -> any {
+    wav_chunk(name, std::bytes::concat(std::encoding::utf8_encode(value), std::bytes::from_array([0])))
+}
+
+fn make_tag_wav(title: string, artist: string) -> any {
+    let fmt = std::bytes::concat(
+        std::bytes::concat(wav_u16(1), wav_u16(2)),
+        std::bytes::concat(
+            wav_u32(44100),
+            std::bytes::concat(wav_u32(176400), std::bytes::concat(wav_u16(4), wav_u16(16)))
+        )
+    )
+    let info = std::bytes::concat(
+        std::encoding::utf8_encode("INFO"),
+        std::bytes::concat(info_item("INAM", title), info_item("IART", artist))
+    )
+    let chunks = std::bytes::concat(
+        wav_chunk("fmt ", fmt),
+        std::bytes::concat(
+            wav_chunk("LIST", info),
+            std::bytes::concat(
+                std::bytes::concat(std::encoding::utf8_encode("data"), wav_u32(176400)),
+                std::bytes::from_array(std::array::filled(176400, 0))
+            )
+        )
+    )
+    std::bytes::concat(
+        std::bytes::concat(std::encoding::utf8_encode("RIFF"), wav_u32(std::bytes::length(chunks) + 4)),
+        std::bytes::concat(std::encoding::utf8_encode("WAVE"), chunks)
+    )
+}
+
+fn id3_syncsafe(value: int) -> any {
+    std::bytes::from_array([(value / 2097152) & 127, (value / 16384) & 127, (value / 128) & 127, value & 127])
+}
+
+fn id3_frame(name: string, content: any) -> any {
+    std::bytes::concat(
+        std::bytes::concat(
+            std::bytes::concat(std::encoding::utf8_encode(name), wav_u32_be(std::bytes::length(content))),
+            std::bytes::from_array([0, 0])
+        ),
+        content
+    )
+}
+
+fn id3_frame_v24(name: string, content: any) -> any {
+    std::bytes::concat(
+        std::bytes::concat(
+            std::bytes::concat(std::encoding::utf8_encode(name), id3_syncsafe(std::bytes::length(content))),
+            std::bytes::from_array([0, 0])
+        ),
+        content
+    )
+}
+
+fn id3v1_field(value: string, width: int) -> any {
+    let bytes = std::encoding::utf8_encode(value)
+    std::bytes::concat(bytes, std::bytes::from_array(std::array::filled(width - std::bytes::length(bytes), 0)))
+}
+
+fn id3v1_tag() -> any {
+    std::bytes::concat(
+        std::bytes::concat(
+            std::bytes::concat(std::encoding::utf8_encode("TAG"), id3v1_field("Old Title", 30)),
+            std::bytes::concat(id3v1_field("Old Artist", 30), id3v1_field("Legacy Album", 30))
+        ),
+        std::bytes::concat(
+            std::bytes::concat(id3v1_field("1999", 4), std::bytes::from_array(std::array::filled(28, 0))),
+            std::bytes::from_array([0, 5, 17])
+        )
+    )
+}
+
+fn mp3_frame() -> any {
+    std::bytes::concat(std::bytes::from_array([255, 251, 144, 0]), std::bytes::from_array(std::array::filled(413, 0)))
+}
+
+fn mp3_repeat(frame: any, count: int) -> any {
+    let frame_len = std::bytes::length(frame)
+    let mut out = frame
+    let mut copies = 1
+    while copies * 2 <= count {
+        out = std::bytes::concat(out, out)
+        copies *= 2
+    }
+    if copies < count {
+        out = std::bytes::concat(out, std::bytes::slice(out, 0, (count - copies) * frame_len))
+    }
+    out
+}
+
+fn xing_mp3_frame(frame_count: int) -> any {
+    let xing = std::bytes::concat(
+        std::bytes::concat(std::encoding::utf8_encode("Xing"), wav_u32_be(1)),
+        std::bytes::concat(wav_u32_be(frame_count), std::bytes::from_array(std::array::filled(16, 0)))
+    )
+    let content = std::bytes::concat(
+        std::bytes::concat(std::bytes::from_array([255, 251, 144, 0]), std::bytes::from_array(std::array::filled(32, 0))),
+        xing
+    )
+    std::bytes::concat(content, std::bytes::from_array(std::array::filled(417 - std::bytes::length(content), 0)))
+}
+
+fn id3_mp3() -> any {
+    let title = id3_frame("TIT2", std::bytes::concat(std::bytes::from_array([0]), std::encoding::utf8_encode("MP3 Song")))
+    let artist = id3_frame("TPE1", std::bytes::concat(std::bytes::from_array([0]), std::encoding::utf8_encode("MP3 Artist")))
+    let track = id3_frame("TRCK", std::bytes::concat(std::bytes::from_array([0]), std::encoding::utf8_encode("7/12")))
+    let image = std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10])
+    let apic = std::bytes::concat(
+        std::bytes::concat(
+            std::bytes::concat(std::bytes::from_array([0]), std::encoding::utf8_encode("image/png")),
+            std::bytes::from_array([0, 3, 0])
+        ),
+        image
+    )
+    let cover = id3_frame("APIC", apic)
+    let body = std::bytes::concat(title, std::bytes::concat(artist, std::bytes::concat(track, cover)))
+    let id3 = std::bytes::concat(
+        std::bytes::concat(std::encoding::utf8_encode("ID3"), std::bytes::from_array([3, 0, 0])),
+        std::bytes::concat(id3_syncsafe(std::bytes::length(body)), body)
+    )
+    let audio = std::bytes::concat(xing_mp3_frame(3000), mp3_repeat(mp3_frame(), 2999))
+    std::bytes::concat(std::bytes::concat(id3, audio), id3v1_tag())
+}
+
+fn id3_footer_mp3() -> any {
+    let body = id3_frame_v24("TIT2", std::bytes::concat(std::bytes::from_array([3]), std::encoding::utf8_encode("Footer Song")))
+    // The v2.4 tag size excludes both the ten-byte header and footer.
+    let size = id3_syncsafe(std::bytes::length(body))
+    let header = std::bytes::concat(
+        std::encoding::utf8_encode("ID3"),
+        std::bytes::concat(std::bytes::from_array([4, 0, 16]), size)
+    )
+    let footer = std::bytes::concat(
+        std::encoding::utf8_encode("3DI"),
+        std::bytes::concat(std::bytes::from_array([4, 0, 16]), size)
+    )
+    let audio = mp3_repeat(mp3_frame(), 3000)
+    std::bytes::concat(header, std::bytes::concat(body, std::bytes::concat(footer, audio)))
+}
+
+fn id3_v24_utf16be_cover_mp3() -> any {
+    let image = std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10])
+    // UTF-16BE description "A" followed by its two-byte NUL terminator.
+    // The old one-byte scan stopped at the first 0x00 and returned a truncated image.
+    let apic = std::bytes::concat(
+        std::bytes::concat(
+            std::bytes::concat(std::bytes::from_array([2]), std::encoding::utf8_encode("image/png")),
+            std::bytes::from_array([0, 3, 0, 65, 0, 0])
+        ),
+        image
+    )
+    let frame = id3_frame_v24("APIC", apic)
+    let header = std::bytes::concat(
+        std::encoding::utf8_encode("ID3"),
+        std::bytes::concat(std::bytes::from_array([4, 0, 0]), id3_syncsafe(std::bytes::length(frame)))
+    )
+    std::bytes::concat(header, std::bytes::concat(frame, mp3_frame()))
+}
+
+fn cbr_mp3() -> any {
+    std::bytes::concat(mp3_repeat(mp3_frame(), 3000), id3v1_tag())
+}
+
+fn short_cbr_mp3() -> any {
+    std::bytes::concat(mp3_frame(), id3v1_tag())
+}
+
+fn vorbis_entry(text: string) -> any {
+    std::bytes::concat(wav_u32(std::bytes::length(std::encoding::utf8_encode(text))), std::encoding::utf8_encode(text))
+}
+
+fn flac_file() -> any {
+    let rate = 48000
+    let channels = 2
+    let total = 96000
+    let streaminfo = std::bytes::concat(
+        std::bytes::from_array(std::array::filled(10, 0)),
+        std::bytes::from_array([
+            (rate / 4096) & 255,
+            (rate / 16) & 255,
+            ((rate & 15) * 16) | ((channels - 1) * 2),
+            240 | ((total / 4294967296) & 15),
+            (total / 16777216) & 255,
+            (total / 65536) & 255,
+            (total / 256) & 255,
+            total & 255,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ])
+    )
+    let comments = std::bytes::concat(
+        std::bytes::concat(wav_u32(4), std::encoding::utf8_encode("test")),
+        std::bytes::concat(
+            wav_u32(3),
+            std::bytes::concat(
+                vorbis_entry("TITLE=FLAC Song"),
+                std::bytes::concat(vorbis_entry("ARTIST=FLAC Artist"), vorbis_entry("TRACKNUMBER=3/9"))
+            )
+        )
+    )
+    let stream_block = std::bytes::concat(
+        std::bytes::from_array([0, 0, 0, 34]),
+        streaminfo
+    )
+    let comment_size = std::bytes::length(comments)
+    let comment_block = std::bytes::concat(
+        std::bytes::from_array([4, (comment_size / 65536) & 255, (comment_size / 256) & 255, comment_size & 255]),
+        comments
+    )
+    let image = std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10])
+    let picture = std::bytes::concat(
+        std::bytes::concat(wav_u32_be(3), wav_u32_be(9)),
+        std::bytes::concat(
+            std::encoding::utf8_encode("image/png"),
+            std::bytes::concat(
+                wav_u32_be(0),
+                std::bytes::concat(std::bytes::from_array(std::array::filled(16, 0)), std::bytes::concat(wav_u32_be(std::bytes::length(image)), image))
+            )
+        )
+    )
+    let picture_size = std::bytes::length(picture)
+    let picture_block = std::bytes::concat(
+        std::bytes::from_array([134, (picture_size / 65536) & 255, (picture_size / 256) & 255, picture_size & 255]),
+        picture
+    )
+    std::bytes::concat(std::encoding::utf8_encode("fLaC"), std::bytes::concat(stream_block, std::bytes::concat(comment_block, picture_block)))
+}
+
+fn ogg_page(granule: int) -> any {
+    std::bytes::concat(
+        std::bytes::concat(std::encoding::utf8_encode("OggS"), std::bytes::from_array([0, 4])),
+        std::bytes::concat(
+            std::bytes::concat(wav_u32(granule & 4294967295), wav_u32(granule / 4294967296)),
+            std::bytes::concat(
+                std::bytes::concat(wav_u32(1), wav_u32(2)),
+                std::bytes::concat(wav_u32(0), std::bytes::from_array([0]))
+            )
+        )
+    )
+}
+
+fn ogg_vorbis_file() -> any {
+    let ident = std::bytes::concat(
+        std::bytes::concat(std::bytes::from_array([0, 0, 0, 0]), std::encoding::utf8_encode("vorbis")),
+        std::bytes::concat(
+            std::bytes::from_array([2]),
+            std::bytes::concat(wav_u32(44100), std::bytes::concat(std::bytes::from_array(std::array::filled(12, 0)), std::bytes::from_array([85, 1])))
+        )
+    )
+    let comment = std::bytes::concat(
+        std::bytes::concat(std::bytes::from_array([3]), std::encoding::utf8_encode("vorbis")),
+        std::bytes::concat(
+            wav_u32(4),
+            std::bytes::concat(
+                std::encoding::utf8_encode("test"),
+                std::bytes::concat(wav_u32(1), vorbis_entry("TITLE=OGG Song"))
+            )
+        )
+    )
+    std::bytes::concat(
+        std::encoding::utf8_encode("OggS"),
+        std::bytes::concat(
+            ident,
+            std::bytes::concat(
+                comment,
+                std::bytes::concat(std::bytes::from_array(std::array::filled(1200000, 0)), ogg_page(4295063296))
+            )
+        )
+    )
+}
+
+fn ogg_opus_file() -> any {
+    let opus_head = std::bytes::concat(
+        std::encoding::utf8_encode("OpusHead"),
+        std::bytes::concat(
+            std::bytes::from_array([1, 2]),
+            std::bytes::concat(wav_u16(312), std::bytes::concat(wav_u32(48000), std::bytes::concat(wav_u16(0), std::bytes::from_array([0]))))
+        )
+    )
+    let tags = std::bytes::concat(
+        std::encoding::utf8_encode("OpusTags"),
+        std::bytes::concat(
+            wav_u32(4),
+            std::bytes::concat(
+                std::encoding::utf8_encode("test"),
+                std::bytes::concat(wav_u32(2), std::bytes::concat(vorbis_entry("TITLE=Opus Song"), vorbis_entry("ARTIST=Opus Artist")))
+            )
+        )
+    )
+    std::bytes::concat(
+        std::encoding::utf8_encode("OggS"),
+        std::bytes::concat(opus_head, std::bytes::concat(tags, std::bytes::concat(std::bytes::from_array(std::array::filled(1200000, 0)), ogg_page(48000))))
+    )
+}
+
+fn error_text(result: any) -> string {
+    match result {
+        Result::Ok(_) => "<unexpected success>",
+        Result::Err(message) => message,
+        _ => "<unexpected result>",
+    }
+}
+
+fn show_track(info: any) {
+    print(std::json::stringify(std::map::remove(info, "path")))
+}
+
+fn main() {
+    let pid = std::json::stringify(std::process::self_pid())
+    let dir = "/tmp/zett-audio-tags-" + pid
+    let nested = dir + "/sub"
+    std::fs::create_dir(dir)
+    std::fs::create_dir(nested)
+
+    let main_wav = dir + "/00-main.wav"
+    let nested_wav = nested + "/a-nested.wav"
+    std::fs::write_bytes(main_wav, make_tag_wav("WAV Main", "WAV Artist"))
+    std::fs::write_bytes(nested_wav, make_tag_wav("WAV Nested", "Nested Artist"))
+
+    let wav = std::audio::tags(main_wav)
+    std::testing::assert_eq(std::map::get(wav, "format"), "wav", "WAV format")
+    std::testing::assert_eq(std::map::get(wav, "title"), "WAV Main", "WAV INFO title")
+    std::testing::assert_eq(std::map::get(wav, "artist"), "WAV Artist", "WAV INFO artist")
+    std::testing::assert_eq(std::map::get(wav, "sample_rate"), 44100, "WAV sample rate")
+    std::testing::assert_eq(std::map::get(wav, "channels"), 2, "WAV channels")
+    std::testing::assert(std::math::abs(std::map::get(wav, "duration_secs") - 1.0) < 0.000001, "WAV duration from data chunk")
+    std::testing::assert_eq(std::map::get(wav, "has_cover"), false, "WAV without cover")
+    std::testing::assert_eq(std::bytes::length(std::audio::cover(main_wav)), 0, "empty WAV cover")
+    std::testing::assert(std::math::abs(std::audio::duration(main_wav) - 1.0) < 0.000001, "duration API uses the parsed track")
+    show_track(wav)
+    print(std::json::stringify(std::audio::duration(main_wav)))
+
+    let mp3_path = dir + "/song.mp3"
+    std::fs::write_bytes(mp3_path, id3_mp3())
+    let mp3 = std::audio::tags(mp3_path)
+    std::testing::assert_eq(std::map::get(mp3, "format"), "mp3", "MP3 format")
+    std::testing::assert_eq(std::map::get(mp3, "title"), "MP3 Song", "ID3v2 title")
+    std::testing::assert_eq(std::map::get(mp3, "artist"), "MP3 Artist", "ID3v2 artist")
+    std::testing::assert_eq(std::map::get(mp3, "album"), "Legacy Album", "ID3v1 fills missing ID3v2 album")
+    std::testing::assert_eq(std::map::get(mp3, "year"), "1999", "ID3v1 year")
+    std::testing::assert_eq(std::map::get(mp3, "genre"), "Rock", "ID3v1 genre")
+    std::testing::assert_eq(std::map::get(mp3, "track"), 7, "ID3v2 track takes precedence over ID3v1")
+    std::testing::assert_eq(std::map::get(mp3, "sample_rate"), 44100, "MP3 sample rate")
+    std::testing::assert_eq(std::map::get(mp3, "channels"), 2, "MP3 channels")
+    std::testing::assert_eq(std::map::get(mp3, "bitrate_kbps"), 128, "MP3 bitrate")
+    std::testing::assert(std::math::abs(std::map::get(mp3, "duration_secs") - (3000.0 * 1152.0 / 44100.0)) < 0.000001, "MP3 Xing duration")
+    std::testing::assert_eq(std::map::get(mp3, "has_cover"), true, "ID3 APIC cover flag")
+    std::testing::assert_eq(std::audio::cover(mp3_path), std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10]), "ID3 APIC image bytes")
+    std::testing::assert_eq(std::map::get(mp3, "_cover_bytes"), nil, "cover payload is not leaked in public metadata")
+    show_track(mp3)
+    print(std::encoding::hex_encode(std::audio::cover(mp3_path)))
+
+    let cbr_path = dir + "/cbr.mp3"
+    std::fs::write_bytes(cbr_path, cbr_mp3())
+    let cbr = std::audio::tags(cbr_path)
+    std::testing::assert_eq(std::map::get(cbr, "sample_rate"), 44100, "CBR MP3 sample rate")
+    std::testing::assert_eq(std::map::get(cbr, "bitrate_kbps"), 128, "CBR MP3 bitrate")
+    std::testing::assert_eq(std::map::get(cbr, "title"), "Old Title", "ID3v1 title in the file tail")
+    std::testing::assert_eq(std::map::get(cbr, "track"), 5, "ID3v1 track in the file tail")
+    std::testing::assert_eq(std::map::get(cbr, "album"), "Legacy Album", "ID3v1 album in the file tail")
+    std::testing::assert(std::math::abs(std::map::get(cbr, "duration_secs") - (1251000.0 * 8.0 / 128000.0)) < 0.000001, "CBR duration excludes ID3v1")
+    std::testing::assert(std::math::abs(std::audio::duration(cbr_path) - (1251000.0 * 8.0 / 128000.0)) < 0.000001, "duration API CBR estimate")
+    show_track(cbr)
+    print(std::json::stringify(std::audio::duration(cbr_path)))
+
+    let short_cbr_path = dir + "/short.mp3"
+    std::fs::write_bytes(short_cbr_path, short_cbr_mp3())
+    let short_cbr = std::audio::tags(short_cbr_path)
+    std::testing::assert_eq(std::map::get(short_cbr, "title"), "Old Title", "short MP3 reads ID3v1 from its EOF tail")
+    std::testing::assert_eq(std::map::get(short_cbr, "track"), 5, "short MP3 ID3v1 track")
+    std::testing::assert(std::math::abs(std::map::get(short_cbr, "duration_secs") - (417.0 * 8.0 / 128000.0)) < 0.000001, "short MP3 duration excludes ID3v1")
+
+    let footer_path = dir + "/footer.mp3"
+    std::fs::write_bytes(footer_path, id3_footer_mp3())
+    let footer = std::audio::tags(footer_path)
+    std::testing::assert_eq(std::map::get(footer, "title"), "Footer Song", "ID3v2.4 frame before a valid footer")
+    std::testing::assert_eq(std::map::get(footer, "sample_rate"), 44100, "MP3 frame starts after the ID3v2.4 footer")
+    std::testing::assert(
+        std::math::abs(std::map::get(footer, "duration_secs") - (1251000.0 * 8.0 / 128000.0)) < 0.000001,
+        "CBR duration excludes both the ID3v2.4 header and footer"
+    )
+    show_track(footer)
+
+    let utf16be_path = dir + "-utf16be.mp3"
+    std::fs::write_bytes(utf16be_path, id3_v24_utf16be_cover_mp3())
+    let utf16be_tags = std::audio::tags(utf16be_path)
+    std::testing::assert_eq(std::map::get(utf16be_tags, "has_cover"), true, "ID3v2.4 UTF-16BE APIC flag")
+    std::testing::assert_eq(
+        std::audio::cover(utf16be_path),
+        std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10]),
+        "ID3v2.4 UTF-16BE description does not truncate APIC image bytes"
+    )
+
+    let flac_path = dir + "/song.flac"
+    std::fs::write_bytes(flac_path, flac_file())
+    let flac = std::audio::tags(flac_path)
+    std::testing::assert_eq(std::map::get(flac, "title"), "FLAC Song", "FLAC Vorbis title")
+    std::testing::assert_eq(std::map::get(flac, "artist"), "FLAC Artist", "FLAC Vorbis artist")
+    std::testing::assert_eq(std::map::get(flac, "track"), 3, "FLAC track number")
+    std::testing::assert_eq(std::map::get(flac, "sample_rate"), 48000, "FLAC sample rate")
+    std::testing::assert_eq(std::map::get(flac, "channels"), 2, "FLAC channels")
+    std::testing::assert(std::math::abs(std::map::get(flac, "duration_secs") - 2.0) < 0.000001, "FLAC STREAMINFO duration")
+    std::testing::assert_eq(std::map::get(flac, "has_cover"), true, "FLAC PICTURE cover flag")
+    std::testing::assert_eq(std::audio::cover(flac_path), std::bytes::from_array([137, 80, 78, 71, 13, 10, 26, 10]), "FLAC PICTURE image bytes")
+    show_track(flac)
+    print(std::encoding::hex_encode(std::audio::cover(flac_path)))
+
+    let ogg_path = dir + "/song.ogg"
+    std::fs::write_bytes(ogg_path, ogg_vorbis_file())
+    let ogg = std::audio::tags(ogg_path)
+    std::testing::assert_eq(std::map::get(ogg, "format"), "ogg", "Vorbis format")
+    std::testing::assert_eq(std::map::get(ogg, "title"), "OGG Song", "Vorbis comment title")
+    std::testing::assert_eq(std::map::get(ogg, "sample_rate"), 44100, "Vorbis sample rate")
+    std::testing::assert(std::math::abs(std::map::get(ogg, "duration_secs") - ((4294967296.0 + 96000.0) / 44100.0)) < 0.000001, "Ogg 64-bit granule duration")
+    show_track(ogg)
+
+    let opus_path = dir + "/song.opus"
+    std::fs::write_bytes(opus_path, ogg_opus_file())
+    let opus = std::audio::tags(opus_path)
+    std::testing::assert_eq(std::map::get(opus, "format"), "opus", "Opus format")
+    std::testing::assert_eq(std::map::get(opus, "title"), "Opus Song", "OpusTags title")
+    std::testing::assert_eq(std::map::get(opus, "artist"), "Opus Artist", "OpusTags artist")
+    std::testing::assert_eq(std::map::get(opus, "channels"), 2, "Opus channels")
+    std::testing::assert_eq(std::map::get(opus, "sample_rate"), 0, "Rust reports unknown Opus sample rate")
+    std::testing::assert(std::math::abs(std::map::get(opus, "duration_secs") - ((48000.0 - 312.0) / 48000.0)) < 0.000001, "Opus pre-skip duration")
+    show_track(opus)
+
+    std::fs::write_bytes(dir + "/broken.mp3", std::encoding::utf8_encode("not audio"))
+    let empty_path = dir + "/empty.wav"
+    std::fs::write_bytes(empty_path, std::bytes::from_array([]))
+    std::fs::write_bytes(dir + "/notes.txt", std::encoding::utf8_encode("ignored"))
+    let library = std::audio::scan_library(dir)
+    std::testing::assert_eq(len(library), 9, "scan includes all supported tracks and skips broken audio")
+    std::testing::assert_eq(std::map::get(library[0], "path"), main_wav, "library is sorted by path")
+    std::testing::assert_eq(std::map::get(library[1], "path"), cbr_path, "library second path")
+    std::testing::assert_eq(std::map::get(library[2], "path"), footer_path, "library retains a track with an ID3v2.4 footer")
+    std::testing::assert_eq(std::map::get(library[3], "path"), short_cbr_path, "library fourth path and short MP3 ID3v1 metadata")
+    std::testing::assert_eq(std::map::get(library[4], "path"), flac_path, "library fifth path")
+    std::testing::assert_eq(std::map::get(library[5], "path"), mp3_path, "library sixth path")
+    std::testing::assert_eq(std::map::get(library[6], "path"), ogg_path, "library seventh path")
+    std::testing::assert_eq(std::map::get(library[7], "path"), opus_path, "library eighth path")
+    std::testing::assert_eq(std::map::get(library[8], "path"), nested_wav, "recursive library path order")
+    for track in library { show_track(track) }
+
+    // The runner creates two real WAV files with distinct POSIX byte paths
+    // that Rust exposes as the same lossy UTF-8 display path. Scanning must
+    // keep both tracks and open each file using its original path bytes.
+    let alias_dir = std::env::get("TITAN_AUDIO_TAGS_LOSSY_DIR")
+    std::testing::assert(alias_dir != nil, "differential harness supplies real non-UTF-8 pathname fixtures")
+    if alias_dir != nil {
+        let aliases = std::audio::scan_library(alias_dir)
+        std::testing::assert_eq(len(aliases), 2, "scan preserves tracks with colliding lossy paths")
+        let alias_path_0 = std::map::get(aliases[0], "path")
+        let alias_path_1 = std::map::get(aliases[1], "path")
+        std::testing::assert_eq(alias_path_0, alias_path_1, "invalid filename is exposed with Rust's lossy path")
+        let title_0 = std::map::get(aliases[0], "title")
+        let title_1 = std::map::get(aliases[1], "title")
+        std::testing::assert(
+            (title_0 == "valid UTF-8 filename" && title_1 == "invalid UTF-8 filename") ||
+            (title_1 == "valid UTF-8 filename" && title_0 == "invalid UTF-8 filename"),
+            "scanner reads both distinct files before lossy path conversion"
+        )
+        print("lossy path aliases: both real tracks retained")
+    }
+
+    let scan_limit_dir = std::env::get("TITAN_AUDIO_TAGS_SCAN_LIMIT_DIR")
+    std::testing::assert(scan_limit_dir != nil, "differential harness supplies the scan-entry budget fixture")
+    if scan_limit_dir != nil {
+        let bounded_library = std::audio::scan_library(scan_limit_dir)
+        std::testing::assert_eq(len(bounded_library), 2500, "scan budget counts directory entries, including album folders")
+        print("scan_library: 5,000 total entries bounds traversal")
+    }
+
+    // The helper writes 2 MiB PNG covers into ID3, FLAC PICTURE, and WAV ID3
+    // metadata. tags() must still see the cover flag beyond the 1 MiB head;
+    // cover() must skip the intervening audio by seeking and return every image byte.
+    let cover_dir = std::env::get("TITAN_AUDIO_TAGS_COVER_DIR")
+    std::testing::assert(cover_dir != nil, "differential harness supplies large-cover fixtures")
+    if cover_dir != nil {
+        let expected_cover = std::fs::read_bytes(cover_dir + "/cover.png")
+        let expected_cover_len = std::bytes::length(expected_cover)
+        let expected_cover_hash = std::hash::sha256(expected_cover)
+        std::testing::assert(expected_cover_len > 1048576, "embedded cover fixture exceeds the bounded metadata head")
+
+        let large_mp3_tags = std::audio::tags(cover_dir + "/large.mp3")
+        std::testing::assert_eq(std::map::get(large_mp3_tags, "has_cover"), true, "large ID3 APIC is detected from its frame header")
+        let large_mp3_cover = std::audio::cover(cover_dir + "/large.mp3")
+        std::testing::assert_eq(std::bytes::length(large_mp3_cover), expected_cover_len, "large ID3 APIC is not truncated")
+        std::testing::assert_eq(std::hash::sha256(large_mp3_cover), expected_cover_hash, "large ID3 APIC bytes match the source PNG")
+
+        let large_flac_tags = std::audio::tags(cover_dir + "/large.flac")
+        std::testing::assert_eq(std::map::get(large_flac_tags, "has_cover"), true, "large FLAC PICTURE is detected from its block header")
+        let large_flac_cover = std::audio::cover(cover_dir + "/large.flac")
+        std::testing::assert_eq(std::bytes::length(large_flac_cover), expected_cover_len, "large FLAC PICTURE is not truncated")
+        std::testing::assert_eq(std::hash::sha256(large_flac_cover), expected_cover_hash, "large FLAC PICTURE bytes match the source PNG")
+
+        let large_wav_tags = std::audio::tags(cover_dir + "/large.wav")
+        std::testing::assert(std::math::abs(std::map::get(large_wav_tags, "duration_secs") - 1.0) < 0.000001, "WAV duration survives metadata after the data chunk")
+        std::testing::assert_eq(std::map::get(large_wav_tags, "has_cover"), true, "large WAV ID3 APIC is detected in a partial chunk")
+        let large_wav_cover = std::audio::cover(cover_dir + "/large.wav")
+        std::testing::assert_eq(std::bytes::length(large_wav_cover), expected_cover_len, "large WAV ID3 APIC is not truncated")
+        std::testing::assert_eq(std::hash::sha256(large_wav_cover), expected_cover_hash, "large WAV ID3 APIC bytes match the source PNG")
+
+        let post_audio_wav_cover = std::audio::cover(cover_dir + "/large-data.wav")
+        std::testing::assert_eq(std::bytes::length(post_audio_wav_cover), expected_cover_len, "WAV cover after 80 MiB of audio is extracted without truncation")
+        std::testing::assert_eq(std::hash::sha256(post_audio_wav_cover), expected_cover_hash, "WAV cover scanning seeks over audio without consuming the metadata budget")
+
+        let limit_message = "native function 'std::audio::cover' failed: invalid parameter: cover metadata exceeds the 67108864-byte scan limit"
+        let limit_mp3_error = error_text(std::try::catch(|| std::audio::cover(cover_dir + "/limit.mp3")))
+        std::testing::assert_eq(limit_mp3_error, limit_message, "oversized ID3 tags fail instead of returning truncated covers")
+        let limit_early_mp3_error = error_text(std::try::catch(|| std::audio::cover(cover_dir + "/limit-early.mp3")))
+        std::testing::assert_eq(limit_early_mp3_error, limit_message, "an early APIC cannot bypass the ID3 scan limit")
+        let limit_flac_error = error_text(std::try::catch(|| std::audio::cover(cover_dir + "/limit.flac")))
+        std::testing::assert_eq(limit_flac_error, limit_message, "cumulative FLAC metadata obeys the same scan limit")
+        let limit_wav_error = error_text(std::try::catch(|| std::audio::cover(cover_dir + "/limit.wav")))
+        std::testing::assert_eq(limit_wav_error, limit_message, "oversized RIFF metadata obeys the same scan limit")
+        print("large covers: ID3, FLAC, and WAV bytes verified; 64 MiB limit enforced")
+    }
+
+    let broken_error = error_text(std::try::catch(|| std::audio::tags(dir + "/broken.mp3")))
+    std::testing::assert_eq(broken_error, "native function 'std::audio::tags' failed: unsupported or corrupt audio file: unsupported audio file: " + dir + "/broken.mp3", "unsupported file error text")
+    let empty_error = error_text(std::try::catch(|| std::audio::tags(empty_path)))
+    std::testing::assert_eq(empty_error, "native function 'std::audio::tags' failed: unsupported or corrupt audio file: " + empty_path, "empty file error text")
+    let missing_error = error_text(std::try::catch(|| std::audio::tags(dir + "/missing.wav")))
+    std::testing::assert_eq(missing_error, "native function 'std::audio::tags' failed: audio I/O error: No such file or directory (os error 2)", "missing file error text")
+    let scan_error = error_text(std::try::catch(|| std::audio::scan_library(main_wav)))
+    std::testing::assert_eq(scan_error, "native function 'std::audio::scan_library' failed: invalid parameter: '" + main_wav + "' is not a directory", "scan rejects a regular file")
+
+    std::fs::remove_file(main_wav)
+    std::fs::remove_file(nested_wav)
+    std::fs::remove_file(mp3_path)
+    std::fs::remove_file(cbr_path)
+    std::fs::remove_file(footer_path)
+    std::fs::remove_file(utf16be_path)
+    std::fs::remove_file(flac_path)
+    std::fs::remove_file(ogg_path)
+    std::fs::remove_file(opus_path)
+    std::fs::remove_file(dir + "/broken.mp3")
+    std::fs::remove_file(empty_path)
+    std::fs::remove_file(dir + "/notes.txt")
+    std::fs::remove_dir(nested)
+    std::fs::remove_dir(dir)
+}

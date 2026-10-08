@@ -1,0 +1,2635 @@
+// Runtime de los ejecutables nativos de Titan, escrito en Titan.
+import unicode
+import unicode_case
+import unicode_debug
+import std_text
+import std_core
+import pdf::std_pdf
+import std_hash
+import std_random
+import std_json
+import std_misc
+import std_collections
+import std_datetime
+import std_vector
+import std_metrics
+import std_dirs
+import std_xml
+import std_icu_tab
+import std_icu
+import std_idna
+import std_url
+import std_regex_parse
+import std_regex_tab
+import std_regex_hir
+import std_regex_nfa
+import std_regex_run
+import std_router
+import std_compress
+import std_compress_enc
+import std_compress_zstd
+import std_compress_zstd_enc_tab
+import std_compress_zstd_enc
+import std_compress_zstd_mf
+import std_archive
+import std_yaml
+import std_yaml_parse
+import std_yaml_emit
+import std_net
+import std_net_gai
+import std_net_dns
+import std_qrcode_tab
+import std_qrcode
+import std_qrcode_png
+import std_freestanding
+import std_freestanding_hw
+import std_rsa
+import std_jwt
+import std_libm
+import std_libm_tab
+import errno
+import float
+import float_table
+import std_plot
+import std_fswatch
+import std_ws
+import std_http
+import std_http_full
+import std_wifi
+import std_dns
+import std_tz_data
+import std_tz
+import std_crypto
+import std_blowfish_tab
+import std_password
+import std_procfs_arm
+import std_procfs
+import std_signals
+import std_uwidth_tab
+import std_uwidth
+import std_progress
+import std_term
+import std_term_keys
+import std_readline
+import std_process
+import std_clipboard
+import std_game
+import std_mobile
+import std_input
+import std_gui
+import std_window
+import std_termux
+import std_audio
+import std_audio_tags
+import std_email
+import std_kv
+import std_redis
+import std_server
+import std_tokenize
+import image::std_image
+import image::std_image_png_read
+import image::std_image_bmp_read
+import image::std_image_jpeg_read
+import image::std_image_jpeg_progressive
+import image::std_image_jpeg_write
+import image::std_image_gif_read
+import image::std_image_gif_neuquant
+import image::std_image_gif_write
+import image::std_image_webp_read
+import image::std_image_webp_lossless
+import image::std_image_webp_vp8
+import image::std_image_webp_vp8_pixels
+import image::std_image_webp_write
+import image::std_image_api
+import image::std_image_ops
+import image::std_image_codec
+import sys_arm64
+import sys_bare
+//
+// Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
+// cada ejecutable. Reproduce la semántica de la VM de Rust
+// (crates/titan_vm/src/lib.rs): cómo se imprimen, comparan y suman los
+// valores, los mismos mensajes de error, etc.
+//
+// Solo este archivo puede usar las operaciones de bajo nivel `std::raw::`
+// (el compilador nativo las traduce directamente a instrucciones):
+//   load/store (8 bytes) y load8/store8 (1 byte) en una dirección,
+//   tag/bits (las dos mitades de un valor) y value (construirlo),
+//   syscall (llamada al sistema Linux), globals (dirección de las variables
+//   globales) y fail (lanzar un error de ejecución).
+//
+// Representación (16 bytes por valor: etiqueta + contenido):
+//   0 nil, 1 int, 2 float, 3 bool, 4 char (código), 5 string, 6 bytes,
+//   7 array, 8 tupla, 9 mapa, 10 struct, 11 enum, 12 closure.
+// Objetos en memoria (el primer campo, +0, es el contador de referencias; -1
+// = inmortal, datos estáticos del ejecutable):
+//   string/bytes: +8 longitud en bytes, +16 bytes (UTF-8)
+//   array/tupla:  +8 longitud, +16 capacidad, +24 puntero a elementos (16 c/u)
+//   mapa:         +8 longitud, +16 capacidad, +24 puntero a entradas
+//                 (24 c/u: clave string, etiqueta, contenido), por clave
+//   struct:       +8 nombre, +16 esquema (+0 n, +8.. claves ordenadas),
+//                 +24 n, +32 valores en el orden del esquema
+//   enum:         +8 nombre, +16 variante, +24 tiene contenido, +32/+40 valor
+//   closure:      +8 dirección del código, +16 capturas, +24 aridad,
+//                 +32 índice de la función, +40 nombre, +48 capturas (16 c/u)
+// Cada bloque de memoria lleva delante (en -8) su tamaño útil.
+// Globales: +0 siguiente byte libre, +8 fin del bloque, +16 profundidad de
+// llamadas, +24 (reservado: manejadores de error), +32 pila inicial (argv),
+// +64..+88 tablas Unicode ya decodificadas (ver rt_unicode_table; las de
+// mayúsculas/minúsculas, slots 4..9, en +2336..+2376; la de escapes del
+// Debug de Rust, slot 10, en +2384),
+// +128 + 8*c listas de bloques libres de 16*c bytes (c = 1..256),
+// +2688 + 8*(k-13) listas de bloques grandes libres de 2^k bytes (k = 13..28).
+//
+// Conteo de referencias (como el `Rc` de la VM): el campo +0 cuenta cuántos
+// lugares guardan el objeto. El código generado suma y resta referencias
+// (ver backend.titan); al llegar a 0 se llama a rt_free, que suelta lo que
+// el objeto contiene y devuelve la memoria para reutilizarla. Si un array,
+// mapa o string tiene un solo dueño, push/set/insert/concatenar lo modifican
+// en el sitio (Rc::make_mut); si no, trabajan sobre una copia.
+//
+// Reglas para escribir este archivo (las operaciones `std::raw::`):
+//   tag(v)/bits(v)   leen el valor y sueltan esa referencia temporal;
+//   keep(v)          como bits, pero la referencia pasa a la memoria donde
+//                    se guarde (para meter un valor en un contenedor);
+//   value(t, b)      valor que apunta a algo guardado (suma una referencia);
+//   adopt(t, b)      se queda con la referencia existente (objeto recién
+//                    creado con cuenta 1, o que un contenedor suelta);
+//   retain/release   suman/restan una referencia a (etiqueta, contenido).
+// Un objeto solo se puede modificar en el sitio si `load(bits(v)) == 1`
+// evaluado en la función que recibió `v` (pasarlo a otra función suma una
+// referencia mientras dura la llamada).
+
+// ------------------------------------------------------------ memoria
+
+fn rt_alloc(size: int) -> int {
+    let g = std::raw::globals()
+    let c = (size + 23) / 16
+    if c <= 256 {
+        let head = g + 128 + 8 * c
+        let free = std::raw::load(head)
+        if free != 0 {
+            std::raw::store(head, std::raw::load(free))
+            return free
+        }
+        let block = 16 * c
+        let mut b = std::raw::load(g)
+        if b == 0 || b + block > std::raw::load(g + 8) {
+            // mmap(NULL, 64 MiB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+            b = std::raw::syscall(9, 0, 67108864, 3, 34, -1, 0)
+            if b < 0 {
+                rt_die("out of memory")
+            }
+            std::raw::store(g + 8, b + 67108864)
+        }
+        std::raw::store(g, b + block)
+        std::raw::store(b, block - 8)
+        return b + 8
+    }
+    // Bloques grandes: tamaño redondeado a potencia de 2 (desde 8 KiB). Los
+    // liberados se guardan en una lista por tamaño y se reutilizan (pedir y
+    // devolver memoria al sistema en cada copia de un array grande era lo
+    // que más tiempo gastaba el compilador); los de más de 256 MiB van y
+    // vuelven directamente al sistema.
+    let mut total = 8192
+    let mut k = 13
+    while total < size + 8 {
+        total = total * 2
+        k += 1
+    }
+    if k <= 28 {
+        let head = rt_big_head(k)
+        let free = std::raw::load(head)
+        if free != 0 {
+            std::raw::store(head, std::raw::load(free))
+            return free
+        }
+    }
+    let b = std::raw::syscall(9, 0, total, 3, 34, -1, 0)
+    if b < 0 {
+        rt_die("out of memory")
+    }
+    std::raw::store(b, total - 8)
+    b + 8
+}
+
+// Como rt_alloc, pero con los `size` primeros bytes a cero. En un bloque
+// grande (empieza en una página, viene de mmap) las páginas enteras se
+// devuelven al sistema con madvise(MADV_DONTNEED): en memoria anónima
+// privada vuelven a leerse como ceros sin recorrerlas. Si madvise no está
+// (sin sistema operativo) o falla, se ponen a cero una a una.
+fn rt_alloc_zero(size: int) -> int {
+    let p = rt_alloc(size)
+    let mut from = p
+    if size >= 65536 {
+        let b = p - 8
+        let end = b + std::raw::load(b) + 8
+        let top = b + ((size + 8) & (-4096))
+        if std::raw::syscall(28, b + 4096, top - b - 4096, 4, 0, 0, 0) == 0 {
+            let mut q = p
+            while q < b + 4096 {
+                std::raw::store(q, 0)
+                q += 8
+            }
+            from = top
+            if from > end {
+                from = end
+            }
+        }
+    }
+    let mut q = from
+    while q < p + size {
+        std::raw::store8(q, 0)
+        q += 1
+        if (q & 7) == 0 {
+            while q + 8 <= p + size {
+                std::raw::store(q, 0)
+                q += 8
+            }
+        }
+    }
+    p
+}
+
+// Lista de bloques grandes libres de 2^k bytes (k = 13..28): globals + 2688..2808.
+// std::regex: globals + 2816 caché de expresiones compiladas (std_regex_run),
+// + 2824 tabla de plegado de mayúsculas, + 2832.. tablas Unicode ya unidas
+// (std_regex_tab, generado por gen_tab.py).
+// std::router: globals + 2960 registro de routers (std_router).
+// + 3000..3016 montón y objetivo sin sistema; + 3024..3064 hardware sin
+// sistema (std_freestanding_hw); + 3072 tabla CRC-32 (std_compress); + 3080 tablas del
+// compresor (std_compress_enc); + 3088 tablas del compresor zstd
+// (std_compress_zstd_enc); + 3096 estado de red (std_net); + 3104 tablas de QR;
+// + 3112 vigilantes de archivos; + 3120 estado HTTP; + 3128 motor de juego;
+// + 3136 registro de imágenes; + 3144 historial en memoria de readline;
+// + 3152 estado de std::mobile; + 3160/+3168 registro de std::pdf;
+// + 3176 estado de std::input; +3184 siguiente handle KV, +3200..3256 bases
+// de handles de DB, +3264..3512 handles de árboles, +3520 estado std::gui y
+// +3528 registro X11 de std::window. Libre desde +3536 hasta +3584 (ARM64
+// reserva +3584..+4096).
+fn rt_big_head(k: int) -> int {
+    std::raw::globals() + 2688 + 8 * (k - 13)
+}
+
+// Tamaño útil del bloque que empieza en p.
+fn rt_capacity(p: int) -> int {
+    std::raw::load(p - 8)
+}
+
+fn rt_free_block(p: int) {
+    let size = std::raw::load(p - 8)
+    let c = (size + 8) / 16
+    if c <= 256 {
+        let head = std::raw::globals() + 128 + 8 * c
+        std::raw::store(p, std::raw::load(head))
+        std::raw::store(head, p)
+        return
+    }
+    let total = size + 8
+    let mut t = 8192
+    let mut k = 13
+    while t < total {
+        t = t * 2
+        k += 1
+    }
+    if t == total && k <= 28 {
+        let head = rt_big_head(k)
+        std::raw::store(p, std::raw::load(head))
+        std::raw::store(head, p)
+        return
+    }
+    std::raw::syscall(11, p - 8, total, 0, 0, 0, 0)
+}
+
+// La última referencia al objeto desapareció (lo llama g_dec, con la cuenta
+// ya a 0): suelta lo que contiene y libera su memoria. Los nombres de
+// structs/enums/closures y los esquemas son datos estáticos del ejecutable.
+fn rt_free(tag: int, p: int) {
+    if tag == 7 || tag == 8 {
+        let n = std::raw::load(p + 8)
+        let data = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+            i += 1
+        }
+        rt_free_block(data)
+    } else if tag == 9 {
+        let n = std::raw::load(p + 8)
+        let data = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            let e = data + 24 * i
+            std::raw::release(5, std::raw::load(e))
+            std::raw::release(std::raw::load(e + 8), std::raw::load(e + 16))
+            i += 1
+        }
+        rt_free_block(data)
+    } else if tag == 10 {
+        let n = std::raw::load(p + 24)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(p + 32 + 16 * i), std::raw::load(p + 40 + 16 * i))
+            i += 1
+        }
+    } else if tag == 11 {
+        if std::raw::load(p + 24) != 0 {
+            std::raw::release(std::raw::load(p + 32), std::raw::load(p + 40))
+        }
+    } else if tag == 12 {
+        let n = std::raw::load(p + 16)
+        let mut i = 0
+        while i < n {
+            std::raw::release(std::raw::load(p + 48 + 16 * i), std::raw::load(p + 56 + 16 * i))
+            i += 1
+        }
+    }
+    rt_free_block(p)
+}
+
+// Error que no pasa por fail (antes de poder construir strings).
+fn rt_die(message: string) {
+    let p = std::raw::bits(message)
+    std::raw::syscall(1, 2, p + 16, std::raw::load(p + 8), 0, 0, 0)
+    std::raw::syscall(60, 1, 0, 0, 0, 0, 0)
+}
+
+fn rt_copy(dst: int, src: int, n: int) {
+    let mut i = 0
+    while i + 8 <= n {
+        std::raw::store(dst + i, std::raw::load(src + i))
+        i += 8
+    }
+    while i < n {
+        std::raw::store8(dst + i, std::raw::load8(src + i))
+        i += 1
+    }
+}
+
+// ------------------------------------------------------------ strings
+
+fn rt_str_alloc(nbytes: int) -> int {
+    let p = rt_alloc(16 + nbytes)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, nbytes)
+    p
+}
+
+// String recién creado (cuenta 1) como valor.
+fn rt_sval(p: int) -> any {
+    std::raw::adopt(5, p)
+}
+
+// String guardado en otro sitio (clave de mapa, nombre...) como valor.
+fn rt_sref(p: int) -> any {
+    std::raw::value(5, p)
+}
+
+fn rt_slen(s: any) -> int {
+    std::raw::load(std::raw::bits(s) + 8)
+}
+
+fn rt_concat(a: any, b: any) -> any {
+    let owned = std::raw::load(std::raw::bits(a)) == 1
+    rt_concat_owned(a, b, owned)
+}
+
+// `owned`: quien llamó comprobó que `a` tenía un solo dueño (la comprobación
+// hay que hacerla en la función que recibió `a`: aquí ya tiene una más).
+fn rt_concat_owned(a: any, b: any, owned: bool) -> any {
+    let pa = std::raw::bits(a)
+    let pb = std::raw::bits(b)
+    let la = std::raw::load(pa + 8)
+    let lb = std::raw::load(pb + 8)
+    if lb == 0 {
+        return a
+    }
+    if owned {
+        // Un solo dueño: se añade en el sitio si cabe; si no, se crece al doble.
+        if 16 + la + lb <= rt_capacity(pa) {
+            rt_copy(pa + 16 + la, pb + 16, lb)
+            std::raw::store(pa + 8, la + lb)
+            return a
+        }
+        let q = rt_alloc(16 + 2 * (la + lb))
+        std::raw::store(q, 1)
+        std::raw::store(q + 8, la + lb)
+        rt_copy(q + 16, pa + 16, la)
+        rt_copy(q + 16 + la, pb + 16, lb)
+        return rt_sval(q)
+    }
+    let p = rt_str_alloc(la + lb)
+    rt_copy(p + 16, pa + 16, la)
+    rt_copy(p + 16 + la, pb + 16, lb)
+    rt_sval(p)
+}
+
+fn rt_str_eq(a: any, b: any) -> bool {
+    let pa = std::raw::bits(a)
+    let pb = std::raw::bits(b)
+    if pa == pb {
+        return true
+    }
+    let n = std::raw::load(pa + 8)
+    if n != std::raw::load(pb + 8) {
+        return false
+    }
+    let mut i = 0
+    while i + 8 <= n {
+        if std::raw::load(pa + 16 + i) != std::raw::load(pb + 16 + i) {
+            return false
+        }
+        i += 8
+    }
+    while i < n {
+        if std::raw::load8(pa + 16 + i) != std::raw::load8(pb + 16 + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Orden de bytes (el mismo que `str::cmp` de Rust): -1, 0 o 1.
+fn rt_str_cmp(a: any, b: any) -> int {
+    rt_cmp_raw(std::raw::bits(a), std::raw::bits(b))
+}
+
+fn rt_cmp_raw(pa: int, pb: int) -> int {
+    let la = std::raw::load(pa + 8)
+    let lb = std::raw::load(pb + 8)
+    let mut n = la
+    if lb < n {
+        n = lb
+    }
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(pa + 16 + i)
+        let y = std::raw::load8(pb + 16 + i)
+        if x != y {
+            if x < y {
+                return -1
+            }
+            return 1
+        }
+        i += 1
+    }
+    if la < lb {
+        return -1
+    }
+    if la > lb {
+        return 1
+    }
+    0
+}
+
+// Número de caracteres (bytes que no son de continuación UTF-8).
+fn rt_str_chars(s: any) -> int {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        if (std::raw::load8(p + 16 + i) & 192) != 128 {
+            count += 1
+        }
+        i += 1
+    }
+    count
+}
+
+fn rt_int_to_str(v: int) -> any {
+    if v == 0 {
+        return rt_sval(rt_ascii_digit(0))
+    }
+    // Dígitos de derecha a izquierda en un búfer de 20 bytes; con números
+    // negativos se trabaja en negativo para que i64::MIN no desborde.
+    let buf = rt_alloc(32)
+    let mut pos = 24
+    let mut x = v
+    let negative = v < 0
+    while x != 0 {
+        let mut d = x % 10
+        if d < 0 {
+            d = 0 - d
+        }
+        pos -= 1
+        std::raw::store8(buf + pos, 48 + d)
+        x = x / 10
+    }
+    if negative {
+        pos -= 1
+        std::raw::store8(buf + pos, 45)
+    }
+    let n = 24 - pos
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, buf + pos, n)
+    rt_free_block(buf)
+    rt_sval(p)
+}
+
+fn rt_ascii_digit(d: int) -> int {
+    let p = rt_str_alloc(1)
+    std::raw::store8(p + 16, 48 + d)
+    p
+}
+
+// Codificación UTF-8 de un código de carácter.
+fn rt_char_to_str(c: int) -> any {
+    if c < 128 {
+        let p = rt_str_alloc(1)
+        std::raw::store8(p + 16, c)
+        return rt_sval(p)
+    }
+    if c < 2048 {
+        let p = rt_str_alloc(2)
+        std::raw::store8(p + 16, 192 + c / 64)
+        std::raw::store8(p + 17, 128 + (c & 63))
+        return rt_sval(p)
+    }
+    if c < 65536 {
+        let p = rt_str_alloc(3)
+        std::raw::store8(p + 16, 224 + c / 4096)
+        std::raw::store8(p + 17, 128 + ((c / 64) & 63))
+        std::raw::store8(p + 18, 128 + (c & 63))
+        return rt_sval(p)
+    }
+    let p = rt_str_alloc(4)
+    std::raw::store8(p + 16, 240 + c / 262144)
+    std::raw::store8(p + 17, 128 + ((c / 4096) & 63))
+    std::raw::store8(p + 18, 128 + ((c / 64) & 63))
+    std::raw::store8(p + 19, 128 + (c & 63))
+    rt_sval(p)
+}
+
+// ------------------------------------------------------------ arrays
+
+fn rt_seq_alloc(tag: int, n: int, cap: int) -> any {
+    let p = rt_alloc(32)
+    let mut c = cap
+    if c < 4 {
+        c = 4
+    }
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, n)
+    std::raw::store(p + 16, c)
+    std::raw::store(p + 24, rt_alloc(16 * c))
+    std::raw::adopt(tag, p)
+}
+
+// NewArray/NewTuple/Print: el compilador rellena los elementos.
+fn rt_array_new(n: int) -> any {
+    rt_seq_alloc(7, n, n)
+}
+
+fn rt_tuple_new(n: int) -> any {
+    rt_seq_alloc(8, n, n)
+}
+
+fn rt_seq_len(v: any) -> int {
+    std::raw::load(std::raw::bits(v) + 8)
+}
+
+fn rt_seq_data(v: any) -> int {
+    std::raw::load(std::raw::bits(v) + 24)
+}
+
+fn rt_seq_get(v: any, i: int) -> any {
+    let e = rt_seq_data(v) + 16 * i
+    std::raw::value(std::raw::load(e), std::raw::load(e + 8))
+}
+
+// Guarda x en el hueco i (el hueco pasa a tener su propia referencia).
+fn rt_seq_put(data: int, i: int, x: any) {
+    let e = data + 16 * i
+    std::raw::store(e, std::raw::tag(x))
+    std::raw::store(e + 8, std::raw::keep(x))
+}
+
+// Suma una referencia a cada uno de los n valores (tras copiarlos en crudo).
+fn rt_retain_slots(data: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::retain(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+        i += 1
+    }
+}
+
+// Asegura sitio para `need` elementos en un array con un solo dueño.
+fn rt_seq_reserve(a: any, need: int) {
+    let p = std::raw::bits(a)
+    let cap = std::raw::load(p + 16)
+    if need <= cap {
+        return
+    }
+    let mut c = 2 * cap
+    if c < need {
+        c = need
+    }
+    let old = std::raw::load(p + 24)
+    let data = rt_alloc(16 * c)
+    rt_copy(data, old, 16 * std::raw::load(p + 8))
+    rt_free_block(old)
+    std::raw::store(p + 24, data)
+    std::raw::store(p + 16, c)
+}
+
+// ------------------------------------------------------------ texto de valores
+
+fn rt_to_string(v: any) -> any {
+    let t = std::raw::tag(v)
+    if t == 5 {
+        return v
+    }
+    if t == 1 {
+        return rt_int_to_str(std::raw::bits(v))
+    }
+    if t == 0 {
+        return "nil"
+    }
+    if t == 3 {
+        if std::raw::bits(v) == 0 {
+            return "false"
+        }
+        return "true"
+    }
+    if t == 4 {
+        return rt_char_to_str(std::raw::bits(v))
+    }
+    if t == 2 {
+        return fl_to_string(std::raw::bits(v))
+    }
+    if t == 6 {
+        return rt_concat(rt_concat("bytes[", rt_int_to_str(rt_seq_len(v))), "]")
+    }
+    if t == 7 || t == 8 {
+        let mut out = "("
+        if t == 7 {
+            out = "["
+        }
+        let n = rt_seq_len(v)
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            out = rt_concat(out, rt_to_string(rt_seq_get(v, i)))
+            i += 1
+        }
+        if t == 7 {
+            return rt_concat(out, "]")
+        }
+        return rt_concat(out, ")")
+    }
+    if t == 9 {
+        let p = std::raw::bits(v)
+        let n = std::raw::load(p + 8)
+        let data = std::raw::load(p + 24)
+        let mut out = "{"
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            let e = data + 24 * i
+            out = rt_concat(out, rt_sref(std::raw::load(e)))
+            out = rt_concat(out, ": ")
+            out = rt_concat(out, rt_to_string(std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))))
+            i += 1
+        }
+        return rt_concat(out, "}")
+    }
+    if t == 10 {
+        let p = std::raw::bits(v)
+        let schema = std::raw::load(p + 16)
+        let n = std::raw::load(p + 24)
+        let mut out = rt_concat(rt_sref(std::raw::load(p + 8)), " { ")
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            out = rt_concat(out, rt_sref(std::raw::load(schema + 8 + 8 * i)))
+            out = rt_concat(out, ": ")
+            let e = p + 32 + 16 * i
+            out = rt_concat(out, rt_to_string(std::raw::value(std::raw::load(e), std::raw::load(e + 8))))
+            i += 1
+        }
+        return rt_concat(out, " }")
+    }
+    if t == 11 {
+        let p = std::raw::bits(v)
+        let head = rt_concat(rt_concat(rt_sref(std::raw::load(p + 8)), "::"), rt_sref(std::raw::load(p + 16)))
+        if std::raw::load(p + 24) == 0 {
+            return head
+        }
+        let inner = rt_to_string(std::raw::value(std::raw::load(p + 32), std::raw::load(p + 40)))
+        return rt_concat(rt_concat(rt_concat(head, "("), inner), ")")
+    }
+    if t == 12 {
+        let p = std::raw::bits(v)
+        return rt_concat(rt_concat("<closure:", rt_int_to_str(std::raw::load(p + 32))), ">")
+    }
+    std::raw::fail("native backend: unknown value")
+}
+
+// Print(n): una línea con los valores separados por espacios.
+fn rt_print(values: any) {
+    let n = rt_seq_len(values)
+    let mut line = ""
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            line = rt_concat(line, " ")
+        }
+        line = rt_concat(line, rt_to_string(rt_seq_get(values, i)))
+        i += 1
+    }
+    rt_write(1, rt_concat(line, "\n"))
+}
+
+fn rt_write(fd: int, s: any) {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut done = 0
+    while done < n {
+        let w = std::raw::syscall(1, fd, p + 16 + done, n - done, 0, 0, 0)
+        if w <= 0 {
+            return
+        }
+        done += w
+    }
+}
+
+// ------------------------------------------------------------ fin del programa
+
+fn rt_is_space(b: int) -> bool {
+    b == 32 || (b >= 9 && b <= 13)
+}
+
+// ¿Hay un espacio en blanco Unicode (White_Space) en el byte i? Devuelve su
+// ancho en bytes, o 0 si no lo es.
+fn rt_space_width(p: int, i: int) -> int {
+    let b = std::raw::load8(p + 16 + i)
+    if b < 128 {
+        if rt_is_space(b) {
+            return 1
+        }
+        return 0
+    }
+    let w = rt_utf8_width(b)
+    let mut c = b & 7
+    if w == 2 {
+        c = b & 31
+    } else if w == 3 {
+        c = b & 15
+    }
+    let mut k = 1
+    while k < w {
+        c = c * 64 + (std::raw::load8(p + 16 + i + k) & 63)
+        k += 1
+    }
+    if rt_unicode_has(3, c) {
+        return w
+    }
+    0
+}
+
+// Mensaje con los espacios en blanco (incluidos saltos de línea) reducidos a
+// uno solo, como `split_whitespace().join(" ")` (espacios Unicode).
+fn rt_flatten(s: any) -> any {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let out = rt_str_alloc(n)
+    let mut len = 0
+    let mut pending = false
+    let mut i = 0
+    while i < n {
+        let w = rt_space_width(p, i)
+        if w > 0 {
+            pending = len > 0
+            i += w
+        } else {
+            if pending {
+                std::raw::store8(out + 16 + len, 32)
+                len += 1
+                pending = false
+            }
+            std::raw::store8(out + 16 + len, std::raw::load8(p + 16 + i))
+            len += 1
+            i += 1
+        }
+    }
+    std::raw::store(out + 8, len)
+    rt_sval(out)
+}
+
+// trim() de Rust (espacios Unicode en los dos extremos).
+fn rt_trim(s: any) -> any {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut a = 0
+    while a < n && rt_space_width(p, a) > 0 {
+        a += rt_space_width(p, a)
+    }
+    let mut b = n
+    let mut i = a
+    while i < n {
+        let w = rt_space_width(p, i)
+        if w > 0 {
+            i += w
+        } else {
+            i += rt_utf8_width(std::raw::load8(p + 16 + i))
+            b = i
+        }
+    }
+    if b < a {
+        b = a
+    }
+    let out = rt_str_alloc(b - a)
+    rt_copy(out + 16, p + 16 + a, b - a)
+    rt_sval(out)
+}
+
+// Error sin capturar: igual que `fatal("RUNTIME ERROR", ...)` del CLI.
+fn rt_fatal(message: any) {
+    // Dentro de std::try::catch el error no termina el programa: vuelve al
+    // catch activo como Result::Err(mensaje) (sin imprimir nada, como la VM).
+    if std::raw::load(std::raw::globals() + 24) != 0 {
+        std::raw::throw(message)
+    }
+    pg_cleanup()
+    ps_cleanup()
+    let flat = rt_flatten(message)
+    rt_write(2, rt_concat(rt_concat("RUNTIME ERROR: ", flat), "\n"))
+    if !rt_str_eq(rt_trim(message), flat) {
+        rt_write(2, rt_concat(message, "\n"))
+    }
+    // Como el CLI: en GitHub Actions (variable GITHUB_ACTIONS presente, con
+    // cualquier valor) el error se publica además como anotación del job.
+    if rt_getenv("GITHUB_ACTIONS") != 0 {
+        let escaped = std__text__replace(std__text__replace(flat, "%", "%25"), "\r", "%0D")
+        rt_write(2, rt_concat(rt_concat("::error title=RUNTIME ERROR::", escaped), "\n"))
+    }
+    std::raw::syscall(60, 1, 0, 0, 0, 0, 0)
+}
+
+// Resultados de std::try::catch.
+fn rt_try_ok(v: any) -> any {
+    rt_enum_new(v, "Result", "Ok")
+}
+
+fn rt_try_err(message: any) -> any {
+    rt_enum_new(message, "Result", "Err")
+}
+
+// Valor devuelto por la función de entrada: como `titan run`, se imprime
+// "=> valor" si no es nil.
+fn rt_finish(v: any) {
+    pg_cleanup()
+    ps_cleanup()
+    if std::raw::tag(v) != 0 {
+        rt_write(1, rt_concat(rt_concat("=> ", rt_to_string(v)), "\n"))
+    }
+    std::raw::syscall(60, 0, 0, 0, 0, 0, 0)
+}
+
+// ------------------------------------------------------------ operadores
+
+fn rt_add(a: any, b: any) -> any {
+    let ta = std::raw::tag(a)
+    let tb = std::raw::tag(b)
+    // Antes de pasar `a` a otra función (eso le suma una referencia).
+    let owned = ta == 5 && std::raw::load(std::raw::bits(a)) == 1
+    if ta == 5 && tb == 5 {
+        return rt_concat_owned(a, b, owned)
+    }
+    if ta == 2 && tb == 2 {
+        return std::raw::adopt(2, std::raw::fadd(std::raw::bits(a), std::raw::bits(b)))
+    }
+    if ta == 5 {
+        return rt_concat_owned(a, rt_to_string(b), owned)
+    }
+    if tb == 5 {
+        return rt_concat(rt_to_string(a), b)
+    }
+    std::raw::fail("type error: addition requires matching numbers or strings")
+}
+
+fn rt_both_float(a: any, b: any) -> bool {
+    std::raw::tag(a) == 2 && std::raw::tag(b) == 2
+}
+
+fn rt_sub(a: any, b: any) -> any {
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fsub(std::raw::bits(a), std::raw::bits(b)))
+    }
+    std::raw::fail("type error: subtraction requires matching numbers")
+}
+
+fn rt_mul(a: any, b: any) -> any {
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fmul(std::raw::bits(a), std::raw::bits(b)))
+    }
+    std::raw::fail("type error: multiplication requires matching numbers")
+}
+
+fn rt_div(a: any, b: any) -> any {
+    if std::raw::tag(b) == 1 && std::raw::bits(b) == 0 {
+        std::raw::fail("division by zero")
+    }
+    if std::raw::tag(b) == 2 && (std::raw::bits(b) == 0 || std::raw::bits(b) == (-9223372036854775807 - 1)) {
+        std::raw::fail("division by zero")
+    }
+    if rt_both_float(a, b) {
+        return std::raw::adopt(2, std::raw::fdiv(std::raw::bits(a), std::raw::bits(b)))
+    }
+    std::raw::fail("type error: division requires matching numbers")
+}
+
+fn rt_mod(a: any, b: any) -> any {
+    if std::raw::tag(b) == 1 && std::raw::bits(b) == 0 {
+        std::raw::fail("division by zero")
+    }
+    std::raw::fail("type error: modulo requires integers")
+}
+
+fn rt_neg(v: any) -> any {
+    if std::raw::tag(v) == 2 {
+        return std::raw::adopt(2, std::raw::bits(v) ^ (-9223372036854775807 - 1))
+    }
+    std::raw::fail(rt_concat("type error: cannot negate ", rt_to_string(v)))
+}
+
+fn rt_bit_error() {
+    std::raw::fail("type error: bitwise operation requires integers")
+}
+
+fn rt_bitnot_error() {
+    std::raw::fail("type error: bitwise not requires int")
+}
+
+// Igualdad estructural (el PartialEq derivado de Value).
+fn rt_eq(a: any, b: any) -> bool {
+    let t = std::raw::tag(a)
+    if t != std::raw::tag(b) {
+        return false
+    }
+    let pa = std::raw::bits(a)
+    let pb = std::raw::bits(b)
+    if t == 0 {
+        return true
+    }
+    if t == 1 || t == 3 || t == 4 {
+        return pa == pb
+    }
+    if t == 2 {
+        return std::raw::fcmp(pa, pb) == 0
+    }
+    if t == 5 || t == 6 {
+        return rt_str_eq(a, b)
+    }
+    if pa == pb {
+        return true
+    }
+    if t == 7 || t == 8 {
+        let n = rt_seq_len(a)
+        if n != rt_seq_len(b) {
+            return false
+        }
+        let mut i = 0
+        while i < n {
+            if !rt_eq(rt_seq_get(a, i), rt_seq_get(b, i)) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if t == 9 {
+        let n = std::raw::load(pa + 8)
+        if n != std::raw::load(pb + 8) {
+            return false
+        }
+        let da = std::raw::load(pa + 24)
+        let db = std::raw::load(pb + 24)
+        let mut i = 0
+        while i < n {
+            let ea = da + 24 * i
+            let eb = db + 24 * i
+            if !rt_str_eq(rt_sref(std::raw::load(ea)), rt_sref(std::raw::load(eb))) {
+                return false
+            }
+            if !rt_eq(std::raw::value(std::raw::load(ea + 8), std::raw::load(ea + 16)), std::raw::value(std::raw::load(eb + 8), std::raw::load(eb + 16))) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if t == 10 {
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 8)), rt_sref(std::raw::load(pb + 8))) {
+            return false
+        }
+        let n = std::raw::load(pa + 24)
+        if n != std::raw::load(pb + 24) {
+            return false
+        }
+        let sa = std::raw::load(pa + 16)
+        let sb = std::raw::load(pb + 16)
+        let mut i = 0
+        while i < n {
+            if !rt_str_eq(rt_sref(std::raw::load(sa + 8 + 8 * i)), rt_sref(std::raw::load(sb + 8 + 8 * i))) {
+                return false
+            }
+            let ea = pa + 32 + 16 * i
+            let eb = pb + 32 + 16 * i
+            if !rt_eq(std::raw::value(std::raw::load(ea), std::raw::load(ea + 8)), std::raw::value(std::raw::load(eb), std::raw::load(eb + 8))) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    if t == 11 {
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 8)), rt_sref(std::raw::load(pb + 8))) {
+            return false
+        }
+        if !rt_str_eq(rt_sref(std::raw::load(pa + 16)), rt_sref(std::raw::load(pb + 16))) {
+            return false
+        }
+        let has = std::raw::load(pa + 24)
+        if has != std::raw::load(pb + 24) {
+            return false
+        }
+        if has == 0 {
+            return true
+        }
+        return rt_eq(std::raw::value(std::raw::load(pa + 32), std::raw::load(pa + 40)), std::raw::value(std::raw::load(pb + 32), std::raw::load(pb + 40)))
+    }
+    if t == 12 {
+        if std::raw::load(pa + 32) != std::raw::load(pb + 32) {
+            return false
+        }
+        let n = std::raw::load(pa + 16)
+        if n != std::raw::load(pb + 16) {
+            return false
+        }
+        let mut i = 0
+        while i < n {
+            let ea = pa + 48 + 16 * i
+            let eb = pb + 48 + 16 * i
+            if !rt_eq(std::raw::value(std::raw::load(ea), std::raw::load(ea + 8)), std::raw::value(std::raw::load(eb), std::raw::load(eb + 8))) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+    false
+}
+
+// <, >, <=, >= (los enteros ya los resuelve el código generado).
+fn rt_order(a: any, b: any) -> int {
+    let t = std::raw::tag(a)
+    if t == std::raw::tag(b) {
+        if t == 1 || t == 4 {
+            let x = std::raw::bits(a)
+            let y = std::raw::bits(b)
+            if x < y {
+                return -1
+            }
+            if x > y {
+                return 1
+            }
+            return 0
+        }
+        if t == 5 {
+            return rt_str_cmp(a, b)
+        }
+        if t == 2 {
+            return std::raw::fcmp(std::raw::bits(a), std::raw::bits(b))
+        }
+    }
+    std::raw::fail("type error: ordered comparison requires matching numbers, chars or strings")
+}
+
+// rt_order da 2 si no hay orden (NaN): entonces toda comparación es falsa.
+fn rt_lt(a: any, b: any) -> bool {
+    rt_order(a, b) == -1
+}
+
+fn rt_gt(a: any, b: any) -> bool {
+    rt_order(a, b) == 1
+}
+
+fn rt_le(a: any, b: any) -> bool {
+    let o = rt_order(a, b)
+    o == -1 || o == 0
+}
+
+fn rt_ge(a: any, b: any) -> bool {
+    let o = rt_order(a, b)
+    o == 1 || o == 0
+}
+
+// ------------------------------------------------------------ acceso
+
+fn rt_len(v: any) -> int {
+    let t = std::raw::tag(v)
+    if t == 7 || t == 8 || t == 9 || t == 6 {
+        return std::raw::load(std::raw::bits(v) + 8)
+    }
+    if t == 5 {
+        return rt_str_chars(v)
+    }
+    std::raw::fail("type error: len requires an array, tuple, string, bytes, or map")
+}
+
+fn rt_oob(index: int, length: int) {
+    let mut shown = rt_int_to_str(index)
+    if index < 0 {
+        shown = "18446744073709551615"
+    }
+    std::raw::fail(rt_concat(rt_concat(rt_concat("index ", shown), " out of bounds for length "), rt_int_to_str(length)))
+}
+
+// Posición en bytes del carácter número `index` (o -1 si no existe).
+fn rt_char_offset(s: any, index: int) -> int {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        if (std::raw::load8(p + 16 + i) & 192) != 128 {
+            if count == index {
+                return i
+            }
+            count += 1
+        }
+        i += 1
+    }
+    if count == index {
+        return n
+    }
+    -1
+}
+
+// Decodifica el carácter UTF-8 que empieza en el byte `i`.
+fn rt_char_at(s: any, i: int) -> int {
+    let p = std::raw::bits(s) + 16
+    let b = std::raw::load8(p + i)
+    if b < 128 {
+        return b
+    }
+    if b < 224 {
+        return (b & 31) * 64 + (std::raw::load8(p + i + 1) & 63)
+    }
+    if b < 240 {
+        return (b & 15) * 4096 + (std::raw::load8(p + i + 1) & 63) * 64 + (std::raw::load8(p + i + 2) & 63)
+    }
+    return (b & 7) * 262144 + (std::raw::load8(p + i + 1) & 63) * 4096 + (std::raw::load8(p + i + 2) & 63) * 64 + (std::raw::load8(p + i + 3) & 63)
+}
+
+fn rt_index(target: any, index: any) -> any {
+    let t = std::raw::tag(target)
+    let ti = std::raw::tag(index)
+    if t == 9 && ti == 5 {
+        let pos = rt_map_find(target, index)
+        if pos < 0 {
+            std::raw::fail(rt_concat(rt_concat("unknown field '", index), "'"))
+        }
+        return rt_map_value_at(target, pos)
+    }
+    if ti != 1 {
+        std::raw::fail("type error: index must be int, or string for maps")
+    }
+    let i = std::raw::bits(index)
+    if i < 0 {
+        rt_oob(-1, 0)
+    }
+    if t == 7 || t == 8 {
+        let n = rt_seq_len(target)
+        if i >= n {
+            rt_oob(i, n)
+        }
+        return rt_seq_get(target, i)
+    }
+    if t == 5 {
+        let off = rt_char_offset(target, i)
+        if off < 0 || off >= rt_slen(target) {
+            rt_oob(i, rt_str_chars(target))
+        }
+        return std::raw::value(4, rt_char_at(target, off))
+    }
+    if t == 6 {
+        let n = rt_slen(target)
+        if i >= n {
+            rt_oob(i, n)
+        }
+        return std::raw::load8(std::raw::bits(target) + 16 + i)
+    }
+    std::raw::fail("type error: value is not indexable by integer")
+}
+
+// ------------------------------------------------------------ structs y enums
+
+// NewStruct: el compilador rellena los valores (+32) en el orden del esquema.
+fn rt_struct_new(name: any, schema: int, n: int) -> any {
+    let p = rt_alloc(32 + 16 * n)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, std::raw::bits(name))
+    std::raw::store(p + 16, schema)
+    std::raw::store(p + 24, n)
+    std::raw::adopt(10, p)
+}
+
+fn rt_get_field(v: any, name: any) -> any {
+    let t = std::raw::tag(v)
+    if t == 10 {
+        let p = std::raw::bits(v)
+        let schema = std::raw::load(p + 16)
+        let n = std::raw::load(p + 24)
+        let key = std::raw::bits(name)
+        let mut i = 0
+        // Las claves del esquema y el nombre del campo son strings estáticos
+        // únicos: basta comparar direcciones; si no, se compara el texto.
+        while i < n {
+            if std::raw::load(schema + 8 + 8 * i) == key {
+                let e = p + 32 + 16 * i
+                return std::raw::value(std::raw::load(e), std::raw::load(e + 8))
+            }
+            i += 1
+        }
+        i = 0
+        while i < n {
+            if rt_str_eq(rt_sref(std::raw::load(schema + 8 + 8 * i)), name) {
+                let e = p + 32 + 16 * i
+                return std::raw::value(std::raw::load(e), std::raw::load(e + 8))
+            }
+            i += 1
+        }
+        std::raw::fail(rt_concat(rt_concat("unknown field '", name), "'"))
+    }
+    if t == 9 {
+        let pos = rt_map_find(v, name)
+        if pos < 0 {
+            std::raw::fail(rt_concat(rt_concat("unknown field '", name), "'"))
+        }
+        return rt_map_value_at(v, pos)
+    }
+    std::raw::fail("type error: field access requires a struct or map")
+}
+
+fn rt_enum_new(payload: any, name: any, variant: any) -> any {
+    let p = rt_alloc(48)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, std::raw::bits(name))
+    std::raw::store(p + 16, std::raw::bits(variant))
+    std::raw::store(p + 24, 1)
+    std::raw::store(p + 32, std::raw::tag(payload))
+    std::raw::store(p + 40, std::raw::keep(payload))
+    std::raw::adopt(11, p)
+}
+
+fn rt_enum_is(v: any, name: any, variant: any) -> bool {
+    if std::raw::tag(v) != 11 {
+        return false
+    }
+    let p = std::raw::bits(v)
+    rt_str_eq(rt_sref(std::raw::load(p + 16)), variant) && rt_str_eq(rt_sref(std::raw::load(p + 8)), name)
+}
+
+fn rt_enum_payload(v: any) -> any {
+    if std::raw::tag(v) == 11 {
+        let p = std::raw::bits(v)
+        if std::raw::load(p + 24) != 0 {
+            return std::raw::value(std::raw::load(p + 32), std::raw::load(p + 40))
+        }
+    }
+    std::raw::fail("type error: enum variant has no payload")
+}
+
+// Operador `?`: 0 = seguir con el contenido (Ok/Some), 1 = devolver el valor
+// tal cual desde la función (Err/None).
+fn rt_try_kind(v: any) -> int {
+    if std::raw::tag(v) == 11 {
+        let p = std::raw::bits(v)
+        let name = rt_sref(std::raw::load(p + 8))
+        let variant = rt_sref(std::raw::load(p + 16))
+        let has = std::raw::load(p + 24) != 0
+        if has && ((rt_str_eq(name, "Result") && rt_str_eq(variant, "Ok")) || (rt_str_eq(name, "Option") && rt_str_eq(variant, "Some"))) {
+            return 0
+        }
+        if (rt_str_eq(name, "Result") && rt_str_eq(variant, "Err")) || (rt_str_eq(name, "Option") && rt_str_eq(variant, "None")) {
+            return 1
+        }
+    }
+    std::raw::fail("type error: operator ? requires Result or Option")
+}
+
+// ------------------------------------------------------------ closures
+
+// MakeClosure: el compilador copia las capturas (+48).
+fn rt_closure_new(code: int, ncap: int, arity: int, index: int, name: any) -> any {
+    let p = rt_alloc(48 + 16 * ncap)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, code)
+    std::raw::store(p + 16, ncap)
+    std::raw::store(p + 24, arity)
+    std::raw::store(p + 32, index)
+    std::raw::store(p + 40, std::raw::bits(name))
+    std::raw::adopt(12, p)
+}
+
+fn rt_call_error(callee: any, argc: int) {
+    if std::raw::tag(callee) != 12 {
+        std::raw::fail("type error: attempted to call a non-function value")
+    }
+    let p = std::raw::bits(callee)
+    let name = rt_sref(std::raw::load(p + 40))
+    let expected = rt_int_to_str(std::raw::load(p + 24))
+    let found = rt_int_to_str(argc)
+    std::raw::fail(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("function '", name), "' expected "), expected), " arguments, found "), found), ""))
+}
+
+// ------------------------------------------------------------ rangos
+
+fn rt_range(start: any, end: any, inclusive: any) -> any {
+    if std::raw::tag(start) != 1 || std::raw::tag(end) != 1 || std::raw::tag(inclusive) != 3 {
+        std::raw::fail("type error: range requires two integers")
+    }
+    let a = std::raw::bits(start)
+    let mut stop = std::raw::bits(end)
+    if std::raw::bits(inclusive) != 0 {
+        stop = stop + 1
+    }
+    // saturating_sub: si no cabe, el rango es enorme (o vacío).
+    let mut length = 0
+    if stop > a {
+        if a < 0 && stop > a + 9223372036854775807 {
+            length = 9223372036854775807
+        } else {
+            length = stop - a
+        }
+    }
+    if length > 1000000 {
+        std::raw::fail("type error: range exceeds the one-million element safety limit")
+    }
+    let out = rt_seq_alloc(7, length, length)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < length {
+        std::raw::store(data + 16 * i, 1)
+        std::raw::store(data + 16 * i + 8, a + i)
+        i += 1
+    }
+    out
+}
+
+// ------------------------------------------------------------ mapas
+
+// Posición de `key` en el mapa, o -(posición de inserción) - 1.
+fn rt_map_search(m: any, key: any) -> int {
+    let p = std::raw::bits(m)
+    let data = std::raw::load(p + 24)
+    let mut lo = 0
+    let mut hi = std::raw::load(p + 8)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let c = rt_cmp_raw(std::raw::load(data + 24 * mid), std::raw::bits(key))
+        if c == 0 {
+            return mid
+        }
+        if c < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    0 - lo - 1
+}
+
+fn rt_map_find(m: any, key: any) -> int {
+    let pos = rt_map_search(m, key)
+    if pos < 0 {
+        return -1
+    }
+    pos
+}
+
+fn rt_map_value_at(m: any, pos: int) -> any {
+    let e = std::raw::load(std::raw::bits(m) + 24) + 24 * pos
+    std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+}
+
+fn rt_map_alloc(n: int, cap: int) -> any {
+    let p = rt_alloc(32)
+    let mut c = cap
+    if c < 4 {
+        c = 4
+    }
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, n)
+    std::raw::store(p + 16, c)
+    std::raw::store(p + 24, rt_alloc(24 * c))
+    std::raw::adopt(9, p)
+}
+
+fn rt_expect_map(v: any, function: string) {
+    if std::raw::tag(v) != 9 {
+        rt_native_fail(function, "expected map")
+    }
+}
+
+fn rt_expect_str(v: any, function: string) {
+    if std::raw::tag(v) != 5 {
+        rt_native_fail(function, "expected string")
+    }
+}
+
+fn rt_expect_int(v: any, function: string) {
+    if std::raw::tag(v) != 1 {
+        rt_native_fail(function, "expected int")
+    }
+}
+
+fn rt_expect_array(v: any, function: string) {
+    let t = std::raw::tag(v)
+    if t != 7 && t != 8 {
+        rt_native_fail(function, "expected array")
+    }
+}
+
+fn rt_native_fail(function: string, message: string) {
+    std::raw::fail(rt_concat(rt_concat(rt_concat(rt_concat("native function '", function), "' failed: "), message), ""))
+}
+
+// ------------------------------------------------------------ nativas: std::map
+
+fn std__map__new() -> any {
+    rt_map_alloc(0, 4)
+}
+
+// Copia de un mapa (con sitio para `extra` claves más); las entradas ganan
+// una referencia cada una.
+fn rt_map_copy(m: any, extra: int) -> any {
+    let p = std::raw::bits(m)
+    let n = std::raw::load(p + 8)
+    let data = std::raw::load(p + 24)
+    let out = rt_map_alloc(n, n + extra)
+    let od = std::raw::load(std::raw::bits(out) + 24)
+    rt_copy(od, data, 24 * n)
+    let mut i = 0
+    while i < n {
+        let e = od + 24 * i
+        std::raw::retain(5, std::raw::load(e))
+        std::raw::retain(std::raw::load(e + 8), std::raw::load(e + 16))
+        i += 1
+    }
+    out
+}
+
+// Inserta en un mapa con un solo dueño (pos: resultado de rt_map_search).
+fn rt_map_put(m: any, pos: int, key: any, value: any) -> any {
+    let p = std::raw::bits(m)
+    let n = std::raw::load(p + 8)
+    if pos >= 0 {
+        let e = std::raw::load(p + 24) + 24 * pos
+        std::raw::release(std::raw::load(e + 8), std::raw::load(e + 16))
+        std::raw::store(e + 8, std::raw::tag(value))
+        std::raw::store(e + 16, std::raw::keep(value))
+        return m
+    }
+    let at = 0 - pos - 1
+    let cap = std::raw::load(p + 16)
+    if n == cap {
+        let old = std::raw::load(p + 24)
+        let bigger = rt_alloc(48 * cap)
+        rt_copy(bigger, old, 24 * n)
+        rt_free_block(old)
+        std::raw::store(p + 24, bigger)
+        std::raw::store(p + 16, 2 * cap)
+    }
+    let data = std::raw::load(p + 24)
+    // Correr una posición las entradas desde `at` (de atrás hacia delante).
+    let mut w = 3 * n - 1
+    while w >= 3 * at {
+        std::raw::store(data + 8 * w + 24, std::raw::load(data + 8 * w))
+        w -= 1
+    }
+    let e = data + 24 * at
+    std::raw::store(e, std::raw::keep(key))
+    std::raw::store(e + 8, std::raw::tag(value))
+    std::raw::store(e + 16, std::raw::keep(value))
+    std::raw::store(p + 8, n + 1)
+    m
+}
+
+fn std__map__insert(m: any, key: any, value: any) -> any {
+    rt_expect_map(m, "std::map::insert")
+    rt_expect_str(key, "std::map::insert")
+    let pos = rt_map_search(m, key)
+    if std::raw::load(std::raw::bits(m)) == 1 {
+        return rt_map_put(m, pos, key, value)
+    }
+    rt_map_put(rt_map_copy(m, 1), pos, key, value)
+}
+
+fn std__map__get(m: any, key: any) -> any {
+    rt_expect_map(m, "std::map::get")
+    rt_expect_str(key, "std::map::get")
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return nil
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn std__map__contains(m: any, key: any) -> bool {
+    rt_expect_map(m, "std::map::contains")
+    rt_expect_str(key, "std::map::contains")
+    rt_map_find(m, key) >= 0
+}
+
+fn std__map__length(m: any) -> int {
+    rt_expect_map(m, "std::map::length")
+    std::raw::load(std::raw::bits(m) + 8)
+}
+
+fn std__map__keys(m: any) -> any {
+    rt_expect_map(m, "std::map::keys")
+    let p = std::raw::bits(m)
+    let n = std::raw::load(p + 8)
+    let data = std::raw::load(p + 24)
+    let out = rt_seq_alloc(7, n, n)
+    let od = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(od, i, rt_sref(std::raw::load(data + 24 * i)))
+        i += 1
+    }
+    out
+}
+
+fn std__map__values(m: any) -> any {
+    rt_expect_map(m, "std::map::values")
+    let p = std::raw::bits(m)
+    let n = std::raw::load(p + 8)
+    let data = std::raw::load(p + 24)
+    let out = rt_seq_alloc(7, n, n)
+    let od = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(od, i, std::raw::value(std::raw::load(data + 24 * i + 8), std::raw::load(data + 24 * i + 16)))
+        i += 1
+    }
+    out
+}
+
+// ------------------------------------------------------------ nativas: std::array
+
+fn rt_seq_copy(v: any, extra: int) -> any {
+    let n = rt_seq_len(v)
+    let out = rt_seq_alloc(7, n, n + extra)
+    rt_copy(rt_seq_data(out), rt_seq_data(v), 16 * n)
+    rt_retain_slots(rt_seq_data(out), n)
+    out
+}
+
+fn std__array__push(a: any, x: any) -> any {
+    rt_expect_array(a, "std::array::push")
+    let n = rt_seq_len(a)
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        rt_seq_reserve(a, n + 1)
+        rt_seq_put(rt_seq_data(a), n, x)
+        std::raw::store(std::raw::bits(a) + 8, n + 1)
+        return a
+    }
+    let out = rt_seq_copy(a, n + 1)
+    std::raw::store(std::raw::bits(out) + 8, n + 1)
+    rt_seq_put(rt_seq_data(out), n, x)
+    out
+}
+
+fn std__array__set(a: any, index: any, x: any) -> any {
+    rt_expect_array(a, "std::array::set")
+    rt_expect_int(index, "std::array::set")
+    let n = rt_seq_len(a)
+    let i = std::raw::bits(index)
+    if i < 0 || i >= n {
+        rt_native_fail("std::array::set", "array index out of bounds")
+    }
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        let e = rt_seq_data(a) + 16 * i
+        std::raw::release(std::raw::load(e), std::raw::load(e + 8))
+        rt_seq_put(rt_seq_data(a), i, x)
+        return a
+    }
+    let out = rt_seq_copy(a, 0)
+    let e = rt_seq_data(out) + 16 * i
+    std::raw::release(std::raw::load(e), std::raw::load(e + 8))
+    rt_seq_put(rt_seq_data(out), i, x)
+    out
+}
+
+fn std__array__concat(a: any, b: any) -> any {
+    rt_expect_array(a, "std::array::concat")
+    rt_expect_array(b, "std::array::concat")
+    let na = rt_seq_len(a)
+    let nb = rt_seq_len(b)
+    if std::raw::load(std::raw::bits(a)) == 1 && std::raw::tag(a) == 7 {
+        rt_seq_reserve(a, na + nb)
+        rt_copy(rt_seq_data(a) + 16 * na, rt_seq_data(b), 16 * nb)
+        rt_retain_slots(rt_seq_data(a) + 16 * na, nb)
+        std::raw::store(std::raw::bits(a) + 8, na + nb)
+        return a
+    }
+    let out = rt_seq_copy(a, nb)
+    std::raw::store(std::raw::bits(out) + 8, na + nb)
+    rt_copy(rt_seq_data(out) + 16 * na, rt_seq_data(b), 16 * nb)
+    rt_retain_slots(rt_seq_data(out) + 16 * na, nb)
+    out
+}
+
+fn std__array__slice(a: any, start: any, end: any) -> any {
+    rt_expect_array(a, "std::array::slice")
+    rt_expect_int(start, "std::array::slice")
+    rt_expect_int(end, "std::array::slice")
+    let n = rt_seq_len(a)
+    let s = std::raw::bits(start)
+    let e = std::raw::bits(end)
+    if s < 0 || e < s || e > n {
+        rt_native_fail("std::array::slice", "invalid slice range")
+    }
+    let out = rt_seq_alloc(7, e - s, e - s)
+    rt_copy(rt_seq_data(out), rt_seq_data(a) + 16 * s, 16 * (e - s))
+    rt_retain_slots(rt_seq_data(out), e - s)
+    out
+}
+
+// ------------------------------------------------------------ nativas: std::text
+
+fn rt_expect_char(v: any, function: string) -> int {
+    if std::raw::tag(v) != 4 {
+        rt_native_fail(function, "expected char")
+    }
+    std::raw::bits(v)
+}
+
+// Rangos "inicio,fin,..." de unicode.titan convertidos (una sola vez) a
+// memoria: +0 número de enteros, +8.. los enteros.
+fn rt_unicode_table(slot: int) -> int {
+    let mut g = std::raw::globals() + 64 + 8 * slot
+    if slot >= 4 {
+        g = std::raw::globals() + 2304 + 8 * slot
+    }
+    let cached = std::raw::load(g)
+    if cached != 0 {
+        return cached
+    }
+    let mut text = uni_whitespace()
+    if slot == 0 {
+        text = uni_alphabetic()
+    } else if slot == 1 {
+        text = uni_alphanumeric()
+    } else if slot == 2 {
+        text = uni_uppercase()
+    } else if slot == 4 {
+        text = uni_upper_simple()
+    } else if slot == 5 {
+        text = uni_upper_multi()
+    } else if slot == 6 {
+        text = uni_lower_simple()
+    } else if slot == 7 {
+        text = uni_lower_multi()
+    } else if slot == 8 {
+        text = uni_case_ignorable()
+    } else if slot == 9 {
+        text = uni_cased_strict()
+    } else if slot == 10 {
+        text = uni_debug_escape()
+    }
+    let p = std::raw::bits(text)
+    let n = std::raw::load(p + 8)
+    let table = rt_alloc(8 + 8 * n)
+    let mut count = 0
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + 16 + i)
+        if b == 44 {
+            std::raw::store(table + 8 + 8 * count, v)
+            count += 1
+            v = 0
+        } else {
+            v = v * 10 + (b - 48)
+        }
+        i += 1
+    }
+    std::raw::store(table, count)
+    std::raw::store(g, table)
+    table
+}
+
+// ¿Está el código c en alguno de los rangos de la tabla? (búsqueda binaria)
+fn rt_unicode_has(slot: int, c: int) -> bool {
+    let table = rt_unicode_table(slot)
+    let mut lo = 0
+    let mut hi = std::raw::load(table) / 2
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let start = std::raw::load(table + 8 + 16 * mid)
+        let end = std::raw::load(table + 16 + 16 * mid)
+        if c < start {
+            hi = mid
+        } else if c > end {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+// El `{:?}` de Rust para un str (UTF-8 válido): entre comillas, con \" \\
+// \n \t \r \0 y \u{hex} para los caracteres de la tabla 10 (ver
+// unicode_debug.titan). Aparece en mensajes como `invalid type: string "..."`.
+fn rt_debug_str(src: int, n: int) -> any {
+    let b = sb_new(n + 2)
+    sb_byte(b, 34)
+    let mut i = 0
+    while i < n {
+        let c0 = std::raw::load8(src + i)
+        let mut c = c0
+        let mut w = 1
+        if c0 >= 240 {
+            c = std::raw::shl(c0 & 7, 18) | std::raw::shl(std::raw::load8(src + i + 1) & 63, 12) | std::raw::shl(std::raw::load8(src + i + 2) & 63, 6) | (std::raw::load8(src + i + 3) & 63)
+            w = 4
+        } else if c0 >= 224 {
+            c = std::raw::shl(c0 & 15, 12) | std::raw::shl(std::raw::load8(src + i + 1) & 63, 6) | (std::raw::load8(src + i + 2) & 63)
+            w = 3
+        } else if c0 >= 192 {
+            c = std::raw::shl(c0 & 31, 6) | (std::raw::load8(src + i + 1) & 63)
+            w = 2
+        }
+        if c == 34 || c == 92 {
+            sb_byte(b, 92)
+            sb_byte(b, c)
+        } else if c == 10 {
+            sb_byte(b, 92)
+            sb_byte(b, 110)
+        } else if c == 9 {
+            sb_byte(b, 92)
+            sb_byte(b, 116)
+        } else if c == 13 {
+            sb_byte(b, 92)
+            sb_byte(b, 114)
+        } else if c == 0 {
+            sb_byte(b, 92)
+            sb_byte(b, 48)
+        } else if c >= 32 && c <= 126 {
+            sb_byte(b, c)
+        } else if c < 32 || rt_unicode_has(10, c) {
+            sb_byte(b, 92)
+            sb_byte(b, 117)
+            sb_byte(b, 123)
+            let mut shift = 20
+            while shift > 0 && std::raw::shr(c, shift) == 0 {
+                shift -= 4
+            }
+            while shift >= 0 {
+                let d = std::raw::shr(c, shift) & 15
+                if d < 10 {
+                    sb_byte(b, 48 + d)
+                } else {
+                    sb_byte(b, 87 + d)
+                }
+                shift -= 4
+            }
+            sb_byte(b, 125)
+        } else {
+            sb_raw(b, src + i, w)
+        }
+        i += w
+    }
+    sb_byte(b, 34)
+    sb_finish(b)
+}
+
+fn std__text__is_alphabetic(c: any) -> any {
+    rt_unicode_has(0, rt_expect_char(c, "std::text::is_alphabetic"))
+}
+
+fn std__text__is_alphanumeric(c: any) -> any {
+    rt_unicode_has(1, rt_expect_char(c, "std::text::is_alphanumeric"))
+}
+
+fn std__text__is_uppercase(c: any) -> any {
+    rt_unicode_has(2, rt_expect_char(c, "std::text::is_uppercase"))
+}
+
+fn std__text__is_whitespace(c: any) -> any {
+    rt_unicode_has(3, rt_expect_char(c, "std::text::is_whitespace"))
+}
+
+fn std__text__char_code(c: any) -> any {
+    rt_expect_char(c, "std::text::char_code")
+}
+
+fn std__text__from_char_code(code: any) -> any {
+    rt_expect_int(code, "std::text::from_char_code")
+    let c = std::raw::bits(code)
+    if c < 0 || c > 1114111 || (c >= 55296 && c <= 57343) {
+        rt_native_fail("std::text::from_char_code", rt_concat(rt_int_to_str(c), " is not a valid Unicode scalar value"))
+    }
+    std::raw::value(4, c)
+}
+
+// Bytes que ocupa el carácter UTF-8 cuyo primer byte es b.
+fn rt_utf8_width(b: int) -> int {
+    if b < 128 {
+        return 1
+    }
+    if b < 224 {
+        return 2
+    }
+    if b < 240 {
+        return 3
+    }
+    4
+}
+
+fn std__text__chars(s: any) -> any {
+    rt_expect_str(s, "std::text::chars")
+    let n = rt_slen(s)
+    let out = rt_seq_alloc(7, 0, rt_str_chars(s))
+    let data = rt_seq_data(out)
+    let p = std::raw::bits(s) + 16
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        rt_seq_put(data, count, std::raw::value(4, rt_char_at(s, i)))
+        count += 1
+        i += rt_utf8_width(std::raw::load8(p + i))
+    }
+    std::raw::store(std::raw::bits(out) + 8, count)
+    out
+}
+
+fn rt_substr_bytes(s: any, a: int, b: int) -> any {
+    let out = rt_str_alloc(b - a)
+    rt_copy(out + 16, std::raw::bits(s) + 16 + a, b - a)
+    rt_sval(out)
+}
+
+fn std__text__substring(s: any, start: any, end: any) -> any {
+    rt_expect_str(s, "std::text::substring")
+    rt_expect_int(start, "std::text::substring")
+    rt_expect_int(end, "std::text::substring")
+    let mut a = std::raw::bits(start)
+    let mut b = std::raw::bits(end)
+    if a < 0 || b < 0 {
+        rt_native_fail("std::text::substring", "expected nonnegative integer")
+    }
+    let count = rt_str_chars(s)
+    if a > count {
+        a = count
+    }
+    if b > count {
+        b = count
+    }
+    if b < a {
+        b = a
+    }
+    rt_substr_bytes(s, rt_char_offset(s, a), rt_char_offset(s, b))
+}
+
+// ¿Aparece `needle` en `hay` a partir del byte `at`?
+fn rt_bytes_at(hay: any, at: int, needle: any) -> bool {
+    let ph = std::raw::bits(hay) + 16
+    let pn = std::raw::bits(needle) + 16
+    let n = rt_slen(needle)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(ph + at + i) != std::raw::load8(pn + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn std__text__contains(s: any, needle: any) -> any {
+    rt_expect_str(s, "std::text::contains")
+    rt_expect_str(needle, "std::text::contains")
+    let last = rt_slen(s) - rt_slen(needle)
+    let mut at = 0
+    while at <= last {
+        if rt_bytes_at(s, at, needle) {
+            return true
+        }
+        at += 1
+    }
+    false
+}
+
+fn std__text__starts_with(s: any, prefix: any) -> any {
+    rt_expect_str(s, "std::text::starts_with")
+    rt_expect_str(prefix, "std::text::starts_with")
+    rt_slen(prefix) <= rt_slen(s) && rt_bytes_at(s, 0, prefix)
+}
+
+fn std__text__ends_with(s: any, suffix: any) -> any {
+    rt_expect_str(s, "std::text::ends_with")
+    rt_expect_str(suffix, "std::text::ends_with")
+    let at = rt_slen(s) - rt_slen(suffix)
+    at >= 0 && rt_bytes_at(s, at, suffix)
+}
+
+// trim de Rust: quita espacios Unicode (White_Space) de ambos extremos.
+fn std__text__trim(s: any) -> any {
+    rt_expect_str(s, "std::text::trim")
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut a = 0
+    while a < n && rt_unicode_has(3, rt_char_at(s, a)) {
+        a += rt_utf8_width(std::raw::load8(p + a))
+    }
+    let mut b = n
+    while b > a {
+        let mut start = b - 1
+        while (std::raw::load8(p + start) & 192) == 128 {
+            start -= 1
+        }
+        if !rt_unicode_has(3, rt_char_at(s, start)) {
+            break
+        }
+        b = start
+    }
+    rt_substr_bytes(s, a, b)
+}
+
+// Como `text.trim().parse::<f64>().ok()` (ver float.titan).
+fn std__text__parse_float(s: any) -> any {
+    rt_expect_str(s, "std::text::parse_float")
+    let n = fl_scan(std__text__trim(s))
+    if !n.ok {
+        return Option::None
+    }
+    if n.special {
+        return Option::Some(std::raw::adopt(2, n.bits))
+    }
+    Option::Some(std::raw::adopt(2, rt_float_from_decimal(n.negative, n.digits, n.exp)))
+}
+
+// 10^n exacto como float (0 <= n <= 22: todos se representan sin error).
+fn rt_pow10_float(n: int) -> int {
+    if n <= 18 {
+        let mut p = 1
+        let mut i = 0
+        while i < n {
+            p = p * 10
+            i += 1
+        }
+        return std::raw::ffromint(p)
+    }
+    let mut q = 1
+    let mut j = 18
+    while j < n {
+        q = q * 10
+        j += 1
+    }
+    std::raw::fmul(std::raw::ffromint(1000000000000000000), std::raw::ffromint(q))
+}
+
+// Camino rápido (Clinger): con <= 15 dígitos y |exp| <= 22 los dos números
+// son exactos en float y una sola operación del procesador redondea bien.
+// Si no, el cálculo exacto con enteros grandes de float.titan.
+fn rt_float_from_decimal(negative: bool, digits: array, exp: int) -> int {
+    let nd = len(digits)
+    if nd <= 15 && exp >= -22 && exp <= 22 {
+        let mut d = 0
+        for c in digits {
+            d = d * 10 + c
+        }
+        let mut bits = std::raw::ffromint(d)
+        if exp > 0 {
+            bits = std::raw::fmul(bits, rt_pow10_float(exp))
+        }
+        if exp < 0 {
+            bits = std::raw::fdiv(bits, rt_pow10_float(0 - exp))
+        }
+        if negative {
+            bits = bits ^ (-9223372036854775807 - 1)
+        }
+        return bits
+    }
+    fl_from_decimal(negative, digits, exp)
+}
+
+// ------------------------------------------------------------ sistema: archivos, rutas, entorno
+
+// Copia terminada en 0 (para las llamadas al sistema); devuelve la dirección.
+fn rt_cstr(s: any) -> int {
+    let n = rt_slen(s)
+    let p = rt_alloc(n + 1)
+    rt_copy(p, std::raw::bits(s) + 16, n)
+    std::raw::store8(p + n, 0)
+    p
+}
+
+fn rt_from_cstr(p: int) -> any {
+    let mut n = 0
+    while std::raw::load8(p + n) != 0 {
+        n += 1
+    }
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, p, n)
+    rt_sval(out)
+}
+
+// Texto de un error del sistema como lo muestra Rust: "... (os error N)".
+
+// Modo del archivo (siguiendo enlaces) o -1 si no se puede consultar.
+fn rt_stat_mode(path: any) -> int {
+    let buf = rt_alloc(144)
+    let c = rt_cstr(path)
+    // newfstatat(AT_FDCWD, path, buf, 0)
+    let r = std::raw::syscall(262, -100, c, buf, 0, 0, 0)
+    let mode = std::raw::load(buf + 24) & 4294967295
+    rt_free_block(c)
+    rt_free_block(buf)
+    if r != 0 {
+        return -1
+    }
+    mode
+}
+
+fn std__fs__exists(path: any) -> any {
+    rt_expect_str(path, "std::fs::exists")
+    rt_stat_mode(path) >= 0
+}
+
+fn std__fs__is_file(path: any) -> any {
+    rt_expect_str(path, "std::fs::is_file")
+    let m = rt_stat_mode(path)
+    m >= 0 && (m & 61440) == 32768
+}
+
+fn std__fs__is_dir(path: any) -> any {
+    rt_expect_str(path, "std::fs::is_dir")
+    let m = rt_stat_mode(path)
+    m >= 0 && (m & 61440) == 16384
+}
+
+// ¿Son los bytes UTF-8 válido? (las mismas reglas que Rust: sin sustitutos,
+// sin formas largas, máximo U+10FFFF)
+fn rt_valid_utf8(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        if b < 128 {
+            i += 1
+            continue
+        }
+        let mut need = 0
+        let mut lo = 128
+        let mut hi = 191
+        if b >= 194 && b <= 223 {
+            need = 1
+        } else if b == 224 {
+            need = 2
+            lo = 160
+        } else if (b >= 225 && b <= 236) || b == 238 || b == 239 {
+            need = 2
+        } else if b == 237 {
+            need = 2
+            hi = 159
+        } else if b == 240 {
+            need = 3
+            lo = 144
+        } else if b >= 241 && b <= 243 {
+            need = 3
+        } else if b == 244 {
+            need = 3
+            hi = 143
+        } else {
+            return false
+        }
+        if i + need >= n {
+            return false
+        }
+        let second = std::raw::load8(p + i + 1)
+        if second < lo || second > hi {
+            return false
+        }
+        let mut k = 2
+        while k <= need {
+            let c = std::raw::load8(p + i + k)
+            if c < 128 || c > 191 {
+                return false
+            }
+            k += 1
+        }
+        i += need + 1
+    }
+    true
+}
+
+fn std__fs__read_text(path: any) -> any {
+    rt_expect_str(path, "std::fs::read_text")
+    // open(path, O_RDONLY | O_CLOEXEC)
+    let c = rt_cstr(path)
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        rt_native_fail("std::fs::read_text", rt_os_error(-fd))
+    }
+    let mut cap = 65536
+    let mut buf = rt_alloc(cap)
+    let mut n = 0
+    loop {
+        if n == cap {
+            let bigger = rt_alloc(cap * 2)
+            rt_copy(bigger, buf, n)
+            rt_free_block(buf)
+            buf = bigger
+            cap = cap * 2
+        }
+        let got = std::raw::syscall(0, fd, buf + n, cap - n, 0, 0, 0)
+        if got < 0 {
+            if got == -4 {
+                continue
+            }
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            rt_native_fail("std::fs::read_text", rt_os_error(-got))
+        }
+        if got == 0 {
+            break
+        }
+        n += got
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if !rt_valid_utf8(buf, n) {
+        rt_native_fail("std::fs::read_text", "stream did not contain valid UTF-8")
+    }
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, buf, n)
+    rt_free_block(buf)
+    rt_sval(out)
+}
+
+fn rt_getcwd() -> any {
+    let mut size = 4096
+    loop {
+        let buf = rt_alloc(size)
+        let r = std::raw::syscall(79, buf, size, 0, 0, 0, 0)
+        if r >= 0 {
+            let cwd = rt_from_cstr(buf)
+            rt_free_block(buf)
+            return cwd
+        }
+        rt_free_block(buf)
+        if r != -34 {
+            rt_native_fail("std::env::current_dir", rt_os_error(-r))
+        }
+        size = size * 2
+    }
+}
+
+// `current_dir().to_string_lossy()` de Rust.
+fn std__env__current_dir() -> any {
+    dr_lossy(rt_getcwd())
+}
+
+// argv y el entorno están en la pila inicial del proceso:
+// [argc][argv0]...[NULL][env0]...[NULL]
+fn std__env__args() -> any {
+    let sp = std::raw::load(std::raw::globals() + 32)
+    let argc = std::raw::load(sp)
+    let out = rt_array_new(argc)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < argc {
+        rt_seq_put(data, i, rt_from_cstr(std::raw::load(sp + 8 + 8 * i)))
+        i += 1
+    }
+    out
+}
+
+// Entorno actual (lo que en C es `environ`): al principio el de la pila
+// inicial; desde el primer std::process::env_set / env_unset, una copia propia
+// (globals + 2576, ver std_process.titan). Todo lo que lee variables de
+// entorno pasa por aquí, y los procesos hijos lo reciben.
+fn rt_environ() -> int {
+    let own = std::raw::load(std::raw::globals() + 2576)
+    if own != 0 {
+        return own
+    }
+    let sp = std::raw::load(std::raw::globals() + 32)
+    sp + 16 + 8 * std::raw::load(sp)
+}
+
+// getenv de glibc: puntero al valor de la primera entrada "NOMBRE=...", o 0.
+// Nombre vacío: 0. Un nombre con un byte NUL no coincide con nada (Rust ni
+// siquiera llama a getenv en ese caso y también da "no está").
+fn rt_getenv(name: any) -> int {
+    let n = rt_slen(name)
+    if n == 0 {
+        return 0
+    }
+    let pn = std::raw::bits(name) + 16
+    let mut e = rt_environ()
+    while std::raw::load(e) != 0 {
+        let entry = std::raw::load(e)
+        let mut i = 0
+        while i < n && std::raw::load8(entry + i) != 0 && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
+            i += 1
+        }
+        if i == n && std::raw::load8(entry + n) == 61 {
+            return entry + n + 1
+        }
+        e += 8
+    }
+    0
+}
+
+fn std__env__get(name: any) -> any {
+    rt_expect_str(name, "std::env::get")
+    let v = rt_getenv(name)
+    if v == 0 {
+        return nil
+    }
+    let value = rt_from_cstr(v)
+    let pv = std::raw::bits(value)
+    if rt_valid_utf8(pv + 16, std::raw::load(pv + 8)) {
+        return value
+    }
+    nil
+}
+
+// Path::join de Rust: una ruta absoluta reemplaza a la base.
+fn std__path__join(base: any, child: any) -> any {
+    rt_expect_str(base, "std::path::join")
+    rt_expect_str(child, "std::path::join")
+    let nb = rt_slen(base)
+    if nb == 0 || (rt_slen(child) > 0 && std::raw::load8(std::raw::bits(child) + 16) == 47) {
+        return child
+    }
+    if std::raw::load8(std::raw::bits(base) + 15 + nb) == 47 {
+        return rt_concat(base, child)
+    }
+    rt_concat(rt_concat(base, "/"), child)
+}
+
+// Partes de una ruta como las ve Rust (Path::components): sin "" ni "." (salvo
+// un "." inicial), y si es absoluta la primera parte es "/".
+fn rt_path_parts(path: any) -> any {
+    let p = std::raw::bits(path) + 16
+    let n = rt_slen(path)
+    let mut parts = []
+    let mut i = 0
+    if n > 0 && std::raw::load8(p) == 47 {
+        parts = std::array::push(parts, "/")
+    }
+    while i < n {
+        while i < n && std::raw::load8(p + i) == 47 {
+            i += 1
+        }
+        let start = i
+        while i < n && std::raw::load8(p + i) != 47 {
+            i += 1
+        }
+        if i > start {
+            let part = rt_substr_bytes(path, start, i)
+            if part != "." || (start == 0 && len(parts) == 0) {
+                parts = std::array::push(parts, part)
+            }
+        }
+    }
+    parts
+}
+
+// Path::parent de Rust: la ruta sin su última parte; nil para "/" y "".
+fn std__path__parent(path: any) -> any {
+    rt_expect_str(path, "std::path::parent")
+    let parts = rt_path_parts(path)
+    let n = len(parts)
+    if n == 0 {
+        return nil
+    }
+    let last = parts[n - 1]
+    if last == "/" {
+        return nil
+    }
+    let mut out = ""
+    let mut i = 0
+    while i < n - 1 {
+        let part = parts[i]
+        if part == "/" {
+            out = "/"
+        } else if out == "" || out == "/" {
+            out = out + part
+        } else {
+            out = out + "/" + part
+        }
+        i += 1
+    }
+    out
+}
+
+// fs::canonicalize (realpath): ruta absoluta sin ".", ".." ni enlaces.
+fn std__path__canonical(path: any) -> any {
+    rt_expect_str(path, "std::path::canonical")
+    let (err, resolved) = rt_canonical_path(path)
+    if err != 0 {
+        rt_native_fail("std::path::canonical", rt_os_error(err))
+    }
+    resolved
+}
+
+// fs::canonicalize (realpath): (0, ruta) o (errno, nil).
+fn rt_canonical_path(path: any) -> (int, any) {
+    if rt_slen(path) == 0 {
+        return (2, nil)
+    }
+    let mut pending = rt_path_parts(path)
+    let mut resolved: any = ""
+    if pending[0] == "/" {
+        pending = std::array::slice(pending, 1, len(pending))
+    } else {
+        resolved = rt_getcwd()
+        if resolved == "/" {
+            resolved = ""
+        }
+    }
+    let buf = rt_alloc(4096)
+    let mut links = 0
+    let mut k = 0
+    while k < len(pending) {
+        let part = pending[k]
+        k += 1
+        if part == "." {
+            continue
+        }
+        if part == ".." {
+            let parent = std__path__parent(resolved)
+            if parent == nil || parent == "/" {
+                resolved = ""
+            } else {
+                resolved = parent
+            }
+            continue
+        }
+        let candidate = resolved + "/" + part
+        // readlink(candidate, buf, 4096)
+        let c = rt_cstr(candidate)
+        let r = std::raw::syscall(89, c, buf, 4096, 0, 0, 0)
+        rt_free_block(c)
+        if r == -22 {
+            resolved = candidate
+        } else if r < 0 {
+            rt_free_block(buf)
+            return (0 - r, nil)
+        } else {
+            links += 1
+            if links > 40 {
+                rt_free_block(buf)
+                return (40, nil)
+            }
+            let target = rt_str_alloc(r)
+            rt_copy(target + 16, buf, r)
+            let tparts = rt_path_parts(rt_sval(target))
+            let mut rest = tparts
+            if len(tparts) > 0 && tparts[0] == "/" {
+                resolved = ""
+                rest = std::array::slice(tparts, 1, len(tparts))
+            }
+            pending = std::array::concat(rest, std::array::slice(pending, k, len(pending)))
+            k = 0
+        }
+    }
+    rt_free_block(buf)
+    if resolved == "" {
+        return (0, "/")
+    }
+    return (0, resolved)
+}
+
+// ------------------------------------------------------------ métodos de arrays
+
+// sort_by como en la VM: orden estable que en cada paso saca el primer mínimo;
+// el comparador recibe (candidato, mínimo actual) y "menor" es un número < 0.
+fn rt_sort_by(values0: any, compare: any) -> any {
+    let t = std::raw::tag(values0)
+    if t != 7 && t != 8 {
+        std::raw::fail("type error: operation requires an array")
+    }
+    if std::raw::tag(compare) != 12 {
+        std::raw::fail("type error: sort_by requires a function")
+    }
+    let f: fn(any, any) -> any = compare
+    let mut values = std::array::slice(values0, 0, len(values0))
+    let mut out = []
+    while len(values) > 0 {
+        let mut min = 0
+        let mut j = 1
+        while j < len(values) {
+            let c = f(values[j], values[min])
+            let tc = std::raw::tag(c)
+            if tc == 1 {
+                if std::raw::bits(c) < 0 {
+                    min = j
+                }
+            } else if tc == 2 {
+                let b = std::raw::bits(c)
+                let nan = (b & 9218868437227405312) == 9218868437227405312 && (b & 4503599627370495) != 0
+                if b < 0 && b != (-9223372036854775807 - 1) && !nan {
+                    min = j
+                }
+            } else {
+                std::raw::fail("type error: sort_by comparator must return int or float")
+            }
+            j += 1
+        }
+        out = std::array::push(out, values[min])
+        values = std::array::concat(std::array::slice(values, 0, min), std::array::slice(values, min + 1, len(values)))
+    }
+    out
+}
+
+// ------------------------------------------------------------ bytes y escritura de archivos
+
+// Bytes nuevos (etiqueta 6, misma forma que un string) con n bytes desde src.
+fn rt_bytes_from(src: int, n: int) -> any {
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, src, n)
+    std::raw::adopt(6, p)
+}
+
+fn std__encoding__utf8_encode(s: any) -> any {
+    rt_expect_str(s, "std::encoding::utf8_encode")
+    rt_bytes_from(std::raw::bits(s) + 16, rt_slen(s))
+}
+
+// Como expect_bytes de la VM: acepta bytes o string.
+fn rt_expect_bytes(v: any, function: string) {
+    let t = std::raw::tag(v)
+    if t != 5 && t != 6 {
+        rt_native_fail(function, "expected bytes or string")
+    }
+}
+
+fn std__bytes__to_array(b: any) -> any {
+    rt_expect_bytes(b, "std::bytes::to_array")
+    let n = rt_slen(b)
+    let p = std::raw::bits(b) + 16
+    let out = rt_array_new(n)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        std::raw::store(data + 16 * i, 1)
+        std::raw::store(data + 16 * i + 8, std::raw::load8(p + i))
+        i += 1
+    }
+    out
+}
+
+fn std__bytes__from_array(a: any) -> any {
+    rt_expect_array(a, "std::bytes::from_array")
+    let n = rt_seq_len(a)
+    let data = rt_seq_data(a)
+    let out = rt_str_alloc(n)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(data + 16 * i) != 1 {
+            rt_free_block(out)
+            rt_native_fail("std::bytes::from_array", "expected int")
+        }
+        let v = std::raw::load(data + 16 * i + 8)
+        if v < 0 || v > 255 {
+            rt_free_block(out)
+            rt_native_fail("std::bytes::from_array", "byte values must be between 0 and 255")
+        }
+        std::raw::store8(out + 16 + i, v)
+        i += 1
+    }
+    std::raw::adopt(6, out)
+}
+
+// Escribe n bytes desde p en fd; devuelve 0 o -errno.
+fn rt_write_all(fd: int, p: int, n: int) -> int {
+    let mut done = 0
+    while done < n {
+        let w = std::raw::syscall(1, fd, p + done, n - done, 0, 0, 0)
+        if w < 0 {
+            if w != -4 {
+                return w
+            }
+        } else {
+            done += w
+        }
+    }
+    0
+}
+
+// fs::write de Rust: crea o vacía el archivo (permisos 0666 menos umask).
+fn rt_write_file(path: any, content: any, function: string) {
+    let c = rt_cstr(path)
+    // open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666)
+    let fd = std::raw::syscall(2, c, 524865, 438, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        rt_native_fail(function, rt_os_error(-fd))
+    }
+    let r = rt_write_all(fd, std::raw::bits(content) + 16, rt_slen(content))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail(function, rt_os_error(-r))
+    }
+}
+
+fn std__fs__write_text(path: any, text: any) -> any {
+    rt_expect_str(path, "std::fs::write_text")
+    rt_expect_str(text, "std::fs::write_text")
+    rt_write_file(path, text, "std::fs::write_text")
+    nil
+}
+
+fn std__fs__write_bytes(path: any, bytes: any) -> any {
+    rt_expect_str(path, "std::fs::write_bytes")
+    rt_expect_bytes(bytes, "std::fs::write_bytes")
+    rt_write_file(path, bytes, "std::fs::write_bytes")
+    nil
+}
+
+fn std__fs__remove_file(path: any) -> any {
+    rt_expect_str(path, "std::fs::remove_file")
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(87, c, 0, 0, 0, 0, 0)
+    rt_free_block(c)
+    if r < 0 {
+        rt_native_fail("std::fs::remove_file", rt_os_error(-r))
+    }
+    nil
+}
+
+// fs::copy de Rust: copia el contenido y los permisos; devuelve los bytes copiados.
+fn std__fs__copy(from: any, to: any) -> any {
+    rt_expect_str(from, "std::fs::copy")
+    rt_expect_str(to, "std::fs::copy")
+    let cf = rt_cstr(from)
+    let src = std::raw::syscall(2, cf, 524288, 0, 0, 0, 0)
+    rt_free_block(cf)
+    if src < 0 {
+        rt_native_fail("std::fs::copy", rt_os_error(-src))
+    }
+    let st = rt_alloc(144)
+    std::raw::syscall(5, src, st, 0, 0, 0, 0)
+    let mode = std::raw::load(st + 24) & 4095
+    rt_free_block(st)
+    let ct = rt_cstr(to)
+    let dst = std::raw::syscall(2, ct, 524865, mode, 0, 0, 0)
+    rt_free_block(ct)
+    if dst < 0 {
+        std::raw::syscall(3, src, 0, 0, 0, 0, 0)
+        rt_native_fail("std::fs::copy", rt_os_error(-dst))
+    }
+    let buf = rt_alloc(65536)
+    let mut total = 0
+    let mut error = 0
+    loop {
+        let got = std::raw::syscall(0, src, buf, 65536, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            error = got
+            break
+        }
+        if got == 0 {
+            break
+        }
+        let r = rt_write_all(dst, buf, got)
+        if r < 0 {
+            error = r
+            break
+        }
+        total += got
+    }
+    rt_free_block(buf)
+    // fchmod(dst, mode)
+    std::raw::syscall(91, dst, mode, 0, 0, 0, 0)
+    std::raw::syscall(3, src, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, dst, 0, 0, 0, 0, 0)
+    if error < 0 {
+        rt_native_fail("std::fs::copy", rt_os_error(-error))
+    }
+    total
+}
+
+// El generador de bytecode exige una función `main` en cada programa. En el
+// runtime nunca se ejecuta: el punto de entrada es el `main` del usuario.
+fn main() {
+}

@@ -1,0 +1,134 @@
+// std::compress: compresión gzip / zlib / deflate en los niveles 0..9. La
+// salida tiene que ser idéntica byte a byte a la de la VM de Rust (flate2 +
+// miniz_oxide); se imprime entera si es corta y si no su longitud y CRC-32.
+// Cada salida se vuelve a descomprimir. Incluye el caso grande de nivel 1 en
+// el que miniz se para a mitad de bloque porque el búfer de 32 KiB de flate2
+// se llena (el camino rápido cambia entonces sus ventanas de 4096 bytes).
+
+fn lcg(x: int) -> int {
+    (x * 1103515245 + 12345) % 2147483648
+}
+
+fn desc(b: bytes) -> string {
+    let n = len(b)
+    if n <= 40 {
+        return std::encoding::hex_encode(b)
+    }
+    let c = std::checksum::crc32(b)
+    "len={n} crc={c}"
+}
+
+// Bytes pseudoaleatorios con alfabeto de `k` símbolos.
+fn aleatorio(n: int, k: int, semilla: int) -> bytes {
+    let mut a = []
+    let mut x = semilla
+    let mut i = 0
+    while i < n {
+        x = lcg(x)
+        a = std::array::push(a, (x / 65536) % k)
+        i += 1
+    }
+    std::bytes::from_array(a)
+}
+
+// Texto de palabras sacadas de un vocabulario inventado (se comprime ~3x).
+fn palabras(n: int, semilla: int) -> bytes {
+    let mut voc = []
+    let mut x = semilla
+    let mut i = 0
+    while i < 400 {
+        let mut w = []
+        x = lcg(x)
+        let largo = 2 + (x / 65536) % 7
+        let mut j = 0
+        while j < largo {
+            x = lcg(x)
+            w = std::array::push(w, 97 + (x / 65536) % 26)
+            j += 1
+        }
+        voc = std::array::push(voc, w)
+        i += 1
+    }
+    let mut a = []
+    while len(a) < n {
+        x = lcg(x)
+        let w = voc[(x / 65536) % 400]
+        let mut j = 0
+        while j < len(w) && len(a) < n {
+            a = std::array::push(a, w[j])
+            j += 1
+        }
+        if len(a) < n {
+            a = std::array::push(a, 32)
+        }
+    }
+    std::bytes::from_array(a)
+}
+
+fn periodico(n: int, periodo: int) -> bytes {
+    let base = aleatorio(periodo, 256, 99)
+    let mut a = []
+    let mut i = 0
+    while i < n {
+        a = std::array::push(a, std::bytes::to_array(base)[i % periodo])
+        i += 1
+    }
+    std::bytes::from_array(a)
+}
+
+fn probar(nombre: string, datos: bytes) {
+    let mut nivel = 0
+    while nivel <= 9 {
+        let g = std::compress::gzip_encode(datos, nivel)
+        let z = std::compress::zlib_encode(datos, nivel)
+        let d = std::compress::deflate_encode(datos, nivel)
+        let ok = std::compress::gzip_decode(g) == datos && std::compress::zlib_decode(z) == datos && std::compress::deflate_decode(d) == datos
+        let dg = desc(g)
+        let dz = desc(z)
+        let dd = desc(d)
+        println("{nombre} nivel {nivel}: gzip {dg} | zlib {dz} | deflate {dd} | ida y vuelta {ok}")
+        nivel += 1
+    }
+}
+
+fn error(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let b: bytes = v
+            "Ok(" + desc(b) + ")"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn main() {
+    probar("vacío", std::encoding::utf8_encode(""))
+    probar("un byte", std::encoding::utf8_encode("a"))
+    probar("47 bytes", aleatorio(47, 256, 5))
+    probar("48 bytes", aleatorio(48, 256, 5))
+    probar("texto", std::encoding::utf8_encode("hola hola hola hola mundo, hola Titan. hola hola mundo"))
+    probar("corrida", aleatorio(5000, 1, 1))
+    probar("alfabeto 3", aleatorio(6000, 3, 7))
+    probar("aleatorio", aleatorio(3000, 256, 11))
+    probar("periodo 300", periodico(20000, 300))
+    probar("palabras", palabras(40000, 3))
+    let grande = palabras(160000, 17)
+    let g1 = std::compress::gzip_encode(grande, 1)
+    let d1 = desc(g1)
+    let ok1 = std::compress::gzip_decode(g1) == grande
+    println("grande nivel 1: gzip {d1} | ida y vuelta {ok1}")
+    let z6 = std::compress::zlib_encode(grande, 6)
+    let d6 = desc(z6)
+    println("grande nivel 6: zlib {d6}")
+    // Texto (string) también vale como entrada.
+    let s = error(std::try::catch(|| { std::compress::gzip_encode("hola hola hola hola mundo", 6) }))
+    println("string: {s}")
+    let e1 = error(std::try::catch(|| { std::compress::gzip_encode("x", 10) }))
+    println("nivel 10: {e1}")
+    let e2 = error(std::try::catch(|| { std::compress::zlib_encode("x", 0 - 1) }))
+    println("nivel -1: {e2}")
+    let e3 = error(std::try::catch(|| { std::compress::deflate_encode("x", 1099511627776) }))
+    println("nivel 2^40: {e3}")
+    let e4 = error(std::try::catch(|| { std::compress::deflate_encode("x", 0 - 1099511627776) }))
+    println("nivel -2^40: {e4}")
+}

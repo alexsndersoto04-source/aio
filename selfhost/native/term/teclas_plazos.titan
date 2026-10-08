@@ -1,0 +1,16 @@
+// Plazos, cambio de tamaño de la ventana y modo normal (no crudo).
+fn main() {
+    print("LISTO")
+    print("[" + std::term::read_key(300) + "]")
+    print("[" + std::term::read_key(0) + "]")
+    print("[" + std::term::read_key(5000) + "]")
+    print(std::term::size())
+    print("[" + std::term::read_key(5000) + "]")
+    print("[" + std::term::read_key(0) + "]")
+    print("[" + std::term::read_key(0) + "]")
+    print("[" + std::term::read_key(100) + "]")
+    std::term::enable_raw()
+    print("[" + std::term::read_key(5000) + "]")
+    std::term::disable_raw()
+    print("FIN")
+}

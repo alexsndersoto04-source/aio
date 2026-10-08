@@ -1,0 +1,1 @@
+fn write(stream: TcpStream, tls: TlsStream) { std::net::tcp_write(stream, "ping") std::tls::write(tls, "ping") } fn main() {}

@@ -1,0 +1,50 @@
+// Compilador nativo de Titan (fase 4b del self-hosting).
+//
+// Uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA
+//
+// Carga, revisa y traduce PROGRAMA con el cargador, typechecker y generador
+// escritos en Titan; hace lo mismo con el runtime (selfhost/native/runtime.titan),
+// que además puede usar las operaciones `std::raw::`; y convierte ambos en
+// código máquina x86-64 dentro de un ejecutable ELF que no necesita ni Rust
+// ni la VM para funcionar.
+import args
+import frontend
+import native::backend
+
+fn build(program: string, runtime: string) -> Result {
+    let gu = front(program, native_table())?
+    let rt_natives = std::array::concat(native_table(), raw_signatures())
+    let gr = match front(runtime, rt_natives) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            return Result::Err("native runtime: " + message)
+        },
+    }
+    bk_build(gu, gr)
+}
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 2 {
+        print("uso: titan run selfhost/build.titan PROGRAMA.titan SALIDA [MAPA]")
+        return
+    }
+    // El runtime está junto a este programa: selfhost/native/runtime.titan
+    // (con la VM, junto a selfhost/build.titan; nativo, junto al ejecutable,
+    // que debe estar en selfhost/).
+    let here = std::path::parent(std::path::canonical(ar_program()))
+    let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
+    match build(args[0], runtime) {
+        Result::Ok(built) => {
+            let (bytes, symbols) = built
+            el_write_executable(args[1], bytes)
+            // Tercer argumento opcional: archivo con el mapa de funciones.
+            if len(args) > 2 {
+                std::fs::write_text(args[2], symbols)
+            }
+        },
+        Result::Err(message) => {
+            print("error: " + message)
+        },
+    }
+}

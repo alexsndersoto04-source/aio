@@ -1,0 +1,50 @@
+// std::http: codec, rutas, cabeceras y multipart, idéntico a la VM.
+fn show_opt(label: string, r: Option) {
+    match r {
+        Option::None => println(label + " none"),
+        Option::Some(m) => {
+            println(label + " method=" + std::map::get(m, "method") + " path=" + std::map::get(m, "path") + " q=" + std::json::stringify(std::map::get(m, "query")) + " ka=" + std::json::stringify(std::map::get(m, "keep_alive")) + " n=" + std::json::stringify(std::map::get(m, "consumed")) + " body=" + std::encoding::utf8_decode(std::map::get(m, "body")))
+        },
+    }
+}
+
+fn show_rm(label: string, r: Option) {
+    match r {
+        Option::None => println(label + " none"),
+        Option::Some(m) => println(label + " " + std::json::stringify(m)),
+    }
+}
+
+fn main() {
+    let req = std::encoding::utf8_encode("POST /users?id=7 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\ndataNEXT")
+    show_opt("post", std::http::parse_request(req))
+    show_opt("part", std::http::parse_request(std::encoding::utf8_encode("GET / HTTP/1.1\r\nHost: x\r\n\r")))
+    println("reason " + std::json::stringify(std::http::reason_phrase(200)))
+    println("r999 " + std::json::stringify(std::http::reason_phrase(999)))
+    let h = std::map::insert(std::map::new(), "Content-Type", "text/plain")
+    println("resp " + std::encoding::utf8_decode(std::http::build_response(200, h, std::encoding::utf8_encode("hello"), true)))
+    show_rm("route", std::http::route_match("/users/:id/files/*path", "/users/42/files/docs/readme.txt"))
+    show_rm("nomatch", std::http::route_match("/users/:id", "/posts/1"))
+    println("query " + std::json::stringify(std::http::parse_query("tag=rust&tag=titan&q=hello+world", 10)))
+    let sec = std::http::security_headers(std::map::new())
+    println("sec " + std::json::stringify(std::map::get(sec, "headers")))
+    let co = std::http::cors(std::map::new(), "https://a.example", "GET, POST")
+    println("cors " + std::json::stringify(std::map::get(co, "headers")))
+    let id1 = std::http::request_id(std::map::new())
+    let id2 = std::http::request_id(std::map::new())
+    println("id1 " + std::map::get(id1, "request_id"))
+    println("id2 " + std::map::get(id2, "request_id"))
+    println("rl1 " + std::json::stringify(std::http::rate_limit("k", 2, 60000)))
+    println("rl2 " + std::json::stringify(std::http::rate_limit("k", 2, 60000)))
+    println("rl3 " + std::json::stringify(std::http::rate_limit("k", 2, 60000)))
+    println("rl0 " + std::json::stringify(std::http::rate_limit("k", 0, 10)))
+    let jr = std::http::json_response(201, std::map::insert(std::map::new(), "ok", true))
+    println("json " + std::json::stringify(std::map::get(jr, "status")) + " " + std::encoding::utf8_decode(std::map::get(jr, "body")))
+    let er = std::http::error_response(400, "nope")
+    println("err " + std::encoding::utf8_decode(std::map::get(er, "body")))
+    let mp = std::encoding::utf8_encode("--abc\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nTitan\r\n--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--abc--\r\n")
+    let parts = std::http::parse_multipart("multipart/form-data; boundary=abc", mp, 4, 1024)
+    println("mp n=" + std::json::stringify(len(parts)))
+    println("mp0 " + std::encoding::utf8_decode(std::map::get(parts[0], "data")) + " " + std::map::get(parts[0], "name"))
+    println("mp1 " + std::json::stringify(std::map::get(parts[1], "filename")))
+}

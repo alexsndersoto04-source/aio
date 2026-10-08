@@ -1,0 +1,3 @@
+fn main() {
+    std::fs::remove_file("/tmp/no_existe_este_archivo_titan")
+}

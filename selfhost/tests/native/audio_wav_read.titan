@@ -1,0 +1,139 @@
+// Differentially exercise the real WAV decoders against the precompiled VM.
+fn result_error(result: Result) -> string {
+    match result {
+        Result::Ok(_) => "unexpected success",
+        Result::Err(message) => message,
+    }
+}
+
+fn wav_u16(value: int) -> any {
+    std::bytes::from_array([value & 255, (value / 256) & 255])
+}
+
+fn wav_u32(value: int) -> any {
+    std::bytes::write_u32_le(value)
+}
+
+fn wrap_wav(fmt: any, data: any, fact_samples: int, extra_chunk: any) -> any {
+    let mut chunks = std::bytes::concat(
+        std::encoding::utf8_encode("fmt "),
+        std::bytes::concat(wav_u32(std::bytes::length(fmt)), fmt),
+    )
+    if fact_samples >= 0 {
+        let fact = std::bytes::concat(
+            std::encoding::utf8_encode("fact"),
+            std::bytes::concat(wav_u32(4), wav_u32(fact_samples)),
+        )
+        chunks = std::bytes::concat(chunks, fact)
+    }
+    chunks = std::bytes::concat(chunks, extra_chunk)
+    let data_chunk = std::bytes::concat(
+        std::encoding::utf8_encode("data"),
+        std::bytes::concat(wav_u32(std::bytes::length(data)), data),
+    )
+    chunks = std::bytes::concat(chunks, data_chunk)
+    let body = std::bytes::concat(std::encoding::utf8_encode("WAVE"), chunks)
+    std::bytes::concat(
+        std::encoding::utf8_encode("RIFF"),
+        std::bytes::concat(wav_u32(std::bytes::length(body)), body),
+    )
+}
+
+fn make_wav(format_tag: int, channels: int, rate: int, block_align: int, bits: int, data: any, fact_samples: int, extra_chunk: any) -> any {
+    let mut fmt = wav_u16(format_tag)
+    fmt = std::bytes::concat(fmt, wav_u16(channels))
+    fmt = std::bytes::concat(fmt, wav_u32(rate))
+    fmt = std::bytes::concat(fmt, wav_u32(rate * block_align))
+    fmt = std::bytes::concat(fmt, wav_u16(block_align))
+    fmt = std::bytes::concat(fmt, wav_u16(bits))
+    wrap_wav(fmt, data, fact_samples, extra_chunk)
+}
+
+fn make_extensible_wav(subtype: int, valid_bits: int, rate: int, block_align: int, data: any, fact_samples: int) -> any {
+    let mut fmt = wav_u16(65534)
+    fmt = std::bytes::concat(fmt, wav_u16(1))
+    fmt = std::bytes::concat(fmt, wav_u32(rate))
+    fmt = std::bytes::concat(fmt, wav_u32(rate * block_align))
+    fmt = std::bytes::concat(fmt, wav_u16(block_align))
+    fmt = std::bytes::concat(fmt, wav_u16(block_align * 8))
+    fmt = std::bytes::concat(fmt, wav_u16(22))
+    fmt = std::bytes::concat(fmt, wav_u16(valid_bits))
+    fmt = std::bytes::concat(fmt, wav_u32(0))
+    let guid = std::bytes::from_array([subtype, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113])
+    fmt = std::bytes::concat(fmt, guid)
+    wrap_wav(fmt, data, fact_samples, std::bytes::from_array([]))
+}
+
+fn check_wav(bytes: any, expected_samples: any, rate: int, channels: int, bits: int, label: string) {
+    let decoded = std::audio::read_wav_bytes(bytes)
+    std::testing::assert_eq(std::map::get(decoded, "samples"), expected_samples, label + " samples")
+    std::testing::assert_eq(std::map::get(decoded, "sample_rate"), rate, label + " sample rate")
+    std::testing::assert_eq(std::map::get(decoded, "channels"), channels, label + " channels")
+    std::testing::assert_eq(std::map::get(decoded, "bits_per_sample"), bits, label + " bit depth")
+}
+
+fn main() {
+    let no_extra = std::bytes::from_array([])
+
+    // PCM16 round-trip through both the in-memory and filesystem APIs.
+    let encoded = std::audio::encode_wav([0.5, -0.5], 48000, 2)
+    let path = "/tmp/aio-audio-wav-read-test.wav"
+    std::fs::write_bytes(path, encoded)
+    let from_bytes = std::audio::read_wav_bytes(encoded)
+    let from_file = std::audio::read_wav(path)
+    std::testing::assert_eq(from_file, from_bytes, "read_wav and read_wav_bytes agree")
+    std::testing::assert_eq(
+        std::map::get(from_bytes, "samples"),
+        [0.499969482421875, -0.499969482421875],
+        "PCM16 samples are normalized to f32",
+    )
+    std::testing::assert_eq(std::map::get(from_bytes, "sample_rate"), 48000, "PCM16 sample rate")
+    std::testing::assert_eq(std::map::get(from_bytes, "channels"), 2, "PCM16 channels")
+    std::testing::assert_eq(std::map::get(from_bytes, "bits_per_sample"), 16, "PCM16 bit depth")
+    std::fs::remove_file(path)
+
+    // Unsigned PCM8 and the signed, three-byte and four-byte PCM24 containers.
+    let pcm8 = make_wav(1, 1, 8000, 1, 8, std::bytes::from_array([0, 127, 128, 255]), -1, no_extra)
+    check_wav(pcm8, [-1.0, -0.0078125, 0.0, 0.9921875], 8000, 1, 8, "PCM8")
+
+    let pcm24 = make_wav(1, 1, 48000, 3, 24, std::bytes::from_array([0, 0, 128, 255, 255, 255, 0, 0, 0, 255, 255, 127]), -1, no_extra)
+    check_wav(pcm24, [-1.0, -0.00000011920928955078125, 0.0, 1.0 - 1.0 / 8388608.0], 48000, 1, 24, "PCM24")
+
+    let pcm24_four = make_wav(1, 1, 48000, 4, 24, std::bytes::from_array([0, 0, 128, 0, 255, 255, 255, 0, 0, 0, 0, 0, 255, 255, 127, 255]), -1, no_extra)
+    check_wav(pcm24_four, [-1.0, -0.00000011920928955078125, 0.0, 1.0 - 1.0 / 8388608.0], 48000, 1, 24, "PCM24-in-32")
+
+    let pcm32 = make_wav(1, 1, 48000, 4, 32, std::bytes::from_array([0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 127]), -1, no_extra)
+    check_wav(pcm32, [-1.0, -0.0000000004656612873077392578125, 0.0, 1.0], 48000, 1, 32, "PCM32")
+
+    // IEEE float and extensible PCM/float formats, including metadata chunks.
+    let float_data = std::bytes::from_array([0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 192, 191, 0, 0, 0, 62])
+    let float_extra = std::bytes::concat(
+        std::encoding::utf8_encode("JUNK"),
+        std::bytes::concat(wav_u32(2), std::bytes::from_array([17, 34])),
+    )
+    let float_wav = make_wav(3, 1, 44100, 4, 32, float_data, 4, float_extra)
+    check_wav(float_wav, [2.0, 3.0, -1.5, 0.125], 44100, 1, 32, "IEEE float32 with fact/JUNK")
+
+    let extensible_pcm = make_extensible_wav(1, 24, 48000, 4, std::bytes::from_array([0, 0, 128, 0, 255, 255, 255, 0]), -1)
+    check_wav(extensible_pcm, [-1.0, -0.00000011920928955078125], 48000, 1, 24, "extensible PCM24")
+
+    let extensible_float = make_extensible_wav(3, 32, 48000, 4, std::bytes::from_array([0, 0, 160, 63]), -1)
+    check_wav(extensible_float, [1.25], 48000, 1, 32, "extensible float32")
+
+    // Hound's format and I/O errors retain the AudioError::Wav prefix.
+    let bad_riff = result_error(std::try::catch(|| std::audio::read_wav_bytes(std::bytes::from_array([88, 73, 70, 70]))))
+    std::testing::assert(bad_riff == "native function 'std::audio::read_wav_bytes' failed: WAV error: Ill-formed WAVE file: no RIFF tag found", "wrong RIFF signature error")
+
+    let truncated = result_error(std::try::catch(|| std::audio::read_wav_bytes(std::encoding::utf8_encode("RIFF"))))
+    std::testing::assert(truncated == "native function 'std::audio::read_wav_bytes' failed: WAV error: Failed to read enough bytes.", "truncated RIFF header error")
+
+    let bad_data_len = make_wav(1, 1, 8000, 2, 16, std::bytes::from_array([0]), -1, no_extra)
+    let length_error = result_error(std::try::catch(|| std::audio::read_wav_bytes(bad_data_len)))
+    std::testing::assert(length_error == "native function 'std::audio::read_wav_bytes' failed: WAV error: Ill-formed WAVE file: data chunk length is not a multiple of sample size", "invalid data length error")
+
+    let missing_file_error = result_error(std::try::catch(|| std::audio::read_wav("/tmp/aio-audio-wav-read-missing-parent/never.wav")))
+    std::testing::assert(std::text::starts_with(missing_file_error, "native function 'std::audio::read_wav' failed: WAV error:"), "read_wav wraps filesystem errors as WAV errors")
+    std::testing::assert(std::text::contains(missing_file_error, "No such file or directory"), "read_wav preserves the filesystem error")
+
+    println("audio WAV decoding passed: PCM 8/16/24/32, float32, extensible, chunk scan, file and bytes APIs")
+}

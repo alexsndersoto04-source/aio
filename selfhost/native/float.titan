@@ -1,0 +1,805 @@
+// Números decimales (f64) sin aproximaciones: texto → float y float → texto,
+// con enteros grandes exactos. Reproduce a Rust:
+//   - fl_parse: `str::parse::<f64>` (redondeo al más cercano, empates al par).
+//   - fl_to_string: `f64::to_string` (Display: los dígitos más cortos que
+//     vuelven a dar el mismo número, sin exponente), siguiendo el algoritmo
+//     Dragon de core::num::flt2dec con las mismas reglas de límites.
+// Un float se maneja por sus 64 bits (IEEE 754) guardados en un Int.
+// Lo usan el runtime nativo (nativas y impresión) y el compilador nativo
+// (literales PushFloat). Prefijos `fl_` y `bn_`. Quien lo importe debe
+// importar también float_table.titan (la tabla de Grisu, generada).
+
+// ------------------------------------------------------------ enteros grandes
+// Lista de "cifras" de 32 bits, de menor a mayor peso; sin ceros al final
+// (el cero es []).
+
+fn bn_limb() -> int {
+    4294967296
+}
+
+fn bn_small(v: int) -> array {
+    let mut out = []
+    let mut x = v
+    while x > 0 {
+        out = std::array::push(out, x % 4294967296)
+        x = x / 4294967296
+    }
+    out
+}
+
+fn bn_trim(a0: array) -> array {
+    let mut n = len(a0)
+    while n > 0 && a0[n - 1] == 0 {
+        n -= 1
+    }
+    if n == len(a0) {
+        return a0
+    }
+    std::array::slice(a0, 0, n)
+}
+
+// a * k (0 <= k < 2^31)
+fn bn_mul_small(a: array, k: int) -> array {
+    let mut out = []
+    let mut carry = 0
+    for d in a {
+        let t = d * k + carry
+        out = std::array::push(out, t % 4294967296)
+        carry = t / 4294967296
+    }
+    while carry > 0 {
+        out = std::array::push(out, carry % 4294967296)
+        carry = carry / 4294967296
+    }
+    bn_trim(out)
+}
+
+fn bn_add_small(a: array, k: int) -> array {
+    let mut out = []
+    let mut carry = k
+    for d in a {
+        let t = d + carry
+        out = std::array::push(out, t % 4294967296)
+        carry = t / 4294967296
+    }
+    while carry > 0 {
+        out = std::array::push(out, carry % 4294967296)
+        carry = carry / 4294967296
+    }
+    out
+}
+
+fn bn_add(a: array, b: array) -> array {
+    let mut out = []
+    let mut carry = 0
+    let mut i = 0
+    while i < len(a) || i < len(b) {
+        let mut t = carry
+        if i < len(a) {
+            t += a[i]
+        }
+        if i < len(b) {
+            t += b[i]
+        }
+        out = std::array::push(out, t % 4294967296)
+        carry = t / 4294967296
+        i += 1
+    }
+    if carry > 0 {
+        out = std::array::push(out, carry)
+    }
+    out
+}
+
+// a - b (a >= b)
+fn bn_sub(a: array, b: array) -> array {
+    let mut out = []
+    let mut borrow = 0
+    let mut i = 0
+    while i < len(a) {
+        let mut t = a[i] - borrow
+        if i < len(b) {
+            t -= b[i]
+        }
+        if t < 0 {
+            t += 4294967296
+            borrow = 1
+        } else {
+            borrow = 0
+        }
+        out = std::array::push(out, t)
+        i += 1
+    }
+    bn_trim(out)
+}
+
+// -1, 0 o 1
+fn bn_cmp(a: array, b: array) -> int {
+    if len(a) != len(b) {
+        if len(a) < len(b) {
+            return -1
+        }
+        return 1
+    }
+    let mut i = len(a) - 1
+    while i >= 0 {
+        if a[i] != b[i] {
+            if a[i] < b[i] {
+                return -1
+            }
+            return 1
+        }
+        i -= 1
+    }
+    0
+}
+
+// a * 2^n
+fn bn_shl(a: array, n: int) -> array {
+    let mut out = a
+    let mut k = n
+    while k >= 30 {
+        out = bn_mul_small(out, 1073741824)
+        k -= 30
+    }
+    let mut f = 1
+    while k > 0 {
+        f = f * 2
+        k -= 1
+    }
+    bn_mul_small(out, f)
+}
+
+// a * 10^n
+fn bn_mul_pow10(a: array, n: int) -> array {
+    let mut out = a
+    let mut k = n
+    while k >= 9 {
+        out = bn_mul_small(out, 1000000000)
+        k -= 9
+    }
+    while k > 0 {
+        out = bn_mul_small(out, 10)
+        k -= 1
+    }
+    out
+}
+
+// Número de bits (0 para el cero).
+fn bn_bits(a: array) -> int {
+    if len(a) == 0 {
+        return 0
+    }
+    let mut top = a[len(a) - 1]
+    let mut b = 32 * (len(a) - 1)
+    while top > 0 {
+        b += 1
+        top = top / 2
+    }
+    b
+}
+
+// Valor (debe caber en 63 bits).
+fn bn_int(a: array) -> int {
+    let mut v = 0
+    let mut i = len(a) - 1
+    while i >= 0 {
+        v = v * 4294967296 + a[i]
+        i -= 1
+    }
+    v
+}
+
+fn fl_pow2(n: int) -> int {
+    let mut v = 1
+    let mut i = 0
+    while i < n {
+        v = v * 2
+        i += 1
+    }
+    v
+}
+
+// ------------------------------------------------------------ bits de un float
+
+fn fl_min_int() -> int {
+    -9223372036854775807 - 1
+}
+
+// Bits de ±infinito / NaN como los da Rust.
+fn fl_inf_bits() -> int {
+    9218868437227405312
+}
+
+fn fl_nan_bits() -> int {
+    9221120237041090560
+}
+
+// Arma el float m * 2^e (m < 2^53 ya redondeado; e = exponente del bit 0).
+fn fl_assemble(negative: bool, m: int, e: int) -> int {
+    let mut bits = 0
+    if m >= 4503599627370496 {
+        bits = (e + 1075) * 4503599627370496 + (m - 4503599627370496)
+    } else {
+        bits = m
+    }
+    if negative {
+        bits = bits + fl_min_int()
+    }
+    bits
+}
+
+// ------------------------------------------------------------ texto → float
+
+// Mantisa decimal (dígitos sin ceros a la izquierda) y exponente: el valor
+// es digits * 10^exp. Devuelve los bits del float más cercano.
+fn fl_from_decimal(negative: bool, digits: array, exp: int) -> int {
+    let mut d = []
+    for c in digits {
+        d = bn_add_small(bn_mul_small(d, 10), c)
+    }
+    if len(d) == 0 {
+        if negative {
+            return fl_min_int()
+        }
+        return 0
+    }
+    let nd = len(digits)
+    // Fuera de rango con seguridad: > 1.8e308 o < 2.5e-324.
+    if nd + exp > 310 {
+        if negative {
+            return fl_inf_bits() + fl_min_int()
+        }
+        return fl_inf_bits()
+    }
+    if nd + exp < -325 {
+        if negative {
+            return fl_min_int()
+        }
+        return 0
+    }
+    let mut a = d
+    let mut b = [1]
+    if exp >= 0 {
+        a = bn_mul_pow10(d, exp)
+    } else {
+        b = bn_mul_pow10([1], 0 - exp)
+    }
+    // Buscar s tal que q = floor(a * 2^s / b) tenga 53 bits (o el exponente
+    // mínimo de los subnormales, s = 1074).
+    let mut s = 53 - (bn_bits(a) - bn_bits(b))
+    if s > 1074 {
+        s = 1074
+    }
+    let mut q = 0
+    let mut r = []
+    let mut den = b
+    loop {
+        let mut num = a
+        den = b
+        if s >= 0 {
+            num = bn_shl(a, s)
+        } else {
+            den = bn_shl(b, 0 - s)
+        }
+        let (q1, r1) = fl_divide(num, den)
+        q = q1
+        r = r1
+        if q >= 9007199254740992 {
+            s -= 1
+            continue
+        }
+        if q < 4503599627370496 && s < 1074 {
+            s += 1
+            continue
+        }
+        break
+    }
+    // Redondeo al más cercano; en empate, al par.
+    let twice = bn_shl(r, 1)
+    let c = bn_cmp(twice, den)
+    if c > 0 || (c == 0 && q % 2 == 1) {
+        q += 1
+    }
+    let mut e = 0 - s
+    if q == 9007199254740992 {
+        q = 4503599627370496
+        e += 1
+    }
+    if e > 971 {
+        if negative {
+            return fl_inf_bits() + fl_min_int()
+        }
+        return fl_inf_bits()
+    }
+    fl_assemble(negative, q, e)
+}
+
+// (floor(a / b), resto) cuando el cociente cabe en 55 bits.
+fn fl_divide(a: array, b: array) -> (int, array) {
+    let mut shifted = [b]
+    let mut i = 1
+    while i < 56 {
+        shifted = std::array::push(shifted, bn_shl(shifted[i - 1], 1))
+        i += 1
+    }
+    let mut r = a
+    let mut q = 0
+    let mut bit = 55
+    while bit >= 0 {
+        if bn_cmp(r, shifted[bit]) >= 0 {
+            r = bn_sub(r, shifted[bit])
+            q += fl_pow2(bit)
+        }
+        bit -= 1
+    }
+    return (q, r)
+}
+
+fn fl_lower(c: string) -> string {
+    let code = std::text::char_code(std::text::chars(c)[0])
+    if code >= 65 && code <= 90 {
+        return std::text::from_char_code(code + 32) + ""
+    }
+    c
+}
+
+fn fl_lower_text(s: string) -> string {
+    let mut out = ""
+    for c in s {
+        out += fl_lower(c + "")
+    }
+    out
+}
+
+// Texto leído: valor especial (bits ya hechos) o dígitos * 10^exp.
+struct FlNum {
+    ok: bool,
+    special: bool,
+    bits: int,
+    negative: bool,
+    digits: array,
+    exp: int,
+}
+
+fn fl_bad() -> FlNum {
+    FlNum { ok: false, special: false, bits: 0, negative: false, digits: [], exp: 0 }
+}
+
+fn fl_special(bits: int) -> FlNum {
+    FlNum { ok: true, special: true, bits: bits, negative: false, digits: [], exp: 0 }
+}
+
+// Como `str::parse::<f64>` (el texto ya viene sin espacios alrededor):
+// [+-]? (dígitos [. dígitos?] | . dígitos) ([eE] [+-]? dígitos)?,
+// o inf / infinity / nan sin distinguir mayúsculas. nil si no es válido.
+fn fl_parse(text: string) -> any {
+    let n = fl_scan(text)
+    if !n.ok {
+        return nil
+    }
+    if n.special {
+        return n.bits
+    }
+    fl_from_decimal(n.negative, n.digits, n.exp)
+}
+
+// Lee el texto (ver fl_parse); los dígitos van sin ceros a los lados.
+fn fl_scan(text: string) -> FlNum {
+    let cs = std::text::chars(text)
+    let n = len(cs)
+    let mut i = 0
+    let mut negative = false
+    if i < n && (cs[i] == '+' || cs[i] == '-') {
+        negative = cs[i] == '-'
+        i += 1
+    }
+    // inf / infinity / nan: solo si empieza por letra (evita trabajo en lo normal).
+    let mut rest = ""
+    if i < n && !(cs[i] >= '0' && cs[i] <= '9') && cs[i] != '.' {
+        rest = fl_lower_text(std::text::substring(text, i, n))
+    }
+    if rest == "inf" || rest == "infinity" {
+        if negative {
+            return fl_special(fl_inf_bits() + fl_min_int())
+        }
+        return fl_special(fl_inf_bits())
+    }
+    if rest == "nan" {
+        if negative {
+            return fl_special(fl_nan_bits() + fl_min_int())
+        }
+        return fl_special(fl_nan_bits())
+    }
+    let mut digits = []
+    let mut exp = 0
+    let mut seen = false
+    while i < n && cs[i] >= '0' && cs[i] <= '9' {
+        seen = true
+        let v = std::text::char_code(cs[i]) - 48
+        if len(digits) > 0 || v != 0 {
+            digits = std::array::push(digits, v)
+        }
+        i += 1
+    }
+    if i < n && cs[i] == '.' {
+        i += 1
+        while i < n && cs[i] >= '0' && cs[i] <= '9' {
+            seen = true
+            let v = std::text::char_code(cs[i]) - 48
+            if len(digits) > 0 || v != 0 {
+                digits = std::array::push(digits, v)
+            }
+            exp -= 1
+            i += 1
+        }
+    }
+    if !seen {
+        return fl_bad()
+    }
+    if i < n && (cs[i] == 'e' || cs[i] == 'E') {
+        i += 1
+        let mut eneg = false
+        if i < n && (cs[i] == '+' || cs[i] == '-') {
+            eneg = cs[i] == '-'
+            i += 1
+        }
+        let mut ev = 0
+        let mut edigits = false
+        while i < n && cs[i] >= '0' && cs[i] <= '9' {
+            edigits = true
+            if ev < 1000000000 {
+                ev = ev * 10 + std::text::char_code(cs[i]) - 48
+            }
+            i += 1
+        }
+        if !edigits {
+            return fl_bad()
+        }
+        if eneg {
+            exp -= ev
+        } else {
+            exp += ev
+        }
+    }
+    if i != n {
+        return fl_bad()
+    }
+    // Quitar ceros finales de la mantisa (no cambian el valor).
+    let mut nd = len(digits)
+    while nd > 0 && digits[nd - 1] == 0 {
+        nd -= 1
+        exp += 1
+    }
+    FlNum { ok: true, special: false, bits: 0, negative: negative, digits: std::array::slice(digits, 0, nd), exp: exp }
+}
+
+// ------------------------------------------------------------ Grisu (rápido)
+// Como core::num::flt2dec::strategy::grisu::format_shortest_opt, pero con
+// números de 62 bits (los Int de Titan tienen signo): ALPHA/GAMMA = -59/-32.
+// Si no puede garantizar el resultado devuelve nil y se usa Dragon (exacto).
+// Cuando acierta da los mismos dígitos que Dragon (los más cortos y los más
+// cercanos); los márgenes de ±1 unidad cubren el error de la tabla y del
+// producto.
+
+// round(a * b / 2^62) con a, b < 2^62.
+fn fl_mul62(a: int, b: int) -> int {
+    let ah = a / 2147483648
+    let al = a % 2147483648
+    let bh = b / 2147483648
+    let bl = b % 2147483648
+    let ad = ah * bl
+    let bc = al * bh
+    let tmp = (al * bl) / 2147483648 + ad % 2147483648 + bc % 2147483648 + 1073741824
+    ah * bh + ad / 2147483648 + bc / 2147483648 + tmp / 2147483648
+}
+
+fn fl_grisu(mant: int, minus: int, plus: int, exp: int) -> any {
+    let mut hi = mant + plus
+    let mut sh = 0
+    while hi < 2305843009213693952 {
+        hi = hi * 2
+        sh += 1
+    }
+    let e0 = exp - sh
+    let lo = (mant - minus) * fl_pow2(sh)
+    let vv = mant * fl_pow2(sh)
+    // Potencia de diez que deja el exponente en [-59, -32].
+    // ce(i) ~= (-348 + 8i) * log2(10) - 61; se busca ce ~= -45 - e0 - 62.
+    let mut i = ((0 - 45 - e0 - 62 + 61) * 10000 / 33219 + 348) / 8
+    if i < 0 {
+        i = 0
+    }
+    if i > 86 {
+        i = 86
+    }
+    loop {
+        let (cf, ce) = fl_cached(i)
+        let t = e0 + ce + 62
+        if t < -59 && i < 86 {
+            i += 1
+            continue
+        }
+        if t > -32 && i > 0 {
+            i -= 1
+            continue
+        }
+        break
+    }
+    let (cf, ce) = fl_cached(i)
+    let t = e0 + ce + 62
+    if t < -59 || t > -32 {
+        return nil
+    }
+    let minusk = -348 + 8 * i
+    let e = 0 - t
+    let one = fl_pow2(e)
+    let pf = fl_mul62(hi, cf)
+    let mf = fl_mul62(lo, cf)
+    let vf = fl_mul62(vv, cf)
+    let plus1 = pf + 1
+    let minus1 = mf - 1
+    let plus1int = plus1 / one
+    let plus1frac = plus1 % one
+    if plus1int <= 0 {
+        return nil
+    }
+    let mut max_kappa = 0
+    let mut max_ten = 1
+    while max_ten * 10 <= plus1int {
+        max_ten = max_ten * 10
+        max_kappa += 1
+    }
+    let delta1 = plus1 - minus1
+    let delta1frac = delta1 % one
+    let k = max_kappa + 1 - minusk
+    // Los dígitos se acumulan en un Int (como mucho 18) y se cuentan.
+    let mut num = 0
+    let mut nd = 0
+    let mut remainder = plus1int
+    let mut ten_kappa = max_ten
+    loop {
+        let q = remainder / ten_kappa
+        let r = remainder % ten_kappa
+        num = num * 10 + q
+        nd += 1
+        let plus1rem = r * one + plus1frac
+        if plus1rem < delta1 {
+            return fl_weed(num, nd, k, plus1rem, delta1, plus1 - vf, ten_kappa * one, 1)
+        }
+        if nd > max_kappa {
+            break
+        }
+        ten_kappa = ten_kappa / 10
+        remainder = r
+    }
+    let mut rem = plus1frac
+    let mut threshold = delta1frac
+    let mut ulp = 1
+    loop {
+        if ulp > 100000000000000000 || threshold <= 0 || nd >= 18 {
+            return nil
+        }
+        rem = rem * 10
+        threshold = threshold * 10
+        ulp = ulp * 10
+        let q = rem / one
+        let r = rem % one
+        num = num * 10 + q
+        nd += 1
+        if r < threshold {
+            let dist = plus1 - vf
+            if dist > 0 && dist > 9223372036854775807 / ulp - 1 {
+                return nil
+            }
+            return fl_weed(num, nd, k, r, threshold, dist * ulp, one, ulp)
+        }
+        rem = r
+    }
+    nil
+}
+
+// Devuelve (dígitos como Int, cuántos, k) o nil.
+fn fl_weed(num: int, nd: int, k: int, remainder: int, threshold: int, plus1v: int, ten_kappa: int, ulp: int) -> any {
+    let plus1v_down = plus1v + ulp
+    let plus1v_up = plus1v - ulp
+    let mut plus1w = remainder
+    let mut d = num % 10
+    while plus1w < plus1v_up && threshold - plus1w >= ten_kappa && (plus1w + ten_kappa < plus1v_up || plus1v_up - plus1w >= plus1w + ten_kappa - plus1v_up) {
+        d -= 1
+        plus1w += ten_kappa
+    }
+    if plus1w < plus1v_down && threshold - plus1w >= ten_kappa && (plus1w + ten_kappa < plus1v_down || plus1v_down - plus1w >= plus1w + ten_kappa - plus1v_down) {
+        return nil
+    }
+    if 2 * ulp <= plus1w && plus1w <= threshold - 4 * ulp && d >= 0 {
+        return (num - num % 10 + d, nd, k)
+    }
+    nil
+}
+
+// ------------------------------------------------------------ float → texto
+
+// Dígitos más cortos (Dragon, como core::num::flt2dec::strategy::dragon::
+// format_shortest) de un float finito y positivo: (dígitos, k), con valor
+// 0.d1d2... * 10^k. Devuelve (los dígitos como un Int, cuántos son, k).
+fn fl_shortest(bits: int) -> (int, int, int) {
+    let field = (bits / 4503599627370496) % 2048
+    let frac = bits % 4503599627370496
+    let mut mant = 0
+    let mut exp = 0
+    if field == 0 {
+        mant = frac * 2
+        exp = -1075
+    } else {
+        mant = frac + 4503599627370496
+        exp = field - 1075
+    }
+    let inclusive = mant % 2 == 0
+    let mut minus = 1
+    let mut plus = 1
+    if field == 0 {
+        // Subnormal: la mantisa ya viene duplicada; vecinos a ±2.
+    } else if mant == 4503599627370496 {
+        mant = mant * 4
+        plus = 2
+        exp -= 2
+    } else {
+        mant = mant * 2
+        exp -= 1
+    }
+    let fast = fl_grisu(mant, minus, plus, exp)
+    if fast != nil {
+        let (fnum, fnd, fk) = fast
+        return (fnum, fnd, fk)
+    }
+    let mut r = bn_small(mant)
+    let mut mm = bn_small(minus)
+    let mut mp = bn_small(plus)
+    let mut s = [1]
+    if exp < 0 {
+        s = bn_shl(s, 0 - exp)
+    } else {
+        r = bn_shl(r, exp)
+        mm = bn_shl(mm, exp)
+        mp = bn_shl(mp, exp)
+    }
+    // k aproximado: log10(v), y luego se corrige.
+    let log2 = exp + bn_bits(bn_small(mant))
+    let mut k = 0
+    if log2 > 0 {
+        k = (log2 * 30103) / 100000
+    } else {
+        k = 0 - ((0 - log2) * 30103) / 100000 - 1
+    }
+    if k >= 0 {
+        s = bn_mul_pow10(s, k)
+    } else {
+        r = bn_mul_pow10(r, 0 - k)
+        mm = bn_mul_pow10(mm, 0 - k)
+        mp = bn_mul_pow10(mp, 0 - k)
+    }
+    // Ahora: el límite superior (r + mp)/s debe quedar en (1/10, 1].
+    loop {
+        let c = bn_cmp(s, bn_add(r, mp))
+        if c < 0 || (inclusive && c == 0) {
+            s = bn_mul_small(s, 10)
+            k += 1
+        } else {
+            break
+        }
+    }
+    loop {
+        let c = bn_cmp(bn_mul_small(s, 1), bn_mul_small(bn_add(r, mp), 10))
+        if c > 0 || (!inclusive && c == 0) {
+            r = bn_mul_small(r, 10)
+            mm = bn_mul_small(mm, 10)
+            mp = bn_mul_small(mp, 10)
+            k -= 1
+        } else {
+            break
+        }
+    }
+    let mut digits = []
+    let mut down = false
+    let mut up = false
+    loop {
+        r = bn_mul_small(r, 10)
+        mm = bn_mul_small(mm, 10)
+        mp = bn_mul_small(mp, 10)
+        let mut d = 0
+        while bn_cmp(r, s) >= 0 {
+            r = bn_sub(r, s)
+            d += 1
+        }
+        digits = std::array::push(digits, d)
+        let cd = bn_cmp(r, mm)
+        down = cd < 0 || (inclusive && cd == 0)
+        let cu = bn_cmp(s, bn_add(r, mp))
+        up = cu < 0 || (inclusive && cu == 0)
+        if down || up {
+            break
+        }
+    }
+    // Redondear hacia arriba el último dígito si hace falta (igual que Rust:
+    // si solo vale subir, o si valen las dos y 2r >= s).
+    if up && (!down || bn_cmp(bn_shl(r, 1), s) >= 0) {
+        let mut j = len(digits) - 1
+        loop {
+            if j < 0 {
+                // Todo eran nueves: 999 -> 1000.
+                digits = std::array::concat([1], digits)
+                k += 1
+                break
+            }
+            if digits[j] == 9 {
+                digits = std::array::set(digits, j, 0)
+                j -= 1
+            } else {
+                digits = std::array::set(digits, j, digits[j] + 1)
+                break
+            }
+        }
+        // Tras 999 -> 1000 sobran ceros al final (el valor es el mismo).
+        let mut nd = len(digits)
+        while nd > 1 && digits[nd - 1] == 0 {
+            nd -= 1
+        }
+        digits = std::array::slice(digits, 0, nd)
+    }
+    let mut num = 0
+    for d in digits {
+        num = num * 10 + d
+    }
+    return (num, len(digits), k)
+}
+
+// f64::to_string de Rust (Display): "inf", "-inf", "NaN", "-0", "1", "0.1",
+// "100000000000000000000", "0.0000001"...
+fn fl_to_string(bits: int) -> string {
+    let negative = bits < 0
+    let mut b = bits
+    if negative {
+        b = bits - fl_min_int()
+    }
+    let field = (b / 4503599627370496) % 2048
+    let frac = b % 4503599627370496
+    if field == 2047 {
+        if frac != 0 {
+            return "NaN"
+        }
+        if negative {
+            return "-inf"
+        }
+        return "inf"
+    }
+    let mut sign = ""
+    if negative {
+        sign = "-"
+    }
+    if b == 0 {
+        return sign + "0"
+    }
+    // Como mucho 17 dígitos: caben en un Int y se escriben de una vez.
+    let (num, nd, k) = fl_shortest(b)
+    let text = "{num}"
+    if k <= 0 {
+        let mut zeros = ""
+        let mut z = 0
+        while z < 0 - k {
+            zeros += "0"
+            z += 1
+        }
+        return sign + "0." + zeros + text
+    }
+    if k < nd {
+        return sign + std::text::substring(text, 0, k) + "." + std::text::substring(text, k, nd)
+    }
+    let mut out = text
+    let mut z = nd
+    while z < k {
+        out += "0"
+        z += 1
+    }
+    sign + out
+}

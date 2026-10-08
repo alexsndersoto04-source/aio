@@ -1,0 +1,360 @@
+// std::tokenize — BPE real sobre tokenizer.json de HuggingFace.
+// Implementación pura en Titan: carga JSON, aplica merges BPE,
+// codifica/decodifica sin dependencias externas.
+
+const TK_DATA_SLOT: int = 3556
+
+fn tk_data_map() -> any {
+    let slot = std::raw::globals() + TK_DATA_SLOT
+    let m = std::raw::load(slot)
+    if m != 0 { return m }
+    let created = std::map::new()
+    std::raw::store(slot, created)
+    created
+}
+
+fn tk_set_data(handle: int, data: any) {
+    let slot = std::raw::globals() + TK_DATA_SLOT
+    let m = tk_data_map()
+    std::raw::store(slot, std::map::insert(m, handle, data))
+}
+
+fn tk_get_data(handle: int) -> any {
+    let m = tk_data_map()
+    if std::raw::tag(m) == 0 { return nil }
+    std::map::get(m, handle)
+}
+
+fn tk_next_handle() -> int {
+    let m = tk_data_map()
+    let h = std::map::get(m, "_next")
+    if std::raw::tag(h) != 0 { return h }
+    0
+}
+
+fn tk_bump_handle() -> int {
+    let h = tk_next_handle()
+    let slot = std::raw::globals() + TK_DATA_SLOT
+    let m = tk_data_map()
+    std::raw::store(slot, std::map::insert(m, "_next", h + 1))
+    h
+}
+
+fn std__tokenize__load(path: string) -> int {
+    let fname = "std::tokenize::load"
+    let result = std::fs::read_text(path)
+    if std::raw::tag(result) == 0 {
+        rt_native_fail(fname, "could not read tokenizer file: " + path)
+    }
+    std__tokenize__from_json(result)
+}
+
+fn std__tokenize__from_json(json: string) -> int {
+    let fname = "std::tokenize::from_json"
+    let parsed = std::json::parse(json)
+    if std::raw::tag(parsed) == 0 {
+        rt_native_fail(fname, "invalid tokenizer JSON")
+    }
+    let model = std::map::get(parsed, "model")
+    if std::raw::tag(model) == 0 {
+        rt_native_fail(fname, "tokenizer JSON missing 'model' field")
+    }
+    let vocab = std::map::get(model, "vocab")
+    let merges = std::map::get(model, "merges")
+    let added = std::map::get(parsed, "added_tokens")
+    let model_type = std::map::get(model, "type")
+    // Build reverse vocab
+    let mut reverse = []
+    if std::raw::tag(vocab) == 4 {
+        let keys = std::map::keys(vocab)
+        let mut i = 0
+        while i < rt_seq_len(keys) {
+            let token = keys[i]
+            let id = std::map::get(vocab, token)
+            if std::raw::tag(id) == 0 || std::raw::tag(id) == 1 {
+                while rt_seq_len(reverse) <= id {
+                    reverse = std::array::add(reverse, "")
+                }
+                reverse[id] = token
+            }
+            i = i + 1
+        }
+    }
+    // Extract special token IDs
+    let mut special_ids = []
+    if std::raw::tag(added) == 6 {
+        let mut j = 0
+        while j < rt_seq_len(added) {
+            let entry = added[j]
+            if std::raw::tag(entry) == 4 {
+                let sp_flag = std::map::get(entry, "special")
+                if sp_flag == true {
+                    let sid = std::map::get(entry, "id")
+                    special_ids = std::array::add(special_ids, sid)
+                }
+            }
+            j = j + 1
+        }
+    }
+    let handle = tk_bump_handle()
+    let mut tok_data = std::map::new()
+    tok_data = std::map::insert(tok_data, "vocab", vocab)
+    tok_data = std::map::insert(tok_data, "reverse", reverse)
+    tok_data = std::map::insert(tok_data, "merges", if std::raw::tag(merges) != 0 { merges } else { [] })
+    tok_data = std::map::insert(tok_data, "type", if std::raw::tag(model_type) == 5 { model_type } else { "BPE" })
+    tok_data = std::map::insert(tok_data, "special_ids", special_ids)
+    tk_set_data(handle, tok_data)
+    handle
+}
+
+fn std__tokenize__close(handle: int) {
+    let slot = std::raw::globals() + TK_DATA_SLOT
+    let m = tk_data_map()
+    std::raw::store(slot, std::map::remove(m, handle))
+}
+
+fn std__tokenize__vocab_size(handle: int) -> int {
+    let data = tk_get_data(handle)
+    if std::raw::tag(data) == 0 { return 0 }
+    let reverse = std::map::get(data, "reverse")
+    if std::raw::tag(reverse) == 6 { return rt_seq_len(reverse) }
+    0
+}
+
+fn std__tokenize__token_to_id(handle: int, token: string) -> any {
+    let data = tk_get_data(handle)
+    if std::raw::tag(data) == 0 { return nil }
+    let vocab = std::map::get(data, "vocab")
+    if std::raw::tag(vocab) == 4 {
+        let v = std::map::get(vocab, token)
+        if std::raw::tag(v) != 0 { return v }
+    }
+    nil
+}
+
+fn std__tokenize__id_to_token(handle: int, id: int) -> any {
+    let data = tk_get_data(handle)
+    if std::raw::tag(data) == 0 { return nil }
+    let reverse = std::map::get(data, "reverse")
+    if std::raw::tag(reverse) != 6 { return nil }
+    if id < 0 || id >= rt_seq_len(reverse) { return nil }
+    let t = reverse[id]
+    if t == "" { return nil }
+    t
+}
+
+// ---- BPE encoding ----
+
+fn tk_pretokenize(text: string) -> any {
+    let mut words = []
+    let len = text.length()
+    let mut i = 0
+    while i < len {
+        while i < len {
+            let c = std::raw::cast(text[i])
+            if c != 32 && c != 10 && c != 13 && c != 9 { break }
+            i = i + 1
+        }
+        if i >= len { break }
+        let start = i
+        while i < len {
+            let c = std::raw::cast(text[i])
+            if c == 32 || c == 10 || c == 13 || c == 9 { break }
+            i = i + 1
+        }
+        if i > start {
+            words = std::array::add(words, std::text::substring(text, start, i))
+        }
+    }
+    words
+}
+
+fn tk_bpe_encode(word: string, merges: any, vocab: any) -> any {
+    let mut symbols = []
+    let len = word.length()
+    let mut i = 0
+    while i < len {
+        symbols = std::array::add(symbols, std::text::substring(word, i, i + 1))
+        i = i + 1
+    }
+    if std::raw::tag(merges) == 6 {
+        let mut changed = true
+        while changed {
+            changed = false
+            let mut best_rank = rt_seq_len(merges) + 1
+            let mut best_pos = -1
+            let mut m = 0
+            while m < rt_seq_len(merges) {
+                let pair = merges[m]
+                if std::raw::tag(pair) == 6 && rt_seq_len(pair) >= 2 {
+                    let a = pair[0]
+                    let b = pair[1]
+                    let mut j = 0
+                    while j < rt_seq_len(symbols) - 1 {
+                        if symbols[j] == a && symbols[j + 1] == b && m < best_rank {
+                            best_rank = m
+                            best_pos = j
+                        }
+                        j = j + 1
+                    }
+                }
+                m = m + 1
+            }
+            if best_pos >= 0 {
+                let merged = symbols[best_pos] + symbols[best_pos + 1]
+                let mut new_symbols = []
+                let mut k = 0
+                while k < rt_seq_len(symbols) {
+                    if k == best_pos {
+                        new_symbols = std::array::add(new_symbols, merged)
+                        k = k + 2
+                    } else {
+                        new_symbols = std::array::add(new_symbols, symbols[k])
+                        k = k + 1
+                    }
+                }
+                symbols = new_symbols
+                changed = true
+            }
+        }
+    }
+    let mut ids = []
+    let mut s = 0
+    while s < rt_seq_len(symbols) {
+        let id = std::map::get(vocab, symbols[s])
+        if std::raw::tag(id) != 0 {
+            ids = std::array::add(ids, id)
+        }
+        s = s + 1
+    }
+    ids
+}
+
+fn std__tokenize__encode(handle: int, text: string, add_special: bool) -> any {
+    let data = tk_get_data(handle)
+    if std::raw::tag(data) == 0 {
+        let mut r = std::map::new()
+        r = std::map::insert(r, "ids", [])
+        r = std::map::insert(r, "tokens", [])
+        r = std::map::insert(r, "attention_mask", [])
+        return std::map::insert(r, "type_ids", [])
+    }
+    let vocab = std::map::get(data, "vocab")
+    let merges = std::map::get(data, "merges")
+    let special_ids = std::map::get(data, "special_ids")
+    let words = tk_pretokenize(text)
+    let mut all_ids = []
+    let mut all_tokens = []
+    if add_special && std::raw::tag(special_ids) == 6 && rt_seq_len(special_ids) > 0 {
+        all_ids = std::array::add(all_ids, special_ids[0])
+        all_tokens = std::array::add(all_tokens, "[CLS]")
+    }
+    let mut w = 0
+    while w < rt_seq_len(words) {
+        let word_ids = tk_bpe_encode(words[w], merges, vocab)
+        let mut j = 0
+        while j < rt_seq_len(word_ids) {
+            all_ids = std::array::add(all_ids, word_ids[j])
+            let tok = std__tokenize__id_to_token(handle, word_ids[j])
+            all_tokens = std::array::add(all_tokens, if std::raw::tag(tok) == 5 { tok } else { "?" })
+            j = j + 1
+        }
+        w = w + 1
+    }
+    if add_special && std::raw::tag(special_ids) == 6 && rt_seq_len(special_ids) > 1 {
+        all_ids = std::array::add(all_ids, special_ids[1])
+        all_tokens = std::array::add(all_tokens, "[SEP]")
+    }
+    let mut mask = []
+    let mut types = []
+    let mut k = 0
+    while k < rt_seq_len(all_ids) {
+        mask = std::array::add(mask, 1)
+        types = std::array::add(types, 0)
+        k = k + 1
+    }
+    let mut result = std::map::new()
+    result = std::map::insert(result, "ids", all_ids)
+    result = std::map::insert(result, "tokens", all_tokens)
+    result = std::map::insert(result, "attention_mask", mask)
+    std::map::insert(result, "type_ids", types)
+}
+
+fn std__tokenize__encode_padded(handle: int, text: string, max_length: int, pad_id: int, add_special: bool) -> any {
+    let enc = std__tokenize__encode(handle, text, add_special)
+    let ids = std::map::get(enc, "ids")
+    let tokens = std::map::get(enc, "tokens")
+    let mask = std::map::get(enc, "attention_mask")
+    let types = std::map::get(enc, "type_ids")
+    let mut new_ids = []
+    let mut new_tokens = []
+    let mut new_mask = []
+    let mut new_types = []
+    let src_len = rt_seq_len(ids)
+    let len = if src_len > max_length { max_length } else { src_len }
+    let mut i = 0
+    while i < len {
+        new_ids = std::array::add(new_ids, ids[i])
+        new_tokens = std::array::add(new_tokens, tokens[i])
+        new_mask = std::array::add(new_mask, mask[i])
+        new_types = std::array::add(new_types, types[i])
+        i = i + 1
+    }
+    while rt_seq_len(new_ids) < max_length {
+        new_ids = std::array::add(new_ids, pad_id)
+        new_tokens = std::array::add(new_tokens, "[PAD]")
+        new_mask = std::array::add(new_mask, 0)
+        new_types = std::array::add(new_types, 0)
+    }
+    let mut result = std::map::new()
+    result = std::map::insert(result, "ids", new_ids)
+    result = std::map::insert(result, "tokens", new_tokens)
+    result = std::map::insert(result, "attention_mask", new_mask)
+    std::map::insert(result, "type_ids", new_types)
+}
+
+fn std__tokenize__encode_batch(handle: int, texts: any, add_special: bool) -> any {
+    let mut results = []
+    let mut i = 0
+    while i < rt_seq_len(texts) {
+        results = std::array::add(results, std__tokenize__encode(handle, texts[i], add_special))
+        i = i + 1
+    }
+    results
+}
+
+fn std__tokenize__decode(handle: int, ids: any, skip_special: bool) -> string {
+    let data = tk_get_data(handle)
+    if std::raw::tag(data) == 0 { return "" }
+    let reverse = std::map::get(data, "reverse")
+    let special_ids = std::map::get(data, "special_ids")
+    let mut result = ""
+    let mut i = 0
+    while i < rt_seq_len(ids) {
+        let id = ids[i]
+        if skip_special && std::raw::tag(special_ids) == 6 {
+            let mut is_special = false
+            let mut s = 0
+            while s < rt_seq_len(special_ids) {
+                if special_ids[s] == id { is_special = true }
+                s = s + 1
+            }
+            if is_special {
+                i = i + 1
+                continue
+            }
+        }
+        if std::raw::tag(reverse) == 6 && id >= 0 && id < rt_seq_len(reverse) {
+            let token = reverse[id]
+            if token != "" {
+                if std::text::starts_with(token, "Ġ") {
+                    result = result + " " + std::text::substring(token, 1, token.length())
+                } else {
+                    result = result + token
+                }
+            }
+        }
+        i = i + 1
+    }
+    result
+}

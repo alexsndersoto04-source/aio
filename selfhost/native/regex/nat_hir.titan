@@ -1,0 +1,17 @@
+// Como nat_parse.titan pero con la traducción a HIR (std::prueba::rx_check_hir).
+// Se compila con prueba_interna.titan; lo usa fuzz_parse.py (modo hir).
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let p = std::encoding::utf8_decode(std::encoding::hex_decode(ls[i]))
+        let e = std::prueba::rx_check_hir(p)
+        if e == "" {
+            println("OK")
+        } else {
+            println(std::encoding::hex_encode(std::encoding::utf8_encode(e)))
+        }
+        i += 1
+    }
+}

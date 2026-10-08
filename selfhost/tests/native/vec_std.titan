@@ -1,0 +1,310 @@
+// std::vector escrito en Titan (fase 6): cuentas en f32 como la VM.
+// Vectores generados con /tmp/vec/gen.py (semilla 11): empates exactos de
+// redondeo, subnormales y desbordes de f32, enteros cerca de 2^24.
+fn main() {
+    let a: [any] = [1.0845787209913724, -1.3649353324189657, -1.363751036939024]
+    let b: [any] = [5.248859896213732e-28, 0.20929798046333742, 39234519.0]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 2.3112540915714154e-28))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-9.286944390802345, 57427594.0, -14677682.0, -4.536955864167247e+33, -1.8644252422964278e+22]
+    let b: [any] = [-0.22802428308549885, 1.0, -7.843937896701155, -9.66219054947648, -0.0]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -0.8399329522840819))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [3.4981833800339075, 0.0, -7.640166411608984e-17]
+    let b: [any] = [-0.7012030784753698, -6.23229064830767e+17, -7.380658325667606e+34]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -1.2363951534988821e+38))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.0, 4.2597196327438156e+27, -1.1691663774434407, 66.05789556551689, 1.65469596335104]
+    let b: [any] = [-25659190681.35436, -30671986.0, -6.917293621478784, 0.0020441265659393703, 0.648803330695957]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.0043105834579134))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1390134.0, -4.86037203359376e+28, -48646914.0]
+    let b: [any] = [1427104792576.0, -0.9174373652969953, -4.61612143942318]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -6.474924492543657))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.4568007698913549, -1e+39, -9.298389267386888, 0.2987986821563027, 1.4093792468459525]
+    let b: [any] = [-3.621910194068283e-39, -55172900.0, 4.073812384835547e-05, 801671.8786607577, -0.0014866034973426423]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -2.416471603113579e-47))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-4.855934548409011, 1.000000059604645, 3195.8419189453125]
+    let b: [any] = [16169206.0, 3.2809651486388973e-21, 8.4092854688014535e-16]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -6.722525637690457e-28))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-1.161350384606268e-18, -60298844.22693681]
+    let b: [any] = [-5.994162279327375e-21, 17847427.0]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -2.985097194150745))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = []
+    let b: [any] = []
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 0.18938604260017944))
+    let a: [any] = [-0.5729662962015247]
+    let b: [any] = [-0.896341004507935]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 6.838040945237354e+31))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = []
+    let b: [any] = []
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.0000001788139343))
+    let a: [any] = [3.4028235e+38, -9.61771970376588e-31, 5.3842627748352925, 5.936946279845023e+32, 0.7078316293720945, -6.039434855516586e-33, 3.6057647453699454e-25, -57398209.0]
+    let b: [any] = [3.4028235e+38, 0.8151124495022153, 1.0497772809162729, 3.402823669209385e+38, -74018015786.256, 1.6357770612490947, 24990692.0, -5.9021127076499715e+34]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.154162213208715))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = []
+    let b: [any] = []
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 18896441.0))
+    let a: [any] = [-0.24117211899289814, 6779818.0, 6.182803193859598, -6.542073855828947e-06, 0.3385789152998514, 0.9802331396733026, 4.0067866675097265e+29, 515678349.4564021]
+    let b: [any] = [1.0000000596046448, 1748424.0, -8.583288095306247e+26, 0.894240368042281, 2.95014828566309e-07, -9.44488964403848e-43, 3.2446138479394465e+23, -8.68199543195578e+20]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -0.7068571249207173))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1e+39, 1e+39, -1.609215048269201]
+    let b: [any] = [0, -9.763345317984518, -5110666808520805.0]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -7.544333062780102e+17))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.6070376751916928, -4.365240187098607e-07, -0.6859517446915327, -30476632.0, 6.210164926587911e-25, 7.006492321624085e-46, -0.1488308443898569, -5.213050524511704]
+    let b: [any] = [-1.0, -1.5048016743720742, 5.977156611943047e-36, 0.08227459463622276, 25097882.0, -6.219854235225362e-39, 5.239943944166823, -0.41957166723162115]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -7.701060145510135))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.4010416787463835]
+    let b: [any] = [-0.19837061081981278]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -346345463530.9522))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [123348040, 6.8852573931620955e-25]
+    let b: [any] = [2.0601156891508765e-10, -8.103966934597376e-47]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 6.838127032618452))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-0.5895796873108337, 1.401298464324817e-45, 4.859545793829556, -0.27600647755772684, 1.0000000596046448, 5304.582742087474, 5.946660241740743, 7.760963343923862]
+    let b: [any] = [0.7600756732350044, 7.006492321624085e-46, -46483903.0, 0.2446941911204417, 5.234794079568161e+25, 4.775897597824197e-16, -14644203.0, -4.828847758339725]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.0000000596046448))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-40362037.0, 1.1974965589766553, 8.603076627642402, 6.697049446015753e-26, 48205185.0]
+    let b: [any] = [236.8141326904297, 6.395477931362762e-17, 9000230.0, -9.462773797808221e-17, -18.23884434305949]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 3.4028236e+38))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.6215337049425247, -1.0296548390626827, -1e+39, 0.4883509425485984, 9.199056300028566, -899200.5046569114, -0.0, -2.733958744575961]
+    let b: [any] = [125429952.0, -2.71960172385473e+19, -4.197418431299225, 3.5096089839935303, -2.8163221069045055e-14, 3.9807929980270675e-24, -6.203691072479531e-17, -6.080444473210513e-43]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -4.809622105182266))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-47649217.0, 0.38863368421447697, -1.2001076781648079e-11]
+    let b: [any] = [1.15191404699225e-28, -1.395355129230039e+25, -2.1974875316207166e-29]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 9.78361153552774e-07))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.6197418428568892, 161179186359.30017, -8.339571441413696, 406363498872832.0, -8.478414072074623e-21, 3902100220889632.5, -4.341696369393055e-30, -3.4586817970284156e-33]
+    let b: [any] = [42302372.0, -0.29492860686578704, 0.8230140232713865, 3.4028235e+38, 3.540092765630721, 0.47766489630646536, -19518389.0, 7.617964871929967e-12]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -0.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [0.0, 1.1576050569424228, -8.366547931187716, 0.4928133942970419, -7.122441217683345e+35]
+    let b: [any] = [-2.1982360402449606e+17, 6.2309471818289275e-12, 0.1, -47655746.0, -1.5834113505176488]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 0.9964330812227151))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = []
+    let b: [any] = []
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -0.7749120885094087))
+    let a: [any] = [-1.1506987972344039e-27, -0.9399903124917173, -5.9127050058056385]
+    let b: [any] = [-0.0, -3.930013083222461e-29, -8.75310976011528]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -57344619.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-5.652713240928842]
+    let b: [any] = [1.895721034498521e-20]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -1.7981528753499685))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [61603555.0, 6.375389460799852e-08, -8.151617425290722e-20, 0.1, 271.88934326171875, 8.485139643790419, 1.263988042915165, 6.058648207492852e-20]
+    let b: [any] = [-6.861797009120574, -1e+39, 2.389944682495175e+18, 5.4075545338242215, 1.0558609507117278, -1e+39, 0.00772622530348599, 14386561]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -6.1385913317265945))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1.0000000596046448, 5.516825810889584e+34, 47055.55859375]
+    let b: [any] = [-8.659192717118637e-39, -2.11527367295941, -1.5290829290807506]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -9.753036221313632))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1.000000059604645, 7.121314107123644e-22, 2.555437442062603]
+    let b: [any] = [908.1782897917872, -6.226853102453848, -3.8057057641390717]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 132183965696.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-7.183550652605206, 4.165777292735055e-25, -0.7367018472046354]
+    let b: [any] = [-9.352834350304953, 1.685537814581726e+21, 0.49050021344535505]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 3.8264166393794845))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [4.538767099486007e+30, -0.24260306477507657, 2.1720805063682968e-46]
+    let b: [any] = [-3.864438436817778, -12111056.0, 6.503772303858875e+30]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.0000000596046448))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1.0000001788139343, 4.2684236464156715, -14172549.0, 3.1888568696229402, -0.44230348222156834]
+    let b: [any] = [1.0, 0.00300104555208236, -5.227390393010181e+24, 3856887.0, 7.939242097364528e-06]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 6.493038684695794))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1.000000059604645, 1.9516386908079237]
+    let b: [any] = [-7.557321524132021e-08, 0.5454974514168399]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -0.003924231390162567))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-62720169.0, -2.2022911594557834e-36, -1.8853199223148298, -5.117360715860988, 5.679537063518641]
+    let b: [any] = [-1936443305115367.2, 3.158557717597432e-07, 2.7586756367274914e+38, -0.8972358655123889, 0.5771798860949535]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 48915551.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [4.511657598049798, 1.9504324081406167e-09, 0.06855329224734802]
+    let b: [any] = [1.9276935732162075, -7.792040545597976e-31, 8.804834818224826e-40]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 0.7429364869848383))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-23051992.0, 1.3360668901620442e-39, -7.524080741081707e+20]
+    let b: [any] = [-4.003914815503727e-16, -6.559743126834297, 460.0849914550781]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.384112291650531e-09))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1e+39, 5.530744414425006e-22]
+    let b: [any] = [-0.12318649917615411, -0.32613992104195094]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 2.707562726693979))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [16777217.0, 1.4331620783352843, -0.21527575328603585, 3.402823669209385e+38, 3.9190168614607614]
+    let b: [any] = [-7.527008813815783e-33, 7.006492321624085e-46, 2.8561899750165765e-13, 6483799703552.0, 1.1754942e-38]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.480965930695114))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [9.660559605994045, -54937539, 242466.0, -22947717.0, -5.082028630475812e-13, 5.807311072503243, -1.6056435529133406, 7.8311679512113805]
+    let b: [any] = [5.53535143210981, 1e+39, -20421904.0, -77577823.98450516, 2.2377785599328717e+21, -528123121564394.0, -1.5445290149173905, 7.006492321624085e-46]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.452806360778158e-25))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-0.07791015413791769, 1.1397591896409574e-18, -1.1363946871877284, 0.1, 2444581836685312.0]
+    let b: [any] = [5.614153186190644e+27, 0.21113696271179316, 3.813338973970289, -87771.58362299728, 4.075292642494459e-43]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 2.014982549277884e-31))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-56580050, -198.27289581298828, 59563907.0]
+    let b: [any] = [-9.314642447254958, 4.681242944665681e-19, 7.107223755371908]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.455251877904079))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1e-45, -8.829629609371484e-05, -0.5251602061748137, 0.8747939658062144, 3.4028236e+38]
+    let b: [any] = [3.4028235e+38, 60830460732979.664, 3.4028235677973366e+38, -0.3737780898809433, 3.4028236e+38]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -4.4700976665590275))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-6.359026172516218, -9.294694052693509e+32, 4.203183021811736e-27, -1, 3.4028236e+38]
+    let b: [any] = [1.77943168365405, -1e+39, 1.0000001788139343, -6.9826171526464575, -3.754399655657492]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -30599774.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [3.4028235677973366e+38, -5.903883601039832, -18.938061391283867, 5.031470820813339e-31, -7.193918818132507e-45]
+    let b: [any] = [4.487950642859885e-38, 7.058998825580687, 1.58801169302302e-29, -8202170.610494685, 0.3543553948402405]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.401298464324817e-45))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1e-45, 4.088795323740801e-06, -0.7636496463753865]
+    let b: [any] = [0.0, 8.193765590032676, 3.4028236e+38]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 58771055.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-9.292951770560938, 4.937175584439617e-16]
+    let b: [any] = [0.10473801804649575, 1.2809601469820908e-12]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.6689580125402084e-39))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [44444846, -0.7206779897622297, -1.3536495174677579, 1e+39, 1.1938038296349602]
+    let b: [any] = [-5.430079362071718, 0.0, 1.2581814264984068, -8.419152852239193e+23, 5.9317094584584565e-15]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 0.02765075764163067))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [3.4028236e+38, 0.26558437599963913, 175213.78125, 1e-50, 7.006492321624087e-46, 8.348710017464152e-32, -0.5262214415768458, -0.7177197493127808]
+    let b: [any] = [-9.192542260502344e+31, 1.8069965090863012, -1e+39, -4.9411268955544527e+33, -3.4627625072628603e-06, 1.000000059604645, 45793295.0, 4.804974024147107]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -5.98282435879844))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [1e-45, -1824947643088896.0]
+    let b: [any] = [1.401298464324817e-45, -5.048721037006024e+33]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -7.632188816247123e-43))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [9.872508466488548e-33, 0.9775555829442018]
+    let b: [any] = [-1.2242296635391945, -5.526562870788024e+31]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.5278301223140183))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-27677471.0]
+    let b: [any] = [-1.7070866623019394]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 0.7784980721686077))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [6381717.0, 7.006492321624087e-46, 1.0000000596046448]
+    let b: [any] = [-8.712463228832261, 1, 0.1]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 3.402823669209385e+38))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [85554.8671875, 1.0000001788139343, -4.457858474757111e-11]
+    let b: [any] = [-0.7262245542118553, -0.09741946023632421, -7.6244770474977575]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 7.0552736453456036e+19))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-5.797180225893186, 0.5450497962437346, 4708.060695975187]
+    let b: [any] = [-40040350.0, 3.1584275395332536e+26, -0.61425633188458]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -6112083.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [2602758832128.0, 91754078208.0, 16777217.0, -3.303953228352694, 0.1, -6.454114117104328e-35, 6.947975746167175e-25, 6.578325822478167e-35]
+    let b: [any] = [0.9059793038483692, -8.669905997196805, 19201384.0, -1.4303501048657696, -1.5742605086162944e+16, -2.197897144006671, 0.2111779665285689, 3.249925133305338e+34]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -310822875.98205906))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [3.0671562109192396e+36, 48828472.872400194, -2.7359817744709858e-09, -55685098.0, 2.5466362314925757, -52451972.0, -0.6263257074149635, -3740712823227.852]
+    let b: [any] = [-4.251904736025267e+28, -1.2019374524682014, 8.478379793350005, -7.7094802561887725, 1.401298464324817e-45, -0.18136611879666983, 1328.9959106445312, -4.4075886962214605]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 1.0999321103811255))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [-0.7378120584543664, 1.2725361734490305e-34, -2.6829875739613023]
+    let b: [any] = [-3.084248758068844, 0.4686574567688205, 0.4259358740321026]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 2.6724821125092686))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [7.006492321624085e-46, 1.2964466712650797, -0.5979799368018605, -5.828397915534024e-22, 3.8751009971702466, -7.679522147984558, -2.8492331047000444e-23, -5.8886951601124355]
+    let b: [any] = [-1.8348286317822393, 1.0, 9.468117096156479e+24, -7.52841458593984, 45060365.0, 9361623.0, 0.38525488853812656, 1e+39]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, 2025267812.6664114))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    let a: [any] = [2.8059134356823624e-17, 1e-50]
+    let b: [any] = [-51056.252397406584, 444890.0]
+    print(std::vector::dot(a, b), std::vector::norm(a), std::vector::cosine_similarity(a, b), std::vector::normalize(a))
+    print(std::vector::add(a, b), std::vector::sub(a, b), std::vector::scale(a, -1.0))
+    print(std::vector::argmax(a), std::vector::argmax(b))
+    // NaN e infinitos (inf - inf da NaN).
+    let inf = 1e308 * 10.0
+    let nan = inf - inf
+    let c: [any] = [nan, 1.0, 5.0, 5.0]
+    let d: [any] = [1.0, nan, inf, 0.0 - inf]
+    print(std::vector::argmax(c), std::vector::argmax(d), std::vector::dot(c, d), std::vector::norm(d), std::vector::normalize(c))
+    print(std::vector::add(c, d), std::vector::sub(d, d), std::vector::scale(d, 0.0), std::vector::scale(c, nan), std::vector::cosine_similarity(c, d))
+    print(std::vector::norm([]), std::vector::dot([], []), std::vector::normalize([]), std::vector::cosine_similarity([], []), std::vector::scale([], 2))
+    print(std::vector::normalize([0.0, -0.0]), std::vector::cosine_similarity([0, 0], [1, 2]), std::vector::argmax([3]))
+}

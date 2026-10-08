@@ -1,0 +1,30 @@
+fn main() {
+    println("paso antes de iniciar: " + (std::game::step() == 0.0))
+    println("fps antes de iniciar: " + (std::game::fps() == 0))
+    println("cierre antes de iniciar: " + (!std::game::shutdown()))
+
+    println("rechaza ancho cero: " + (!std::game::init("juego", 0, 480)))
+    println("inicia: " + std::game::init("juego", 640, 480))
+    println("fps inicial: " + (std::game::fps() == 60))
+    std::time::sleep_ms(2)
+    let delta = std::game::step()
+    println("tiempo real positivo: " + (delta > 0.0))
+    println("fps medido positivo: " + (std::game::fps() > 0))
+    println("fps coincide con el intervalo: " + (std::math::round(1.0 / delta) == std::math::to_float(std::game::fps())))
+
+    println("rechaza altura excesiva: " + (!std::game::init("juego", 640, 16385)))
+    std::time::sleep_ms(2)
+    println("sigue activo tras init inválido: " + (std::game::step() > 0.0))
+
+    println("colisión superpuesta: " + std::game::check_collision(0.0, 0.0, 10.0, 10.0, 5.0, 5.0, 10.0, 10.0))
+    println("bordes que solo se tocan: " + (!std::game::check_collision(0.0, 0.0, 10.0, 10.0, 10.0, 0.0, 10.0, 10.0)))
+    println("tamaño negativo: " + (!std::game::check_collision(0.0, 0.0, -1.0, 10.0, 0.0, 0.0, 10.0, 10.0)))
+    println("coordenada desbordada: " + (!std::game::check_collision(1.0e308, 0.0, 1.0e308, 10.0, -1.0e308, 0.0, 1.0e308, 10.0)))
+
+    println("cierre: " + std::game::shutdown())
+    println("paso después del cierre: " + (std::game::step() == 0.0))
+    println("fps después del cierre: " + (std::game::fps() == 0))
+    println("segundo cierre: " + std::game::shutdown())
+    println("reinicia: " + std::game::init("nuevo", 16384, 16384))
+    println("cierra reinicio: " + std::game::shutdown())
+}

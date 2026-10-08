@@ -1,0 +1,5 @@
+fn main() {
+    let k = std::encoding::hex_decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+    let s = std::crypto::aes_gcm_seal(k, "hola", "correcto")
+    println(std::crypto::aes_gcm_open(k, s, "otro"))
+}

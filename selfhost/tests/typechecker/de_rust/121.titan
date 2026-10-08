@@ -1,0 +1,1 @@
+fn main() { let callback: fn(int) -> int = { |value| value + 1 } callback(41) }

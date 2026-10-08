@@ -1,0 +1,1 @@
+fn main() { let flag = true let callback: fn(int) -> int = if flag { |value| value + 1 } else { |value| value - 1 } callback(41) }

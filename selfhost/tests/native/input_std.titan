@@ -1,0 +1,90 @@
+fn main() {
+    std::testing::assert(!std::input::is_key_pressed("Space"), "untouched key starts up")
+    std::testing::assert(!std::input::set_key_state("", true), "empty key name is rejected")
+
+    let mut max_key = ""
+    let mut i = 0
+    while i < 128 {
+        max_key = max_key + "ñ"
+        i += 1
+    }
+    std::testing::assert(std::input::set_key_state(max_key, true), "key name at the 256-byte limit is accepted")
+    std::testing::assert(std::input::is_key_pressed(max_key), "maximum-length key is found")
+    let too_long_key = max_key + "ñ"
+    std::testing::assert(!std::input::set_key_state(too_long_key, true), "key name limit counts UTF-8 bytes, not characters")
+    std::testing::assert(!std::input::is_key_pressed(too_long_key), "oversized lookup is not pressed")
+    std::testing::assert(std::input::set_key_state(max_key, false), "maximum-length key is released")
+
+    std::testing::assert(std::input::set_key_state("Ñandú", true), "UTF-8 key is accepted")
+    std::testing::assert(std::input::is_key_pressed("Ñandú"), "pressed UTF-8 key is found")
+    std::testing::assert(!std::input::is_key_pressed("ñandú"), "key lookup is case-sensitive")
+    std::testing::assert(std::input::set_key_state("Ñandú", true), "pressing an existing key is idempotent")
+    std::testing::assert(std::input::set_key_state("Ñandú", false), "pressed key is released")
+    std::testing::assert(std::input::set_key_state("Ñandú", false), "releasing an absent key succeeds")
+    std::testing::assert(!std::input::is_key_pressed("Ñandú"), "released key is up")
+
+    let mut all_keys_added = true
+    i = 0
+    while i < 256 {
+        let key = "capacity-" + std::json::stringify(i)
+        if !std::input::set_key_state(key, true) { all_keys_added = false }
+        i += 1
+    }
+    std::testing::assert(all_keys_added, "all 256 key slots are usable")
+    std::testing::assert(!std::input::set_key_state("capacity-overflow", true), "257th active key is rejected")
+    std::testing::assert(std::input::set_key_state("capacity-0", true), "duplicate key succeeds at capacity")
+    std::testing::assert(std::input::set_key_state("capacity-0", false), "release frees one key slot")
+    std::testing::assert(std::input::set_key_state("capacity-overflow", true), "released key slot can be reused")
+    i = 0
+    while i < 256 {
+        let key = "capacity-" + std::json::stringify(i)
+        std::input::set_key_state(key, false)
+        i += 1
+    }
+    std::input::set_key_state("capacity-overflow", false)
+    std::testing::assert(!std::input::is_key_pressed("capacity-255") && !std::input::is_key_pressed("capacity-overflow"), "released key table no longer reports pressed keys")
+
+    std::testing::assert(std::input::set_mouse_pos(4294967297, -4294967297), "mouse coordinates accept signed inputs")
+    let mut mouse = std::input::mouse_pos()
+    std::testing::assert(len(mouse) == 2 && mouse[0] == 1 && mouse[1] == -1, "mouse coordinates wrap to i32")
+    std::testing::assert(std::input::set_mouse_pos(-15, -42), "negative mouse coordinates are accepted")
+    mouse = std::input::mouse_pos()
+    std::testing::assert(len(mouse) == 2 && mouse[0] == -15 && mouse[1] == -42, "mouse position returns the latest coordinates")
+
+    std::testing::assert(std::input::set_mouse_button(256, true), "mouse button index wraps to u8")
+    std::testing::assert(std::input::is_mouse_button_pressed(0), "wrapped mouse button is down")
+    std::testing::assert(!std::input::is_mouse_button_pressed(1), "mouse buttons are independent")
+    std::testing::assert(std::input::set_mouse_button(-1, true), "negative mouse button wraps to u8")
+    std::testing::assert(std::input::is_mouse_button_pressed(511), "mouse button query wraps to u8")
+    std::testing::assert(std::input::set_mouse_button(-257, false), "wrapped mouse button can be released")
+    std::testing::assert(!std::input::is_mouse_button_pressed(255), "released mouse button is up")
+
+    std::testing::assert(std::input::set_touch_point(-1, 4294967295, 2147483648, true), "touch index and coordinates use Rust integer casts")
+    let mut touch = std::input::touch_pos(4294967295)
+    std::testing::assert(len(touch) == 3 && touch[0] == -1 && touch[1] == -2147483648 && touch[2] == true, "touch coordinates are returned as i32")
+    std::testing::assert(std::input::set_touch_point(4294967295, 7, 8, true), "active touch updates in place")
+    touch = std::input::touch_pos(-1)
+    std::testing::assert(len(touch) == 3 && touch[0] == 7 && touch[1] == 8 && touch[2] == true, "touch index query wraps to u32")
+    std::testing::assert(std::input::set_touch_point(-1, 0, 0, false), "active touch is removed")
+    touch = std::input::touch_pos(-1)
+    std::testing::assert(len(touch) == 3 && touch[0] == 0 && touch[1] == 0 && touch[2] == false, "removed touch reports inactive")
+    std::testing::assert(std::input::set_touch_point(999, 0, 0, false), "removing an absent touch succeeds")
+
+    let mut all_touches_added = true
+    i = 0
+    while i < 32 {
+        if !std::input::set_touch_point(i, i, 0 - i, true) { all_touches_added = false }
+        i += 1
+    }
+    std::testing::assert(all_touches_added, "all 32 touch slots are usable")
+    std::testing::assert(!std::input::set_touch_point(32, 32, 0, true), "33rd active touch is rejected")
+    std::testing::assert(std::input::set_touch_point(31, 310, -310, true), "existing touch updates at capacity")
+    std::testing::assert(std::input::set_touch_point(4, 0, 0, false), "removing a touch frees a slot")
+    touch = std::input::touch_pos(4)
+    std::testing::assert(touch[2] == false, "removed touch reports inactive")
+    std::testing::assert(std::input::set_touch_point(32, 320, -320, true), "freed touch slot is reusable")
+    touch = std::input::touch_pos(32)
+    std::testing::assert(touch[0] == 320 && touch[1] == -320 && touch[2] == true, "reused touch stores new coordinates")
+
+    println("std::input state and limits OK")
+}

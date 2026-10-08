@@ -1,0 +1,5 @@
+fn main() {
+    println("antes")
+    println(std::password::verify_bcrypt("$2b$04$x", "x"))
+    println("nunca")
+}

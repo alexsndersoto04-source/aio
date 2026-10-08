@@ -1,0 +1,3 @@
+fn main() {
+    print(std::xml::parse("<a><!-- sin cerrar </a>"))
+}

@@ -1,0 +1,101 @@
+// std::yaml::parse y parse_multi: mensajes de error (sintaxis, lector,
+// anclas, tipos, límites).
+fn show(label: string, text: string) {
+    let r = std::try::catch(|| { std::yaml::parse(text) })
+    match r {
+        Result::Ok(v) => println(label + " = " + std::json::stringify(v)),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn showm(label: string, text: string) {
+    let r = std::try::catch(|| { std::yaml::parse_multi(text) })
+    match r {
+        Result::Ok(v) => println(label + " = " + std::json::stringify(v)),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn hexs(h: string) -> string {
+    std::encoding::utf8_decode(std::encoding::hex_decode(h))
+}
+
+fn nest(n: int) -> string {
+    let mut a = ""
+    let mut b = ""
+    let mut i = 0
+    while i < n {
+        a = a + "["
+        b = b + "]"
+        i += 1
+    }
+    a + "x" + b
+}
+
+fn nestm(n: int) -> string {
+    let mut a = ""
+    let mut b = ""
+    let mut i = 0
+    while i < n {
+        a = a + "{a: "
+        b = b + "}"
+        i += 1
+    }
+    a + "1" + b
+}
+
+// Anclas que se multiplican: cada nivel repite 9 veces el anterior.
+fn bomb(levels: int) -> string {
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    let mut out = "a: &a [x, x, x, x, x, x, x, x, x]\n"
+    let mut i = 1
+    while i <= levels {
+        let n = names[i]
+        let p = names[i - 1]
+        out = out + n + ": &" + n + " [*" + p + ", *" + p + ", *" + p + ", *" + p + ", *" + p + ", *" + p + ", *" + p + ", *" + p + ", *" + p + "]\n"
+        i += 1
+    }
+    out
+}
+
+fn main() {
+    show("varios documentos", "a: 1\n---\nb: 2\n")
+    show("valor mapa", "a: b: c\n")
+    show("sin cerrar", "[a, b\n")
+    show("llave sin cerrar", "{a: 1\n")
+    show("comilla", "key: 'unterminated\n")
+    show("escape", "\"bad \\q\"")
+    show("hex", "\"\\xZZ\"")
+    show("sustituto", "\"\\uD800\"")
+    show("fuera unicode", "\"\\U00110000\"")
+    show("corchete", "]\n")
+    show("ancla desconocida", "a: *nope\n")
+    show("control", hexs("613a20010a"))
+    show("tab", "\t- x\n")
+    show("indicador", "|0\n x\n")
+    show("version", "%YAML 2.0\n--- z\n")
+    show("tag duplicado", "%TAG !e! a\n%TAG !e! b\n---\n")
+    show("handle", "--- !x!y z\n")
+    show("enum", "!foo bar\n")
+    show("enum seq", "!foo [1]\n")
+    show("entero", "!!int x\n")
+    show("decimal", "!!float x\n")
+    show("booleano", "!!bool yes\n")
+    show("nulo", "!!null x\n")
+    show("fuera rango", "a: [1, 340282366920938463463374607431768211455]\n")
+    show("negativo grande", "-170141183460469231731687303715884105728\n")
+    show("clave seq", "{[1]: 2}\n")
+    show("clave mapa 2", "a: 1\n? {b: 1}\n: 2\n")
+    show("clave alias", "k: &k [1]\n*k : 2\n")
+    show("profundo 128", nest(128))
+    show("profundo 129", nest(129))
+    show("profundo mapa", nestm(200))
+    show("repeticion 2", bomb(2))
+    show("repeticion 6", bomb(6))
+    showm("multi", "---\nname: one\n---\nname: two\n")
+    showm("multi vacio", "")
+    showm("multi final", "a\n---\n")
+    showm("multi puntos", "a\n...\n---\nb\n...\n")
+    showm("multi error 2", "a: 1\n---\n[b\n")
+    showm("multi alias", "---\n&x a\n---\n*x\n")
+}

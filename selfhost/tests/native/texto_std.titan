@@ -1,0 +1,72 @@
+// std::text: mayúsculas/minúsculas Unicode (con ß → SS y la sigma final),
+// capitalize, slugify, reverse, replace, truncate, parse_int, words, lines,
+// levenshtein, escape_html, hash64, length, equals.
+fn range_text(a: int, b: int) -> string {
+    let mut out = ""
+    let mut c = a
+    while c < b {
+        if c < 55296 || c > 57343 {
+            out += std::text::from_char_code(c) + ""
+        }
+        c += 1
+    }
+    out
+}
+
+fn show(label: string, v: any) {
+    print(label + ": " + "{v}")
+}
+
+fn main() {
+    let blocks = [[0, 12288], [42560, 42912], [64256, 64320], [65280, 65400], [66560, 66640], [68736, 68864], [71840, 71904], [93760, 93824], [125184, 125264], [127232, 127400]]
+    for bl in blocks {
+        let t = range_text(bl[0], bl[1])
+        let u = std::text::uppercase(t)
+        let l = std::text::lowercase(t)
+        let h1 = std::text::hash64(u)
+        let h2 = std::text::hash64(l)
+        let n1 = std::text::length(u)
+        let n2 = std::text::length(l)
+        print("{h1} {h2} {n1} {n2}")
+    }
+    let samples = ["ΟΔΟΣ", "ΟΔΟΣ ΟΔΟΣ.", "Σ", "AΣ", "AΣb", "A.Σ", "A'Σ'", "ΣΑΣ", "aΣ́", "straße", "İstanbul", "ǅemal", "ﬁne", "ŉ", "Hello, World!", "", "  ", "ÀÉÎõü"]
+    for s in samples {
+        let u = std::text::uppercase(s)
+        let l = std::text::lowercase(s)
+        let c = std::text::capitalize(s)
+        let g = std::text::slugify(s)
+        let r = std::text::reverse(s)
+        print(s + " | " + u + " | " + l + " | " + c + " | " + g + " | " + r)
+    }
+    show("slug", std::text::slugify("  Hola, Mundo!! ¿Qué tal?  --x "))
+    show("slug2", std::text::slugify("İİ ΣΑΣ"))
+    show("esc", std::text::escape_html("<a href=\"x\">'&'</a>"))
+    show("rep1", std::text::replace("aaaa", "aa", "b"))
+    show("rep2", std::text::replace("año", "", "-"))
+    show("rep3", std::text::replace("hola mundo hola", "hola", "adiós"))
+    show("rep4", std::text::replace("", "", "x"))
+    show("trunc1", std::text::truncate("abcdef", 4, "…"))
+    show("trunc2", std::text::truncate("abc", 4, "…"))
+    show("trunc3", std::text::truncate("abcdef", 2, "...."))
+    show("trunc4", std::text::truncate("abcdef", 0, "."))
+    for t in ["42", " -17 ", "+5", "-", "+", "", "9223372036854775807", "9223372036854775808", "-9223372036854775808", "-9223372036854775809", "12a", "007", "٣"] {
+        match std::text::parse_int(t) {
+            Option::Some(v) => print("int [" + t + "] = {v}"),
+            Option::None => print("int [" + t + "] = none"),
+        }
+    }
+    show("words", std::text::words("  uno  dos\ttres\n cuatro　cinco  "))
+    show("words0", std::text::words("   "))
+    show("lines", std::text::lines("a\nb\r\nc\r\n\nd\re\n"))
+    show("lines2", std::text::lines(""))
+    show("lines3", std::text::lines("\n"))
+    show("lines4", std::text::lines("x\r"))
+    show("lev", std::text::levenshtein("kitten", "sitting"))
+    show("lev2", std::text::levenshtein("", "año"))
+    show("lev3", std::text::levenshtein("ñandú", "nandu"))
+    show("hash", std::text::hash64("hola"))
+    show("hash0", std::text::hash64(""))
+    show("len", std::text::length("añoΣ😀"))
+    show("eq", std::text::equals("a", "a"))
+    show("eq2", std::text::equals("a", "b"))
+}

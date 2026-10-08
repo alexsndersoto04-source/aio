@@ -1,0 +1,66 @@
+// Programa pensado para el optimizador (opt.titan): constantes, código
+// muerto, funciones pequeñas integradas, `?` y cierres (que no se integran),
+// errores que deben seguir ocurriendo al ejecutar.
+fn sq(x: int) -> int {
+    x * x
+}
+
+fn pick(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    b
+}
+
+fn name(s: string) -> string {
+    "<" + s + ">"
+}
+
+fn half(n: int) -> Result {
+    if n % 2 != 0 {
+        return Result::Err("impar")
+    }
+    Result::Ok(n / 2)
+}
+
+fn quarter(n: int) -> Result {
+    let h = half(n)?
+    half(h)
+}
+
+fn nothing(x: int) {
+    let y = x + 1
+}
+
+fn main() {
+    let big = 4611686018427387904
+    let mut t = 0
+    for i in 0..10 {
+        t = t + sq(i) + pick(i, 5)
+    }
+    print(t)
+    print(sq(12) + 2 * 3 - 10 / 3 % 2)
+    print(name("a" + "b") + name("c"))
+    print(1 < 2 && "x" == "x")
+    print(!(3 >= 4) || false)
+    if false {
+        print("nunca")
+    }
+    while 1 > 2 {
+        print("nunca")
+    }
+    print(-(-(7)) + ~0)
+    print(nothing(3))
+    print(quarter(8))
+    print(quarter(6))
+    let add = |a: int| a + t
+    print(add(1))
+    let mut s = ""
+    for w in ["x", "y", "z"] {
+        s = s + name(w)
+    }
+    print(s)
+    print(pick(sq(3), sq(2)))
+    print(big + big - 1 + big)
+    print(4611686018427387904 + 4611686018427387904)
+}

@@ -1,0 +1,1 @@
+fn main() { for value in true { print(value) } }

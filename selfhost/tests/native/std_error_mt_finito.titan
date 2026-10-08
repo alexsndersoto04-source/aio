@@ -1,0 +1,4 @@
+// Valor infinito.
+fn main() {
+    std::metrics::gauge_set("g", 1e308 * 10.0)
+}

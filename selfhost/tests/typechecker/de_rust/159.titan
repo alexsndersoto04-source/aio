@@ -1,0 +1,1 @@
+const VALUE: int = 1 fn main() { VALUE = 2 }

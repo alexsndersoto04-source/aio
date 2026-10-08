@@ -1,0 +1,14 @@
+// Errores de std::wifi cuando no está termux-api (mismo texto que la VM).
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("scan", std::try::catch(|| { std::wifi::scan() }))
+    show("info", std::try::catch(|| { std::wifi::connection_info() }))
+    show("on", std::try::catch(|| { std::wifi::set_enabled(true) }))
+    show("off", std::try::catch(|| { std::wifi::set_enabled(false) }))
+}

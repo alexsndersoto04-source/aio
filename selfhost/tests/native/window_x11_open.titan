@@ -1,0 +1,31 @@
+// Prueba el contrato del cliente X11 nativo. Si hay un DISPLAY real
+// disponible, abre una ventana del sistema y verifica su ciclo de vida.
+fn main() {
+    std::testing::assert(std::window::live_open("bad", 0, 1) == -1, "zero-width request is rejected")
+    std::testing::assert(std::window::live_open("bad", 1, 4097) == -1, "oversized request is rejected")
+    std::testing::assert(!std::window::live_is_open(-1), "negative handle is not open")
+    std::testing::assert(std::window::live_pump(-1, 0) == -2, "unknown window has the documented pump status")
+    std::testing::assert(len(std::window::live_poll_events(-1)) == 0, "unknown window has no queued events")
+    std::testing::assert(!std::window::live_close(-1), "unknown handle cannot close a window")
+    std::testing::assert(!std::window::live_set_title(-1, "ignored"), "unknown handle cannot change a title")
+
+    let display = std::env::get("DISPLAY")
+    let opened = std::window::live_open("TITAN X11 integration", 96, 64)
+    if display != nil && display != "" {
+        std::testing::assert(opened > 0, "a configured DISPLAY must open a real X11 window")
+    }
+    if opened > 0 {
+        std::testing::assert(std::window::live_is_open(opened), "X11-created window is registered")
+        std::testing::assert(std::window::live_set_title(opened, "TITAN X11 title update"), "title update is sent to the X server")
+        std::testing::assert(std::gui::init(), "GUI initializes for the live-window framebuffer")
+        let wrong_root = std::gui::create_container("wrong size", 95, 64)
+        std::testing::assert(std::window::live_pump(opened, wrong_root) == -4, "framebuffer dimensions must match the X11 window")
+        let root = std::gui::create_container("X11", 96, 64)
+        std::testing::assert(std::window::live_pump(opened, root) == 1, "RGBA GUI frame is presented and X11 is pumped")
+        let _events = std::window::live_poll_events(opened)
+        std::testing::assert(len(std::window::live_poll_events(opened)) == 0, "drained X11 events are not replayed")
+        std::testing::assert(std::window::live_close(opened), "X11 window closes cleanly")
+        std::testing::assert(!std::window::live_is_open(opened), "closed handle is no longer live")
+        std::testing::assert(std::gui::shutdown(), "GUI state is released after the window test")
+    }
+}

@@ -1,0 +1,1 @@
+fn main() { let router = std::http::router() std::http::route(router, "GET", "/", |request| request.path) std::http::middleware(router, |request| request) std::http::after(router, |response| response) std::http::on_error(router, |request, error| request) }

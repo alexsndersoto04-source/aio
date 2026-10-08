@@ -1,0 +1,1 @@
+fn main() { let len: fn(string) -> string = |value| value let result: string = len("ok") result }

@@ -1,0 +1,55 @@
+// Uso: titan run selfhost/bytecode.titan <archivo.titan>
+//
+// Compila con el cargador, el typechecker y el generador escritos en Titan e
+// imprime el bytecode. La salida debe ser idéntica, byte a byte, a la de
+// `titan bytecode <archivo.titan>` (la versión de Rust).
+import loader
+import args
+import codegen
+
+// Display de TypeDiagnostic: "archivo:l:c: msg", "l:c: msg" o solo "msg".
+fn diag_text(d: Diag) -> string {
+    let sp = d.span
+    if sp != nil && sp.line > 0 && sp.col > 0 {
+        let l = sp.line
+        let c = sp.col
+        if d.file != nil {
+            return d.file + ":{l}:{c}: " + d.msg
+        }
+        return "{l}:{c}: " + d.msg
+    }
+    d.msg
+}
+
+fn compile_to_dump(path: string) -> Result {
+    let items = ld_load(path)?
+    let diags = check_program(items)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_text(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    let g = cg_compile_program(cg_new(cg_native_names()), items)?
+    Result::Ok(cg_dump_module(g))
+}
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 1 {
+        print("uso: titan run selfhost/bytecode.titan <archivo.titan>")
+        return
+    }
+    let mut dump = ""
+    match compile_to_dump(args[0]) {
+        Result::Ok(text) => {
+            dump = text
+        },
+        Result::Err(message) => {
+            dump = "error: " + esc(message) + "\n"
+        },
+    }
+    // print() añade el salto de línea final que ya trae el volcado.
+    print(std::text::substring(dump, 0, len(dump) - 1))
+}

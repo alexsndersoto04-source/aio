@@ -1,0 +1,48 @@
+// std::progress sin terminal: ids, operaciones, ids desconocidos, cupo.
+fn main() {
+    let b = std::progress::bar_new(10)
+    let s = std::progress::spinner_new()
+    print("barra {b} spinner {s}")
+    std::progress::set_message(b, "copiando\tarchivos")
+    std::progress::increment(b, 3)
+    std::progress::set_position(b, 7)
+    std::progress::increment(b, 9223372036854775807)
+    std::progress::set_message(s, "pensando")
+    std::progress::increment(s, 2)
+    std::progress::finish(b, "")
+    std::progress::finish(s, "listo")
+    // Ya terminadas: no hacen nada.
+    std::progress::set_message(b, "otra vez")
+    std::progress::increment(b, 1)
+    std::progress::finish(b, "x")
+    std::progress::abandon(s)
+    // Nunca creadas.
+    std::progress::set_message(999999, "hola")
+    std::progress::set_position(-5, 1)
+    std::progress::abandon(0)
+    // Mensaje justo en el límite (4096 bytes).
+    let mut m = ""
+    let mut i = 0
+    while i < 4096 {
+        m = m + "a"
+        i += 1
+    }
+    let c = std::progress::bar_new(0)
+    std::progress::set_message(c, m)
+    std::progress::abandon(c)
+    // Cupo: 64 activas; al soltar una se puede crear otra.
+    let mut ids = []
+    i = 0
+    while i < 64 {
+        ids = std::array::push(ids, std::progress::bar_new(i))
+        i += 1
+    }
+    let first = ids[0]
+    let last = ids[63]
+    print("primera {first} última {last}")
+    std::progress::abandon(ids[5])
+    let again = std::progress::spinner_new()
+    print("de nuevo {again}")
+    // Se quedan sin terminar: el programa las limpia al salir.
+    print("fin")
+}

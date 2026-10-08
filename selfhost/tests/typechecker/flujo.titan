@@ -1,0 +1,91 @@
+// Análisis de "siempre devuelve" con loop, while true, if y match.
+fn siempre_loop() -> int {
+    loop {
+        return 1
+    }
+}
+
+fn loop_con_break() -> int {
+    loop {
+        break
+    }
+}
+
+fn while_true() -> int {
+    while true {
+        return 2
+    }
+}
+
+fn while_true_break() -> int {
+    while true {
+        if 1 == 1 {
+            break
+        }
+        return 3
+    }
+}
+
+fn while_true_despues() -> int {
+    while true {
+        return 2
+    }
+    let z = 0
+}
+
+fn while_true_break_despues() -> int {
+    while true {
+        if 1 == 1 {
+            break
+        }
+        return 3
+    }
+    let z = 0
+}
+
+fn loop_break_anidado() -> int {
+    loop {
+        for i in [1] {
+            break
+        }
+        return 4
+    }
+    let z = 0
+}
+
+fn if_ambas() -> int {
+    if 1 < 2 {
+        return 1
+    } else {
+        return 2
+    }
+}
+
+fn if_sin_else() -> int {
+    if 1 < 2 {
+        return 1
+    }
+}
+
+fn por_match(v: int) -> int {
+    match v {
+        1 => { return 1 }
+        _ => { return 2 }
+    }
+}
+
+fn logico() -> int {
+    let a = false && { return 1 }
+    let b = true || { return 2 }
+    let c = true && { return 3 }
+}
+
+fn main() {
+    let x = siempre_loop() + loop_con_break() + while_true() + while_true_break() + while_true_despues() + while_true_break_despues() + loop_break_anidado()
+    print(x + if_ambas() + if_sin_else() + por_match(1) + logico())
+    let v = loop {
+        break
+    }
+    continue
+    break
+}

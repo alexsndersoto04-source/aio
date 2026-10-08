@@ -1,0 +1,3 @@
+fn main() {
+    print(std::xml::parse("<a>&#xD800;</a>"))
+}

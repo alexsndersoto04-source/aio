@@ -1,0 +1,27 @@
+// A live KV handle must stay attached to the directory it opened even if
+// the caller's symlink is retargeted later. Rust/Sled canonicalizes this path;
+// the native Titan backend must hold the same canonical root and lock.
+fn main() {
+    let alias = std::env::get("TITAN_KV_SYMLINK")
+    let replacement = std::env::get("TITAN_KV_SYMLINK_NEXT")
+    let target_one = std::env::get("TITAN_KV_TARGET_ONE")
+    let target_two = std::env::get("TITAN_KV_TARGET_TWO")
+    std::testing::assert(alias != nil && replacement != nil && target_one != nil && target_two != nil, "harness supplies two targets and replaceable symlinks")
+
+    let db = std::kv::open(alias)
+    std::fs::rename(replacement, alias)
+    let key = std::encoding::utf8_encode("opened-before-symlink-retarget")
+    let value = std::bytes::from_array([0, 255, 17, 0])
+    std::kv::insert(db, key, value)
+    std::kv::close(db)
+    std::testing::assert(std::fs::exists(target_one + "/.titan-kv.lock"), "the opened database keeps using its canonical lock")
+    std::testing::assert(!std::fs::exists(target_two + "/.titan-kv.lock"), "retargeting cannot create a lock in the replacement directory")
+
+    let first = std::kv::open(target_one)
+    std::testing::assert_eq(std::kv::get(first, key), value, "writes follow the canonical directory captured at open")
+    std::kv::close(first)
+
+    let second = std::kv::open(target_two)
+    std::testing::assert(std::kv::get(second, key) == nil, "retargeting the symlink cannot redirect an open handle")
+    std::kv::close(second)
+}

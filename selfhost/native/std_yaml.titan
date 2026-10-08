@@ -1,0 +1,1884 @@
+// Biblioteca estándar nativa: std::yaml (lectura). Reproduce
+// crates/titan_stdlib/src/yaml_mod.rs, que usa serde_yaml 0.9.34 sobre
+// unsafe-libyaml 0.2.11 (traducción de libyaml a Rust) y convierte el
+// resultado a serde_json::Value. Este archivo es el lector y el escáner de
+// libyaml (reader.rs + scanner.rs); std_yaml_parse.titan es el analizador
+// (parser.rs), el cargador de serde_yaml (loader.rs + de.rs) y las nativas.
+//
+// Estado del analizador `y` (bloque de 512 bytes, todo enteros):
+//   +0 bytes de la entrada, +8 longitud, +16 posición (byte) del buffer
+//   +24 mark.index, +32 mark.line, +40 mark.column
+//   +48 unread, +56 raw_read, +64 raw_pos, +72 eof
+//   +80 tipo de error (0 ninguno, 1 lector, 2 escáner, 3 analizador)
+//   +88 problema (código, ver ym_msg), +96 problem_offset, +104..+120 problem_mark
+//   +128 contexto (código, 0 = ninguno), +136..+152 context_mark
+//   +160 stream_start_produced, +168 stream_end_produced, +176 flow_level
+//   +184 indent, +192 simple_key_allowed, +200 not_simple_keys
+//   +208 tokens_parsed, +216 token_available
+//   +224 cola de tokens: buffer, +232 cabeza, +240 cola, +248 capacidad
+//   +256 pila de indents (vector), +264 pila de simple keys (6 palabras c/u)
+//   +272 estado del analizador, +280 pila de estados, +288 pila de marks
+//   +296 directivas de tag (pares handle, prefijo), +304 todos los sb creados
+//   +312 lista de eventos del documento, +320 error del documento
+//   +328..+344 mark del error "unknown anchor"
+//
+// El lector de libyaml decodifica la entrada a trozos de 16384 bytes y
+// comprueba los caracteres de control de todo el trozo cuando lo decodifica:
+// por eso un carácter prohibido puede dar error antes de que el escáner
+// llegue a él. Se reproduce con raw_read/raw_pos/unread.
+//
+// Los textos (valores de escalares, anclas, tags) se guardan en
+// constructores sb_* registrados en +304 y se liberan todos al terminar.
+
+// ------------------------------------------------------------ vectores de palabras
+
+fn ym_vnew() -> int {
+    let v = rt_alloc(24)
+    std::raw::store(v, 0)
+    std::raw::store(v + 8, 8)
+    std::raw::store(v + 16, rt_alloc(64))
+    v
+}
+
+fn ym_vpush(v: int, x: int) {
+    let n = std::raw::load(v)
+    let cap = std::raw::load(v + 8)
+    if n == cap {
+        let data = rt_alloc(cap * 16)
+        rt_copy(data, std::raw::load(v + 16), cap * 8)
+        rt_free_block(std::raw::load(v + 16))
+        std::raw::store(v + 16, data)
+        std::raw::store(v + 8, cap * 2)
+    }
+    std::raw::store(std::raw::load(v + 16) + n * 8, x)
+    std::raw::store(v, n + 1)
+}
+
+fn ym_vpop(v: int) -> int {
+    let n = std::raw::load(v) - 1
+    std::raw::store(v, n)
+    std::raw::load(std::raw::load(v + 16) + n * 8)
+}
+
+fn ym_vlen(v: int) -> int {
+    std::raw::load(v)
+}
+
+fn ym_vat(v: int, i: int) -> int {
+    std::raw::load(v + 16) + i * 8
+}
+
+fn ym_vfree(v: int) {
+    rt_free_block(std::raw::load(v + 16))
+    rt_free_block(v)
+}
+
+// ------------------------------------------------------------ textos
+
+fn ym_sb(y: int) -> int {
+    let b = sb_new(16)
+    ym_vpush(std::raw::load(y + 304), b)
+    b
+}
+
+// Primer byte del texto (0 si está vacío), como `*string.start` en C.
+fn ym_sb_first(b: int) -> int {
+    if std::raw::load(b) == 0 {
+        return 0
+    }
+    std::raw::load8(std::raw::load(b + 16))
+}
+
+fn ym_sb_clear(b: int) {
+    std::raw::store(b, 0)
+}
+
+// JOIN(a, b): añade b a a y vacía b.
+fn ym_sb_join(a: int, b: int) {
+    sb_raw(a, std::raw::load(b + 16), std::raw::load(b))
+    std::raw::store(b, 0)
+}
+
+fn ym_sb_str(b: int) -> any {
+    let n = std::raw::load(b)
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, std::raw::load(b + 16), n)
+    rt_sval(p)
+}
+
+// Longitud como C string (strlen): hasta el primer NUL.
+fn ym_sb_clen(b: int) -> int {
+    let n = std::raw::load(b)
+    let d = std::raw::load(b + 16)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(d + i) == 0 {
+            return i
+        }
+        i += 1
+    }
+    n
+}
+
+// ------------------------------------------------------------ mensajes
+
+fn ym_msg(code: int) -> string {
+    if code == 1 { return "found character that cannot start any token" }
+    if code == 2 { return "could not find expected ':'" }
+    if code == 3 { return "block sequence entries are not allowed in this context" }
+    if code == 4 { return "mapping keys are not allowed in this context" }
+    if code == 5 { return "mapping values are not allowed in this context" }
+    if code == 6 { return "found unknown directive name" }
+    if code == 7 { return "did not find expected comment or line break" }
+    if code == 8 { return "could not find expected directive name" }
+    if code == 9 { return "found unexpected non-alphabetical character" }
+    if code == 10 { return "did not find expected digit or '.' character" }
+    if code == 11 { return "found extremely long version number" }
+    if code == 12 { return "did not find expected version number" }
+    if code == 13 { return "did not find expected whitespace" }
+    if code == 14 { return "did not find expected whitespace or line break" }
+    if code == 15 { return "did not find expected alphabetic or numeric character" }
+    if code == 16 { return "did not find the expected '>'" }
+    if code == 17 { return "did not find expected '!'" }
+    if code == 18 { return "did not find expected tag URI" }
+    if code == 19 { return "did not find URI escaped octet" }
+    if code == 20 { return "found an incorrect leading UTF-8 octet" }
+    if code == 21 { return "found an incorrect trailing UTF-8 octet" }
+    if code == 22 { return "found an indentation indicator equal to 0" }
+    if code == 23 { return "found a tab character where an indentation space is expected" }
+    if code == 24 { return "found unexpected document indicator" }
+    if code == 25 { return "found unexpected end of stream" }
+    if code == 26 { return "found unknown escape character" }
+    if code == 27 { return "did not find expected hexadecimal number" }
+    if code == 28 { return "found invalid Unicode character escape code" }
+    if code == 29 { return "found unexpected ':'" }
+    if code == 30 { return "found a tab character that violates indentation" }
+    if code == 31 { return "control characters are not allowed" }
+    if code == 32 { return "did not find expected <stream-start>" }
+    if code == 33 { return "did not find expected <document start>" }
+    if code == 34 { return "found undefined tag handle" }
+    if code == 35 { return "did not find expected node content" }
+    if code == 36 { return "did not find expected '-' indicator" }
+    if code == 37 { return "did not find expected key" }
+    if code == 38 { return "did not find expected ',' or ']'" }
+    if code == 39 { return "did not find expected ',' or '}'" }
+    if code == 40 { return "found duplicate %YAML directive" }
+    if code == 41 { return "found incompatible YAML document" }
+    if code == 42 { return "found duplicate %TAG directive" }
+    if code == 51 { return "while scanning for the next token" }
+    if code == 52 { return "while scanning a simple key" }
+    if code == 53 { return "while scanning a directive" }
+    if code == 54 { return "while scanning a %YAML directive" }
+    if code == 55 { return "while scanning a %TAG directive" }
+    if code == 56 { return "while scanning an anchor" }
+    if code == 57 { return "while scanning an alias" }
+    if code == 58 { return "while scanning a tag" }
+    if code == 59 { return "while scanning a block scalar" }
+    if code == 60 { return "while scanning a quoted scalar" }
+    if code == 61 { return "while scanning a plain scalar" }
+    if code == 62 { return "while parsing a tag directive" }
+    if code == 63 { return "while parsing a %TAG directive" }
+    if code == 64 { return "while parsing a tag" }
+    if code == 65 { return "while parsing a node" }
+    if code == 66 { return "while parsing a block node" }
+    if code == 67 { return "while parsing a flow node" }
+    if code == 68 { return "while parsing a block collection" }
+    if code == 69 { return "while parsing a block mapping" }
+    if code == 70 { return "while parsing a flow sequence" }
+    if code == 71 { return "while parsing a flow mapping" }
+    if code == 72 { return "while scanning a tag directive" }
+    if code == 73 { return "while parsing a quoted scalar" }
+    "?"
+}
+
+// ------------------------------------------------------------ errores
+
+fn ym_mi(y: int) -> int { std::raw::load(y + 24) }
+fn ym_ml(y: int) -> int { std::raw::load(y + 32) }
+fn ym_mc(y: int) -> int { std::raw::load(y + 40) }
+
+// yaml_parser_set_scanner_error: el problema está en la posición actual.
+fn ym_scan_err(y: int, context: int, ci: int, cl: int, cc: int, problem: int) {
+    std::raw::store(y + 80, 2)
+    std::raw::store(y + 128, context)
+    std::raw::store(y + 136, ci)
+    std::raw::store(y + 144, cl)
+    std::raw::store(y + 152, cc)
+    std::raw::store(y + 88, problem)
+    std::raw::store(y + 104, ym_mi(y))
+    std::raw::store(y + 112, ym_ml(y))
+    std::raw::store(y + 120, ym_mc(y))
+}
+
+// Error del escáner con el contexto en la posición actual.
+fn ym_scan_err_here(y: int, context: int, problem: int) {
+    ym_scan_err(y, context, ym_mi(y), ym_ml(y), ym_mc(y), problem)
+}
+
+// ------------------------------------------------------------ lector
+
+// Byte k del buffer decodificado (0 al final: el NUL que añade libyaml).
+fn ym_ch(y: int, k: int) -> int {
+    let q = std::raw::load(y + 16) + k
+    if q < std::raw::load(y + 8) {
+        return std::raw::load8(std::raw::load(y) + q)
+    }
+    0
+}
+
+fn ym_width_of(c: int) -> int {
+    if c < 128 {
+        return 1
+    }
+    if (c & 224) == 192 {
+        return 2
+    }
+    if (c & 240) == 224 {
+        return 3
+    }
+    if (c & 248) == 240 {
+        return 4
+    }
+    0
+}
+
+// yaml_parser_update_buffer: decodifica trozos hasta tener `length`
+// caracteres sin leer (o el final). false si hay un carácter prohibido.
+fn ym_update(y: int, length: int) -> bool {
+    let n = std::raw::load(y + 8)
+    let src = std::raw::load(y)
+    if std::raw::load(y + 72) != 0 && std::raw::load(y + 64) == std::raw::load(y + 56) {
+        return true
+    }
+    if std::raw::load(y + 48) >= length {
+        return true
+    }
+    let mut first = true
+    while std::raw::load(y + 48) < length {
+        if !first || std::raw::load(y + 64) == std::raw::load(y + 56) {
+            // yaml_parser_update_raw_buffer
+            if std::raw::load(y + 72) == 0 {
+                let raw_read = std::raw::load(y + 56)
+                let leftover = raw_read - std::raw::load(y + 64)
+                if leftover < 16384 {
+                    let mut size = 16384 - leftover
+                    if size > n - raw_read {
+                        size = n - raw_read
+                    }
+                    std::raw::store(y + 56, raw_read + size)
+                    if size == 0 {
+                        std::raw::store(y + 72, 1)
+                    }
+                }
+            }
+        }
+        first = false
+        let raw_read = std::raw::load(y + 56)
+        let mut pos = std::raw::load(y + 64)
+        let mut unread = std::raw::load(y + 48)
+        while pos < raw_read {
+            let c0 = std::raw::load8(src + pos)
+            let w = ym_width_of(c0)
+            if w > raw_read - pos {
+                break
+            }
+            let mut c = c0
+            if w == 2 {
+                c = std::raw::shl(c0 & 31, 6) | (std::raw::load8(src + pos + 1) & 63)
+            } else if w == 3 {
+                c = std::raw::shl(c0 & 15, 12) | std::raw::shl(std::raw::load8(src + pos + 1) & 63, 6) | (std::raw::load8(src + pos + 2) & 63)
+            } else if w == 4 {
+                c = std::raw::shl(c0 & 7, 18) | std::raw::shl(std::raw::load8(src + pos + 1) & 63, 12) | std::raw::shl(std::raw::load8(src + pos + 2) & 63, 6) | (std::raw::load8(src + pos + 3) & 63)
+            }
+            let ok = c == 9 || c == 10 || c == 13 || (c >= 32 && c <= 126) || c == 133 || (c >= 160 && c <= 55295) || (c >= 57344 && c <= 65533) || (c >= 65536 && c <= 1114111)
+            if !ok {
+                std::raw::store(y + 64, pos)
+                std::raw::store(y + 48, unread)
+                std::raw::store(y + 80, 1)
+                std::raw::store(y + 88, 31)
+                std::raw::store(y + 96, pos)
+                return false
+            }
+            pos += w
+            unread += 1
+        }
+        std::raw::store(y + 64, pos)
+        std::raw::store(y + 48, unread)
+        if std::raw::load(y + 72) != 0 {
+            std::raw::store(y + 48, unread + 1)
+            return true
+        }
+    }
+    true
+}
+
+fn ym_cache(y: int, length: int) -> bool {
+    if std::raw::load(y + 48) >= length {
+        return true
+    }
+    ym_update(y, length)
+}
+
+// ------------------------------------------------------------ clases de caracteres
+
+fn ym_is_alpha(y: int, k: int) -> bool {
+    let c = ym_ch(y, k)
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+}
+
+fn ym_is_digit(y: int, k: int) -> bool {
+    let c = ym_ch(y, k)
+    c >= 48 && c <= 57
+}
+
+fn ym_is_hex(y: int, k: int) -> bool {
+    let c = ym_ch(y, k)
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn ym_as_hex(y: int, k: int) -> int {
+    let c = ym_ch(y, k)
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    c - 48
+}
+
+fn ym_is_blank(y: int, k: int) -> bool {
+    let c = ym_ch(y, k)
+    c == 32 || c == 9
+}
+
+fn ym_is_break(y: int, k: int) -> bool {
+    let c = ym_ch(y, k)
+    if c == 13 || c == 10 {
+        return true
+    }
+    if c == 194 {
+        return ym_ch(y, k + 1) == 133
+    }
+    if c == 226 {
+        let c2 = ym_ch(y, k + 2)
+        return ym_ch(y, k + 1) == 128 && (c2 == 168 || c2 == 169)
+    }
+    false
+}
+
+fn ym_is_breakz(y: int, k: int) -> bool {
+    ym_is_break(y, k) || ym_ch(y, k) == 0
+}
+
+fn ym_is_blankz(y: int, k: int) -> bool {
+    ym_is_blank(y, k) || ym_is_breakz(y, k)
+}
+
+fn ym_is_crlf(y: int) -> bool {
+    ym_ch(y, 0) == 13 && ym_ch(y, 1) == 10
+}
+
+// ------------------------------------------------------------ avance
+
+fn ym_skip(y: int) {
+    let w = ym_width_of(ym_ch(y, 0))
+    std::raw::store(y + 24, ym_mi(y) + w)
+    std::raw::store(y + 40, ym_mc(y) + 1)
+    std::raw::store(y + 48, std::raw::load(y + 48) - 1)
+    std::raw::store(y + 16, std::raw::load(y + 16) + w)
+}
+
+fn ym_newline(y: int, bytes: int, chars: int) {
+    std::raw::store(y + 24, ym_mi(y) + bytes)
+    std::raw::store(y + 40, 0)
+    std::raw::store(y + 32, ym_ml(y) + 1)
+    std::raw::store(y + 48, std::raw::load(y + 48) - chars)
+    std::raw::store(y + 16, std::raw::load(y + 16) + bytes)
+}
+
+fn ym_skip_line(y: int) {
+    if ym_is_crlf(y) {
+        ym_newline(y, 2, 2)
+    } else if ym_is_break(y, 0) {
+        ym_newline(y, ym_width_of(ym_ch(y, 0)), 1)
+    }
+}
+
+// READ: copia el carácter actual al texto.
+fn ym_read(y: int, b: int) {
+    let w = ym_width_of(ym_ch(y, 0))
+    sb_raw(b, std::raw::load(y) + std::raw::load(y + 16), w)
+    std::raw::store(y + 24, ym_mi(y) + w)
+    std::raw::store(y + 40, ym_mc(y) + 1)
+    std::raw::store(y + 48, std::raw::load(y + 48) - 1)
+    std::raw::store(y + 16, std::raw::load(y + 16) + w)
+}
+
+// READ_LINE: CR, LF, CRLF y NEL pasan a '\n'; LS y PS se copian tal cual.
+fn ym_read_line(y: int, b: int) {
+    let c = ym_ch(y, 0)
+    if ym_is_crlf(y) {
+        sb_byte(b, 10)
+        ym_newline(y, 2, 2)
+    } else if c == 13 || c == 10 {
+        sb_byte(b, 10)
+        ym_newline(y, 1, 1)
+    } else if c == 194 && ym_ch(y, 1) == 133 {
+        sb_byte(b, 10)
+        ym_newline(y, 2, 1)
+    } else if c == 226 && ym_ch(y, 1) == 128 && (ym_ch(y, 2) == 168 || ym_ch(y, 2) == 169) {
+        sb_raw(b, std::raw::load(y) + std::raw::load(y + 16), 3)
+        ym_newline(y, 3, 1)
+    }
+}
+
+// ------------------------------------------------------------ cola de tokens
+//
+// Token (96 bytes): +0 tipo, +8..+24 start_mark, +32..+48 end_mark,
+// +56 texto (valor / ancla / handle), +64 segundo texto (sufijo / prefijo),
+// +72 estilo o versión mayor, +80 versión menor.
+// Tipos: 1 STREAM-START, 2 STREAM-END, 3 VERSION-DIRECTIVE, 4 TAG-DIRECTIVE,
+// 5 DOCUMENT-START, 6 DOCUMENT-END, 7 BLOCK-SEQUENCE-START,
+// 8 BLOCK-MAPPING-START, 9 BLOCK-END, 10 FLOW-SEQUENCE-START,
+// 11 FLOW-SEQUENCE-END, 12 FLOW-MAPPING-START, 13 FLOW-MAPPING-END,
+// 14 BLOCK-ENTRY, 15 FLOW-ENTRY, 16 KEY, 17 VALUE, 18 ALIAS, 19 ANCHOR,
+// 20 TAG, 21 SCALAR. Estilos: 1 plain, 2 simple, 3 doble, 4 literal, 5 plegado.
+
+fn ym_q_count(y: int) -> int {
+    std::raw::load(y + 240) - std::raw::load(y + 232)
+}
+
+// Deja sitio para un token más al final de la cola.
+fn ym_q_room(y: int) {
+    let buf = std::raw::load(y + 224)
+    let head = std::raw::load(y + 232)
+    let tail = std::raw::load(y + 240)
+    let cap = std::raw::load(y + 248)
+    if tail < cap {
+        return
+    }
+    if head > 0 {
+        rt_copy(buf, buf + head * 96, (tail - head) * 96)
+        std::raw::store(y + 232, 0)
+        std::raw::store(y + 240, tail - head)
+        return
+    }
+    let bigger = rt_alloc(cap * 192)
+    rt_copy(bigger, buf, cap * 96)
+    rt_free_block(buf)
+    std::raw::store(y + 224, bigger)
+    std::raw::store(y + 248, cap * 2)
+}
+
+fn ym_tok_fill(t: int, kind: int, si: int, sl: int, sc: int, ei: int, el: int, ec: int) {
+    std::raw::store(t, kind)
+    std::raw::store(t + 8, si)
+    std::raw::store(t + 16, sl)
+    std::raw::store(t + 24, sc)
+    std::raw::store(t + 32, ei)
+    std::raw::store(t + 40, el)
+    std::raw::store(t + 48, ec)
+    std::raw::store(t + 56, 0)
+    std::raw::store(t + 64, 0)
+    std::raw::store(t + 72, 0)
+    std::raw::store(t + 80, 0)
+}
+
+// ENQUEUE: devuelve el token nuevo (al final).
+fn ym_enqueue(y: int, kind: int, si: int, sl: int, sc: int, ei: int, el: int, ec: int) -> int {
+    ym_q_room(y)
+    let tail = std::raw::load(y + 240)
+    let t = std::raw::load(y + 224) + tail * 96
+    std::raw::store(y + 240, tail + 1)
+    ym_tok_fill(t, kind, si, sl, sc, ei, el, ec)
+    t
+}
+
+// QUEUE_INSERT en la posición `at` contando desde la cabeza.
+fn ym_q_insert(y: int, at: int, kind: int, si: int, sl: int, sc: int) {
+    ym_q_room(y)
+    let buf = std::raw::load(y + 224)
+    let head = std::raw::load(y + 232)
+    let tail = std::raw::load(y + 240)
+    let mut k = tail
+    while k > head + at {
+        let dst = buf + k * 96
+        let src = dst - 96
+        let mut w = 0
+        while w < 96 {
+            std::raw::store(dst + w, std::raw::load(src + w))
+            w += 8
+        }
+        k -= 1
+    }
+    std::raw::store(y + 240, tail + 1)
+    ym_tok_fill(buf + (head + at) * 96, kind, si, sl, sc, si, sl, sc)
+}
+
+// Token de la cabeza (sin sacarlo).
+fn ym_q_head(y: int) -> int {
+    std::raw::load(y + 224) + std::raw::load(y + 232) * 96
+}
+
+// ------------------------------------------------------------ simple keys
+//
+// Cada simple key son 6 palabras: possible, required, token_number, mark.
+
+fn ym_sk_count(y: int) -> int {
+    ym_vlen(std::raw::load(y + 264)) / 6
+}
+
+fn ym_sk(y: int, i: int) -> int {
+    ym_vat(std::raw::load(y + 264), i * 6)
+}
+
+fn ym_sk_push(y: int) {
+    let v = std::raw::load(y + 264)
+    let mut k = 0
+    while k < 6 {
+        ym_vpush(v, 0)
+        k += 1
+    }
+}
+
+fn ym_sk_pop(y: int) {
+    let v = std::raw::load(y + 264)
+    std::raw::store(v, std::raw::load(v) - 6)
+}
+
+fn ym_stale_simple_keys(y: int) -> bool {
+    let count = ym_sk_count(y)
+    let mut i = std::raw::load(y + 200)
+    while i < count {
+        let k = ym_sk(y, i)
+        if std::raw::load(k) != 0 && (std::raw::load(k + 32) < ym_ml(y) || std::raw::load(k + 24) + 1024 < ym_mi(y)) {
+            if std::raw::load(k + 8) != 0 {
+                ym_scan_err(y, 52, std::raw::load(k + 24), std::raw::load(k + 32), std::raw::load(k + 40), 2)
+                return false
+            }
+            std::raw::store(k, 0)
+            if std::raw::load(y + 200) == i {
+                std::raw::store(y + 200, i + 1)
+            }
+        }
+        i += 1
+    }
+    true
+}
+
+fn ym_remove_simple_key(y: int) -> bool {
+    let k = ym_sk(y, ym_sk_count(y) - 1)
+    if std::raw::load(k) != 0 && std::raw::load(k + 8) != 0 {
+        ym_scan_err(y, 52, std::raw::load(k + 24), std::raw::load(k + 32), std::raw::load(k + 40), 2)
+        return false
+    }
+    std::raw::store(k, 0)
+    true
+}
+
+fn ym_save_simple_key(y: int) -> bool {
+    let required = std::raw::load(y + 176) == 0 && std::raw::load(y + 184) == ym_mc(y)
+    if std::raw::load(y + 192) != 0 {
+        let number = std::raw::load(y + 208) + ym_q_count(y)
+        if !ym_remove_simple_key(y) {
+            return false
+        }
+        let count = ym_sk_count(y)
+        let k = ym_sk(y, count - 1)
+        std::raw::store(k, 1)
+        if required {
+            std::raw::store(k + 8, 1)
+        } else {
+            std::raw::store(k + 8, 0)
+        }
+        std::raw::store(k + 16, number)
+        std::raw::store(k + 24, ym_mi(y))
+        std::raw::store(k + 32, ym_ml(y))
+        std::raw::store(k + 40, ym_mc(y))
+        if std::raw::load(y + 200) == count {
+            std::raw::store(y + 200, count - 1)
+        }
+    }
+    true
+}
+
+fn ym_increase_flow_level(y: int) {
+    ym_sk_push(y)
+    std::raw::store(y + 176, std::raw::load(y + 176) + 1)
+}
+
+fn ym_decrease_flow_level(y: int) {
+    if std::raw::load(y + 176) != 0 {
+        std::raw::store(y + 176, std::raw::load(y + 176) - 1)
+        if std::raw::load(y + 200) == ym_sk_count(y) {
+            std::raw::store(y + 200, std::raw::load(y + 200) - 1)
+        }
+        ym_sk_pop(y)
+    }
+}
+
+// ------------------------------------------------------------ indentación
+
+// number = -1: al final de la cola; si no, número de token donde insertar.
+fn ym_roll_indent(y: int, column: int, number: int, kind: int, mi: int, ml: int, mc: int) {
+    if std::raw::load(y + 176) != 0 {
+        return
+    }
+    if std::raw::load(y + 184) < column {
+        ym_vpush(std::raw::load(y + 256), std::raw::load(y + 184))
+        std::raw::store(y + 184, column)
+        if number == -1 {
+            let t = ym_enqueue(y, kind, mi, ml, mc, mi, ml, mc)
+        } else {
+            ym_q_insert(y, number - std::raw::load(y + 208), kind, mi, ml, mc)
+        }
+    }
+}
+
+fn ym_unroll_indent(y: int, column: int) {
+    if std::raw::load(y + 176) != 0 {
+        return
+    }
+    while std::raw::load(y + 184) > column {
+        let t = ym_enqueue(y, 9, ym_mi(y), ym_ml(y), ym_mc(y), ym_mi(y), ym_ml(y), ym_mc(y))
+        std::raw::store(y + 184, ym_vpop(std::raw::load(y + 256)))
+    }
+}
+
+// ------------------------------------------------------------ fetch_*
+
+fn ym_fetch_more_tokens(y: int) -> bool {
+    while true {
+        let mut need_more = false
+        if ym_q_count(y) == 0 {
+            need_more = true
+        } else {
+            if !ym_stale_simple_keys(y) {
+                return false
+            }
+            let count = ym_sk_count(y)
+            let mut i = std::raw::load(y + 200)
+            while i < count {
+                let k = ym_sk(y, i)
+                if std::raw::load(k) != 0 && std::raw::load(k + 16) == std::raw::load(y + 208) {
+                    need_more = true
+                    break
+                }
+                i += 1
+            }
+        }
+        if !need_more {
+            break
+        }
+        if !ym_fetch_next_token(y) {
+            return false
+        }
+    }
+    std::raw::store(y + 216, 1)
+    true
+}
+
+fn ym_fetch_stream_start(y: int) {
+    std::raw::store(y + 184, -1)
+    ym_sk_push(y)
+    std::raw::store(y + 200, 1)
+    std::raw::store(y + 192, 1)
+    std::raw::store(y + 160, 1)
+    let t = ym_enqueue(y, 1, ym_mi(y), ym_ml(y), ym_mc(y), ym_mi(y), ym_ml(y), ym_mc(y))
+}
+
+fn ym_fetch_stream_end(y: int) -> bool {
+    if ym_mc(y) != 0 {
+        std::raw::store(y + 40, 0)
+        std::raw::store(y + 32, ym_ml(y) + 1)
+    }
+    ym_unroll_indent(y, -1)
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    let t = ym_enqueue(y, 2, ym_mi(y), ym_ml(y), ym_mc(y), ym_mi(y), ym_ml(y), ym_mc(y))
+    true
+}
+
+fn ym_fetch_directive(y: int) -> bool {
+    ym_unroll_indent(y, -1)
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    ym_scan_directive(y)
+}
+
+fn ym_fetch_document_indicator(y: int, kind: int) -> bool {
+    ym_unroll_indent(y, -1)
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    ym_skip(y)
+    ym_skip(y)
+    let t = ym_enqueue(y, kind, si, sl, sc, ym_mi(y), ym_ml(y), ym_mc(y))
+    true
+}
+
+// Token de un solo carácter en la posición actual.
+fn ym_one_char_token(y: int, kind: int) {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    let t = ym_enqueue(y, kind, si, sl, sc, ym_mi(y), ym_ml(y), ym_mc(y))
+}
+
+fn ym_fetch_flow_collection_start(y: int, kind: int) -> bool {
+    if !ym_save_simple_key(y) {
+        return false
+    }
+    ym_increase_flow_level(y)
+    std::raw::store(y + 192, 1)
+    ym_one_char_token(y, kind)
+    true
+}
+
+fn ym_fetch_flow_collection_end(y: int, kind: int) -> bool {
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    ym_decrease_flow_level(y)
+    std::raw::store(y + 192, 0)
+    ym_one_char_token(y, kind)
+    true
+}
+
+fn ym_fetch_flow_entry(y: int) -> bool {
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 1)
+    ym_one_char_token(y, 15)
+    true
+}
+
+fn ym_fetch_block_entry(y: int) -> bool {
+    if std::raw::load(y + 176) == 0 {
+        if std::raw::load(y + 192) == 0 {
+            ym_scan_err_here(y, 0, 3)
+            return false
+        }
+        ym_roll_indent(y, ym_mc(y), -1, 7, ym_mi(y), ym_ml(y), ym_mc(y))
+    }
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 1)
+    ym_one_char_token(y, 14)
+    true
+}
+
+fn ym_flow0(y: int) -> int {
+    if std::raw::load(y + 176) == 0 {
+        return 1
+    }
+    0
+}
+
+fn ym_fetch_key(y: int) -> bool {
+    if std::raw::load(y + 176) == 0 {
+        if std::raw::load(y + 192) == 0 {
+            ym_scan_err_here(y, 0, 4)
+            return false
+        }
+        ym_roll_indent(y, ym_mc(y), -1, 8, ym_mi(y), ym_ml(y), ym_mc(y))
+    }
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, ym_flow0(y))
+    ym_one_char_token(y, 16)
+    true
+}
+
+fn ym_fetch_value(y: int) -> bool {
+    let k = ym_sk(y, ym_sk_count(y) - 1)
+    if std::raw::load(k) != 0 {
+        let number = std::raw::load(k + 16)
+        let ki = std::raw::load(k + 24)
+        let kl = std::raw::load(k + 32)
+        let kc = std::raw::load(k + 40)
+        ym_q_insert(y, number - std::raw::load(y + 208), 16, ki, kl, kc)
+        ym_roll_indent(y, kc, number, 8, ki, kl, kc)
+        std::raw::store(k, 0)
+        std::raw::store(y + 192, 0)
+    } else {
+        if std::raw::load(y + 176) == 0 {
+            if std::raw::load(y + 192) == 0 {
+                ym_scan_err_here(y, 0, 5)
+                return false
+            }
+            ym_roll_indent(y, ym_mc(y), -1, 8, ym_mi(y), ym_ml(y), ym_mc(y))
+        }
+        std::raw::store(y + 192, ym_flow0(y))
+    }
+    ym_one_char_token(y, 17)
+    true
+}
+
+fn ym_fetch_next_token(y: int) -> bool {
+    if !ym_cache(y, 1) {
+        return false
+    }
+    if std::raw::load(y + 160) == 0 {
+        ym_fetch_stream_start(y)
+        return true
+    }
+    if !ym_scan_to_next_token(y) {
+        return false
+    }
+    if !ym_stale_simple_keys(y) {
+        return false
+    }
+    ym_unroll_indent(y, ym_mc(y))
+    if !ym_cache(y, 4) {
+        return false
+    }
+    let c = ym_ch(y, 0)
+    if c == 0 {
+        return ym_fetch_stream_end(y)
+    }
+    let col0 = ym_mc(y) == 0
+    if col0 && c == 37 {
+        return ym_fetch_directive(y)
+    }
+    if col0 && c == 45 && ym_ch(y, 1) == 45 && ym_ch(y, 2) == 45 && ym_is_blankz(y, 3) {
+        return ym_fetch_document_indicator(y, 5)
+    }
+    if col0 && c == 46 && ym_ch(y, 1) == 46 && ym_ch(y, 2) == 46 && ym_is_blankz(y, 3) {
+        return ym_fetch_document_indicator(y, 6)
+    }
+    if c == 91 {
+        return ym_fetch_flow_collection_start(y, 10)
+    }
+    if c == 123 {
+        return ym_fetch_flow_collection_start(y, 12)
+    }
+    if c == 93 {
+        return ym_fetch_flow_collection_end(y, 11)
+    }
+    if c == 125 {
+        return ym_fetch_flow_collection_end(y, 13)
+    }
+    if c == 44 {
+        return ym_fetch_flow_entry(y)
+    }
+    let flow = std::raw::load(y + 176) != 0
+    if c == 45 && ym_is_blankz(y, 1) {
+        return ym_fetch_block_entry(y)
+    }
+    if c == 63 && (flow || ym_is_blankz(y, 1)) {
+        return ym_fetch_key(y)
+    }
+    if c == 58 && (flow || ym_is_blankz(y, 1)) {
+        return ym_fetch_value(y)
+    }
+    if c == 42 {
+        return ym_fetch_anchor(y, 18)
+    }
+    if c == 38 {
+        return ym_fetch_anchor(y, 19)
+    }
+    if c == 33 {
+        return ym_fetch_tag(y)
+    }
+    if c == 124 && !flow {
+        return ym_fetch_block_scalar(y, true)
+    }
+    if c == 62 && !flow {
+        return ym_fetch_block_scalar(y, false)
+    }
+    if c == 39 {
+        return ym_fetch_flow_scalar(y, true)
+    }
+    if c == 34 {
+        return ym_fetch_flow_scalar(y, false)
+    }
+    let indicator = c == 45 || c == 63 || c == 58 || c == 44 || c == 91 || c == 93 || c == 123 || c == 125 || c == 35 || c == 38 || c == 42 || c == 33 || c == 124 || c == 62 || c == 39 || c == 34 || c == 37 || c == 64 || c == 96
+    if !(ym_is_blankz(y, 0) || indicator) || (c == 45 && !ym_is_blank(y, 1)) || (!flow && (c == 63 || c == 58) && !ym_is_blankz(y, 1)) {
+        return ym_fetch_plain_scalar(y)
+    }
+    ym_scan_err_here(y, 51, 1)
+    false
+}
+
+fn ym_fetch_anchor(y: int, kind: int) -> bool {
+    if !ym_save_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    ym_scan_anchor(y, kind)
+}
+
+fn ym_fetch_tag(y: int) -> bool {
+    if !ym_save_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    ym_scan_tag(y)
+}
+
+fn ym_fetch_block_scalar(y: int, literal: bool) -> bool {
+    if !ym_remove_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 1)
+    ym_scan_block_scalar(y, literal)
+}
+
+fn ym_fetch_flow_scalar(y: int, single: bool) -> bool {
+    if !ym_save_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    ym_scan_flow_scalar(y, single)
+}
+
+fn ym_fetch_plain_scalar(y: int) -> bool {
+    if !ym_save_simple_key(y) {
+        return false
+    }
+    std::raw::store(y + 192, 0)
+    ym_scan_plain_scalar(y)
+}
+
+// ------------------------------------------------------------ espacios y comentarios
+
+fn ym_scan_to_next_token(y: int) -> bool {
+    while true {
+        if !ym_cache(y, 1) {
+            return false
+        }
+        if ym_mc(y) == 0 && ym_ch(y, 0) == 239 && ym_ch(y, 1) == 187 && ym_ch(y, 2) == 191 {
+            ym_skip(y)
+        }
+        if !ym_cache(y, 1) {
+            return false
+        }
+        while ym_ch(y, 0) == 32 || ((std::raw::load(y + 176) != 0 || std::raw::load(y + 192) == 0) && ym_ch(y, 0) == 9) {
+            ym_skip(y)
+            if !ym_cache(y, 1) {
+                return false
+            }
+        }
+        if ym_ch(y, 0) == 35 {
+            while !ym_is_breakz(y, 0) {
+                ym_skip(y)
+                if !ym_cache(y, 1) {
+                    return false
+                }
+            }
+        }
+        if !ym_is_break(y, 0) {
+            break
+        }
+        if !ym_cache(y, 2) {
+            return false
+        }
+        ym_skip_line(y)
+        if std::raw::load(y + 176) == 0 {
+            std::raw::store(y + 192, 1)
+        }
+    }
+    true
+}
+
+// Salta blancos; true si pudo (false = error del lector).
+fn ym_skip_blanks(y: int) -> bool {
+    if !ym_cache(y, 1) {
+        return false
+    }
+    while ym_is_blank(y, 0) {
+        ym_skip(y)
+        if !ym_cache(y, 1) {
+            return false
+        }
+    }
+    true
+}
+
+// Blancos, un comentario opcional y el fin de línea obligatorio (tras una
+// directiva o la cabecera de un escalar de bloque).
+fn ym_line_end(y: int, context: int, si: int, sl: int, sc: int) -> bool {
+    if !ym_skip_blanks(y) {
+        return false
+    }
+    if ym_ch(y, 0) == 35 {
+        while !ym_is_breakz(y, 0) {
+            ym_skip(y)
+            if !ym_cache(y, 1) {
+                return false
+            }
+        }
+    }
+    if !ym_is_breakz(y, 0) {
+        ym_scan_err(y, context, si, sl, sc, 7)
+        return false
+    }
+    if ym_is_break(y, 0) {
+        if !ym_cache(y, 2) {
+            return false
+        }
+        ym_skip_line(y)
+    }
+    true
+}
+
+// ------------------------------------------------------------ directivas
+
+fn ym_version_number(y: int, si: int, sl: int, sc: int) -> int {
+    if !ym_cache(y, 1) {
+        return -1
+    }
+    let mut value = 0
+    let mut length = 0
+    while ym_is_digit(y, 0) {
+        length += 1
+        if length > 9 {
+            ym_scan_err(y, 54, si, sl, sc, 11)
+            return -1
+        }
+        value = value * 10 + ym_ch(y, 0) - 48
+        ym_skip(y)
+        if !ym_cache(y, 1) {
+            return -1
+        }
+    }
+    if length == 0 {
+        ym_scan_err(y, 54, si, sl, sc, 12)
+        return -1
+    }
+    value
+}
+
+fn ym_sb_is(b: int, a0: int, a1: int, a2: int, a3: int, n: int) -> bool {
+    if std::raw::load(b) != n {
+        return false
+    }
+    let d = std::raw::load(b + 16)
+    if std::raw::load8(d) != a0 || std::raw::load8(d + 1) != a1 || std::raw::load8(d + 2) != a2 {
+        return false
+    }
+    n == 3 || std::raw::load8(d + 3) == a3
+}
+
+fn ym_scan_directive(y: int) -> bool {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    if !ym_cache(y, 1) {
+        return false
+    }
+    let name = ym_sb(y)
+    while ym_is_alpha(y, 0) {
+        ym_read(y, name)
+        if !ym_cache(y, 1) {
+            return false
+        }
+    }
+    if sb_len(name) == 0 {
+        ym_scan_err(y, 53, si, sl, sc, 8)
+        return false
+    }
+    if !ym_is_blankz(y, 0) {
+        ym_scan_err(y, 53, si, sl, sc, 9)
+        return false
+    }
+    let mut kind = 0
+    let mut major = 0
+    let mut minor = 0
+    let mut handle = 0
+    let mut prefix = 0
+    if ym_sb_is(name, 89, 65, 77, 76, 4) {
+        if !ym_skip_blanks(y) {
+            return false
+        }
+        major = ym_version_number(y, si, sl, sc)
+        if major < 0 {
+            return false
+        }
+        if ym_ch(y, 0) != 46 {
+            ym_scan_err(y, 54, si, sl, sc, 10)
+            return false
+        }
+        ym_skip(y)
+        minor = ym_version_number(y, si, sl, sc)
+        if minor < 0 {
+            return false
+        }
+        kind = 3
+    } else if ym_sb_is(name, 84, 65, 71, 0, 3) {
+        if !ym_skip_blanks(y) {
+            return false
+        }
+        handle = ym_scan_tag_handle(y, true, si, sl, sc)
+        if handle == 0 {
+            return false
+        }
+        if !ym_cache(y, 1) {
+            return false
+        }
+        if !ym_is_blank(y, 0) {
+            ym_scan_err(y, 55, si, sl, sc, 13)
+            return false
+        }
+        if !ym_skip_blanks(y) {
+            return false
+        }
+        prefix = ym_scan_tag_uri(y, true, true, 0, si, sl, sc)
+        if prefix == 0 {
+            return false
+        }
+        if !ym_cache(y, 1) {
+            return false
+        }
+        if !ym_is_blankz(y, 0) {
+            ym_scan_err(y, 55, si, sl, sc, 14)
+            return false
+        }
+        kind = 4
+    } else {
+        ym_scan_err(y, 53, si, sl, sc, 6)
+        return false
+    }
+    let ei = ym_mi(y)
+    let el = ym_ml(y)
+    let ec = ym_mc(y)
+    if !ym_line_end(y, 53, si, sl, sc) {
+        return false
+    }
+    let t = ym_enqueue(y, kind, si, sl, sc, ei, el, ec)
+    std::raw::store(t + 56, handle)
+    std::raw::store(t + 64, prefix)
+    std::raw::store(t + 72, major)
+    std::raw::store(t + 80, minor)
+    true
+}
+
+// ------------------------------------------------------------ anclas y alias
+
+fn ym_scan_anchor(y: int, kind: int) -> bool {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    if !ym_cache(y, 1) {
+        return false
+    }
+    let text = ym_sb(y)
+    let mut length = 0
+    while ym_is_alpha(y, 0) {
+        ym_read(y, text)
+        if !ym_cache(y, 1) {
+            return false
+        }
+        length += 1
+    }
+    let ei = ym_mi(y)
+    let el = ym_ml(y)
+    let ec = ym_mc(y)
+    let c = ym_ch(y, 0)
+    if length == 0 || !(ym_is_blankz(y, 0) || c == 63 || c == 58 || c == 44 || c == 93 || c == 125 || c == 37 || c == 64 || c == 96) {
+        let mut context = 57
+        if kind == 19 {
+            context = 56
+        }
+        ym_scan_err(y, context, si, sl, sc, 15)
+        return false
+    }
+    let t = ym_enqueue(y, kind, si, sl, sc, ei, el, ec)
+    std::raw::store(t + 56, text)
+    true
+}
+
+// ------------------------------------------------------------ tags
+
+fn ym_scan_tag_handle(y: int, directive: bool, si: int, sl: int, sc: int) -> int {
+    if !ym_cache(y, 1) {
+        return 0
+    }
+    if ym_ch(y, 0) != 33 {
+        let mut context = 58
+        if directive {
+            context = 72
+        }
+        ym_scan_err(y, context, si, sl, sc, 17)
+        return 0
+    }
+    let text = ym_sb(y)
+    ym_read(y, text)
+    if !ym_cache(y, 1) {
+        return 0
+    }
+    while ym_is_alpha(y, 0) {
+        ym_read(y, text)
+        if !ym_cache(y, 1) {
+            return 0
+        }
+    }
+    if ym_ch(y, 0) == 33 {
+        ym_read(y, text)
+    } else if directive && sb_len(text) != 1 {
+        ym_scan_err(y, 62, si, sl, sc, 17)
+        return 0
+    }
+    text
+}
+
+fn ym_uri_context(directive: bool) -> int {
+    if directive {
+        return 63
+    }
+    64
+}
+
+fn ym_scan_uri_escapes(y: int, directive: bool, si: int, sl: int, sc: int, text: int) -> bool {
+    let mut width = 0
+    while true {
+        if !ym_cache(y, 3) {
+            return false
+        }
+        if !(ym_ch(y, 0) == 37 && ym_is_hex(y, 1) && ym_is_hex(y, 2)) {
+            ym_scan_err(y, ym_uri_context(directive), si, sl, sc, 19)
+            return false
+        }
+        let octet = ym_as_hex(y, 1) * 16 + ym_as_hex(y, 2)
+        if width == 0 {
+            if (octet & 128) == 0 {
+                width = 1
+            } else if (octet & 224) == 192 {
+                width = 2
+            } else if (octet & 240) == 224 {
+                width = 3
+            } else if (octet & 248) == 240 {
+                width = 4
+            } else {
+                ym_scan_err(y, ym_uri_context(directive), si, sl, sc, 20)
+                return false
+            }
+        } else if (octet & 192) != 128 {
+            ym_scan_err(y, ym_uri_context(directive), si, sl, sc, 21)
+            return false
+        }
+        sb_byte(text, octet)
+        ym_skip(y)
+        ym_skip(y)
+        ym_skip(y)
+        width -= 1
+        if width == 0 {
+            break
+        }
+    }
+    true
+}
+
+// head = 0 si no hay cabeza; si la hay se copia sin su primer carácter.
+fn ym_scan_tag_uri(y: int, uri_char: bool, directive: bool, head: int, si: int, sl: int, sc: int) -> int {
+    let mut length = 0
+    if head != 0 {
+        length = ym_sb_clen(head)
+    }
+    let text = ym_sb(y)
+    if length > 1 {
+        sb_raw(text, std::raw::load(head + 16) + 1, length - 1)
+    }
+    if !ym_cache(y, 1) {
+        return 0
+    }
+    while true {
+        let c = ym_ch(y, 0)
+        let ok = ym_is_alpha(y, 0) || c == 59 || c == 47 || c == 63 || c == 58 || c == 64 || c == 38 || c == 61 || c == 43 || c == 36 || c == 46 || c == 37 || c == 33 || c == 126 || c == 42 || c == 39 || c == 40 || c == 41 || (uri_char && (c == 44 || c == 91 || c == 93))
+        if !ok {
+            break
+        }
+        if c == 37 {
+            if !ym_scan_uri_escapes(y, directive, si, sl, sc, text) {
+                return 0
+            }
+        } else {
+            ym_read(y, text)
+        }
+        length += 1
+        if !ym_cache(y, 1) {
+            return 0
+        }
+    }
+    if length == 0 {
+        ym_scan_err(y, ym_uri_context(directive), si, sl, sc, 18)
+        return 0
+    }
+    text
+}
+
+fn ym_scan_tag(y: int) -> bool {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    if !ym_cache(y, 2) {
+        return false
+    }
+    let mut handle = 0
+    let mut suffix = 0
+    if ym_ch(y, 1) == 60 {
+        handle = ym_sb(y)
+        ym_skip(y)
+        ym_skip(y)
+        suffix = ym_scan_tag_uri(y, true, false, 0, si, sl, sc)
+        if suffix == 0 {
+            return false
+        }
+        if ym_ch(y, 0) != 62 {
+            ym_scan_err(y, 58, si, sl, sc, 16)
+            return false
+        }
+        ym_skip(y)
+    } else {
+        handle = ym_scan_tag_handle(y, false, si, sl, sc)
+        if handle == 0 {
+            return false
+        }
+        let hl = sb_len(handle)
+        let hd = std::raw::load(handle + 16)
+        if hl >= 2 && std::raw::load8(hd + hl - 1) == 33 {
+            suffix = ym_scan_tag_uri(y, false, false, 0, si, sl, sc)
+            if suffix == 0 {
+                return false
+            }
+        } else {
+            suffix = ym_scan_tag_uri(y, false, false, handle, si, sl, sc)
+            if suffix == 0 {
+                return false
+            }
+            handle = ym_sb(y)
+            sb_byte(handle, 33)
+            if ym_sb_first(suffix) == 0 {
+                let tmp = handle
+                handle = suffix
+                suffix = tmp
+            }
+        }
+    }
+    if !ym_cache(y, 1) {
+        return false
+    }
+    if !ym_is_blankz(y, 0) {
+        if std::raw::load(y + 176) == 0 || ym_ch(y, 0) != 44 {
+            ym_scan_err(y, 58, si, sl, sc, 14)
+            return false
+        }
+    }
+    let t = ym_enqueue(y, 20, si, sl, sc, ym_mi(y), ym_ml(y), ym_mc(y))
+    std::raw::store(t + 56, handle)
+    std::raw::store(t + 64, suffix)
+    true
+}
+
+// ------------------------------------------------------------ escalares de bloque
+
+// st: +0 indent, +8..+24 end_mark.
+fn ym_block_breaks(y: int, st: int, breaks: int, si: int, sl: int, sc: int) -> bool {
+    let mut max_indent = 0
+    std::raw::store(st + 8, ym_mi(y))
+    std::raw::store(st + 16, ym_ml(y))
+    std::raw::store(st + 24, ym_mc(y))
+    while true {
+        if !ym_cache(y, 1) {
+            return false
+        }
+        let mut indent = std::raw::load(st)
+        while (indent == 0 || ym_mc(y) < indent) && ym_ch(y, 0) == 32 {
+            ym_skip(y)
+            if !ym_cache(y, 1) {
+                return false
+            }
+        }
+        if ym_mc(y) > max_indent {
+            max_indent = ym_mc(y)
+        }
+        if (indent == 0 || ym_mc(y) < indent) && ym_ch(y, 0) == 9 {
+            ym_scan_err(y, 59, si, sl, sc, 23)
+            return false
+        }
+        if !ym_is_break(y, 0) {
+            break
+        }
+        if !ym_cache(y, 2) {
+            return false
+        }
+        ym_read_line(y, breaks)
+        std::raw::store(st + 8, ym_mi(y))
+        std::raw::store(st + 16, ym_ml(y))
+        std::raw::store(st + 24, ym_mc(y))
+    }
+    if std::raw::load(st) == 0 {
+        let mut indent = max_indent
+        if indent < std::raw::load(y + 184) + 1 {
+            indent = std::raw::load(y + 184) + 1
+        }
+        if indent < 1 {
+            indent = 1
+        }
+        std::raw::store(st, indent)
+    }
+    true
+}
+
+fn ym_scan_block_scalar(y: int, literal: bool) -> bool {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    if !ym_cache(y, 1) {
+        return false
+    }
+    let mut chomping = 0
+    let mut increment = 0
+    let c = ym_ch(y, 0)
+    if c == 43 || c == 45 {
+        if c == 43 {
+            chomping = 1
+        } else {
+            chomping = -1
+        }
+        ym_skip(y)
+        if !ym_cache(y, 1) {
+            return false
+        }
+        if ym_is_digit(y, 0) {
+            if ym_ch(y, 0) == 48 {
+                ym_scan_err(y, 59, si, sl, sc, 22)
+                return false
+            }
+            increment = ym_ch(y, 0) - 48
+            ym_skip(y)
+        }
+    } else if ym_is_digit(y, 0) {
+        if c == 48 {
+            ym_scan_err(y, 59, si, sl, sc, 22)
+            return false
+        }
+        increment = c - 48
+        ym_skip(y)
+        if !ym_cache(y, 1) {
+            return false
+        }
+        let c2 = ym_ch(y, 0)
+        if c2 == 43 || c2 == 45 {
+            if c2 == 43 {
+                chomping = 1
+            } else {
+                chomping = -1
+            }
+            ym_skip(y)
+        }
+    }
+    if !ym_line_end(y, 59, si, sl, sc) {
+        return false
+    }
+    let st = rt_alloc(32)
+    std::raw::store(st, 0)
+    std::raw::store(st + 8, ym_mi(y))
+    std::raw::store(st + 16, ym_ml(y))
+    std::raw::store(st + 24, ym_mc(y))
+    if increment != 0 {
+        let base = std::raw::load(y + 184)
+        if base >= 0 {
+            std::raw::store(st, base + increment)
+        } else {
+            std::raw::store(st, increment)
+        }
+    }
+    let text = ym_sb(y)
+    let leading_break = ym_sb(y)
+    let trailing_breaks = ym_sb(y)
+    if !ym_block_breaks(y, st, trailing_breaks, si, sl, sc) {
+        rt_free_block(st)
+        return false
+    }
+    if !ym_cache(y, 1) {
+        rt_free_block(st)
+        return false
+    }
+    let mut leading_blank = false
+    while ym_mc(y) == std::raw::load(st) && ym_ch(y, 0) != 0 {
+        let trailing_blank = ym_is_blank(y, 0)
+        if !literal && ym_sb_first(leading_break) == 10 && !leading_blank && !trailing_blank {
+            if ym_sb_first(trailing_breaks) == 0 {
+                sb_byte(text, 32)
+            }
+            ym_sb_clear(leading_break)
+        } else {
+            ym_sb_join(text, leading_break)
+        }
+        ym_sb_join(text, trailing_breaks)
+        leading_blank = ym_is_blank(y, 0)
+        while !ym_is_breakz(y, 0) {
+            ym_read(y, text)
+            if !ym_cache(y, 1) {
+                rt_free_block(st)
+                return false
+            }
+        }
+        if !ym_cache(y, 2) {
+            rt_free_block(st)
+            return false
+        }
+        ym_read_line(y, leading_break)
+        if !ym_block_breaks(y, st, trailing_breaks, si, sl, sc) {
+            rt_free_block(st)
+            return false
+        }
+    }
+    if chomping != -1 {
+        ym_sb_join(text, leading_break)
+    }
+    if chomping == 1 {
+        ym_sb_join(text, trailing_breaks)
+    }
+    let t = ym_enqueue(y, 21, si, sl, sc, std::raw::load(st + 8), std::raw::load(st + 16), std::raw::load(st + 24))
+    rt_free_block(st)
+    std::raw::store(t + 56, text)
+    if literal {
+        std::raw::store(t + 72, 4)
+    } else {
+        std::raw::store(t + 72, 5)
+    }
+    true
+}
+
+// ------------------------------------------------------------ escalares entre comillas
+
+fn ym_doc_indicator_here(y: int) -> bool {
+    if ym_mc(y) != 0 {
+        return false
+    }
+    let c = ym_ch(y, 0)
+    if !((c == 45 && ym_ch(y, 1) == 45 && ym_ch(y, 2) == 45) || (c == 46 && ym_ch(y, 1) == 46 && ym_ch(y, 2) == 46)) {
+        return false
+    }
+    ym_is_blankz(y, 3)
+}
+
+// Byte que produce un escape de un carácter (\0 \a ... \\), -1 si no es de esos.
+fn ym_simple_escape(e: int) -> int {
+    if e == 48 { return 0 }
+    if e == 97 { return 7 }
+    if e == 98 { return 8 }
+    if e == 116 || e == 9 { return 9 }
+    if e == 110 { return 10 }
+    if e == 118 { return 11 }
+    if e == 102 { return 12 }
+    if e == 114 { return 13 }
+    if e == 101 { return 27 }
+    if e == 32 || e == 34 || e == 47 || e == 92 { return e }
+    -1
+}
+
+fn ym_scan_flow_scalar(y: int, single: bool) -> bool {
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    ym_skip(y)
+    let text = ym_sb(y)
+    let leading_break = ym_sb(y)
+    let trailing_breaks = ym_sb(y)
+    let whitespaces = ym_sb(y)
+    let mut quote = 34
+    if single {
+        quote = 39
+    }
+    while true {
+        if !ym_cache(y, 4) {
+            return false
+        }
+        if ym_doc_indicator_here(y) {
+            ym_scan_err(y, 60, si, sl, sc, 24)
+            return false
+        }
+        if ym_ch(y, 0) == 0 {
+            ym_scan_err(y, 60, si, sl, sc, 25)
+            return false
+        }
+        if !ym_cache(y, 2) {
+            return false
+        }
+        let mut leading_blanks = false
+        while !ym_is_blankz(y, 0) {
+            let c = ym_ch(y, 0)
+            if single && c == 39 && ym_ch(y, 1) == 39 {
+                sb_byte(text, 39)
+                ym_skip(y)
+                ym_skip(y)
+            } else {
+                if c == quote {
+                    break
+                }
+                if !single && c == 92 && ym_is_break(y, 1) {
+                    if !ym_cache(y, 3) {
+                        return false
+                    }
+                    ym_skip(y)
+                    ym_skip_line(y)
+                    leading_blanks = true
+                    break
+                } else if !single && c == 92 {
+                    let e = ym_ch(y, 1)
+                    let mut code_length = 0
+                    let simple = ym_simple_escape(e)
+                    if simple >= 0 {
+                        sb_byte(text, simple)
+                    } else if e == 78 {
+                        sb_byte(text, 194)
+                        sb_byte(text, 133)
+                    } else if e == 95 {
+                        sb_byte(text, 194)
+                        sb_byte(text, 160)
+                    } else if e == 76 {
+                        sb_byte(text, 226)
+                        sb_byte(text, 128)
+                        sb_byte(text, 168)
+                    } else if e == 80 {
+                        sb_byte(text, 226)
+                        sb_byte(text, 128)
+                        sb_byte(text, 169)
+                    } else if e == 120 {
+                        code_length = 2
+                    } else if e == 117 {
+                        code_length = 4
+                    } else if e == 85 {
+                        code_length = 8
+                    } else {
+                        ym_scan_err(y, 73, si, sl, sc, 26)
+                        return false
+                    }
+                    ym_skip(y)
+                    ym_skip(y)
+                    if code_length != 0 {
+                        if !ym_cache(y, code_length) {
+                            return false
+                        }
+                        let mut value = 0
+                        let mut k = 0
+                        while k < code_length {
+                            if !ym_is_hex(y, k) {
+                                ym_scan_err(y, 73, si, sl, sc, 27)
+                                return false
+                            }
+                            value = value * 16 + ym_as_hex(y, k)
+                            k += 1
+                        }
+                        if (value >= 55296 && value <= 57343) || value > 1114111 {
+                            ym_scan_err(y, 73, si, sl, sc, 28)
+                            return false
+                        }
+                        sb_cp(text, value)
+                        k = 0
+                        while k < code_length {
+                            ym_skip(y)
+                            k += 1
+                        }
+                    }
+                } else {
+                    ym_read(y, text)
+                }
+            }
+            if !ym_cache(y, 2) {
+                return false
+            }
+        }
+        if !ym_cache(y, 1) {
+            return false
+        }
+        if ym_ch(y, 0) == quote {
+            break
+        }
+        while ym_is_blank(y, 0) || ym_is_break(y, 0) {
+            if ym_is_blank(y, 0) {
+                if !leading_blanks {
+                    ym_read(y, whitespaces)
+                } else {
+                    ym_skip(y)
+                }
+            } else {
+                if !ym_cache(y, 2) {
+                    return false
+                }
+                if !leading_blanks {
+                    ym_sb_clear(whitespaces)
+                    ym_read_line(y, leading_break)
+                    leading_blanks = true
+                } else {
+                    ym_read_line(y, trailing_breaks)
+                }
+            }
+            if !ym_cache(y, 1) {
+                return false
+            }
+        }
+        ym_fold(text, leading_blanks, leading_break, trailing_breaks, whitespaces)
+    }
+    ym_skip(y)
+    let t = ym_enqueue(y, 21, si, sl, sc, ym_mi(y), ym_ml(y), ym_mc(y))
+    std::raw::store(t + 56, text)
+    if single {
+        std::raw::store(t + 72, 2)
+    } else {
+        std::raw::store(t + 72, 3)
+    }
+    true
+}
+
+// Une los blancos o saltos pendientes al texto (común a comillas y plain).
+fn ym_fold(text: int, leading_blanks: bool, leading_break: int, trailing_breaks: int, whitespaces: int) {
+    if leading_blanks {
+        if ym_sb_first(leading_break) == 10 {
+            if ym_sb_first(trailing_breaks) == 0 {
+                sb_byte(text, 32)
+            } else {
+                ym_sb_join(text, trailing_breaks)
+            }
+            ym_sb_clear(leading_break)
+        } else {
+            ym_sb_join(text, leading_break)
+            ym_sb_join(text, trailing_breaks)
+        }
+    } else {
+        ym_sb_join(text, whitespaces)
+    }
+}
+
+// ------------------------------------------------------------ escalares plain
+
+fn ym_scan_plain_scalar(y: int) -> bool {
+    let indent = std::raw::load(y + 184) + 1
+    let si = ym_mi(y)
+    let sl = ym_ml(y)
+    let sc = ym_mc(y)
+    let mut ei = si
+    let mut el = sl
+    let mut ec = sc
+    let text = ym_sb(y)
+    let leading_break = ym_sb(y)
+    let trailing_breaks = ym_sb(y)
+    let whitespaces = ym_sb(y)
+    let mut leading_blanks = false
+    let flow = std::raw::load(y + 176) != 0
+    while true {
+        if !ym_cache(y, 4) {
+            return false
+        }
+        if ym_doc_indicator_here(y) {
+            break
+        }
+        if ym_ch(y, 0) == 35 {
+            break
+        }
+        while !ym_is_blankz(y, 0) {
+            let c = ym_ch(y, 0)
+            if flow && c == 58 {
+                let n = ym_ch(y, 1)
+                if n == 44 || n == 63 || n == 91 || n == 93 || n == 123 || n == 125 {
+                    ym_scan_err(y, 61, si, sl, sc, 29)
+                    return false
+                }
+            }
+            if (c == 58 && ym_is_blankz(y, 1)) || (flow && (c == 44 || c == 91 || c == 93 || c == 123 || c == 125)) {
+                break
+            }
+            if leading_blanks || sb_len(whitespaces) != 0 {
+                ym_fold(text, leading_blanks, leading_break, trailing_breaks, whitespaces)
+                leading_blanks = false
+            }
+            ym_read(y, text)
+            ei = ym_mi(y)
+            el = ym_ml(y)
+            ec = ym_mc(y)
+            if !ym_cache(y, 2) {
+                return false
+            }
+        }
+        if !(ym_is_blank(y, 0) || ym_is_break(y, 0)) {
+            break
+        }
+        if !ym_cache(y, 1) {
+            return false
+        }
+        while ym_is_blank(y, 0) || ym_is_break(y, 0) {
+            if ym_is_blank(y, 0) {
+                if leading_blanks && ym_mc(y) < indent && ym_ch(y, 0) == 9 {
+                    ym_scan_err(y, 61, si, sl, sc, 30)
+                    return false
+                } else if !leading_blanks {
+                    ym_read(y, whitespaces)
+                } else {
+                    ym_skip(y)
+                }
+            } else {
+                if !ym_cache(y, 2) {
+                    return false
+                }
+                if !leading_blanks {
+                    ym_sb_clear(whitespaces)
+                    ym_read_line(y, leading_break)
+                    leading_blanks = true
+                } else {
+                    ym_read_line(y, trailing_breaks)
+                }
+            }
+            if !ym_cache(y, 1) {
+                return false
+            }
+        }
+        if !flow && ym_mc(y) < indent {
+            break
+        }
+    }
+    let t = ym_enqueue(y, 21, si, sl, sc, ei, el, ec)
+    std::raw::store(t + 56, text)
+    std::raw::store(t + 72, 1)
+    if leading_blanks {
+        std::raw::store(y + 192, 1)
+    }
+    true
+}
+
+// ------------------------------------------------------------ yaml_parser_scan
+
+// Token siguiente (sin sacarlo): PEEK_TOKEN del analizador. 0 si hay error.
+fn ym_peek_token(y: int) -> int {
+    if std::raw::load(y + 216) != 0 {
+        return ym_q_head(y)
+    }
+    if std::raw::load(y + 80) != 0 {
+        return 0
+    }
+    if !ym_fetch_more_tokens(y) {
+        return 0
+    }
+    ym_q_head(y)
+}
+
+// SKIP_TOKEN del analizador.
+fn ym_skip_token(y: int) {
+    std::raw::store(y + 216, 0)
+    std::raw::store(y + 208, std::raw::load(y + 208) + 1)
+    let t = ym_q_head(y)
+    if std::raw::load(t) == 2 {
+        std::raw::store(y + 168, 1)
+    }
+    std::raw::store(y + 232, std::raw::load(y + 232) + 1)
+}

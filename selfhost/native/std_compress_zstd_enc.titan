@@ -1,0 +1,2728 @@
+// std::compress::zstd_encode escrito en Titan: el mismo resultado byte a byte
+// que libzstd 1.5.7 (la versión que usa la VM de Rust a través del crate
+// zstd 0.13.3 y zstd::stream::encode_all).
+//
+// Cómo lo llama la VM: encode_all entrega todos los datos en una sola
+// escritura (ZSTD_e_continue, tamaño desconocido) y luego termina con
+// ZSTD_e_end. Con tamaño desconocido los parámetros salen de la primera
+// tabla de niveles (clevels.h, tabla 0) sin reducirse; los datos pasan por el
+// búfer circular de entrada (ventana + 128 KiB) y se comprimen de 128 KiB en
+// 128 KiB (cada trozo puede partirse en dos bloques, zstd_preSplit.c).
+//
+// Este archivo: utilidades, escritor de bits, histogramas, FSE, Huffman,
+// literales, secuencias, bloques, marco y la nativa. Los buscadores de
+// coincidencias están en std_compress_zstd_mf.titan; las tablas constantes en
+// std_compress_zstd_enc_tab.titan (generado).
+//
+// Convenciones: todo son direcciones de memoria y enteros; las tablas FSE se
+// guardan con la misma disposición de bytes que en C (hay lecturas de
+// entradas viejas que dependen de ella); los errores internos se devuelven
+// en negativo.
+
+// ------------------------------------------------------------ utilidades
+
+fn ze_g(z: int, k: int) -> int {
+    std::raw::load(z + k)
+}
+
+fn ze_s(z: int, k: int, v: int) {
+    std::raw::store(z + k, v)
+}
+
+fn ze_min(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    b
+}
+
+fn ze_max(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    b
+}
+
+// Bit más alto de v (v > 0); 0 si v <= 1.
+fn ze_hb(v: int) -> int {
+    let mut n = 0
+    let mut x = v
+    if x >= 4294967296 {
+        n += 32
+        x = std::raw::shr(x, 32)
+    }
+    if x >= 65536 {
+        n += 16
+        x = std::raw::shr(x, 16)
+    }
+    if x >= 256 {
+        n += 8
+        x = std::raw::shr(x, 8)
+    }
+    if x >= 16 {
+        n += 4
+        x = std::raw::shr(x, 4)
+    }
+    if x >= 4 {
+        n += 2
+        x = std::raw::shr(x, 2)
+    }
+    if x >= 2 {
+        n += 1
+    }
+    n
+}
+
+fn ze_r16(p: int) -> int {
+    std::raw::load(p) & 65535
+}
+
+fn ze_r32(p: int) -> int {
+    std::raw::load(p) & 4294967295
+}
+
+// Entero de 32 bits con signo.
+fn ze_rs32(p: int) -> int {
+    let v = std::raw::load(p) & 4294967295
+    if v >= 2147483648 {
+        return v - 4294967296
+    }
+    v
+}
+
+fn ze_w16(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+}
+
+fn ze_w24(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+}
+
+fn ze_w32(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+// Tablas de índices de 32 bits (hash, cadenas): entrada i de t.
+fn ze_t32(t: int, i: int) -> int {
+    std::raw::load(t + 4 * i) & 4294967295
+}
+
+fn ze_p32(t: int, i: int, v: int) {
+    let a = t + 4 * i
+    std::raw::store(a, (std::raw::load(a) & (0 - 4294967296)) | (v & 4294967295))
+}
+
+// Memoria a cero con margen de 128 bytes.
+fn ze_alloc(n: int) -> int {
+    rt_alloc_zero(n + 128)
+}
+
+fn ze_zero(p: int, n: int) {
+    let mut i = 0
+    while i + 8 <= n {
+        std::raw::store(p + i, 0)
+        i += 8
+    }
+    while i < n {
+        std::raw::store8(p + i, 0)
+        i += 1
+    }
+}
+
+fn ze_copy(d: int, s: int, n: int) {
+    let mut i = 0
+    while i + 8 <= n {
+        std::raw::store(d + i, std::raw::load(s + i))
+        i += 8
+    }
+    while i < n {
+        std::raw::store8(d + i, std::raw::load8(s + i))
+        i += 1
+    }
+}
+
+// Tablas constantes (ze_tables): desplazamientos en bytes.
+fn ze_tab() -> int {
+    let g = std::raw::globals() + 3088
+    let t = std::raw::load(g)
+    if t != 0 {
+        return t
+    }
+    let n = ze_tables()
+    std::raw::store(g, n)
+    n
+}
+
+// ZSTD_count: bytes iguales desde ip y m sin pasar de lim.
+fn ze_count(ip0: int, m0: int, lim: int) -> int {
+    let mut ip = ip0
+    let mut m = m0
+    while ip + 8 <= lim {
+        let d = std::raw::load(m) ^ std::raw::load(ip)
+        if d != 0 {
+            return ip - ip0 + std::raw::shr(zd_ctz(d), 3)
+        }
+        ip += 8
+        m += 8
+    }
+    while ip < lim && std::raw::load8(m) == std::raw::load8(ip) {
+        ip += 1
+        m += 1
+    }
+    ip - ip0
+}
+
+// ZSTD_count_2segments.
+fn ze_count2(ip: int, m: int, iEnd: int, mEnd: int, iStart: int) -> int {
+    let vEnd = ze_min(ip + (mEnd - m), iEnd)
+    let n = ze_count(ip, m, vEnd)
+    if m + n != mEnd {
+        return n
+    }
+    n + ze_count(ip + n, iStart, iEnd)
+}
+
+// ZSTD_hash3Ptr (tabla hash3 del analizador óptimo).
+fn ze_hash3(p: int, h: int) -> int {
+    std::raw::shr(std::raw::wmul(std::raw::shl(std::raw::load(p) & 4294967295, 8) & 4294967295, 506832829) & 4294967295, 32 - h)
+}
+
+// ZSTD_hashPtr (sin sal): mls 5..8; cualquier otro valor (3, 4) usa hash4.
+fn ze_hash(p: int, h: int, mls: int) -> int {
+    if mls == 5 {
+        return std::raw::shr(std::raw::wmul(std::raw::shl(std::raw::load(p), 24), 889523592379), 64 - h)
+    }
+    if mls == 6 {
+        return std::raw::shr(std::raw::wmul(std::raw::shl(std::raw::load(p), 16), 227718039650203), 64 - h)
+    }
+    if mls == 7 {
+        return std::raw::shr(std::raw::wmul(std::raw::shl(std::raw::load(p), 8), 58295818150454627), 64 - h)
+    }
+    if mls == 8 {
+        return std::raw::shr(std::raw::wmul(std::raw::load(p), 0 - 3523014627327384477), 64 - h)
+    }
+    std::raw::shr(std::raw::wmul(std::raw::load(p) & 4294967295, 2654435761) & 4294967295, 32 - h)
+}
+
+// ------------------------------------------------------------ escritor de bits
+// bw: +0 puntero, +8 contenedor, +16 bits en el contenedor, +24 inicio.
+// Los bits van en orden (el primero en el bit bajo), como BIT_CStream_t.
+
+fn ze_bw_init(bw: int, dst: int) {
+    std::raw::store(bw, dst)
+    std::raw::store(bw + 8, 0)
+    std::raw::store(bw + 16, 0)
+    std::raw::store(bw + 24, dst)
+}
+
+fn ze_bw_add(bw: int, v: int, n: int) {
+    if n == 0 {
+        return
+    }
+    let nb = std::raw::load(bw + 16)
+    let c = std::raw::load(bw + 8) | std::raw::shl(v & (std::raw::shl(1, n) - 1), nb)
+    let t = nb + n
+    if t >= 32 {
+        let p = std::raw::load(bw)
+        std::raw::store(p, c)
+        std::raw::store(bw, p + 4)
+        std::raw::store(bw + 8, std::raw::shr(c, 32))
+        std::raw::store(bw + 16, t - 32)
+    } else {
+        std::raw::store(bw + 8, c)
+        std::raw::store(bw + 16, t)
+    }
+}
+
+// Marca final (un bit a 1) y vaciado; devuelve el tamaño en bytes.
+fn ze_bw_close(bw: int) -> int {
+    ze_bw_add(bw, 1, 1)
+    let mut p = std::raw::load(bw)
+    let mut c = std::raw::load(bw + 8)
+    let mut nb = std::raw::load(bw + 16)
+    while nb > 0 {
+        std::raw::store8(p, c & 255)
+        p += 1
+        c = std::raw::shr(c, 8)
+        nb -= 8
+    }
+    p - std::raw::load(bw + 24)
+}
+
+// ------------------------------------------------------------ histogramas
+// count: casillas de 8 bytes (al menos 256). Devuelve la cuenta mayor y deja
+// en outMax el símbolo más alto presente (0 si n == 0).
+
+fn ze_hist(count: int, maxSV: int, src: int, n: int, outMax: int) -> int {
+    let mut i = 0
+    while i < 256 {
+        std::raw::store(count + 8 * i, 0)
+        i += 1
+    }
+    if n == 0 {
+        std::raw::store(outMax, 0)
+        return 0
+    }
+    i = 0
+    while i < n {
+        let a = count + 8 * std::raw::load8(src + i)
+        std::raw::store(a, std::raw::load(a) + 1)
+        i += 1
+    }
+    let mut m = maxSV
+    while std::raw::load(count + 8 * m) == 0 {
+        m -= 1
+    }
+    std::raw::store(outMax, m)
+    let mut largest = 0
+    i = 0
+    while i <= m {
+        let c = std::raw::load(count + 8 * i)
+        if c > largest {
+            largest = c
+        }
+        i += 1
+    }
+    largest
+}
+
+// ------------------------------------------------------------ FSE
+
+fn ze_fse_mintl(total: int, maxSV: int) -> int {
+    ze_min(ze_hb(total) + 1, ze_hb(maxSV) + 2)
+}
+
+// FSE_optimalTableLog_internal.
+fn ze_fse_otl(maxTL: int, n: int, maxSV: int, minus: int) -> int {
+    let maxBitsSrc = ze_hb(n - 1) - minus
+    let mut tl = maxTL
+    let minBits = ze_fse_mintl(n, maxSV)
+    if tl == 0 {
+        tl = 11
+    }
+    if maxBitsSrc >= 0 && maxBitsSrc < tl {
+        tl = maxBitsSrc
+    }
+    if minBits > tl {
+        tl = minBits
+    }
+    if tl < 5 {
+        tl = 5
+    }
+    if tl > 12 {
+        tl = 12
+    }
+    tl
+}
+
+// FSE_normalizeM2 (norm y count en casillas de 8 bytes).
+fn ze_fse_m2(norm: int, tl: int, count: int, total0: int, maxSV: int, lowProbCount: int) -> int {
+    let mut total = total0
+    let mut distributed = 0
+    let lowThreshold = std::raw::shr(total, tl)
+    let mut lowOne = std::raw::shr(total * 3, tl + 1)
+    let mut s = 0
+    while s <= maxSV {
+        let c = std::raw::load(count + 8 * s)
+        if c == 0 {
+            std::raw::store(norm + 8 * s, 0)
+        } else if c <= lowThreshold {
+            std::raw::store(norm + 8 * s, lowProbCount)
+            distributed += 1
+            total -= c
+        } else if c <= lowOne {
+            std::raw::store(norm + 8 * s, 1)
+            distributed += 1
+            total -= c
+        } else {
+            std::raw::store(norm + 8 * s, 0 - 2)
+        }
+        s += 1
+    }
+    let mut toDistribute = std::raw::shl(1, tl) - distributed
+    if toDistribute == 0 {
+        return 0
+    }
+    if total / toDistribute > lowOne {
+        lowOne = (total * 3) / (toDistribute * 2)
+        s = 0
+        while s <= maxSV {
+            let c = std::raw::load(count + 8 * s)
+            if std::raw::load(norm + 8 * s) == 0 - 2 && c <= lowOne {
+                std::raw::store(norm + 8 * s, 1)
+                distributed += 1
+                total -= c
+            }
+            s += 1
+        }
+        toDistribute = std::raw::shl(1, tl) - distributed
+    }
+    if distributed == maxSV + 1 {
+        let mut maxV = 0
+        let mut maxC = 0
+        s = 0
+        while s <= maxSV {
+            let c = std::raw::load(count + 8 * s)
+            if c > maxC {
+                maxV = s
+                maxC = c
+            }
+            s += 1
+        }
+        std::raw::store(norm + 8 * maxV, std::raw::load(norm + 8 * maxV) + toDistribute)
+        return 0
+    }
+    if total == 0 {
+        s = 0
+        while toDistribute > 0 {
+            if std::raw::load(norm + 8 * s) > 0 {
+                toDistribute -= 1
+                std::raw::store(norm + 8 * s, std::raw::load(norm + 8 * s) + 1)
+            }
+            s = (s + 1) % (maxSV + 1)
+        }
+        return 0
+    }
+    let vStepLog = 62 - tl
+    let mid = std::raw::shl(1, vStepLog - 1) - 1
+    let rStep = (std::raw::shl(1, vStepLog) * toDistribute + mid) / total
+    let mut tmpTotal = mid
+    s = 0
+    while s <= maxSV {
+        if std::raw::load(norm + 8 * s) == 0 - 2 {
+            let end = tmpTotal + std::raw::load(count + 8 * s) * rStep
+            let sStart = std::raw::shr(tmpTotal, vStepLog)
+            let sEnd = std::raw::shr(end, vStepLog)
+            let weight = sEnd - sStart
+            if weight < 1 {
+                return 0 - 1
+            }
+            std::raw::store(norm + 8 * s, weight)
+            tmpTotal = end
+        }
+        s += 1
+    }
+    0
+}
+
+// FSE_normalizeCount: devuelve tl, 0 (un solo símbolo) o error negativo.
+fn ze_fse_norm(norm: int, tl: int, count: int, total: int, maxSV: int, useLowProb: bool) -> int {
+    if tl < ze_fse_mintl(total, maxSV) {
+        return 0 - 1
+    }
+    let t = ze_tab()
+    let mut lowProbCount = 1
+    if useLowProb {
+        lowProbCount = 0 - 1
+    }
+    let scale = 62 - tl
+    let step = std::raw::shl(1, 62) / total
+    let vStep = std::raw::shl(1, scale - 20)
+    let mut still = std::raw::shl(1, tl)
+    let mut largest = 0
+    let mut largestP = 0
+    let lowThreshold = std::raw::shr(total, tl)
+    let mut s = 0
+    while s <= maxSV {
+        let c = std::raw::load(count + 8 * s)
+        if c == total {
+            return 0
+        }
+        if c == 0 {
+            std::raw::store(norm + 8 * s, 0)
+        } else if c <= lowThreshold {
+            std::raw::store(norm + 8 * s, lowProbCount)
+            still -= 1
+        } else {
+            let cs = c * step
+            let mut proba = std::raw::shr(cs, scale)
+            if proba < 8 {
+                let restToBeat = vStep * std::raw::load(t + 5240 + 8 * proba)
+                if cs - std::raw::shl(proba, scale) > restToBeat {
+                    proba += 1
+                }
+            }
+            if proba > largestP {
+                largestP = proba
+                largest = s
+            }
+            std::raw::store(norm + 8 * s, proba)
+            still -= proba
+        }
+        s += 1
+    }
+    if 0 - still >= std::raw::sar(std::raw::load(norm + 8 * largest), 1) {
+        let e = ze_fse_m2(norm, tl, count, total, maxSV, lowProbCount)
+        if e < 0 {
+            return e
+        }
+    } else {
+        std::raw::store(norm + 8 * largest, std::raw::load(norm + 8 * largest) + still)
+    }
+    tl
+}
+
+// FSE_writeNCount: escribe la cabecera de la distribución en out; devuelve el
+// tamaño o error negativo.
+fn ze_fse_wncount(out0: int, norm: int, maxSV: int, tl: int) -> int {
+    let mut out = out0
+    let tableSize = std::raw::shl(1, tl)
+    let alphabetSize = maxSV + 1
+    let mut bitStream = tl - 5
+    let mut bitCount = 4
+    let mut remaining = tableSize + 1
+    let mut threshold = tableSize
+    let mut nbBits = tl + 1
+    let mut symbol = 0
+    let mut previousIs0 = false
+    while symbol < alphabetSize && remaining > 1 {
+        if previousIs0 {
+            let mut start = symbol
+            while symbol < alphabetSize && std::raw::load(norm + 8 * symbol) == 0 {
+                symbol += 1
+            }
+            if symbol == alphabetSize {
+                break
+            }
+            while symbol >= start + 24 {
+                start += 24
+                bitStream += std::raw::shl(65535, bitCount)
+                std::raw::store8(out, bitStream & 255)
+                std::raw::store8(out + 1, std::raw::shr(bitStream, 8) & 255)
+                out += 2
+                bitStream = std::raw::shr(bitStream, 16)
+            }
+            while symbol >= start + 3 {
+                start += 3
+                bitStream += std::raw::shl(3, bitCount)
+                bitCount += 2
+            }
+            bitStream += std::raw::shl(symbol - start, bitCount)
+            bitCount += 2
+            if bitCount > 16 {
+                std::raw::store8(out, bitStream & 255)
+                std::raw::store8(out + 1, std::raw::shr(bitStream, 8) & 255)
+                out += 2
+                bitStream = std::raw::shr(bitStream, 16)
+                bitCount -= 16
+            }
+        }
+        let mut count = std::raw::load(norm + 8 * symbol)
+        symbol += 1
+        let max = (2 * threshold - 1) - remaining
+        if count < 0 {
+            remaining += count
+        } else {
+            remaining -= count
+        }
+        count += 1
+        if count >= threshold {
+            count += max
+        }
+        bitStream += std::raw::shl(count, bitCount)
+        bitCount += nbBits
+        if count < max {
+            bitCount -= 1
+        }
+        previousIs0 = count == 1
+        if remaining < 1 {
+            return 0 - 1
+        }
+        while remaining < threshold {
+            nbBits -= 1
+            threshold = std::raw::sar(threshold, 1)
+        }
+        if bitCount > 16 {
+            std::raw::store8(out, bitStream & 255)
+            std::raw::store8(out + 1, std::raw::shr(bitStream, 8) & 255)
+            out += 2
+            bitStream = std::raw::shr(bitStream, 16)
+            bitCount -= 16
+        }
+    }
+    if remaining != 1 {
+        return 0 - 1
+    }
+    std::raw::store8(out, bitStream & 255)
+    std::raw::store8(out + 1, std::raw::shr(bitStream, 8) & 255)
+    out += (bitCount + 7) / 8
+    out - out0
+}
+
+// Tabla FSE de compresión con la disposición de C: u16 tableLog, u16 maxSV,
+// u16 stateTable[tableSize], y luego por símbolo {i32 deltaFindState,
+// u32 deltaNbBits} (con tableLog 0 los símbolos empiezan en el byte 8).
+fn ze_fse_stt(ct: int) -> int {
+    let tl = ze_r16(ct)
+    if tl == 0 {
+        return ct + 8
+    }
+    ct + 4 + 2 * std::raw::shl(1, tl)
+}
+
+// FSE_buildCTable_wksp; wk: casillas de 8 bytes (maxSV + 2 + tableSize).
+fn ze_fse_build(ct: int, norm: int, maxSV: int, tl: int, wk: int) {
+    let tableSize = std::raw::shl(1, tl)
+    let mask = tableSize - 1
+    let step = std::raw::shr(tableSize, 1) + std::raw::shr(tableSize, 3) + 3
+    let maxSV1 = maxSV + 1
+    let cumul = wk
+    let tableSymbol = wk + 8 * (maxSV1 + 1)
+    let mut highThreshold = tableSize - 1
+    ze_w16(ct, tl)
+    ze_w16(ct + 2, maxSV)
+    std::raw::store(cumul, 0)
+    let mut u = 1
+    while u <= maxSV1 {
+        let nv = std::raw::load(norm + 8 * (u - 1))
+        if nv == 0 - 1 {
+            std::raw::store(cumul + 8 * u, std::raw::load(cumul + 8 * (u - 1)) + 1)
+            std::raw::store(tableSymbol + 8 * highThreshold, u - 1)
+            highThreshold -= 1
+        } else {
+            std::raw::store(cumul + 8 * u, std::raw::load(cumul + 8 * (u - 1)) + nv)
+        }
+        u += 1
+    }
+    std::raw::store(cumul + 8 * maxSV1, tableSize + 1)
+    let mut position = 0
+    let mut symbol = 0
+    while symbol < maxSV1 {
+        let freq = std::raw::load(norm + 8 * symbol)
+        let mut k = 0
+        while k < freq {
+            std::raw::store(tableSymbol + 8 * position, symbol)
+            position = (position + step) & mask
+            while position > highThreshold {
+                position = (position + step) & mask
+            }
+            k += 1
+        }
+        symbol += 1
+    }
+    u = 0
+    while u < tableSize {
+        let s = std::raw::load(tableSymbol + 8 * u)
+        let c = std::raw::load(cumul + 8 * s)
+        ze_w16(ct + 4 + 2 * c, tableSize + u)
+        std::raw::store(cumul + 8 * s, c + 1)
+        u += 1
+    }
+    let stt = ze_fse_stt(ct)
+    let mut total = 0
+    let mut s = 0
+    while s <= maxSV {
+        let nv = std::raw::load(norm + 8 * s)
+        let e = stt + 8 * s
+        if nv == 0 {
+            ze_w32(e + 4, std::raw::shl(tl + 1, 16) - tableSize)
+        } else if nv == 0 - 1 || nv == 1 {
+            ze_w32(e + 4, std::raw::shl(tl, 16) - tableSize)
+            ze_w32(e, total - 1)
+            total += 1
+        } else {
+            let maxBitsOut = tl - ze_hb(nv - 1)
+            let minStatePlus = std::raw::shl(nv, maxBitsOut)
+            ze_w32(e + 4, std::raw::shl(maxBitsOut, 16) - minStatePlus)
+            ze_w32(e, total - nv)
+            total += nv
+        }
+        s += 1
+    }
+}
+
+// FSE_buildCTable_rle.
+fn ze_fse_build_rle(ct: int, sym: int) {
+    ze_w16(ct, 0)
+    ze_w16(ct + 2, sym)
+    ze_w16(ct + 4, 0)
+    ze_w16(ct + 6, 0)
+    ze_w32(ct + 8 + 8 * sym, 0)
+    ze_w32(ct + 12 + 8 * sym, 0)
+}
+
+// FSE_initCState2: estado inicial que ya incluye el símbolo sym.
+fn ze_fse_init2(ct: int, stt: int, sym: int) -> int {
+    let dnb = ze_r32(stt + 8 * sym + 4)
+    let dfs = ze_rs32(stt + 8 * sym)
+    let nbOut = std::raw::shr(dnb + 32768, 16)
+    let v = (std::raw::shl(nbOut, 16) - dnb) & 4294967295
+    ze_r16(ct + 4 + 2 * (std::raw::shr(v, nbOut) + dfs))
+}
+
+// FSE_encodeSymbol: devuelve el estado nuevo.
+fn ze_fse_enc(bw: int, ct: int, stt: int, v: int, sym: int) -> int {
+    let dnb = ze_r32(stt + 8 * sym + 4)
+    let dfs = ze_rs32(stt + 8 * sym)
+    let nbOut = std::raw::shr((v + dnb) & 4294967295, 16)
+    ze_bw_add(bw, v, nbOut)
+    ze_r16(ct + 4 + 2 * (std::raw::shr(v, nbOut) + dfs))
+}
+
+// FSE_compress_usingCTable (pesos de Huffman): 0 si n <= 2.
+fn ze_fse_compress(dst: int, src: int, n: int, ct: int, bw: int) -> int {
+    if n <= 2 {
+        return 0
+    }
+    let stt = ze_fse_stt(ct)
+    ze_bw_init(bw, dst)
+    let mut ip = src + n
+    let mut s1 = 0
+    let mut s2 = 0
+    if (n & 1) != 0 {
+        s1 = ze_fse_init2(ct, stt, std::raw::load8(ip - 1))
+        s2 = ze_fse_init2(ct, stt, std::raw::load8(ip - 2))
+        s1 = ze_fse_enc(bw, ct, stt, s1, std::raw::load8(ip - 3))
+        ip -= 3
+    } else {
+        s2 = ze_fse_init2(ct, stt, std::raw::load8(ip - 1))
+        s1 = ze_fse_init2(ct, stt, std::raw::load8(ip - 2))
+        ip -= 2
+    }
+    if ((n - 2) & 2) != 0 {
+        s2 = ze_fse_enc(bw, ct, stt, s2, std::raw::load8(ip - 1))
+        s1 = ze_fse_enc(bw, ct, stt, s1, std::raw::load8(ip - 2))
+        ip -= 2
+    }
+    while ip > src {
+        s2 = ze_fse_enc(bw, ct, stt, s2, std::raw::load8(ip - 1))
+        s1 = ze_fse_enc(bw, ct, stt, s1, std::raw::load8(ip - 2))
+        s2 = ze_fse_enc(bw, ct, stt, s2, std::raw::load8(ip - 3))
+        s1 = ze_fse_enc(bw, ct, stt, s1, std::raw::load8(ip - 4))
+        ip -= 4
+    }
+    let tl = ze_r16(ct)
+    ze_bw_add(bw, s2, tl)
+    ze_bw_add(bw, s1, tl)
+    ze_bw_close(bw)
+}
+
+// ------------------------------------------------------------ Huffman
+// Tabla de Huffman (HUF_CElt): 257 casillas de 8 bytes; la 0 es la cabecera
+// (tableLog | maxSV << 8) y la 1 + s es nbBits | valor << 8.
+//
+// Espacio de trabajo hw (bytes):
+//   0 count[256] · 2048 tabla nueva [257] · 4112 nodos [512] de 32 bytes
+//   (cuenta, padre, byte, nbBits) · 20496 rankPosition[192] de 16 bytes ·
+//   23568 pesos [256 bytes] · 23824 tabla FSE de pesos · 24336 cuenta de
+//   pesos [16] · 24464 normas [16] · 24592 trabajo FSE (576 casillas) ·
+//   29200 salida de prueba [512] · 29712 escritor de bits · 29760 maxSV.
+
+fn ze_hn(hn: int, i: int) -> int {
+    hn + 32 * i
+}
+
+fn ze_node_copy(d: int, s: int) {
+    std::raw::store(d, std::raw::load(s))
+    std::raw::store(d + 8, std::raw::load(s + 8))
+    std::raw::store(d + 16, std::raw::load(s + 16))
+    std::raw::store(d + 24, std::raw::load(s + 24))
+}
+
+fn ze_node_swap(a: int, b: int, tmp: int) {
+    ze_node_copy(tmp, a)
+    ze_node_copy(a, b)
+    ze_node_copy(b, tmp)
+}
+
+fn ze_huf_isort(arr: int, low: int, high: int, tmp: int) {
+    let base = arr + 32 * low
+    let size = high - low + 1
+    let mut i = 1
+    while i < size {
+        ze_node_copy(tmp, base + 32 * i)
+        let kc = std::raw::load(tmp)
+        let mut j = i - 1
+        while j >= 0 && std::raw::load(base + 32 * j) < kc {
+            ze_node_copy(base + 32 * (j + 1), base + 32 * j)
+            j -= 1
+        }
+        ze_node_copy(base + 32 * (j + 1), tmp)
+        i += 1
+    }
+}
+
+fn ze_huf_partition(arr: int, low: int, high: int, tmp: int) -> int {
+    let pivot = std::raw::load(arr + 32 * high)
+    let mut i = low - 1
+    let mut j = low
+    while j < high {
+        if std::raw::load(arr + 32 * j) > pivot {
+            i += 1
+            ze_node_swap(arr + 32 * i, arr + 32 * j, tmp)
+        }
+        j += 1
+    }
+    ze_node_swap(arr + 32 * (i + 1), arr + 32 * high, tmp)
+    i + 1
+}
+
+fn ze_huf_qsort(arr: int, low0: int, high0: int, tmp: int) {
+    let mut low = low0
+    let mut high = high0
+    if high - low < 8 {
+        ze_huf_isort(arr, low, high, tmp)
+        return
+    }
+    while low < high {
+        let idx = ze_huf_partition(arr, low, high, tmp)
+        if idx - low < high - idx {
+            ze_huf_qsort(arr, low, idx - 1, tmp)
+            low = idx + 1
+        } else {
+            ze_huf_qsort(arr, idx + 1, high, tmp)
+            high = idx - 1
+        }
+    }
+}
+
+fn ze_huf_index(c: int) -> int {
+    if c < 166 {
+        return c
+    }
+    ze_hb(c) + 158
+}
+
+fn ze_huf_sort(hn: int, count: int, maxSV: int, rp: int, tmp: int) {
+    ze_zero(rp, 192 * 16)
+    let mut n = 0
+    while n <= maxSV {
+        let r = ze_huf_index(std::raw::load(count + 8 * n))
+        std::raw::store(rp + 16 * r, std::raw::load(rp + 16 * r) + 1)
+        n += 1
+    }
+    n = 191
+    while n > 0 {
+        let b = std::raw::load(rp + 16 * (n - 1)) + std::raw::load(rp + 16 * n)
+        std::raw::store(rp + 16 * (n - 1), b)
+        std::raw::store(rp + 16 * (n - 1) + 8, b)
+        n -= 1
+    }
+    n = 0
+    while n <= maxSV {
+        let c = std::raw::load(count + 8 * n)
+        let r = ze_huf_index(c) + 1
+        let pos = std::raw::load(rp + 16 * r + 8)
+        std::raw::store(rp + 16 * r + 8, pos + 1)
+        std::raw::store(ze_hn(hn, pos), c)
+        std::raw::store(ze_hn(hn, pos) + 16, n)
+        n += 1
+    }
+    n = 166
+    while n < 191 {
+        let size = std::raw::load(rp + 16 * n + 8) - std::raw::load(rp + 16 * n)
+        let start = std::raw::load(rp + 16 * n)
+        if size > 1 {
+            ze_huf_qsort(ze_hn(hn, start), 0, size - 1, tmp)
+        }
+        n += 1
+    }
+}
+
+// HUF_buildTree: devuelve nonNullRank.
+fn ze_huf_tree(hn: int, maxSV: int) -> int {
+    let mut nonNullRank = maxSV
+    while std::raw::load(ze_hn(hn, nonNullRank)) == 0 {
+        nonNullRank -= 1
+    }
+    let mut lowS = nonNullRank
+    let nodeRoot = 256 + lowS - 1
+    let mut lowN = 256
+    let mut nodeNb = 256
+    std::raw::store(ze_hn(hn, nodeNb), std::raw::load(ze_hn(hn, lowS)) + std::raw::load(ze_hn(hn, lowS - 1)))
+    std::raw::store(ze_hn(hn, lowS) + 8, nodeNb)
+    std::raw::store(ze_hn(hn, lowS - 1) + 8, nodeNb)
+    nodeNb += 1
+    lowS -= 2
+    let mut n = nodeNb
+    while n <= nodeRoot {
+        std::raw::store(ze_hn(hn, n), 1073741824)
+        n += 1
+    }
+    std::raw::store(ze_hn(hn, 0 - 1), 2147483648)
+    while nodeNb <= nodeRoot {
+        let mut n1 = 0
+        if std::raw::load(ze_hn(hn, lowS)) < std::raw::load(ze_hn(hn, lowN)) {
+            n1 = lowS
+            lowS -= 1
+        } else {
+            n1 = lowN
+            lowN += 1
+        }
+        let mut n2 = 0
+        if std::raw::load(ze_hn(hn, lowS)) < std::raw::load(ze_hn(hn, lowN)) {
+            n2 = lowS
+            lowS -= 1
+        } else {
+            n2 = lowN
+            lowN += 1
+        }
+        std::raw::store(ze_hn(hn, nodeNb), std::raw::load(ze_hn(hn, n1)) + std::raw::load(ze_hn(hn, n2)))
+        std::raw::store(ze_hn(hn, n1) + 8, nodeNb)
+        std::raw::store(ze_hn(hn, n2) + 8, nodeNb)
+        nodeNb += 1
+    }
+    std::raw::store(ze_hn(hn, nodeRoot) + 24, 0)
+    n = nodeRoot - 1
+    while n >= 256 {
+        let p = std::raw::load(ze_hn(hn, n) + 8)
+        std::raw::store(ze_hn(hn, n) + 24, std::raw::load(ze_hn(hn, p) + 24) + 1)
+        n -= 1
+    }
+    n = 0
+    while n <= nonNullRank {
+        let p = std::raw::load(ze_hn(hn, n) + 8)
+        std::raw::store(ze_hn(hn, n) + 24, std::raw::load(ze_hn(hn, p) + 24) + 1)
+        n += 1
+    }
+    nonNullRank
+}
+
+// HUF_setMaxHeight; rl: rankLast[14] (casillas de 8 bytes).
+fn ze_huf_maxheight(hn: int, lastNonNull: int, target: int, rl: int) -> int {
+    let largestBits = std::raw::load(ze_hn(hn, lastNonNull) + 24)
+    if largestBits <= target {
+        return largestBits
+    }
+    let noSymbol = 4042322160
+    let mut totalCost = 0
+    let baseCost = std::raw::shl(1, largestBits - target)
+    let mut n = lastNonNull
+    while std::raw::load(ze_hn(hn, n) + 24) > target {
+        totalCost += baseCost - std::raw::shl(1, largestBits - std::raw::load(ze_hn(hn, n) + 24))
+        std::raw::store(ze_hn(hn, n) + 24, target)
+        n -= 1
+    }
+    while std::raw::load(ze_hn(hn, n) + 24) == target {
+        n -= 1
+    }
+    totalCost = std::raw::sar(totalCost, largestBits - target)
+    let mut i = 0
+    while i < 14 {
+        std::raw::store(rl + 8 * i, noSymbol)
+        i += 1
+    }
+    let mut currentNbBits = target
+    let mut pos = n
+    while pos >= 0 {
+        let nb = std::raw::load(ze_hn(hn, pos) + 24)
+        if nb < currentNbBits {
+            currentNbBits = nb
+            std::raw::store(rl + 8 * (target - currentNbBits), pos)
+        }
+        pos -= 1
+    }
+    while totalCost > 0 {
+        let mut nBitsToDecrease = ze_hb(totalCost) + 1
+        while nBitsToDecrease > 1 {
+            let highPos = std::raw::load(rl + 8 * nBitsToDecrease)
+            let lowPos = std::raw::load(rl + 8 * (nBitsToDecrease - 1))
+            if highPos != noSymbol {
+                if lowPos == noSymbol {
+                    break
+                }
+                let highTotal = std::raw::load(ze_hn(hn, highPos))
+                let lowTotal = 2 * std::raw::load(ze_hn(hn, lowPos))
+                if highTotal <= lowTotal {
+                    break
+                }
+            }
+            nBitsToDecrease -= 1
+        }
+        while nBitsToDecrease <= 12 && std::raw::load(rl + 8 * nBitsToDecrease) == noSymbol {
+            nBitsToDecrease += 1
+        }
+        totalCost -= std::raw::shl(1, nBitsToDecrease - 1)
+        let r = std::raw::load(rl + 8 * nBitsToDecrease)
+        std::raw::store(ze_hn(hn, r) + 24, std::raw::load(ze_hn(hn, r) + 24) + 1)
+        if std::raw::load(rl + 8 * (nBitsToDecrease - 1)) == noSymbol {
+            std::raw::store(rl + 8 * (nBitsToDecrease - 1), r)
+        }
+        if r == 0 {
+            std::raw::store(rl + 8 * nBitsToDecrease, noSymbol)
+        } else {
+            std::raw::store(rl + 8 * nBitsToDecrease, r - 1)
+            if std::raw::load(ze_hn(hn, r - 1) + 24) != target - nBitsToDecrease {
+                std::raw::store(rl + 8 * nBitsToDecrease, noSymbol)
+            }
+        }
+    }
+    while totalCost < 0 {
+        let r1 = std::raw::load(rl + 8)
+        if r1 == noSymbol {
+            while std::raw::load(ze_hn(hn, n) + 24) == target {
+                n -= 1
+            }
+            std::raw::store(ze_hn(hn, n + 1) + 24, std::raw::load(ze_hn(hn, n + 1) + 24) - 1)
+            std::raw::store(rl + 8, n + 1)
+            totalCost += 1
+        } else {
+            std::raw::store(ze_hn(hn, r1 + 1) + 24, std::raw::load(ze_hn(hn, r1 + 1) + 24) - 1)
+            std::raw::store(rl + 8, r1 + 1)
+            totalCost += 1
+        }
+    }
+    target
+}
+
+// HUF_buildCTableFromTree; pr: 2 x 13 casillas de trabajo.
+fn ze_huf_from_tree(ct: int, hn: int, nonNullRank: int, maxSV: int, maxNbBits: int, pr: int) {
+    let nbPerRank = pr
+    let valPerRank = pr + 8 * 16
+    let mut i = 0
+    while i < 16 {
+        std::raw::store(nbPerRank + 8 * i, 0)
+        std::raw::store(valPerRank + 8 * i, 0)
+        i += 1
+    }
+    let mut n = 0
+    while n <= nonNullRank {
+        let a = nbPerRank + 8 * std::raw::load(ze_hn(hn, n) + 24)
+        std::raw::store(a, std::raw::load(a) + 1)
+        n += 1
+    }
+    let mut min = 0
+    n = maxNbBits
+    while n > 0 {
+        std::raw::store(valPerRank + 8 * n, min)
+        min = (min + std::raw::load(nbPerRank + 8 * n)) & 65535
+        min = std::raw::shr(min, 1)
+        n -= 1
+    }
+    n = 0
+    while n <= maxSV {
+        std::raw::store(ct + 8 * (1 + std::raw::load(ze_hn(hn, n) + 16)), std::raw::load(ze_hn(hn, n) + 24))
+        n += 1
+    }
+    n = 0
+    while n <= maxSV {
+        let nb = std::raw::load(ct + 8 * (1 + n)) & 255
+        let a = valPerRank + 8 * nb
+        let v = std::raw::load(a)
+        std::raw::store(a, (v + 1) & 65535)
+        if nb > 0 {
+            std::raw::store(ct + 8 * (1 + n), nb | std::raw::shl(v, 8))
+        }
+        n += 1
+    }
+    std::raw::store(ct, maxNbBits | std::raw::shl(maxSV, 8))
+}
+
+// HUF_buildCTable_wksp: devuelve maxNbBits (o error negativo).
+fn ze_huf_build(ct: int, count: int, maxSV: int, maxNbBits0: int, hw: int) -> int {
+    let mut maxNbBits = maxNbBits0
+    if maxNbBits == 0 {
+        maxNbBits = 11
+    }
+    let hn0 = hw + 4112
+    let hn = hn0 + 32
+    ze_zero(hn0, 512 * 32)
+    let tmp = hw + 29712
+    ze_huf_sort(hn, count, maxSV, hw + 20496, tmp)
+    let nonNullRank = ze_huf_tree(hn, maxSV)
+    maxNbBits = ze_huf_maxheight(hn, nonNullRank, maxNbBits, hw + 24592)
+    if maxNbBits > 12 {
+        return 0 - 1
+    }
+    ze_huf_from_tree(ct, hn, nonNullRank, maxSV, maxNbBits, hw + 24592)
+    maxNbBits
+}
+
+fn ze_huf_estimate(ct: int, count: int, maxSV: int) -> int {
+    let mut nbBits = 0
+    let mut s = 0
+    while s <= maxSV {
+        nbBits += (std::raw::load(ct + 8 * (1 + s)) & 255) * std::raw::load(count + 8 * s)
+        s += 1
+    }
+    std::raw::shr(nbBits, 3)
+}
+
+fn ze_huf_validate(ct: int, count: int, maxSV: int) -> bool {
+    if (std::raw::shr(std::raw::load(ct), 8) & 255) < maxSV {
+        return false
+    }
+    let mut s = 0
+    while s <= maxSV {
+        if std::raw::load(count + 8 * s) != 0 && (std::raw::load(ct + 8 * (1 + s)) & 255) == 0 {
+            return false
+        }
+        s += 1
+    }
+    true
+}
+
+// HUF_compressWeights: 0 = no compresible, 1 = un solo valor, <0 error.
+fn ze_huf_cweights(dst: int, w: int, wtSize: int, hw: int) -> int {
+    if wtSize <= 1 {
+        return 0
+    }
+    let count = hw + 24336
+    let norm = hw + 24464
+    let mx = hw + 29760
+    // ze_hist limpia 256 casillas: se usa una zona propia para no pisar.
+    let wc = hw + 30000
+    let maxCount = ze_hist(wc, 12, w, wtSize, mx)
+    if maxCount == wtSize {
+        return 1
+    }
+    if maxCount == 1 {
+        return 0
+    }
+    let maxSV = std::raw::load(mx)
+    let mut i = 0
+    while i <= maxSV {
+        std::raw::store(count + 8 * i, std::raw::load(wc + 8 * i))
+        i += 1
+    }
+    let tl = ze_fse_otl(6, wtSize, maxSV, 2)
+    let r = ze_fse_norm(norm, tl, count, wtSize, maxSV, false)
+    if r < 0 {
+        return r
+    }
+    let mut op = dst
+    let hSize = ze_fse_wncount(op, norm, maxSV, tl)
+    if hSize < 0 {
+        return hSize
+    }
+    op += hSize
+    let ct = hw + 23824
+    ze_fse_build(ct, norm, maxSV, tl, hw + 24592)
+    let cSize = ze_fse_compress(op, w, wtSize, ct, hw + 29712)
+    if cSize == 0 {
+        return 0
+    }
+    op += cSize
+    op - dst
+}
+
+// HUF_writeCTable_wksp: tamaño de la descripción de la tabla o error.
+fn ze_huf_write(dst: int, ct: int, maxSV: int, huffLog: int, hw: int) -> int {
+    let w = hw + 23568
+    let mut n = 0
+    while n < maxSV {
+        let nb = std::raw::load(ct + 8 * (1 + n)) & 255
+        let mut wt = 0
+        if nb != 0 {
+            wt = huffLog + 1 - nb
+        }
+        std::raw::store8(w + n, wt)
+        n += 1
+    }
+    let hSize = ze_huf_cweights(dst + 1, w, maxSV, hw)
+    if hSize < 0 {
+        return hSize
+    }
+    if hSize > 1 && hSize < maxSV / 2 {
+        std::raw::store8(dst, hSize)
+        return hSize + 1
+    }
+    if maxSV > 128 {
+        return 0 - 1
+    }
+    std::raw::store8(dst, 128 + (maxSV - 1))
+    std::raw::store8(w + maxSV, 0)
+    n = 0
+    while n < maxSV {
+        std::raw::store8(dst + n / 2 + 1, std::raw::shl(std::raw::load8(w + n), 4) + std::raw::load8(w + n + 1))
+        n += 2
+    }
+    let r = (maxSV + 1) / 2 + 1
+    r
+}
+
+// Un flujo de Huffman (símbolos del último al primero).
+fn ze_huf_1x(dst: int, src: int, n: int, ct: int, bw: int) -> int {
+    ze_bw_init(bw, dst)
+    let mut i = n - 1
+    while i >= 0 {
+        let e = std::raw::load(ct + 8 * (1 + std::raw::load8(src + i)))
+        ze_bw_add(bw, std::raw::shr(e, 8), e & 255)
+        i -= 1
+    }
+    ze_bw_close(bw)
+}
+
+fn ze_huf_4x(dst: int, src: int, n: int, ct: int, bw: int) -> int {
+    if n < 12 {
+        return 0
+    }
+    let seg = (n + 3) / 4
+    let mut op = dst + 6
+    let mut ip = src
+    let mut k = 0
+    while k < 4 {
+        let mut len = seg
+        if k == 3 {
+            len = src + n - ip
+        }
+        let c = ze_huf_1x(op, ip, len, ct, bw)
+        if c == 0 || c > 65535 {
+            return 0
+        }
+        if k < 3 {
+            ze_w16(dst + 2 * k, c)
+        }
+        op += c
+        ip += seg
+        k += 1
+    }
+    op - dst
+}
+
+fn ze_huf_cctable(ostart: int, op: int, src: int, n: int, single: bool, ct: int, bw: int) -> int {
+    let mut c = 0
+    if single {
+        c = ze_huf_1x(op, src, n, ct, bw)
+    } else {
+        c = ze_huf_4x(op, src, n, ct, bw)
+    }
+    if c == 0 {
+        return 0
+    }
+    if op + c - ostart >= n - 1 {
+        return 0
+    }
+    op + c - ostart
+}
+
+// HUF_optimalTableLog con HUF_flags_optimalDepth (btultra y btultra2).
+fn ze_huf_optdepth(maxTL: int, n: int, maxSV: int, count: int, hw: int) -> int {
+    let table = hw + 2048
+    let mut card = 0
+    let mut i = 0
+    while i <= maxSV {
+        if std::raw::load(count + 8 * i) != 0 {
+            card += 1
+        }
+        i += 1
+    }
+    let minTableLog = ze_hb(card) + 1
+    let mut optSize = 0 - 1
+    let mut optLog = maxTL
+    let mut guess = minTableLog
+    while guess <= maxTL {
+        let maxBits = ze_huf_build(table, count, maxSV, guess, hw)
+        if maxBits >= 0 {
+            if maxBits < guess && guess > minTableLog {
+                break
+            }
+            let hSize = ze_huf_write(hw + 29200, table, maxSV, maxBits, hw)
+            if hSize >= 0 {
+                let newSize = ze_huf_estimate(table, count, maxSV) + hSize
+                if optSize >= 0 && newSize > optSize + 1 {
+                    break
+                }
+                if optSize < 0 || newSize < optSize {
+                    optSize = newSize
+                    optLog = guess
+                }
+            }
+        }
+        guess += 1
+    }
+    optLog
+}
+
+// HUF_compress_internal. rep: dirección del modo de repetición (0 ninguno,
+// 1 comprobar, 2 válido). Devuelve el tamaño, 0 (sin comprimir), 1 (un solo
+// símbolo) o error negativo.
+fn ze_huf_compress(dst: int, src: int, n: int, single: bool, oldTable: int, rep: int, preferRepeat: bool, optDepth: bool, suspect: bool, hw: int) -> int {
+    let count = hw
+    let table = hw + 2048
+    let bw = hw + 29712
+    let mx = hw + 29760
+    if n == 0 {
+        return 0
+    }
+    if preferRepeat && std::raw::load(rep) == 2 {
+        return ze_huf_cctable(dst, dst, src, n, single, oldTable, bw)
+    }
+    if suspect && n >= 40960 {
+        let lb = ze_hist(count, 255, src, 4096, mx)
+        let le = ze_hist(count, 255, src + n - 4096, 4096, mx)
+        if lb + le <= 68 {
+            return 0
+        }
+    }
+    let largest = ze_hist(count, 255, src, n, mx)
+    let maxSV = std::raw::load(mx)
+    if largest == n {
+        std::raw::store8(dst, std::raw::load8(src))
+        return 1
+    }
+    if largest <= std::raw::shr(n, 7) + 4 {
+        return 0
+    }
+    if std::raw::load(rep) == 1 && !ze_huf_validate(oldTable, count, maxSV) {
+        std::raw::store(rep, 0)
+    }
+    if preferRepeat && std::raw::load(rep) != 0 {
+        return ze_huf_cctable(dst, dst, src, n, single, oldTable, bw)
+    }
+    let mut huffLog = 11
+    if optDepth {
+        huffLog = ze_huf_optdepth(11, n, maxSV, count, hw)
+    } else {
+        huffLog = ze_fse_otl(11, n, maxSV, 1)
+    }
+    let maxBits = ze_huf_build(table, count, maxSV, huffLog, hw)
+    if maxBits < 0 {
+        return maxBits
+    }
+    huffLog = maxBits
+    let hSize = ze_huf_write(dst, table, maxSV, huffLog, hw)
+    if hSize < 0 {
+        return hSize
+    }
+    if std::raw::load(rep) != 0 {
+        let oldSize = ze_huf_estimate(oldTable, count, maxSV)
+        let newSize = ze_huf_estimate(table, count, maxSV)
+        if oldSize <= hSize + newSize || hSize + 12 >= n {
+            return ze_huf_cctable(dst, dst, src, n, single, oldTable, bw)
+        }
+    }
+    if hSize + 12 >= n {
+        return 0
+    }
+    std::raw::store(rep, 0)
+    ze_copy(oldTable, table, 257 * 8)
+    ze_huf_cctable(dst, dst + hSize, src, n, single, table, bw)
+}
+
+// ------------------------------------------------------------ literales
+// Bloque de entropía (CB): +0/8/16 repeticiones; +24 tabla de Huffman
+// [257]; +2080 modo de repetición de Huffman; +2088 tabla FSE de
+// desplazamientos (772 bytes), +2860 longitudes de coincidencia (1452),
+// +4312 longitudes de literales (1316); +5632/5640/5648 modos de repetición
+// (desplazamientos, coincidencias, literales). Tamaño 5664.
+
+fn ze_mingain(n: int, strat: int) -> int {
+    let mut minlog = 6
+    if strat >= 8 {
+        minlog = strat - 1
+    }
+    std::raw::shr(n, minlog) + 2
+}
+
+fn ze_lit_raw(dst: int, src: int, n: int) -> int {
+    let mut fl = 1
+    if n > 31 {
+        fl += 1
+    }
+    if n > 4095 {
+        fl += 1
+    }
+    if fl == 1 {
+        std::raw::store8(dst, std::raw::shl(n, 3) & 255)
+    } else if fl == 2 {
+        ze_w16(dst, 4 + std::raw::shl(n, 4))
+    } else {
+        ze_w24(dst, 12 + std::raw::shl(n, 4))
+    }
+    ze_copy(dst + fl, src, n)
+    n + fl
+}
+
+fn ze_lit_rle(dst: int, src: int, n: int) -> int {
+    let mut fl = 1
+    if n > 31 {
+        fl += 1
+    }
+    if n > 4095 {
+        fl += 1
+    }
+    if fl == 1 {
+        std::raw::store8(dst, (1 + std::raw::shl(n, 3)) & 255)
+    } else if fl == 2 {
+        ze_w16(dst, 1 + 4 + std::raw::shl(n, 4))
+    } else {
+        ze_w24(dst, 1 + 12 + std::raw::shl(n, 4))
+    }
+    std::raw::store8(dst + fl, std::raw::load8(src))
+    fl + 1
+}
+
+// ZSTD_compressLiterals.
+fn ze_literals(dst: int, src: int, n: int, prev: int, next: int, strat: int, disable: bool, suspect: bool, hw: int) -> int {
+    let mut lhSize = 3
+    if n >= 1024 {
+        lhSize += 1
+    }
+    if n >= 16384 {
+        lhSize += 1
+    }
+    let mut single = n < 256
+    let mut hType = 2
+    ze_copy(next + 24, prev + 24, 2064)
+    if disable {
+        return ze_lit_raw(dst, src, n)
+    }
+    let mut shift = 9 - strat
+    if shift > 3 {
+        shift = 3
+    }
+    let mut minLit = std::raw::shl(8, shift)
+    if std::raw::load(prev + 2080) == 2 {
+        minLit = 6
+    }
+    if n < minLit {
+        return ze_lit_raw(dst, src, n)
+    }
+    let repAddr = hw + 29768
+    std::raw::store(repAddr, std::raw::load(prev + 2080))
+    if std::raw::load(repAddr) == 2 && lhSize == 3 {
+        single = true
+    }
+    let preferRepeat = strat < 4 && n <= 1024
+    let cLitSize = ze_huf_compress(dst + lhSize, src, n, single, next + 24, repAddr, preferRepeat, strat >= 8, suspect, hw)
+    if std::raw::load(repAddr) != 0 {
+        hType = 3
+    }
+    let minGain = ze_mingain(n, strat)
+    if cLitSize <= 0 || cLitSize >= n - minGain {
+        ze_copy(next + 24, prev + 24, 2064)
+        return ze_lit_raw(dst, src, n)
+    }
+    if cLitSize == 1 {
+        let mut same = true
+        if n < 8 {
+            let mut i = 1
+            while i < n {
+                if std::raw::load8(src + i) != std::raw::load8(src) {
+                    same = false
+                }
+                i += 1
+            }
+        }
+        if same {
+            ze_copy(next + 24, prev + 24, 2064)
+            return ze_lit_rle(dst, src, n)
+        }
+    }
+    if hType == 2 {
+        std::raw::store(next + 2080, 1)
+    }
+    let mut ns = 0
+    if !single {
+        ns = 1
+    }
+    if lhSize == 3 {
+        ze_w24(dst, hType + std::raw::shl(ns, 2) + std::raw::shl(n, 4) + std::raw::shl(cLitSize, 14))
+    } else if lhSize == 4 {
+        ze_w32(dst, hType + 8 + std::raw::shl(n, 4) + std::raw::shl(cLitSize, 18))
+    } else {
+        ze_w32(dst, hType + 12 + std::raw::shl(n, 4) + std::raw::shl(cLitSize, 22))
+        std::raw::store8(dst + 4, std::raw::shr(cLitSize, 10) & 255)
+    }
+    lhSize + cLitSize
+}
+
+// ------------------------------------------------------------ secuencias
+// Contexto z (bytes): 0 nivel; 8 wlog, 16 clog, 24 hlog, 32 slog, 40 mml,
+// 48 tlen, 56 estrategia; 104 inBuff, 112 tamaño, 120 pos, 128 objetivo,
+// 136 inToCompress; 152 etapa (0 inicio, 1 en curso, 2 terminando),
+// 160 consumido, 168 producido, 176 primer bloque; 184/192/200 salida
+// (puntero, longitud, capacidad); 208 base, 216 dictBase, 224 dictLimit,
+// 232 lowLimit, 240 nextSrc; 256 nextToUpdate, 264 loadedDictEnd;
+// 272 tabla hash, 280 tabla de cadenas, 288 hash3, 296 hashLog3, 304 etiquetas,
+// 312 sal, 320 sal de entropía, 328 rowHashLog, 336 lazySkipping;
+// 512 secuencias, 520 cuántas, 528 literales, 536 puntero de literales,
+// 544/552/560 códigos ll/ml/of, 584 tipo de longitud larga (0, 1 literal,
+// 2 coincidencia), 592 su posición; 600 CB anterior, 608 CB siguiente,
+// 616 trabajo de secuencias, 624 salida del bloque, 632 escritor de bits,
+// 640 trabajo del divisor, 648 trabajo de Huffman, 656 base ficticia.
+// Secuencia i: seqStart + 24 i = {offBase, litLength (16 bits), mlBase
+// (16 bits)}.
+
+fn ze_store_seq(z: int, ll: int, lit: int, offBase: int, ml: int) {
+    let lp = std::raw::load(z + 536)
+    ze_copy(lp, lit, ll)
+    std::raw::store(z + 536, lp + ll)
+    let k = std::raw::load(z + 520)
+    let s = std::raw::load(z + 512) + 24 * k
+    if ll > 65535 {
+        std::raw::store(z + 584, 1)
+        std::raw::store(z + 592, k)
+    }
+    let mlBase = ml - 3
+    if mlBase > 65535 {
+        std::raw::store(z + 584, 2)
+        std::raw::store(z + 592, k)
+    }
+    std::raw::store(s, offBase)
+    std::raw::store(s + 8, ll & 65535)
+    std::raw::store(s + 16, mlBase & 65535)
+    std::raw::store(z + 520, k + 1)
+}
+
+fn ze_seq_codes(z: int) {
+    let t = ze_tab()
+    let nb = std::raw::load(z + 520)
+    let seqs = std::raw::load(z + 512)
+    let llc = std::raw::load(z + 544)
+    let mlc = std::raw::load(z + 552)
+    let ofc = std::raw::load(z + 560)
+    let mut u = 0
+    while u < nb {
+        let s = seqs + 24 * u
+        let ll = std::raw::load(s + 8)
+        let ml = std::raw::load(s + 16)
+        if ll > 63 {
+            std::raw::store8(llc + u, ze_hb(ll) + 19)
+        } else {
+            std::raw::store8(llc + u, std::raw::load(t + 8 * ll))
+        }
+        if ml > 127 {
+            std::raw::store8(mlc + u, ze_hb(ml) + 36)
+        } else {
+            std::raw::store8(mlc + u, std::raw::load(t + 512 + 8 * ml))
+        }
+        std::raw::store8(ofc + u, ze_hb(std::raw::load(s)))
+        u += 1
+    }
+    let lt = std::raw::load(z + 584)
+    if lt == 1 {
+        std::raw::store8(llc + std::raw::load(z + 592), 35)
+    }
+    if lt == 2 {
+        std::raw::store8(mlc + std::raw::load(z + 592), 52)
+    }
+}
+
+fn ze_err() -> int {
+    4611686018427387904
+}
+
+fn ze_cross_entropy(norm: int, accLog: int, count: int, max: int) -> int {
+    let t = ze_tab()
+    let shift = 8 - accLog
+    let mut cost = 0
+    let mut s = 0
+    while s <= max {
+        let mut na = std::raw::load(norm + 8 * s)
+        if na == 0 - 1 {
+            na = 1
+        }
+        cost += std::raw::load(count + 8 * s) * std::raw::load(t + 3192 + 8 * std::raw::shl(na, shift))
+        s += 1
+    }
+    std::raw::shr(cost, 8)
+}
+
+fn ze_fse_bitcost(ct: int, count: int, max: int) -> int {
+    if ze_r16(ct + 2) < max {
+        return ze_err()
+    }
+    let tl = ze_r16(ct)
+    let stt = ze_fse_stt(ct)
+    let badCost = std::raw::shl(tl + 1, 8)
+    let tableSize = std::raw::shl(1, tl)
+    let mut cost = 0
+    let mut s = 0
+    while s <= max {
+        let c = std::raw::load(count + 8 * s)
+        if c != 0 {
+            let dnb = ze_r32(stt + 8 * s + 4)
+            let minNb = std::raw::shr(dnb, 16)
+            let thr = std::raw::shl(minNb + 1, 16)
+            let dft = (thr - (dnb + tableSize)) & 4294967295
+            let nd = std::raw::shr(std::raw::shl(dft, 8) & 4294967295, tl)
+            let bitCost = (std::raw::shl(minNb + 1, 8) - nd) & 4294967295
+            if bitCost >= badCost {
+                return ze_err()
+            }
+            cost += c * bitCost
+        }
+        s += 1
+    }
+    std::raw::shr(cost, 8)
+}
+
+fn ze_entropy_cost(count: int, max: int, total: int) -> int {
+    let t = ze_tab()
+    let mut cost = 0
+    let mut s = 0
+    while s <= max {
+        let c = std::raw::load(count + 8 * s)
+        let mut nv = (256 * c) / total
+        if c != 0 && nv == 0 {
+            nv = 1
+        }
+        cost = (cost + c * std::raw::load(t + 3192 + 8 * nv)) & 4294967295
+        s += 1
+    }
+    std::raw::shr(cost, 8)
+}
+
+// sw (trabajo de secuencias): 0 count[256], 2048 norm[64], 2560 trabajo FSE,
+// 7168 cabecera de prueba [512], 7700 maxSV.
+fn ze_ncount_cost(count: int, max: int, nbSeq: int, fseLog: int, sw: int) -> int {
+    let tl = ze_fse_otl(fseLog, nbSeq, max, 2)
+    let r = ze_fse_norm(sw + 2048, tl, count, nbSeq, max, nbSeq >= 2048)
+    if r < 0 {
+        return 0 - 1
+    }
+    ze_fse_wncount(sw + 7168, sw + 2048, max, tl)
+}
+
+// ZSTD_selectEncodingType: 0 básico, 1 RLE, 2 comprimido, 3 repetir.
+fn ze_select(rep: int, count: int, max: int, mostFrequent: int, nbSeq: int, fseLog: int, prevCT: int, defNorm: int, defLog: int, defaultAllowed: bool, strat: int, sw: int) -> int {
+    if mostFrequent == nbSeq {
+        std::raw::store(rep, 0)
+        if defaultAllowed && nbSeq <= 2 {
+            return 0
+        }
+        return 1
+    }
+    if strat < 4 {
+        if defaultAllowed {
+            let dynMin = std::raw::shr(std::raw::shl(1, defLog) * (10 - strat), 3)
+            if std::raw::load(rep) == 2 && nbSeq < 1000 {
+                return 3
+            }
+            if nbSeq < dynMin || mostFrequent < std::raw::shr(nbSeq, defLog - 1) {
+                std::raw::store(rep, 0)
+                return 0
+            }
+        }
+    } else {
+        let mut basicCost = ze_err()
+        if defaultAllowed {
+            basicCost = ze_cross_entropy(defNorm, defLog, count, max)
+        }
+        let mut repeatCost = ze_err()
+        if std::raw::load(rep) != 0 {
+            repeatCost = ze_fse_bitcost(prevCT, count, max)
+        }
+        let ncc = ze_ncount_cost(count, max, nbSeq, fseLog, sw)
+        let mut compressedCost = ze_err()
+        if ncc >= 0 {
+            compressedCost = std::raw::shl(ncc, 3) + ze_entropy_cost(count, max, nbSeq)
+        }
+        if basicCost <= repeatCost && basicCost <= compressedCost {
+            std::raw::store(rep, 0)
+            return 0
+        }
+        if repeatCost <= compressedCost {
+            return 3
+        }
+    }
+    std::raw::store(rep, 1)
+    2
+}
+
+// ZSTD_buildCTable: bytes de cabecera escritos en op (o error negativo).
+fn ze_build_ct(op: int, next: int, fseLog: int, typ: int, count: int, max: int, codes: int, nbSeq: int, defNorm: int, defLog: int, defMax: int, prev: int, size: int, sw: int) -> int {
+    if typ == 1 {
+        ze_fse_build_rle(next, max)
+        std::raw::store8(op, std::raw::load8(codes))
+        return 1
+    }
+    if typ == 3 {
+        ze_copy(next, prev, size)
+        return 0
+    }
+    if typ == 0 {
+        ze_fse_build(next, defNorm, defMax, defLog, sw + 2560)
+        return 0
+    }
+    let tl = ze_fse_otl(fseLog, nbSeq, max, 2)
+    let mut n1 = nbSeq
+    let last = count + 8 * std::raw::load8(codes + nbSeq - 1)
+    if std::raw::load(last) > 1 {
+        std::raw::store(last, std::raw::load(last) - 1)
+        n1 -= 1
+    }
+    let r = ze_fse_norm(sw + 2048, tl, count, n1, max, n1 >= 2048)
+    if r < 0 {
+        return r
+    }
+    let ns = ze_fse_wncount(op, sw + 2048, max, tl)
+    if ns < 0 {
+        return ns
+    }
+    ze_fse_build(next, sw + 2048, max, tl, sw + 2560)
+    ns
+}
+
+// ZSTD_encodeSequences (64 bits).
+fn ze_encode_seqs(dst: int, z: int, nbSeq: int, cb: int, bw: int) -> int {
+    let t = ze_tab()
+    let ctOF = cb + 2088
+    let ctML = cb + 2860
+    let ctLL = cb + 4312
+    let sttOF = ze_fse_stt(ctOF)
+    let sttML = ze_fse_stt(ctML)
+    let sttLL = ze_fse_stt(ctLL)
+    let seqs = std::raw::load(z + 512)
+    let llc = std::raw::load(z + 544)
+    let mlc = std::raw::load(z + 552)
+    let ofc = std::raw::load(z + 560)
+    ze_bw_init(bw, dst)
+    let mut n = nbSeq - 1
+    let mut s = seqs + 24 * n
+    let mut sML = ze_fse_init2(ctML, sttML, std::raw::load8(mlc + n))
+    let mut sOF = ze_fse_init2(ctOF, sttOF, std::raw::load8(ofc + n))
+    let mut sLL = ze_fse_init2(ctLL, sttLL, std::raw::load8(llc + n))
+    ze_bw_add(bw, std::raw::load(s + 8), std::raw::load(t + 1536 + 8 * std::raw::load8(llc + n)))
+    ze_bw_add(bw, std::raw::load(s + 16), std::raw::load(t + 1824 + 8 * std::raw::load8(mlc + n)))
+    ze_bw_add(bw, std::raw::load(s), std::raw::load8(ofc + n))
+    n -= 1
+    while n >= 0 {
+        s = seqs + 24 * n
+        let llCode = std::raw::load8(llc + n)
+        let ofCode = std::raw::load8(ofc + n)
+        let mlCode = std::raw::load8(mlc + n)
+        sOF = ze_fse_enc(bw, ctOF, sttOF, sOF, ofCode)
+        sML = ze_fse_enc(bw, ctML, sttML, sML, mlCode)
+        sLL = ze_fse_enc(bw, ctLL, sttLL, sLL, llCode)
+        ze_bw_add(bw, std::raw::load(s + 8), std::raw::load(t + 1536 + 8 * llCode))
+        ze_bw_add(bw, std::raw::load(s + 16), std::raw::load(t + 1824 + 8 * mlCode))
+        ze_bw_add(bw, std::raw::load(s), ofCode)
+        n -= 1
+    }
+    ze_bw_add(bw, sML, ze_r16(ctML))
+    ze_bw_add(bw, sOF, ze_r16(ctOF))
+    ze_bw_add(bw, sLL, ze_r16(ctLL))
+    ze_bw_close(bw)
+}
+
+// ZSTD_entropyCompressSeqStore_internal.
+// ZSTD_buildSequencesStatistics: códigos, tipos y tablas FSE de las
+// secuencias de la vista actual (z + 512...). Escribe las cabeceras NCount
+// en op0; out: +0 llType, +8 ofType, +16 mlType, +24 lastCount. Devuelve los
+// bytes escritos (o error negativo).
+fn ze_seq_stats(z: int, op0: int, out: int) -> int {
+    let t = ze_tab()
+    let prev = std::raw::load(z + 600)
+    let next = std::raw::load(z + 608)
+    let strat = std::raw::load(z + 56)
+    let sw = std::raw::load(z + 616)
+    let count = sw
+    let mx = sw + 7700
+    let nbSeq = std::raw::load(z + 520)
+    let mut op = op0
+    ze_seq_codes(z)
+    let mut lastCount = 0
+    // longitudes de literales
+    let llc = std::raw::load(z + 544)
+    let mut mf = ze_hist(count, 35, llc, nbSeq, mx)
+    let mut max = std::raw::load(mx)
+    std::raw::store(next + 5648, std::raw::load(prev + 5648))
+    let llType = ze_select(next + 5648, count, max, mf, nbSeq, 9, prev + 4312, t + 2248, 6, true, strat, sw)
+    let mut cs = ze_build_ct(op, next + 4312, 9, llType, count, max, llc, nbSeq, t + 2248, 6, 35, prev + 4312, 1316, sw)
+    if cs < 0 {
+        return cs
+    }
+    if llType == 2 {
+        lastCount = cs
+    }
+    op += cs
+    // desplazamientos
+    let ofc = std::raw::load(z + 560)
+    mf = ze_hist(count, 31, ofc, nbSeq, mx)
+    max = std::raw::load(mx)
+    std::raw::store(next + 5632, std::raw::load(prev + 5632))
+    let ofType = ze_select(next + 5632, count, max, mf, nbSeq, 8, prev + 2088, t + 2960, 5, max <= 28, strat, sw)
+    cs = ze_build_ct(op, next + 2088, 8, ofType, count, max, ofc, nbSeq, t + 2960, 5, 28, prev + 2088, 772, sw)
+    if cs < 0 {
+        return cs
+    }
+    if ofType == 2 {
+        lastCount = cs
+    }
+    op += cs
+    // longitudes de coincidencia
+    let mlc = std::raw::load(z + 552)
+    mf = ze_hist(count, 52, mlc, nbSeq, mx)
+    max = std::raw::load(mx)
+    std::raw::store(next + 5640, std::raw::load(prev + 5640))
+    let mlType = ze_select(next + 5640, count, max, mf, nbSeq, 9, prev + 2860, t + 2536, 6, true, strat, sw)
+    cs = ze_build_ct(op, next + 2860, 9, mlType, count, max, mlc, nbSeq, t + 2536, 6, 52, prev + 2860, 1452, sw)
+    if cs < 0 {
+        return cs
+    }
+    if mlType == 2 {
+        lastCount = cs
+    }
+    op += cs
+    std::raw::store(out, llType)
+    std::raw::store(out + 8, ofType)
+    std::raw::store(out + 16, mlType)
+    std::raw::store(out + 24, lastCount)
+    op - op0
+}
+
+fn ze_entropy_in(z: int, dst: int) -> int {
+    let t = ze_tab()
+    let prev = std::raw::load(z + 600)
+    let next = std::raw::load(z + 608)
+    let strat = std::raw::load(z + 56)
+    let sw = std::raw::load(z + 616)
+    let count = sw
+    let mx = sw + 7700
+    let litStart = std::raw::load(z + 528)
+    let litSize = std::raw::load(z + 536) - litStart
+    let nbSeq = std::raw::load(z + 520)
+    let suspect = nbSeq == 0 || litSize / nbSeq >= 20
+    let disable = strat == 1 && std::raw::load(z + 48) > 0
+    let mut op = dst
+    op += ze_literals(op, litStart, litSize, prev, next, strat, disable, suspect, std::raw::load(z + 648))
+    if nbSeq < 128 {
+        std::raw::store8(op, nbSeq)
+        op += 1
+    } else if nbSeq < 32512 {
+        std::raw::store8(op, std::raw::shr(nbSeq, 8) + 128)
+        std::raw::store8(op + 1, nbSeq & 255)
+        op += 2
+    } else {
+        std::raw::store8(op, 255)
+        ze_w16(op + 1, nbSeq - 32512)
+        op += 3
+    }
+    if nbSeq == 0 {
+        ze_copy(next + 2088, prev + 2088, 3568)
+        return op - dst
+    }
+    let seqHead = op
+    op += 1
+    let st = z + 976
+    let ss = ze_seq_stats(z, op, st)
+    if ss < 0 {
+        return ss
+    }
+    op += ss
+    let llType = std::raw::load(st)
+    let ofType = std::raw::load(st + 8)
+    let mlType = std::raw::load(st + 16)
+    let lastCount = std::raw::load(st + 24)
+    std::raw::store8(seqHead, std::raw::shl(llType, 6) + std::raw::shl(ofType, 4) + std::raw::shl(mlType, 2))
+    let bs = ze_encode_seqs(op, z, nbSeq, next, std::raw::load(z + 632))
+    op += bs
+    if lastCount != 0 && lastCount + bs < 4 {
+        return 0
+    }
+    op - dst
+}
+
+fn ze_entropy(z: int, dst: int, blockSize: int) -> int {
+    let c = ze_entropy_in(z, dst)
+    if c <= 0 {
+        return c
+    }
+    if c >= blockSize - ze_mingain(blockSize, std::raw::load(z + 56)) {
+        return 0
+    }
+    c
+}
+
+// ------------------------------------------------------------ bloques
+
+fn ze_is_rle(src: int, n: int) -> bool {
+    let b = std::raw::load8(src)
+    let mut i = 1
+    while i < n {
+        if std::raw::load8(src + i) != b {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn ze_out(z: int, n: int) -> int {
+    let p = std::raw::load(z + 184) + std::raw::load(z + 192)
+    std::raw::store(z + 192, std::raw::load(z + 192) + n)
+    p
+}
+
+// ZSTD_compressBlock_internal + cabecera; devuelve los bytes escritos en la
+// salida (o error negativo).
+fn ze_block(z: int, src: int, n: int, last: int) -> int {
+    let scratch = std::raw::load(z + 624)
+    let mut cSize = 0
+    if n >= 7 {
+        std::raw::store(z + 520, 0)
+        std::raw::store(z + 536, std::raw::load(z + 528))
+        std::raw::store(z + 584, 0)
+        let curr = src - std::raw::load(z + 208)
+        let ntu = std::raw::load(z + 256)
+        if curr > ntu + 384 {
+            std::raw::store(z + 256, curr - ze_min(192, curr - ntu - 384))
+        }
+        let prev = std::raw::load(z + 600)
+        let next = std::raw::load(z + 608)
+        std::raw::store(next, std::raw::load(prev))
+        std::raw::store(next + 8, std::raw::load(prev + 8))
+        std::raw::store(next + 16, std::raw::load(prev + 16))
+        let ext = std::raw::load(z + 232) < std::raw::load(z + 224)
+        let l = std::raw::load(z + 1016)
+        if l != 0 {
+            let g = ze_ldm_generate(l, src, n)
+            if g < 0 {
+                return g
+            }
+        }
+        let lastLL = ze_blockc(z, next, src, n, ext)
+        let lp = std::raw::load(z + 536)
+        ze_copy(lp, src + n - lastLL, lastLL)
+        std::raw::store(z + 536, lp + lastLL)
+        if std::raw::load(z + 56) >= 7 && std::raw::load(z + 8) >= 17 {
+            return ze_split_block(z, src, n, last)
+        }
+        cSize = ze_entropy(z, scratch, n)
+        if cSize < 0 {
+            return cSize
+        }
+        if std::raw::load(z + 176) == 0 && cSize < 25 && ze_is_rle(src, n) {
+            cSize = 1
+            std::raw::store8(scratch, std::raw::load8(src))
+        }
+    }
+    if cSize > 1 {
+        let p = std::raw::load(z + 600)
+        std::raw::store(z + 600, std::raw::load(z + 608))
+        std::raw::store(z + 608, p)
+    }
+    if cSize == 0 {
+        let o = ze_out(z, n + 3)
+        ze_w24(o, last + std::raw::shl(n, 3))
+        ze_copy(o + 3, src, n)
+        return n + 3
+    }
+    if cSize == 1 {
+        let o = ze_out(z, 4)
+        ze_w24(o, last + 2 + std::raw::shl(n, 3))
+        std::raw::store8(o + 3, std::raw::load8(scratch))
+        return 4
+    }
+    let o = ze_out(z, cSize + 3)
+    ze_w24(o, last + 4 + std::raw::shl(cSize, 3))
+    ze_copy(o + 3, scratch, cSize)
+    cSize + 3
+}
+
+// ------------------------------------------------------------ división posterior
+// ZSTD_compressBlock_splitBlock (divide un bloque según sus secuencias).
+// Contexto S = z + 1008: vistas de 80 bytes (+0 seqs, +8 nbSeq, +16 litStart,
+// +24 fin de literales, +32/+40/+48 códigos ll/ml/of, +56 tipo largo,
+// +64 posición larga): +0 original, +80 completo, +160 primera mitad,
+// +240 segunda mitad, +320 actual, +400 siguiente; +480 dRep, +504 cRep,
+// +528 dRep original; +560 particiones [197]; +2144 cabecera Huffman;
+// +2400 tablas FSE; +3424 cuentas [256]; +5472 máximo; +5480 tipos
+// (ll, of, ml, lastCount); +5520 tipo de literales; +5528 tamaño de la
+// cabecera Huffman; +5600 número de divisiones.
+
+fn ze_view_save(z: int, v: int) {
+    std::raw::store(v, std::raw::load(z + 512))
+    std::raw::store(v + 8, std::raw::load(z + 520))
+    std::raw::store(v + 16, std::raw::load(z + 528))
+    std::raw::store(v + 24, std::raw::load(z + 536))
+    std::raw::store(v + 32, std::raw::load(z + 544))
+    std::raw::store(v + 40, std::raw::load(z + 552))
+    std::raw::store(v + 48, std::raw::load(z + 560))
+    std::raw::store(v + 56, std::raw::load(z + 584))
+    std::raw::store(v + 64, std::raw::load(z + 592))
+}
+
+fn ze_view_load(z: int, v: int) {
+    std::raw::store(z + 512, std::raw::load(v))
+    std::raw::store(z + 520, std::raw::load(v + 8))
+    std::raw::store(z + 528, std::raw::load(v + 16))
+    std::raw::store(z + 536, std::raw::load(v + 24))
+    std::raw::store(z + 544, std::raw::load(v + 32))
+    std::raw::store(z + 552, std::raw::load(v + 40))
+    std::raw::store(z + 560, std::raw::load(v + 48))
+    std::raw::store(z + 584, std::raw::load(v + 56))
+    std::raw::store(z + 592, std::raw::load(v + 64))
+}
+
+// countSeqStoreLiteralsBytes sobre las nb secuencias desde seqs.
+fn ze_count_lits(seqs: int, nb: int, typ: int, pos: int) -> int {
+    let mut total = 0
+    let mut i = 0
+    while i < nb {
+        total += std::raw::load(seqs + 24 * i + 8)
+        if i == pos && typ == 1 {
+            total += 65536
+        }
+        i += 1
+    }
+    total
+}
+
+fn ze_count_match(v: int) -> int {
+    let seqs = std::raw::load(v)
+    let nb = std::raw::load(v + 8)
+    let mut total = 0
+    let mut i = 0
+    while i < nb {
+        total += std::raw::load(seqs + 24 * i + 16) + 3
+        if i == std::raw::load(v + 64) && std::raw::load(v + 56) == 2 {
+            total += 65536
+        }
+        i += 1
+    }
+    total
+}
+
+// ZSTD_deriveSeqStoreChunk.
+fn ze_derive(res: int, orig: int, start: int, end: int) {
+    ze_copy(res, orig, 72)
+    if start > 0 {
+        std::raw::store(res + 16, std::raw::load(orig + 16) + ze_count_lits(std::raw::load(orig), start, std::raw::load(orig + 56), std::raw::load(orig + 64)))
+    }
+    if std::raw::load(orig + 56) != 0 {
+        let pos = std::raw::load(orig + 64)
+        if pos < start || pos > end {
+            std::raw::store(res + 56, 0)
+        } else {
+            std::raw::store(res + 64, pos - start)
+        }
+    }
+    std::raw::store(res, std::raw::load(orig) + 24 * start)
+    std::raw::store(res + 8, end - start)
+    if end != std::raw::load(orig + 8) {
+        std::raw::store(res + 24, std::raw::load(res + 16) + ze_count_lits(std::raw::load(res), end - start, std::raw::load(res + 56), std::raw::load(res + 64)))
+    }
+    std::raw::store(res + 32, std::raw::load(orig + 32) + start)
+    std::raw::store(res + 40, std::raw::load(orig + 40) + start)
+    std::raw::store(res + 48, std::raw::load(orig + 48) + start)
+}
+
+// ZSTD_buildBlockEntropyStats_literals: devuelve el tamaño de la cabecera
+// Huffman (o error negativo); deja el tipo en S + 5520.
+fn ze_lit_stats(z: int, s: int) -> int {
+    let prev = std::raw::load(z + 600)
+    let next = std::raw::load(z + 608)
+    let hw = std::raw::load(z + 648)
+    let count = s + 3424
+    let mx = s + 5472
+    let src = std::raw::load(z + 528)
+    let n = std::raw::load(z + 536) - src
+    ze_copy(next + 24, prev + 24, 2064)
+    let mut minLit = 63
+    if std::raw::load(prev + 2080) == 2 {
+        minLit = 6
+    }
+    std::raw::store(s + 5520, 0)
+    if n <= minLit {
+        return 0
+    }
+    let largest = ze_hist(count, 255, src, n, mx)
+    let maxSV = std::raw::load(mx)
+    if largest == n {
+        std::raw::store(s + 5520, 1)
+        return 0
+    }
+    if largest <= std::raw::shr(n, 7) + 4 {
+        return 0
+    }
+    let mut repeat = std::raw::load(prev + 2080)
+    if repeat == 1 && !ze_huf_validate(prev + 24, count, maxSV) {
+        repeat = 0
+    }
+    ze_zero(next + 24, 257 * 8)
+    let mut huffLog = 11
+    if std::raw::load(z + 56) >= 8 {
+        huffLog = ze_huf_optdepth(11, n, maxSV, count, hw)
+    } else {
+        huffLog = ze_fse_otl(11, n, maxSV, 1)
+    }
+    let maxBits = ze_huf_build(next + 24, count, maxSV, huffLog, hw)
+    if maxBits < 0 {
+        return maxBits
+    }
+    let newSize = ze_huf_estimate(next + 24, count, maxSV)
+    let hSize = ze_huf_write(s + 2144, next + 24, maxSV, maxBits, hw)
+    if hSize < 0 {
+        return hSize
+    }
+    if repeat != 0 {
+        let oldSize = ze_huf_estimate(prev + 24, count, maxSV)
+        if oldSize < n && (oldSize <= hSize + newSize || hSize + 12 >= n) {
+            ze_copy(next + 24, prev + 24, 2064)
+            std::raw::store(s + 5520, 3)
+            return 0
+        }
+    }
+    if newSize + hSize >= n {
+        ze_copy(next + 24, prev + 24, 2064)
+        return 0
+    }
+    std::raw::store(s + 5520, 2)
+    std::raw::store(next + 2080, 1)
+    hSize
+}
+
+// ZSTD_estimateBlockSize_symbolType.
+fn ze_est_sym(typ: int, codes: int, nb: int, maxCode: int, ct: int, extra: int, defNorm: int, defLog: int, s: int) -> int {
+    let count = s + 3424
+    let mx = s + 5472
+    ze_hist(count, maxCode, codes, nb, mx)
+    let max = std::raw::load(mx)
+    let mut bits = 0
+    if typ == 0 {
+        bits = ze_cross_entropy(defNorm, defLog, count, max)
+    } else if typ != 1 {
+        bits = ze_fse_bitcost(ct, count, max)
+        if bits >= ze_err() || bits < 0 {
+            return nb * 10
+        }
+    }
+    let mut i = 0
+    while i < nb {
+        let c = std::raw::load8(codes + i)
+        if extra == 0 {
+            bits += c
+        } else {
+            bits += std::raw::load(extra + 8 * c)
+        }
+        i += 1
+    }
+    std::raw::shr(bits, 3)
+}
+
+// ZSTD_buildEntropyStatisticsAndEstimateSubBlockSize con la vista v.
+fn ze_estimate(z: int, s: int, v: int) -> int {
+    let t = ze_tab()
+    ze_view_load(z, v)
+    let next = std::raw::load(z + 608)
+    let hufDes = ze_lit_stats(z, s)
+    if hufDes < 0 {
+        return 0 - 1
+    }
+    let nb = std::raw::load(z + 520)
+    let st = s + 5480
+    let mut fseSize = 0
+    if nb != 0 {
+        fseSize = ze_seq_stats(z, s + 2400, st)
+        if fseSize < 0 {
+            return 0 - 1
+        }
+    } else {
+        std::raw::store(next + 5632, 0)
+        std::raw::store(next + 5640, 0)
+        std::raw::store(next + 5648, 0)
+        std::raw::store(st, 0)
+        std::raw::store(st + 8, 0)
+        std::raw::store(st + 16, 0)
+    }
+    // literales
+    let litStart = std::raw::load(z + 528)
+    let litSize = std::raw::load(z + 536) - litStart
+    let hType = std::raw::load(s + 5520)
+    let mut litEst = litSize
+    if hType == 1 {
+        litEst = 1
+    } else if hType >= 2 {
+        ze_hist(s + 3424, 255, litStart, litSize, s + 5472)
+        litEst = ze_huf_estimate(next + 24, s + 3424, std::raw::load(s + 5472))
+        if hType == 2 {
+            litEst += hufDes
+        }
+        if litSize >= 256 {
+            litEst += 6
+        }
+        litEst += 3
+        if litSize >= 1024 {
+            litEst += 1
+        }
+        if litSize >= 16384 {
+            litEst += 1
+        }
+    }
+    // secuencias
+    let mut seqEst = 2 + fseSize
+    if nb >= 128 {
+        seqEst += 1
+    }
+    if nb >= 32512 {
+        seqEst += 1
+    }
+    seqEst += ze_est_sym(std::raw::load(st + 8), std::raw::load(z + 560), nb, 31, next + 2088, 0, t + 2960, 5, s)
+    seqEst += ze_est_sym(std::raw::load(st), std::raw::load(z + 544), nb, 35, next + 4312, t + 1536, t + 2248, 6, s)
+    seqEst += ze_est_sym(std::raw::load(st + 16), std::raw::load(z + 552), nb, 52, next + 2860, t + 1824, t + 2536, 6, s)
+    seqEst + litEst + 3
+}
+
+// ZSTD_deriveBlockSplitsHelper.
+fn ze_split_helper(z: int, s: int, start: int, end: int) -> bool {
+    let idx = std::raw::load(s + 5600)
+    if end - start < 300 || idx >= 196 {
+        return true
+    }
+    let mid = (start + end) / 2
+    ze_derive(s + 80, s, start, end)
+    ze_derive(s + 160, s, start, mid)
+    ze_derive(s + 240, s, mid, end)
+    let eo = ze_estimate(z, s, s + 80)
+    let ef = ze_estimate(z, s, s + 160)
+    let es = ze_estimate(z, s, s + 240)
+    if eo < 0 || ef < 0 || es < 0 {
+        return true
+    }
+    if ef + es < eo {
+        ze_split_helper(z, s, start, mid)
+        let k = std::raw::load(s + 5600)
+        std::raw::store(s + 560 + 8 * k, mid)
+        std::raw::store(s + 5600, k + 1)
+        ze_split_helper(z, s, mid, end)
+    }
+    true
+}
+
+// ZSTD_seqStore_resolveOffCodes.
+fn ze_resolve_rep(rep: int, offBase: int, ll0: int) -> int {
+    let adj = offBase - 1 + ll0
+    if adj == 3 {
+        return (std::raw::load(rep) - 1) & 4294967295
+    }
+    std::raw::load(rep + 8 * adj)
+}
+
+fn ze_rep_update(rep: int, offBase: int, ll0: int) {
+    if offBase > 3 {
+        std::raw::store(rep + 16, std::raw::load(rep + 8))
+        std::raw::store(rep + 8, std::raw::load(rep))
+        std::raw::store(rep, offBase - 3)
+        return
+    }
+    let r = offBase - 1 + ll0
+    if r == 0 {
+        return
+    }
+    let cur = ze_resolve_rep(rep, offBase, ll0)
+    if r != 1 {
+        std::raw::store(rep + 16, std::raw::load(rep + 8))
+    }
+    std::raw::store(rep + 8, std::raw::load(rep))
+    std::raw::store(rep, cur)
+}
+
+fn ze_resolve_offcodes(dRep: int, cRep: int, v: int) {
+    let seqs = std::raw::load(v)
+    let nb = std::raw::load(v + 8)
+    let mut longLit = nb
+    if std::raw::load(v + 56) == 1 {
+        longLit = std::raw::load(v + 64)
+    }
+    let mut i = 0
+    while i < nb {
+        let sq = seqs + 24 * i
+        let mut ll0 = 0
+        if std::raw::load(sq + 8) == 0 && i != longLit {
+            ll0 = 1
+        }
+        let offBase = std::raw::load(sq)
+        if offBase <= 3 {
+            let d = ze_resolve_rep(dRep, offBase, ll0)
+            let c = ze_resolve_rep(cRep, offBase, ll0)
+            if d != c {
+                std::raw::store(sq, c + 3)
+            }
+        }
+        ze_rep_update(dRep, std::raw::load(sq), ll0)
+        ze_rep_update(cRep, offBase, ll0)
+        i += 1
+    }
+}
+
+// ZSTD_compressSeqStore_singleBlock.
+fn ze_single(z: int, s: int, v: int, src: int, n: int, last: int, part: bool) -> int {
+    let scratch = std::raw::load(z + 624)
+    let dRep = s + 480
+    ze_copy(s + 528, dRep, 24)
+    if part {
+        ze_resolve_offcodes(dRep, s + 504, v)
+    }
+    ze_view_load(z, v)
+    let mut cSize = ze_entropy(z, scratch, n)
+    if cSize < 0 {
+        return cSize
+    }
+    if std::raw::load(z + 176) == 0 && cSize < 25 && ze_is_rle(src, n) {
+        cSize = 1
+    }
+    if cSize == 0 {
+        ze_copy(dRep, s + 528, 24)
+        let o = ze_out(z, n + 3)
+        ze_w24(o, last + std::raw::shl(n, 3))
+        ze_copy(o + 3, src, n)
+        return n + 3
+    }
+    if cSize == 1 {
+        ze_copy(dRep, s + 528, 24)
+        let o = ze_out(z, 4)
+        ze_w24(o, last + 2 + std::raw::shl(n, 3))
+        std::raw::store8(o + 3, std::raw::load8(src))
+        return 4
+    }
+    let p = std::raw::load(z + 600)
+    std::raw::store(z + 600, std::raw::load(z + 608))
+    std::raw::store(z + 608, p)
+    let o = ze_out(z, cSize + 3)
+    ze_w24(o, last + 4 + std::raw::shl(cSize, 3))
+    ze_copy(o + 3, scratch, cSize)
+    cSize + 3
+}
+
+// ZSTD_compressBlock_splitBlock_internal (el almacén de secuencias ya está
+// construido en z).
+fn ze_split_block(z: int, src: int, n: int, last: int) -> int {
+    let s = std::raw::load(z + 1008)
+    ze_view_save(z, s)
+    let nbSeq = std::raw::load(z + 520)
+    std::raw::store(s + 5600, 0)
+    if nbSeq > 4 {
+        ze_split_helper(z, s, 0, nbSeq)
+        let k = std::raw::load(s + 5600)
+        std::raw::store(s + 560 + 8 * k, nbSeq)
+    }
+    let numSplits = std::raw::load(s + 5600)
+    let prev = std::raw::load(z + 600)
+    ze_copy(s + 480, prev, 24)
+    ze_copy(s + 504, prev, 24)
+    if numSplits == 0 {
+        let c = ze_single(z, s, s, src, n, last, false)
+        ze_view_load(z, s)
+        return c
+    }
+    ze_derive(s + 320, s, 0, std::raw::load(s + 560))
+    let mut total = 0
+    let mut srcTotal = 0
+    let mut ip = src
+    let mut i = 0
+    while i <= numSplits {
+        let lastPart = i == numSplits
+        let mut srcBytes = ze_count_lits(std::raw::load(s + 320), std::raw::load(s + 328), std::raw::load(s + 376), std::raw::load(s + 384)) + ze_count_match(s + 320)
+        srcTotal += srcBytes
+        let mut lastEntire = 0
+        if lastPart {
+            srcBytes += n - srcTotal
+            lastEntire = last
+        } else {
+            ze_derive(s + 400, s, std::raw::load(s + 560 + 8 * i), std::raw::load(s + 568 + 8 * i))
+        }
+        let c = ze_single(z, s, s + 320, ip, srcBytes, lastEntire, true)
+        if c < 0 {
+            ze_view_load(z, s)
+            return c
+        }
+        ip += srcBytes
+        total += c
+        ze_copy(s + 320, s + 400, 72)
+        i += 1
+    }
+    ze_view_load(z, s)
+    ze_copy(std::raw::load(z + 600), s + 480, 24)
+    total
+}
+
+// ------------------------------------------------------------ división previa
+// (zstd_preSplit.c). Trabajo: +0 eventos pasados [1024], +8192 cuántos,
+// +8200 eventos nuevos [1024], +16392 cuántos, +16400 eventos del medio [256].
+
+fn ze_fp_dist(a: int, na: int, b: int, nb: int, hl: int) -> int {
+    let mut d = 0
+    let mut n = 0
+    let size = std::raw::shl(1, hl)
+    while n < size {
+        let x = std::raw::load(a + 8 * n) * nb - std::raw::load(b + 8 * n) * na
+        if x < 0 {
+            d -= x
+        } else {
+            d += x
+        }
+        n += 1
+    }
+    d
+}
+
+fn ze_fp_differ(a: int, na: int, b: int, nb: int, penalty: int, hl: int) -> bool {
+    let p50 = na * nb
+    let dev = ze_fp_dist(a, na, b, nb, hl)
+    let thr = p50 * (14 + penalty) / 16
+    dev >= thr
+}
+
+fn ze_fp_record(fp: int, src: int, rate: int, hl: int) {
+    let size = std::raw::shl(1, hl)
+    let mut i = 0
+    while i < size {
+        std::raw::store(fp + 8 * i, 0)
+        i += 1
+    }
+    let limit = 8191
+    let mut n = 0
+    while n < limit {
+        let mut h = 0
+        if hl == 8 {
+            h = std::raw::load8(src + n)
+        } else {
+            h = std::raw::shr(std::raw::wmul(std::raw::load(src + n) & 65535, 2654435769) & 4294967295, 32 - hl)
+        }
+        let a = fp + 8 * h
+        std::raw::store(a, std::raw::load(a) + 1)
+        n += rate
+    }
+    std::raw::store(fp + 8192, limit / rate)
+}
+
+fn ze_split_chunks(src: int, bs: int, level: int, wk: int) -> int {
+    let mut rate = 1
+    let mut hl = 10
+    if level == 0 {
+        rate = 43
+        hl = 8
+    } else if level == 1 {
+        rate = 11
+        hl = 9
+    } else if level == 2 {
+        rate = 5
+    }
+    let past = wk
+    let nw = wk + 8200
+    ze_zero(wk, 16400)
+    ze_fp_record(past, src, rate, hl)
+    let mut penalty = 3
+    let mut pos = 8192
+    while pos <= bs - 8192 {
+        ze_fp_record(nw, src + pos, rate, hl)
+        if ze_fp_differ(past, std::raw::load(past + 8192), nw, std::raw::load(nw + 8192), penalty, hl) {
+            return pos
+        }
+        let mut i = 0
+        while i < 1024 {
+            std::raw::store(past + 8 * i, std::raw::load(past + 8 * i) + std::raw::load(nw + 8 * i))
+            i += 1
+        }
+        std::raw::store(past + 8192, std::raw::load(past + 8192) + std::raw::load(nw + 8192))
+        if penalty > 0 {
+            penalty -= 1
+        }
+        pos += 8192
+    }
+    bs
+}
+
+fn ze_hist_add(ev: int, src: int, n: int) {
+    let mut i = 0
+    while i < n {
+        let a = ev + 8 * std::raw::load8(src + i)
+        std::raw::store(a, std::raw::load(a) + 1)
+        i += 1
+    }
+}
+
+fn ze_split_borders(src: int, bs: int, wk: int) -> int {
+    let past = wk
+    let nw = wk + 8200
+    let mid = wk + 16400
+    ze_zero(wk, 16400 + 2048)
+    ze_hist_add(past, src, 512)
+    ze_hist_add(nw, src + bs - 512, 512)
+    if !ze_fp_differ(past, 512, nw, 512, 0, 8) {
+        return bs
+    }
+    ze_hist_add(mid, src + bs / 2 - 256, 512)
+    let dB = ze_fp_dist(past, 512, mid, 512, 8)
+    let dE = ze_fp_dist(nw, 512, mid, 512, 8)
+    let mut d = dB - dE
+    if d < 0 {
+        d = 0 - d
+    }
+    if d < 87381 {
+        return 65536
+    }
+    if dB > dE {
+        return 32768
+    }
+    98304
+}
+
+// ZSTD_optimalBlockSize.
+fn ze_block_size(z: int, ip: int, remaining: int, savings: int) -> int {
+    if remaining < 131072 {
+        return remaining
+    }
+    if savings < 3 {
+        return 131072
+    }
+    let strat = std::raw::load(z + 56)
+    let mut level = 4
+    if strat <= 1 {
+        level = 0
+    } else if strat == 2 {
+        level = 1
+    } else if strat <= 4 {
+        level = 2
+    } else if strat <= 6 {
+        level = 3
+    }
+    if level == 0 {
+        return ze_split_borders(ip, 131072, std::raw::load(z + 640))
+    }
+    ze_split_chunks(ip, 131072, level - 1, std::raw::load(z + 640))
+}
+
+// ------------------------------------------------------------ marco
+
+// ZSTD_compress_frameChunk.
+fn ze_chunk(z: int, src: int, n: int, lastChunk: int) -> int {
+    let mut savings = std::raw::load(z + 160) - std::raw::load(z + 168)
+    let maxDist = std::raw::shl(1, std::raw::load(z + 8))
+    let mut ip = src
+    let mut remaining = n
+    let mut total = 0
+    while remaining > 0 {
+        let bs = ze_block_size(z, ip, remaining, savings)
+        let mut last = 0
+        if lastChunk != 0 && bs == remaining {
+            last = 1
+        }
+        ze_overflow_correct(z, ip, ip + bs)
+        let idx = ip - std::raw::load(z + 208)
+        if idx > maxDist {
+            let nl = idx - maxDist
+            if std::raw::load(z + 232) < nl {
+                std::raw::store(z + 232, nl)
+            }
+            if std::raw::load(z + 224) < std::raw::load(z + 232) {
+                std::raw::store(z + 224, std::raw::load(z + 232))
+            }
+        }
+        if std::raw::load(z + 256) < std::raw::load(z + 232) {
+            std::raw::store(z + 256, std::raw::load(z + 232))
+        }
+        let c = ze_block(z, ip, bs, last)
+        if c < 0 {
+            return c
+        }
+        savings += bs - c
+        ip += bs
+        remaining -= bs
+        total += c
+        std::raw::store(z + 176, 0)
+    }
+    if lastChunk != 0 && total > 0 {
+        std::raw::store(z + 152, 2)
+    }
+    total
+}
+
+// ZSTD_window_update.
+fn ze_window_update(z: int, src: int, n: int) {
+    if n == 0 {
+        return
+    }
+    if src != std::raw::load(z + 240) {
+        let dist = std::raw::load(z + 240) - std::raw::load(z + 208)
+        std::raw::store(z + 232, std::raw::load(z + 224))
+        std::raw::store(z + 224, dist)
+        std::raw::store(z + 216, std::raw::load(z + 208))
+        std::raw::store(z + 208, src - dist)
+        if std::raw::load(z + 224) - std::raw::load(z + 232) < 8 {
+            std::raw::store(z + 232, std::raw::load(z + 224))
+        }
+        std::raw::store(z + 256, std::raw::load(z + 224))
+    }
+    std::raw::store(z + 240, src + n)
+    let db = std::raw::load(z + 216)
+    if src + n > db + std::raw::load(z + 232) && src < db + std::raw::load(z + 224) {
+        let hi = src + n - db
+        std::raw::store(z + 232, ze_min(std::raw::load(z + 224), hi))
+    }
+    // La corrección posterior de nextToUpdate se hace arriba (no contiguo).
+}
+
+// ZSTD_compressContinue_internal (+ epílogo si es el último).
+fn ze_continue(z: int, src: int, n: int, last: int) -> int {
+    let mut fh = 0
+    if std::raw::load(z + 152) == 0 {
+        let o = ze_out(z, 6)
+        ze_w32(o, 4247762216)
+        std::raw::store8(o + 4, 0)
+        std::raw::store8(o + 5, std::raw::shl(std::raw::load(z + 8) - 10, 3))
+        fh = 6
+        std::raw::store(z + 152, 1)
+    }
+    if n > 0 {
+        ze_window_update(z, src, n)
+        if std::raw::load(z + 1016) != 0 {
+            ze_ldm_window_update(std::raw::load(z + 1016), src, n)
+        }
+        let c = ze_chunk(z, src, n, last)
+        if c < 0 {
+            return c
+        }
+        std::raw::store(z + 160, std::raw::load(z + 160) + n)
+        std::raw::store(z + 168, std::raw::load(z + 168) + c + fh)
+    }
+    if last != 0 && std::raw::load(z + 152) != 2 {
+        let o = ze_out(z, 3)
+        ze_w24(o, 1)
+        std::raw::store(z + 152, 2)
+    }
+    0
+}
+
+fn ze_new(level: int, n: int) -> int {
+    let t = ze_tab()
+    let z = ze_alloc(1024)
+    let row = t + 5304 + 56 * level
+    let wlog = std::raw::load(row)
+    let clog = std::raw::load(row + 8)
+    let mut hlog = std::raw::load(row + 16)
+    let slog = std::raw::load(row + 24)
+    let mml = std::raw::load(row + 32)
+    let tlen = std::raw::load(row + 40)
+    let strat = std::raw::load(row + 48)
+    if strat >= 3 && strat <= 5 {
+        let rowLog = ze_max(4, ze_min(slog, 6))
+        if hlog > 24 + rowLog {
+            hlog = 24 + rowLog
+        }
+    }
+    ze_s(z, 0, level)
+    ze_s(z, 8, wlog)
+    ze_s(z, 16, clog)
+    ze_s(z, 24, hlog)
+    ze_s(z, 32, slog)
+    ze_s(z, 40, mml)
+    ze_s(z, 48, tlen)
+    ze_s(z, 56, strat)
+    let inSize = std::raw::shl(1, wlog) + 131072
+    ze_s(z, 104, ze_alloc(inSize))
+    ze_s(z, 112, inSize)
+    ze_s(z, 120, 0)
+    ze_s(z, 128, 131072)
+    ze_s(z, 136, 0)
+    ze_s(z, 152, 0)
+    ze_s(z, 176, 1)
+    let cap = n + 8 * (n / 131072) + 256
+    ze_s(z, 184, rt_alloc(cap + 64))
+    ze_s(z, 192, 0)
+    ze_s(z, 200, cap)
+    let dummy = ze_alloc(16)
+    ze_s(z, 656, dummy)
+    ze_s(z, 208, dummy)
+    ze_s(z, 216, dummy)
+    ze_s(z, 224, 2)
+    ze_s(z, 232, 2)
+    ze_s(z, 240, dummy + 2)
+    ze_s(z, 256, 2)
+    ze_s(z, 264, 0)
+    ze_mf_init(z)
+    ze_ldm_init(z)
+    let maxSeq = 131072 / 3 + 4
+    ze_s(z, 512, ze_alloc(24 * maxSeq))
+    ze_s(z, 528, ze_alloc(131072 + 64))
+    ze_s(z, 544, ze_alloc(maxSeq))
+    ze_s(z, 552, ze_alloc(maxSeq))
+    ze_s(z, 560, ze_alloc(maxSeq))
+    let a = ze_alloc(5664)
+    let b = ze_alloc(5664)
+    ze_s(a, 0, 1)
+    ze_s(a, 8, 4)
+    ze_s(a, 16, 8)
+    ze_s(z, 600, a)
+    ze_s(z, 608, b)
+    ze_s(z, 616, ze_alloc(8000))
+    ze_s(z, 624, ze_alloc(1048576 + 8192))
+    ze_s(z, 632, ze_alloc(64))
+    ze_s(z, 640, ze_alloc(18500))
+    ze_s(z, 648, ze_alloc(33000))
+    ze_s(z, 1008, ze_alloc(6144))
+    z
+}
+
+fn ze_free(z: int) {
+    let ks = [104, 184, 656, 512, 528, 544, 552, 560, 600, 608, 616, 624, 632, 640, 648, 1008]
+    let mut i = 0
+    while i < len(ks) {
+        let p = std::raw::load(z + ks[i])
+        if p != 0 {
+            rt_free_block(p)
+        }
+        i += 1
+    }
+    ze_mf_free(z)
+    ze_ldm_free(z)
+    rt_free_block(z)
+}
+
+// Recorrido de encode_all: e_continue con todos los datos y luego e_end.
+fn ze_stream(z: int, src: int, n: int) -> int {
+    let inBuff = std::raw::load(z + 104)
+    let inSize = std::raw::load(z + 112)
+    let mut ip = 0
+    loop {
+        let pos = std::raw::load(z + 120)
+        let target = std::raw::load(z + 128)
+        let load = ze_min(target - pos, n - ip)
+        ze_copy(inBuff + pos, src + ip, load)
+        ip += load
+        std::raw::store(z + 120, pos + load)
+        if pos + load < target {
+            break
+        }
+        let tc = std::raw::load(z + 136)
+        let r = ze_continue(z, inBuff + tc, pos + load - tc, 0)
+        if r < 0 {
+            return r
+        }
+        let mut nt = pos + load + 131072
+        if nt > inSize {
+            std::raw::store(z + 120, 0)
+            nt = 131072
+        }
+        std::raw::store(z + 128, nt)
+        std::raw::store(z + 136, std::raw::load(z + 120))
+    }
+    let tc = std::raw::load(z + 136)
+    ze_continue(z, inBuff + tc, std::raw::load(z + 120) - tc, 1)
+}
+
+fn std__compress__zstd_encode(b: any, lv: any) -> any {
+    let function = "std::compress::zstd_encode"
+    rt_expect_bytes(b, function)
+    rt_expect_int(lv, function)
+    let mut level = std::raw::bits(lv)
+    if level < -2147483648 || level > 2147483647 {
+        level = 0
+    }
+    if level < 1 || level > 22 {
+        rt_native_fail(function, "compression level must be between 0 and 9 (or 1..=22 for zstd), got " + rt_int_to_str(level))
+    }
+    let src = rt_bdata(b)
+    let n = rt_slen(b)
+    if n == 0 {
+        let p = rt_str_alloc(9)
+        let e = [40, 181, 47, 253, 32, 0, 1, 0, 0]
+        let mut i = 0
+        while i < 9 {
+            std::raw::store8(p + 16 + i, e[i])
+            i += 1
+        }
+        return std::raw::adopt(6, p)
+    }
+    let z = ze_new(level, n)
+    let r = ze_stream(z, src, n)
+    if r < 0 {
+        ze_free(z)
+        rt_native_fail(function, "Zstd error: " + zd_message(0 - r))
+    }
+    let len = std::raw::load(z + 192)
+    let p = rt_str_alloc(len)
+    rt_copy(p + 16, std::raw::load(z + 184), len)
+    ze_free(z)
+    std::raw::adopt(6, p)
+}

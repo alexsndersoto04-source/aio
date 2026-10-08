@@ -1,0 +1,54 @@
+// std::random: con semilla debe dar exactamente lo mismo que la VM; sin
+// semilla solo se comprueban rangos y largos.
+fn main() {
+    for seed in [0, 1, 42, -1, 123456789, -9223372036854775807] {
+        print("seed {seed}")
+        print(std::random::seeded_int(seed, 0, 1000000))
+        print(std::random::seeded_int(seed, -5, 5))
+        print(std::random::seeded_int(seed, 0, 0))
+        print(std::random::seeded_int(seed, 10, 3))
+        print(std::random::seeded_int(seed, -9223372036854775807 - 1, 9223372036854775807))
+        print(std::random::seeded_int(seed, 0, 9223372036854775807))
+        print(std::random::seeded_int(seed, -9223372036854775807, 9223372036854775807))
+        print(std::random::seeded_float(seed))
+        print(std::bytes::to_array(std::random::seeded_bytes(seed, 5)))
+        print(std::encoding::hex_encode(std::random::seeded_bytes(seed, 200)))
+    }
+    let mut s = 0
+    while s < 300 {
+        let r = std::random::seeded_int(s, 1, 6148914691236517205)
+        let q = std::random::seeded_int(s, 0, 2)
+        print("{s} {r} {q}")
+        s += 1
+    }
+    let mut ok = true
+    let mut i = 0
+    while i < 2000 {
+        let r = std::random::range(10, 20)
+        if r < 10 || r > 20 {
+            ok = false
+        }
+        let f = std::random::float()
+        if f < 0.0 || f >= 1.0 {
+            ok = false
+        }
+        i += 1
+    }
+    print(ok)
+    print(std::random::range(5, 5))
+    print(std::random::range(10, 3))
+    print(std::bytes::length(std::random::bytes(100)))
+    print(std::bytes::length(std::random::bytes(0)))
+    let a = std::random::int()
+    let b = std::random::int()
+    print(a != b)
+    let mut t = 0
+    i = 0
+    while i < 1000 {
+        if std::random::bool() {
+            t += 1
+        }
+        i += 1
+    }
+    print(t > 400 && t < 600)
+}

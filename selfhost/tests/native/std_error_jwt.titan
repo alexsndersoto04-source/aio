@@ -1,0 +1,6 @@
+// std::jwt: token con firma alterada.
+fn main() {
+    let k = std::encoding::utf8_encode("secreto")
+    let t = std::jwt::sign_hs256(std::map::insert(std::map::new(), "exp", 9999999999), k)
+    print(std::jwt::verify_hs256(t, std::encoding::utf8_encode("otro"), "", ""))
+}

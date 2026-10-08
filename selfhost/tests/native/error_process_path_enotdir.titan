@@ -1,0 +1,4 @@
+fn main() {
+    std::process::env_set("PATH", "/usr/bin_no:/etc/hostname")
+    std::process::run("titanprog")
+}

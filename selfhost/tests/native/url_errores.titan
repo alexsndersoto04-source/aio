@@ -1,0 +1,22 @@
+// std::url: errores de build_query y un error sin atrapar al final.
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok({v})",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn main() {
+    let a: any = "x"
+    let b: any = 5
+    println(show(std::try::catch(|| { std::url::build_query([["a", "b"], a]) })))
+    println(show(std::try::catch(|| { std::url::build_query([["a"]]) })))
+    println(show(std::try::catch(|| { std::url::build_query([["a", "b", "c"]]) })))
+    println(show(std::try::catch(|| { std::url::build_query([["a", b]]) })))
+    println(show(std::try::catch(|| { std::url::build_query([[b, "a"], ["x"]]) })))
+    println(show(std::try::catch(|| { std::url::host("mailto:x@y") })))
+    println(show(std::try::catch(|| { std::url::join("http://a/", "http://[") })))
+    println(std::url::host("file:///etc"))
+    println(std::url::path("http://[::1"))
+}

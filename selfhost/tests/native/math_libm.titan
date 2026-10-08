@@ -1,0 +1,42 @@
+// std::math: exp, ln, log, sin, cos, tan y pow deben dar exactamente los
+// mismos bits que la VM de Rust (que usa la libm de glibc).
+fn show(nombre: string, v: float) {
+    print("{nombre} = {v}")
+}
+
+fn main() {
+    let inf = 1e308 * 10.0
+    let nan = inf - inf
+    let xs = [0.0, 0.5, 1.0, 2.0, 3.141592653589793, 10.0, 100.0, 709.78, -745.1, 1e-310, 1e22, 1e300, -2.5, 0.7853981633974483, 1.5707963267948966, 123456.789]
+    let mut i = 0
+    while i < len(xs) {
+        let x = xs[i]
+        print("x = {x}")
+        show("exp", std::math::exp(x))
+        show("sin", std::math::sin(x))
+        show("cos", std::math::cos(x))
+        if x > 0.0 {
+            show("ln", std::math::ln(x))
+            show("log2", std::math::log(x, 2.0))
+            show("log10", std::math::log(x, 10.0))
+        }
+        show("tan", std::math::tan(x))
+        show("pow1.5", std::math::pow(std::math::abs(x), 1.5))
+        show("pow-3", std::math::pow(x + 7.0, -3.0))
+        i += 1
+    }
+    show("exp inf", std::math::exp(inf))
+    show("exp -inf", std::math::exp(0.0 - inf))
+    show("exp 710", std::math::exp(710.0))
+    show("sin inf", std::math::sin(inf))
+    show("cos nan", std::math::cos(nan))
+    show("log -1 base 2", std::math::log(-1.0, 2.0))
+    show("log 5 base 1", std::math::log(5.0, 1.0))
+    show("pow -2 ^ 3", std::math::pow(-2.0, 3.0))
+    show("pow 1 ^ nan", std::math::pow(1.0, nan))
+    show("pow 0 ^ 0", std::math::pow(0.0, 0.0))
+    show("pow 2 ^ -1074", std::math::pow(2.0, -1074.0))
+    show("pow 2 ^ -1080", std::math::pow(2.0, -1080.0))
+    show("pow int", std::math::pow(3, 4))
+    show("sin int", std::math::sin(2))
+}

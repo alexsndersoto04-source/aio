@@ -1,0 +1,26 @@
+// std::xml escrito en Titan (fase 6): mismo lector y escritor que quick-xml.
+struct Nodo {
+    tag: string,
+    text: string,
+    attrs: map,
+}
+
+fn main() {
+    let doc = "﻿<?xml version=\"1.0\"?>\n<!DOCTYPE lista [<!ENTITY x \"y\">]>\n<!-- comentario -->\n<lista tipo='compras' n=\"&#51;\">\n  <item id=\"1\">pan &amp; queso</item>\n  <item id='2' nota=\"&lt;fresco&gt;\"/>\n  <item id=\"3\"><![CDATA[ <b>precio</b> & más ]]></item>\n  <vacio></vacio >\n</lista>\n"
+    let t = std::xml::parse(doc)
+    print(t)
+    print(std::xml::stringify(t))
+    print(std::xml::parse(" texto suelto "))
+    print(std::xml::parse("<a/><b/>"))
+    print(std::xml::parse("<a/>fin"))
+    print(std::xml::parse(""))
+    print(std::xml::parse("<__root__/>"))
+    print(std::xml::parse("<a x=\"&#x1F600;&#233;\">&apos;&quot;</a>"))
+    let n = Nodo { tag: "n", text: "a<b", attrs: std::map::insert(std::map::new(), "k", "\"v\"") }
+    print(std::xml::stringify(n))
+    let hijo = std::map::insert(std::map::new(), "tag", 'c')
+    let raro = std::map::insert(std::map::insert(std::map::insert(std::map::new(), "tag", "r"), "children", [hijo]), "attrs", std::map::insert(std::map::insert(std::map::new(), "num", 1), "s", "ok"))
+    print(std::xml::stringify(raro))
+    print(std::xml::escape_text("<a href='x'>&\"</a>"))
+    print(std::xml::escape_attr("sin cambios"))
+}

@@ -1,0 +1,577 @@
+// std::xml escrito en Titan. Lee y escribe igual que xml_mod.rs, que usa
+// quick-xml 0.36.2 (Reader::from_str con trim_text(true); Writer sin
+// sangría). Mismas reglas del lector: BOM inicial, texto recortado, `<!--`,
+// `<![CDATA[`, `<!DOCTYPE` (con balance de `<`/`>`), `<?...?>`, comillas en
+// las etiquetas, nombres de cierre comparados literalmente, atributos con los
+// mismos errores y posiciones, entidades (&lt; &gt; &amp; &apos; &quot; y
+// &#N; / &#xN;) con los mismos mensajes.
+//
+// Bug 14 (corregido también en Rust): si el documento termina con etiquetas
+// abiertas, quick-xml no avisa y xml_mod devolvía solo la última etiqueta
+// abierta, perdiendo el resto. Ahora es un error: el de quick-xml para ese
+// caso ("start tag not closed: `</b>` not found before end of input").
+
+fn xm_fail(msg: any) {
+    rt_native_fail("std::xml::parse", rt_concat("XML parse error: ", msg))
+}
+
+fn xm_ws(c: int) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn xm_range(a: int, b: int) -> any {
+    rt_concat(rt_concat(rt_int_to_str(a), ".."), rt_int_to_str(b))
+}
+
+// ------------------------------------------------------------ entidades
+
+// u32::from_str_radix con los mensajes de ParseIntError, o falla.
+fn xm_char_ref(s: any, a: int, b: int) -> int {
+    let sp = std::raw::bits(s) + 16
+    let mut i = a
+    let mut radix = 10
+    if i < b && std::raw::load8(sp + i) == 120 {
+        radix = 16
+        i += 1
+    }
+    let pre = "invalid character reference: "
+    if i < b && (std::raw::load8(sp + i) == 43 || std::raw::load8(sp + i) == 45) {
+        xm_fail(rt_concat(pre, "unexpected number sign"))
+    }
+    if i >= b {
+        xm_fail(rt_concat(pre, "cannot parse integer from empty string"))
+    }
+    let mut v = 0
+    while i < b {
+        let c = std::raw::load8(sp + i)
+        let mut d = -1
+        if c >= 48 && c <= 57 {
+            d = c - 48
+        } else if radix == 16 && c >= 97 && c <= 102 {
+            d = c - 87
+        } else if radix == 16 && c >= 65 && c <= 70 {
+            d = c - 55
+        }
+        if d < 0 {
+            xm_fail(rt_concat(pre, "invalid digit found in string"))
+        }
+        v = v * radix + d
+        if v > 4294967295 {
+            xm_fail(rt_concat(pre, "number too large to fit in target type"))
+        }
+        i += 1
+    }
+    if v == 0 {
+        xm_fail(rt_concat(pre, "0x0 character is not permitted in XML"))
+    }
+    if (v >= 55296 && v <= 57343) || v > 1114111 {
+        xm_fail(rt_concat(rt_concat(rt_concat(pre, "`"), rt_int_to_str(v)), "` is not a valid codepoint"))
+    }
+    v
+}
+
+fn xm_is(s: any, a: int, b: int, word: string) -> bool {
+    let sp = std::raw::bits(s) + 16
+    let n = rt_slen(word)
+    if b - a != n {
+        return false
+    }
+    let mut k = 0
+    while k < n {
+        if std::raw::load8(sp + a + k) != dt_byte(word, k) {
+            return false
+        }
+        k += 1
+    }
+    true
+}
+
+// unescape_with(resolve_xml_entity): la cadena con las entidades resueltas.
+fn xm_unescape(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut first = 0
+    while first < n && std::raw::load8(p + first) != 38 {
+        first += 1
+    }
+    if first == n {
+        return s
+    }
+    let b = sb_new(n)
+    let mut last = 0
+    let mut i = first
+    while i < n {
+        if std::raw::load8(p + i) != 38 {
+            i += 1
+            continue
+        }
+        let start = i
+        let mut j = start + 1
+        while j < n && std::raw::load8(p + j) != 38 && std::raw::load8(p + j) != 59 {
+            j += 1
+        }
+        if j >= n || std::raw::load8(p + j) == 38 {
+            xm_fail(rt_concat(rt_concat("Error while escaping character at range ", xm_range(start, n)), ": Cannot find ';' after '&'"))
+        }
+        sb_raw(b, p + last, start - last)
+        let a = start + 1
+        if a < j && std::raw::load8(p + a) == 35 {
+            sb_cp(b, xm_char_ref(s, a + 1, j))
+        } else if xm_is(s, a, j, "lt") {
+            sb_byte(b, 60)
+        } else if xm_is(s, a, j, "gt") {
+            sb_byte(b, 62)
+        } else if xm_is(s, a, j, "amp") {
+            sb_byte(b, 38)
+        } else if xm_is(s, a, j, "apos") {
+            sb_byte(b, 39)
+        } else if xm_is(s, a, j, "quot") {
+            sb_byte(b, 34)
+        } else {
+            let msg = rt_concat(rt_concat(rt_concat("at ", xm_range(a, j)), ": unrecognized entity `"), rt_substr_bytes(s, a, j))
+            xm_fail(rt_concat(msg, "`"))
+        }
+        last = j + 1
+        i = j + 1
+    }
+    sb_raw(b, p + last, n - last)
+    sb_finish(b)
+}
+
+// escape(): < > & ' " como entidades.
+fn xm_escape_into(b: int, s: any) {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 60 {
+            sb_str(b, "&lt;")
+        } else if c == 62 {
+            sb_str(b, "&gt;")
+        } else if c == 38 {
+            sb_str(b, "&amp;")
+        } else if c == 39 {
+            sb_str(b, "&apos;")
+        } else if c == 34 {
+            sb_str(b, "&quot;")
+        } else {
+            sb_byte(b, c)
+        }
+        i += 1
+    }
+}
+
+fn xm_escape(s: any) -> any {
+    let b = sb_new(rt_slen(s) + 8)
+    xm_escape_into(b, s)
+    sb_finish(b)
+}
+
+fn std__xml__escape_text(s: any) -> any {
+    rt_expect_str(s, "std::xml::escape_text")
+    xm_escape(s)
+}
+
+fn std__xml__escape_attr(s: any) -> any {
+    rt_expect_str(s, "std::xml::escape_attr")
+    xm_escape(s)
+}
+
+// ------------------------------------------------------------ atributos
+
+fn xm_attr_fail(pos: int, rest: string) {
+    xm_fail(rt_concat(rt_concat("position ", rt_int_to_str(pos)), rest))
+}
+
+// Atributos de la etiqueta s[a..b) (sin `<`, `>` ni `/` final) a partir del
+// final del nombre; las posiciones de error cuentan desde a.
+fn xm_attrs(s: any, a: int, b: int, name_end: int) -> any {
+    let sp = std::raw::bits(s) + 16
+    let mut m: any = std::map::new()
+    let mut ks: any = rt_array_new(0)
+    let mut ke: any = rt_array_new(0)
+    let len = b - a
+    let mut pos = name_end
+    loop {
+        while pos < b && xm_ws(std::raw::load8(sp + pos)) {
+            pos += 1
+        }
+        if pos >= b {
+            break
+        }
+        let sk = pos
+        pos += 1
+        while pos < b && std::raw::load8(sp + pos) != 61 && !xm_ws(std::raw::load8(sp + pos)) {
+            pos += 1
+        }
+        if pos >= b {
+            xm_attr_fail(len, ": attribute key must be directly followed by `=` or space")
+        }
+        let ek = pos
+        if std::raw::load8(sp + pos) != 61 {
+            pos += 1
+            while pos < b && xm_ws(std::raw::load8(sp + pos)) {
+                pos += 1
+            }
+            if pos >= b {
+                xm_attr_fail(len, ": attribute key must be directly followed by `=` or space")
+            }
+            if std::raw::load8(sp + pos) != 61 {
+                xm_attr_fail(pos - a, ": attribute key must be directly followed by `=` or space")
+            }
+        }
+        pos += 1
+        let mut k = 0
+        while k < rt_seq_len(ks) {
+            let ps = std::raw::bits(rt_seq_get(ks, k))
+            let pe = std::raw::bits(rt_seq_get(ke, k))
+            if rt_str_eq(rt_substr_bytes(s, ps, pe), rt_substr_bytes(s, sk, ek)) {
+                let msg = rt_concat(": duplicated attribute, previous declaration at position ", rt_int_to_str(ps - a))
+                xm_attr_fail(sk - a, msg)
+            }
+            k += 1
+        }
+        ks = std::array::push(ks, sk)
+        ke = std::array::push(ke, ek)
+        while pos < b && xm_ws(std::raw::load8(sp + pos)) {
+            pos += 1
+        }
+        if pos >= b {
+            xm_attr_fail(len, ": `=` must be followed by an attribute value")
+        }
+        let q = std::raw::load8(sp + pos)
+        if q != 34 && q != 39 {
+            xm_attr_fail(pos - a, ": attribute value must be enclosed in `\"` or `'`")
+        }
+        pos += 1
+        let vs = pos
+        while pos < b && std::raw::load8(sp + pos) != q {
+            pos += 1
+        }
+        if pos >= b {
+            let qs = rt_concat(rt_concat(": missing closing quote `", rt_substr_bytes(s, vs - 1, vs)), "` in attribute value")
+            xm_attr_fail(len, qs)
+        }
+        m = std::map::insert(m, rt_substr_bytes(s, sk, ek), xm_unescape(rt_substr_bytes(s, vs, pos)))
+        pos += 1
+    }
+    m
+}
+
+// ------------------------------------------------------------ lector
+
+fn xm_node(tag: any, attrs: any, kids: any, text: any) -> any {
+    let mut m: any = std::map::new()
+    m = std::map::insert(m, "attrs", attrs)
+    m = std::map::insert(m, "children", kids)
+    m = std::map::insert(m, "tag", tag)
+    m = std::map::insert(m, "text", text)
+    m
+}
+
+fn xm_syntax(what: string) {
+    xm_fail(rt_concat("syntax error: ", what))
+}
+
+// Posición del `>` que cierra una etiqueta (fuera de comillas) desde i, o -1.
+fn xm_tag_end(s: any, i: int, n: int) -> int {
+    let sp = std::raw::bits(s) + 16
+    let mut q = 0
+    let mut k = i
+    while k < n {
+        let c = std::raw::load8(sp + k)
+        if q == 0 {
+            if c == 62 {
+                return k
+            }
+            if c == 39 || c == 34 {
+                q = c
+            }
+        } else if c == q {
+            q = 0
+        }
+        k += 1
+    }
+    -1
+}
+
+fn xm_ends2(s: any, i: int, k: int, c: int) -> bool {
+    let sp = std::raw::bits(s) + 16
+    k - i >= 2 && std::raw::load8(sp + k - 1) == c && std::raw::load8(sp + k - 2) == c
+}
+
+fn std__xml__parse(text: any) -> any {
+    rt_expect_str(text, "std::xml::parse")
+    let s = text
+    let sp = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let mut i = 0
+    if n >= 3 && std::raw::load8(sp + 0) == 239 && std::raw::load8(sp + 1) == 187 && std::raw::load8(sp + 2) == 191 {
+        i = 3
+    }
+    // Pila de elementos abiertos (el primero es la raíz sintética).
+    let mut tags: any = rt_array_new(0)
+    let mut attrss: any = rt_array_new(0)
+    let mut texts: any = rt_array_new(0)
+    let mut starts: any = rt_array_new(0)
+    let mut kids: any = rt_array_new(0)
+    tags = std::array::push(tags, "__root__")
+    attrss = std::array::push(attrss, std::map::new())
+    texts = std::array::push(texts, sb_new(16))
+    starts = std::array::push(starts, 0)
+    loop {
+        // Texto hasta el próximo `<`.
+        while i < n && xm_ws(std::raw::load8(sp + i)) {
+            i += 1
+        }
+        let mut j = i
+        while j < n && std::raw::load8(sp + j) != 60 {
+            j += 1
+        }
+        if j > i {
+            let mut e = j
+            while e > i && xm_ws(std::raw::load8(sp + e - 1)) {
+                e -= 1
+            }
+            if e > i {
+                let t = xm_unescape(rt_substr_bytes(s, i, e))
+                let top = std::raw::bits(rt_seq_get(texts, rt_seq_len(texts) - 1))
+                sb_str(top, t)
+            }
+        }
+        if j >= n {
+            break
+        }
+        i = j + 1
+        // Marcado después de `<`.
+        if i >= n {
+            xm_syntax("tag not closed: `>` not found before end of input")
+        }
+        let c = std::raw::load8(sp + i)
+        if c == 33 {
+            let kind = if i + 1 < n { std::raw::load8(sp + i + 1) } else { 0 }
+            if kind == 45 {
+                let mut k = i
+                let mut found = -1
+                while k < n && found < 0 {
+                    if std::raw::load8(sp + k) == 62 && k - i > 4 && xm_ends2(s, i, k, 45) {
+                        found = k
+                    }
+                    k += 1
+                }
+                if found < 0 || !(std::raw::load8(sp + i + 1) == 45 && std::raw::load8(sp + i + 2) == 45) {
+                    xm_syntax("comment not closed: `-->` not found before end of input")
+                }
+                i = found + 1
+            } else if kind == 91 {
+                let mut k = i
+                let mut found = -1
+                while k < n && found < 0 {
+                    if std::raw::load8(sp + k) == 62 && xm_ends2(s, i, k, 93) {
+                        found = k
+                    }
+                    k += 1
+                }
+                if found < 0 || found - i < 10 || !xm_is(s, i, i + 8, "![CDATA[") {
+                    xm_syntax("CDATA not closed: `]]>` not found before end of input")
+                }
+                let top = std::raw::bits(rt_seq_get(texts, rt_seq_len(texts) - 1))
+                sb_str(top, rt_substr_bytes(s, i + 8, found - 2))
+                i = found + 1
+            } else if kind == 68 || kind == 100 {
+                let mut k = i
+                let mut found = -1
+                let mut balance = 0
+                while k < n && found < 0 {
+                    let d = std::raw::load8(sp + k)
+                    if d == 60 {
+                        balance += 1
+                    } else if d == 62 {
+                        if balance == 0 {
+                            found = k
+                        } else {
+                            balance -= 1
+                        }
+                    }
+                    k += 1
+                }
+                let mut doctype = found >= 0 && found - i >= 8
+                let mut w = 0
+                while doctype && w < 8 {
+                    let mut d = std::raw::load8(sp + i + w)
+                    if d >= 97 && d <= 122 {
+                        d -= 32
+                    }
+                    if d != dt_byte("!DOCTYPE", w) {
+                        doctype = false
+                    }
+                    w += 1
+                }
+                if !doctype {
+                    xm_syntax("DOCTYPE not closed: `>` not found before end of input")
+                }
+                let mut r = i + 8
+                while r < found && xm_ws(std::raw::load8(sp + r)) {
+                    r += 1
+                }
+                if r == found {
+                    xm_fail("ill-formed document: `<!DOCTYPE>` declaration does not contain a name of a document type")
+                }
+                i = found + 1
+            } else {
+                xm_syntax("unknown or missed symbol in markup")
+            }
+        } else if c == 63 {
+            let mut k = i + 1
+            let mut found = -1
+            while k < n && found < 0 {
+                if std::raw::load8(sp + k) == 62 && std::raw::load8(sp + k - 1) == 63 {
+                    found = k
+                }
+                k += 1
+            }
+            if found < 0 || found - i < 2 {
+                xm_syntax("processing instruction or xml declaration not closed: `?>` not found before end of input")
+            }
+            i = found + 1
+        } else if c == 47 {
+            let k = xm_tag_end(s, i, n)
+            if k < 0 {
+                xm_syntax("tag not closed: `>` not found before end of input")
+            }
+            let mut e = k
+            while e > i + 1 && xm_ws(std::raw::load8(sp + e - 1)) {
+                e -= 1
+            }
+            if e == i + 1 {
+                e = k
+            }
+            let name = rt_substr_bytes(s, i + 1, e)
+            let depth = rt_seq_len(tags)
+            if depth == 1 {
+                xm_fail(rt_concat(rt_concat("ill-formed document: close tag `</", name), ">` does not match any open tag"))
+            }
+            let expected = rt_seq_get(tags, depth - 1)
+            if !rt_str_eq(expected, name) {
+                let msg = rt_concat(rt_concat(rt_concat("ill-formed document: expected `</", expected), ">`, but `</"), name)
+                xm_fail(rt_concat(msg, ">` was found"))
+            }
+            let st = std::raw::bits(rt_seq_get(starts, depth - 1))
+            let children = std::array::slice(kids, st, rt_seq_len(kids))
+            while rt_seq_len(kids) > st {
+                kids = std::array::pop(kids)
+            }
+            let tb = std::raw::bits(rt_seq_get(texts, depth - 1))
+            let node = xm_node(expected, rt_seq_get(attrss, depth - 1), children, sb_finish(tb))
+            tags = std::array::pop(tags)
+            attrss = std::array::pop(attrss)
+            texts = std::array::pop(texts)
+            starts = std::array::pop(starts)
+            kids = std::array::push(kids, node)
+            i = k + 1
+        } else {
+            let k = xm_tag_end(s, i, n)
+            if k < 0 {
+                xm_syntax("tag not closed: `>` not found before end of input")
+            }
+            let mut e = k
+            let empty = e > i && std::raw::load8(sp + e - 1) == 47
+            if empty {
+                e -= 1
+            }
+            let mut ne = i
+            while ne < e && !xm_ws(std::raw::load8(sp + ne)) {
+                ne += 1
+            }
+            let tag = rt_substr_bytes(s, i, ne)
+            let attrs = xm_attrs(s, i, e, ne)
+            if empty {
+                kids = std::array::push(kids, xm_node(tag, attrs, rt_array_new(0), ""))
+            } else {
+                tags = std::array::push(tags, tag)
+                attrss = std::array::push(attrss, attrs)
+                texts = std::array::push(texts, sb_new(16))
+                starts = std::array::push(starts, rt_seq_len(kids))
+            }
+            i = k + 1
+        }
+    }
+    let depth = rt_seq_len(tags)
+    if depth > 1 {
+        let open = rt_seq_get(tags, depth - 1)
+        xm_fail(rt_concat(rt_concat("ill-formed document: start tag not closed: `</", open), ">` not found before end of input"))
+    }
+    let root_text = sb_finish(std::raw::bits(rt_seq_get(texts, 0)))
+    if rt_seq_len(kids) == 1 && rt_slen(root_text) == 0 {
+        return rt_seq_get(kids, 0)
+    }
+    xm_node("__root__", std::map::new(), kids, root_text)
+}
+
+// ------------------------------------------------------------ escritor
+
+fn xm_emit_fail(msg: string) {
+    rt_native_fail("std::xml::stringify", rt_concat("XML emit error: ", msg))
+}
+
+fn xm_get(m: any, key: string) -> any {
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return nil
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn xm_write(b: int, v: any) {
+    if std::raw::tag(v) != 9 {
+        xm_emit_fail("expected an XML node object")
+    }
+    let tag = xm_get(v, "tag")
+    if std::raw::tag(tag) != 5 {
+        xm_emit_fail("node is missing 'tag'")
+    }
+    sb_byte(b, 60)
+    sb_str(b, tag)
+    let attrs = xm_get(v, "attrs")
+    if std::raw::tag(attrs) == 9 {
+        let p = std::raw::bits(attrs)
+        let count = std::raw::load(p + 8)
+        let mut k = 0
+        while k < count {
+            let val = rt_map_value_at(attrs, k)
+            if std::raw::tag(val) == 5 {
+                let key = std::raw::value(5, std::raw::load(std::raw::load(p + 24) + 24 * k))
+                sb_byte(b, 32)
+                sb_str(b, key)
+                sb_str(b, "=\"")
+                xm_escape_into(b, val)
+                sb_byte(b, 34)
+            }
+            k += 1
+        }
+    }
+    sb_byte(b, 62)
+    let text = xm_get(v, "text")
+    if std::raw::tag(text) == 5 {
+        xm_escape_into(b, text)
+    }
+    let kids = xm_get(v, "children")
+    if std::raw::tag(kids) == 7 {
+        let mut k = 0
+        while k < rt_seq_len(kids) {
+            xm_write(b, rt_seq_get(kids, k))
+            k += 1
+        }
+    }
+    sb_str(b, "</")
+    sb_str(b, tag)
+    sb_byte(b, 62)
+}
+
+fn std__xml__stringify(v: any) -> any {
+    let norm = js_norm(v, "std::xml::stringify")
+    let b = sb_new(256)
+    xm_write(b, norm)
+    sb_finish(b)
+}

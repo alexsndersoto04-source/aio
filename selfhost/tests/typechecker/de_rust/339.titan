@@ -1,0 +1,1 @@
+fn main() { let mut m = std::map::new() if m != nil { m = std::map::new() } }

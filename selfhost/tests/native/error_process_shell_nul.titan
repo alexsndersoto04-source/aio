@@ -1,0 +1,3 @@
+fn main() {
+    std::process::shell("echo a\0b")
+}

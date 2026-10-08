@@ -1,0 +1,2463 @@
+// Cliente DNS de glibc 2.39 para std::net (el módulo NSS "dns" que usa
+// getaddrinfo): resolv.conf (res_init.c, resolv_conf.c, resolv_context.c),
+// res_search / res_query / res_mkquery, res_send (UDP con sendmmsg y paso a
+// TCP) y nss_dns/dns-host.c (gethostbyname4_r). Las consultas salen de
+// verdad por la red con las llamadas al sistema socket/connect/sendmmsg/
+// recvfrom/poll/writev/read.
+//
+// Diferencias conocidas con glibc (no se pueden reproducir):
+//   - __libc_res_queriesmatch lee la pregunta de la respuesta hasta el final
+//     del búfer (memoria vieja) y aquí hasta el final de la respuesta: solo
+//     cambia algo con respuestas mal formadas.
+//   - si la configuración queda "congelada" (ctx->conf == NULL) y hay
+//     servidores IPv6, glibc usa por error la dirección de un puntero
+//     (__resolv_context_nameserver); aquí se usa la dirección correcta.
+// Prefijo `ns_`.
+
+// ------------------------------------------------------------ estado (_res)
+
+// Desplazamientos dentro de nt_state():
+//   40 options, 48 retrans, 56 retry, 64 ndots (4 bits), 72 nscount,
+//   80 + 32*i servidores (sockaddr), 176 configuración enlazada,
+//   192..448 defdname, 448 número de dnsrch, 456 + 8*i desplazamientos de
+//   dnsrch dentro de defdname, 520 ipv6_unavail, 528 _vcsock + 1,
+//   536 + 8*i nssocks + 1, 568 global_offset (rotate), 576 res_h_errno,
+//   584 conf_current, 592..640 datos del archivo resolv.conf,
+//   640 ctx->conf.
+
+fn ns_st() -> int {
+    nt_state()
+}
+
+fn ns_set_h(v: int) {
+    std::raw::store(ns_st() + 576, v)
+    gi_set_herrno(v)
+}
+
+// errno a partir del resultado de una llamada al sistema.
+fn ns_sys(r: int) -> int {
+    if r < 0 {
+        gi_set_errno(0 - r)
+    }
+    r
+}
+
+// random_bits() de glibc (include/random-bits.h).
+fn ns_random_bits() -> int {
+    let ts = rt_alloc_zero(16)
+    std::raw::syscall(228, 1, ts, 0, 0, 0, 0)
+    let mut r = (std::raw::load(ts + 8) ^ std::raw::load(ts)) & 4294967295
+    rt_free_block(ts)
+    r = r ^ ((std::raw::shl(r, 24) | std::raw::shr(r, 8)) & 4294967295)
+    r & 4294967295
+}
+
+// strtol(p, NULL, 10) convertido a int (32 bits con signo).
+fn ns_strtol_int(p0: int) -> int {
+    let mut p = p0
+    while nt_isspace(std::raw::load8(p)) {
+        p += 1
+    }
+    let mut neg = false
+    if std::raw::load8(p) == 45 {
+        neg = true
+        p += 1
+    } else if std::raw::load8(p) == 43 {
+        p += 1
+    }
+    let mut v = 0
+    let mut over = false
+    while nt_isdigit(std::raw::load8(p)) {
+        if !over {
+            v = v * 10 + std::raw::load8(p) - 48
+            if v > 922337203685477580 {
+                over = true
+            }
+        }
+        p += 1
+    }
+    let mut l = v
+    if over {
+        // LONG_MAX o LONG_MIN: los 32 bits bajos son -1 o 0
+        if neg {
+            return 0
+        }
+        return -1
+    }
+    if neg {
+        l = 0 - v
+    }
+    let low = l & 4294967295
+    if low >= 2147483648 {
+        return low - 4294967296
+    }
+    low
+}
+
+// ------------------------------------------------------------ detección de cambios
+
+// __file_change_detection_for_path / _for_fp: 6 palabras (tamaño, inodo,
+// mtime s/ns, ctime s/ns). false si el error es fatal (errno queda puesto).
+fn ns_detect_stat(rec: int, st: int) {
+    let mode = sa_u32(st + 24) & 61440
+    if mode == 16384 {
+        std::raw::store(rec, 0)
+    } else if mode != 32768 {
+        std::raw::store(rec, -1)
+    } else {
+        std::raw::store(rec, std::raw::load(st + 48))
+        std::raw::store(rec + 8, std::raw::load(st + 8))
+        std::raw::store(rec + 16, std::raw::load(st + 88))
+        std::raw::store(rec + 24, std::raw::load(st + 96))
+        std::raw::store(rec + 32, std::raw::load(st + 104))
+        std::raw::store(rec + 40, std::raw::load(st + 112))
+    }
+}
+
+fn ns_detect_path(rec: int, path: int) -> bool {
+    let st = rt_alloc_zero(160)
+    let r = nt_stat(path, st)
+    if r != 0 {
+        rt_free_block(st)
+        let e = 0 - r
+        gi_set_errno(e)
+        if e == 13 || e == 21 || e == 40 || e == 2 || e == 20 || e == 1 {
+            std::raw::store(rec, 0)
+            return true
+        }
+        return false
+    }
+    ns_detect_stat(rec, st)
+    rt_free_block(st)
+    true
+}
+
+fn ns_unchanged(a: int, b: int) -> bool {
+    let sa = std::raw::load(a)
+    let sb = std::raw::load(b)
+    if sa < 0 || sb < 0 {
+        return false
+    }
+    if sa == 0 && sb == 0 {
+        return true
+    }
+    let mut k = 0
+    while k < 6 {
+        if std::raw::load(a + 8 * k) != std::raw::load(b + 8 * k) {
+            return false
+        }
+        k += 1
+    }
+    true
+}
+
+// ------------------------------------------------------------ resolv.conf
+
+// Lista de punteros [cantidad][capacidad][punteros...] en una celda.
+fn ns_plist_add(cell: int, p: int) {
+    let mut l = std::raw::load(cell)
+    if l == 0 {
+        l = rt_alloc_zero(16 + 8 * 8)
+        std::raw::store(l + 8, 8)
+        std::raw::store(cell, l)
+    }
+    let n = std::raw::load(l)
+    let cap = std::raw::load(l + 8)
+    if n == cap {
+        let nl = rt_alloc_zero(16 + 8 * cap * 2)
+        rt_copy(nl, l, 16 + 8 * n)
+        std::raw::store(nl + 8, cap * 2)
+        rt_free_block(l)
+        l = nl
+        std::raw::store(cell, l)
+    }
+    std::raw::store(l + 16 + 8 * n, p)
+    std::raw::store(l, n + 1)
+}
+
+fn ns_plist_count(cell: int) -> int {
+    let l = std::raw::load(cell)
+    if l == 0 {
+        return 0
+    }
+    std::raw::load(l)
+}
+
+fn ns_plist_get(cell: int, i: int) -> int {
+    std::raw::load(std::raw::load(cell) + 16 + 8 * i)
+}
+
+// Parte una cadena en palabras como res_vinit_1 (la primera palabra empieza
+// siempre al principio; con nl = true un '\n' termina la lista).
+fn ns_split_words(cell: int, cp0: int, nl: bool) {
+    let mut cp = cp0
+    ns_plist_add(cell, cp)
+    let mut in_name = true
+    while std::raw::load8(cp) != 0 {
+        let c = std::raw::load8(cp)
+        if nl && c == 10 {
+            std::raw::store8(cp, 0)
+            break
+        } else if c == 32 || c == 9 {
+            std::raw::store8(cp, 0)
+            in_name = false
+        } else if !in_name {
+            ns_plist_add(cell, cp)
+            in_name = true
+        }
+        cp += 1
+    }
+}
+
+// MATCH(line, name): prefijo seguido de espacio o tabulador.
+fn ns_match(line: int, name: string) -> bool {
+    let n = rt_slen(name)
+    if !nt_starts(line, name) {
+        return false
+    }
+    let c = std::raw::load8(line + n)
+    c == 32 || c == 9
+}
+
+// res_setoptions sobre la plantilla (tpl: options, retrans, retry, ndots).
+fn ns_setoptions(tpl: int, s: int) {
+    let mut cp = s
+    while std::raw::load8(cp) != 0 {
+        while std::raw::load8(cp) == 32 || std::raw::load8(cp) == 9 {
+            cp += 1
+        }
+        if nt_starts(cp, "ndots:") {
+            let i = ns_strtol_int(cp + 6)
+            if i <= 15 {
+                std::raw::store(tpl + 24, i)
+            } else {
+                std::raw::store(tpl + 24, 15)
+            }
+        } else if nt_starts(cp, "timeout:") {
+            let i = ns_strtol_int(cp + 8)
+            if i <= 30 {
+                std::raw::store(tpl + 8, i)
+            } else {
+                std::raw::store(tpl + 8, 30)
+            }
+        } else if nt_starts(cp, "attempts:") {
+            let i = ns_strtol_int(cp + 9)
+            if i <= 5 {
+                std::raw::store(tpl + 16, i)
+            } else {
+                std::raw::store(tpl + 16, 5)
+            }
+        } else {
+            let mut flag = 0
+            if nt_starts(cp, "rotate") {
+                flag = 16384
+            } else if nt_starts(cp, "edns0") {
+                flag = 1048576
+            } else if nt_starts(cp, "single-request-reopen") {
+                flag = 4194304
+            } else if nt_starts(cp, "single-request") {
+                flag = 2097152
+            } else if nt_starts(cp, "no_tld_query") || nt_starts(cp, "no-tld-query") {
+                flag = 16777216
+            } else if nt_starts(cp, "no-reload") {
+                flag = 33554432
+            } else if nt_starts(cp, "use-vc") {
+                flag = 8
+            } else if nt_starts(cp, "trust-ad") {
+                flag = 67108864
+            } else if nt_starts(cp, "no-aaaa") {
+                flag = 134217728
+            }
+            std::raw::store(tpl, std::raw::load(tpl) | flag)
+        }
+        while std::raw::load8(cp) != 0 && std::raw::load8(cp) != 32 && std::raw::load8(cp) != 9 {
+            cp += 1
+        }
+    }
+}
+
+// Añade un servidor (sockaddr de 32 bytes) a la lista de la plantilla.
+fn ns_add_server(nscell: int, sa: int) {
+    ns_plist_add(nscell, sa)
+}
+
+// __resolv_conf_load: la configuración nueva o 0 (errno puesto). after
+// recibe los datos del archivo leído.
+fn ns_conf_load(after: int) -> int {
+    gi_hconf_init()
+    let path = nt_lit("/etc/resolv.conf")
+    let fd = std::raw::syscall(2, path, 524288, 0, 0, 0, 0)
+    rt_free_block(path)
+    if fd < 0 {
+        let e = 0 - fd
+        gi_set_errno(e)
+        if !(e == 13 || e == 21 || e == 40 || e == 2 || e == 20 || e == 1) {
+            return 0
+        }
+    }
+    // plantilla: options, retrans, retry, ndots
+    let tpl = rt_alloc_zero(32)
+    std::raw::store(tpl, 705)
+    std::raw::store(tpl + 8, 5)
+    std::raw::store(tpl + 16, 2)
+    std::raw::store(tpl + 24, 1)
+    let nscell = rt_alloc_zero(8)
+    let srcell = rt_alloc_zero(8)
+    let mut haveenv = false
+    let ld = rt_getenv("LOCALDOMAIN")
+    if ld != 0 {
+        let cp = nt_cdup(ld, nt_strlen(ld))
+        haveenv = true
+        ns_split_words(srcell, cp, true)
+    }
+    let mut ok = true
+    if fd >= 0 {
+        let file = nt_read_fd(fd)
+        let pos = rt_alloc_zero(8)
+        loop {
+            let line = nt_getline(file, pos)
+            if line == 0 {
+                if std::raw::load(file + 8) != 0 {
+                    gi_set_errno(std::raw::load(file + 8))
+                    ok = false
+                }
+                break
+            }
+            ns_conf_line(line, tpl, nscell, srcell, haveenv)
+        }
+        rt_free_block(pos)
+        rt_free_block(file)
+        if ok {
+            let st = rt_alloc_zero(160)
+            let r = std::raw::syscall(5, fd, st, 0, 0, 0, 0)
+            if r != 0 {
+                gi_set_errno(0 - r)
+                ok = false
+            } else {
+                ns_detect_stat(after, st)
+            }
+            rt_free_block(st)
+        }
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    } else {
+        std::raw::store(after, 0)
+    }
+    if !ok {
+        rt_free_block(tpl)
+        return 0
+    }
+    if ns_plist_count(nscell) == 0 {
+        let sa = rt_alloc_zero(32)
+        std::raw::store8(sa, 2)
+        std::raw::store8(sa + 3, 53)
+        std::raw::store8(sa + 4, 127)
+        std::raw::store8(sa + 7, 1)
+        ns_add_server(nscell, sa)
+    }
+    if ns_plist_count(srcell) == 0 {
+        // domain_from_hostname: gethostname (uname) y lo que sigue al punto
+        let u = rt_alloc_zero(400)
+        if std::raw::syscall(63, u, 0, 0, 0, 0, 0) == 0 {
+            let node = u + 65
+            let n = nt_strlen(node)
+            if n + 1 <= 255 {
+                let mut k = 0
+                while k < n && std::raw::load8(node + k) != 46 {
+                    k += 1
+                }
+                if k < n {
+                    ns_plist_add(srcell, nt_cdup(node + k + 1, n - k - 1))
+                }
+            }
+        }
+        rt_free_block(u)
+    }
+    let ro = rt_getenv("RES_OPTIONS")
+    if ro != 0 {
+        ns_setoptions(tpl, ro)
+    }
+    // __resolv_conf_allocate
+    let conf = rt_alloc_zero(152)
+    std::raw::store(conf, std::raw::load(tpl) & 4294967295)
+    std::raw::store(conf + 8, std::raw::load(tpl + 8))
+    std::raw::store(conf + 16, std::raw::load(tpl + 16))
+    std::raw::store(conf + 24, std::raw::load(tpl + 24))
+    let nns = ns_plist_count(nscell)
+    std::raw::store(conf + 32, nns)
+    let mut i = 0
+    while i < nns && i < 3 {
+        rt_copy(conf + 40 + 32 * i, ns_plist_get(nscell, i), 32)
+        i += 1
+    }
+    let ns = ns_plist_count(srcell)
+    std::raw::store(conf + 136, ns)
+    let arr = rt_alloc_zero(8 * ns + 8)
+    i = 0
+    while i < ns {
+        let s = ns_plist_get(srcell, i)
+        std::raw::store(arr + 8 * i, nt_cdup(s, nt_strlen(s)))
+        i += 1
+    }
+    std::raw::store(conf + 144, arr)
+    rt_free_block(tpl)
+    conf
+}
+
+fn ns_conf_line(line: int, tpl: int, nscell: int, srcell: int, haveenv: bool) {
+    let c0 = std::raw::load8(line)
+    if c0 == 59 || c0 == 35 {
+        return
+    }
+    if ns_match(line, "domain") {
+        if haveenv {
+            return
+        }
+        let mut cp = line + 6
+        while std::raw::load8(cp) == 32 || std::raw::load8(cp) == 9 {
+            cp += 1
+        }
+        if std::raw::load8(cp) == 0 || std::raw::load8(cp) == 10 {
+            return
+        }
+        let d = nt_cdup(cp, nt_strlen(cp))
+        std::raw::store(srcell, 0)
+        ns_plist_add(srcell, d)
+        let mut k = 0
+        while std::raw::load8(d + k) != 0 {
+            let c = std::raw::load8(d + k)
+            if c == 32 || c == 9 || c == 10 {
+                std::raw::store8(d + k, 0)
+                break
+            }
+            k += 1
+        }
+        return
+    }
+    if ns_match(line, "search") {
+        if haveenv {
+            return
+        }
+        let mut cp = line + 6
+        while std::raw::load8(cp) == 32 || std::raw::load8(cp) == 9 {
+            cp += 1
+        }
+        if std::raw::load8(cp) == 0 || std::raw::load8(cp) == 10 {
+            return
+        }
+        let mut k = 0
+        while std::raw::load8(cp + k) != 0 {
+            if std::raw::load8(cp + k) == 10 {
+                std::raw::store8(cp + k, 0)
+                break
+            }
+            k += 1
+        }
+        let d = nt_cdup(cp, nt_strlen(cp))
+        std::raw::store(srcell, 0)
+        ns_split_words(srcell, d, false)
+        return
+    }
+    if ns_match(line, "nameserver") {
+        let mut cp = line + 10
+        while std::raw::load8(cp) == 32 || std::raw::load8(cp) == 9 {
+            cp += 1
+        }
+        let mut k = 0
+        while std::raw::load8(cp + k) != 0 {
+            let c = std::raw::load8(cp + k)
+            if c == 32 || c == 9 || c == 10 {
+                std::raw::store8(cp + k, 0)
+                break
+            }
+            k += 1
+        }
+        let sa = rt_alloc_zero(32)
+        let a = rt_alloc_zero(16)
+        let c = std::raw::load8(cp)
+        if c != 0 && c != 10 && gi_aton_exact(cp, a) {
+            std::raw::store8(sa, 2)
+            std::raw::store8(sa + 3, 53)
+            rt_copy(sa + 4, a, 4)
+            ns_add_server(nscell, sa)
+        } else {
+            let mut el = 0
+            let mut j = 0
+            while std::raw::load8(cp + j) != 0 {
+                if std::raw::load8(cp + j) == 37 {
+                    std::raw::store8(cp + j, 0)
+                    el = cp + j
+                    break
+                }
+                j += 1
+            }
+            if std::raw::load8(cp) != 0 && gi_pton6(cp, cp + nt_strlen(cp), a) {
+                std::raw::store8(sa, 10)
+                std::raw::store8(sa + 3, 53)
+                rt_copy(sa + 8, a, 16)
+                if el != 0 {
+                    let sc = gi_scopeid(a, el + 1)
+                    if sc >= 0 {
+                        sa_put8(sa + 24, sc, 4)
+                    }
+                }
+                ns_add_server(nscell, sa)
+            } else {
+                rt_free_block(sa)
+            }
+        }
+        rt_free_block(a)
+        return
+    }
+    // sortlist no cambia ninguna respuesta de getaddrinfo (solo la de
+    // gethostbyname) y nunca falla: no hace falta guardarla.
+    if ns_match(line, "options") {
+        ns_setoptions(tpl, line + 7)
+    }
+}
+
+// __resolv_conf_get_current.
+fn ns_get_current() -> int {
+    let st = ns_st()
+    let initial = rt_alloc_zero(48)
+    let path = nt_lit("/etc/resolv.conf")
+    let ok = ns_detect_path(initial, path)
+    rt_free_block(path)
+    if !ok {
+        rt_free_block(initial)
+        return 0
+    }
+    let cur = std::raw::load(st + 584)
+    if cur != 0 && ns_unchanged(initial, st + 592) {
+        rt_free_block(initial)
+        return cur
+    }
+    let after = rt_alloc_zero(48)
+    let conf = ns_conf_load(after)
+    if conf != 0 {
+        std::raw::store(st + 584, conf)
+        if ns_unchanged(initial, after) {
+            rt_copy(st + 592, after, 48)
+        } else {
+            std::raw::store(st + 592, -1)
+        }
+    }
+    rt_free_block(after)
+    rt_free_block(initial)
+    conf
+}
+
+// update_from_conf (dentro de __resolv_conf_attach).
+fn ns_attach(conf: int) {
+    let st = ns_st()
+    std::raw::store8(st + 192, 0)
+    std::raw::store(st + 528, 0)
+    std::raw::store(st + 520, 0)
+    std::raw::store(st + 48, std::raw::load(conf + 8))
+    std::raw::store(st + 56, std::raw::load(conf + 16))
+    std::raw::store(st + 40, std::raw::load(conf))
+    std::raw::store(st + 64, std::raw::load(conf + 24) & 15)
+    let mut n = std::raw::load(conf + 32)
+    if n > 3 {
+        n = 3
+    }
+    let mut i = 0
+    while i < 3 {
+        rt_copy(st + 80 + 32 * i, conf + 40 + 32 * i, 32)
+        std::raw::store(st + 536 + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(st + 72, n)
+    // dnsrch dentro de defdname (256 bytes), como mucho 6
+    let sc = std::raw::load(conf + 136)
+    let arr = std::raw::load(conf + 144)
+    let mut used = 0
+    i = 0
+    while i < sc && i < 6 {
+        let s = std::raw::load(arr + 8 * i)
+        let l = nt_strlen(s) + 1
+        if used + l > 256 {
+            break
+        }
+        rt_copy(st + 192 + used, s, l)
+        std::raw::store(st + 456 + 8 * i, used)
+        used += l
+        i += 1
+    }
+    std::raw::store(st + 448, i)
+    std::raw::store(st + 176, conf)
+    // assert (resolv_conf_matches (resp, conf)) de update_from_conf: con
+    // ciertas listas "search" (una entrada que ya no cabe en defdname tras
+    // otras cortas) glibc aborta el programa aquí.
+    if !ns_conf_matches(conf) {
+        let m = "Fatal glibc error: resolv_conf.c:554 (update_from_conf): assertion failed: resolv_conf_matches (resp, conf)\n"
+        rt_write_all(2, std::raw::bits(m) + 16, rt_slen(m))
+        let pid = std::raw::syscall(39, 0, 0, 0, 0, 0, 0)
+        std::raw::syscall(62, pid, 6, 0, 0, 0, 0)
+        std::raw::syscall(231, 134, 0, 0, 0, 0, 0)
+    }
+}
+
+// __res_iclose(statp, free_addr).
+fn ns_iclose(free_addr: bool) {
+    let st = ns_st()
+    let vc = std::raw::load(st + 528)
+    if vc != 0 {
+        std::raw::syscall(3, vc - 1, 0, 0, 0, 0, 0)
+        std::raw::store(st + 528, 0)
+    }
+    let mut i = 0
+    while i < 3 {
+        let s = std::raw::load(st + 536 + 8 * i)
+        if s != 0 {
+            std::raw::syscall(3, s - 1, 0, 0, 0, 0, 0)
+            std::raw::store(st + 536 + 8 * i, 0)
+        }
+        i += 1
+    }
+    if free_addr {
+        std::raw::store(st + 176, 0)
+    }
+}
+
+fn ns_same_addr(a: int, b: int) -> bool {
+    let fa = std::raw::load8(a) + 256 * std::raw::load8(a + 1)
+    let fb = std::raw::load8(b) + 256 * std::raw::load8(b + 1)
+    if fa != fb {
+        return false
+    }
+    if fa == 2 {
+        return sa_u32(a + 4) == sa_u32(b + 4) && std::raw::load8(a + 2) == std::raw::load8(b + 2) && std::raw::load8(a + 3) == std::raw::load8(b + 3)
+    }
+    if fa == 10 {
+        return gi_memcmp16(a + 8, b + 8) == 0 && std::raw::load8(a + 2) == std::raw::load8(b + 2) && std::raw::load8(a + 3) == std::raw::load8(b + 3) && sa_u32(a + 24) == sa_u32(b + 24)
+    }
+    false
+}
+
+// resolv_conf_matches.
+fn ns_conf_matches(conf: int) -> bool {
+    let st = ns_st()
+    let mut nserv = std::raw::load(conf + 32)
+    if nserv > 3 {
+        nserv = 3
+    }
+    if std::raw::load(st + 72) != nserv {
+        return false
+    }
+    let mut i = 0
+    while i < nserv {
+        if !ns_same_addr(st + 80 + 32 * i, conf + 40 + 32 * i) {
+            return false
+        }
+        i += 1
+    }
+    let cnt = std::raw::load(st + 448)
+    let sc = std::raw::load(conf + 136)
+    if cnt == 0 {
+        return sc == 0 && std::raw::load8(st + 192) == 0
+    }
+    let arr = std::raw::load(conf + 144)
+    let mut size = 0
+    i = 0
+    while i < sc {
+        if i < cnt {
+            let s = st + 192 + std::raw::load(st + 456 + 8 * i)
+            size += nt_strlen(s) + 1
+            if !nt_streq(s, std::raw::load(arr + 8 * i)) {
+                return false
+            }
+        } else {
+            // sizeof (resp->dnsrch) es 56 (7 punteros), no 256
+            if i == 6 || size > 56 {
+                break
+            }
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// replicated_configuration_matches.
+fn ns_replicated(conf: int) -> bool {
+    let st = ns_st()
+    let cn = std::raw::load(conf + 24) & 4294967295
+    std::raw::load(st + 40) == std::raw::load(conf) && (std::raw::load(st + 48) & 4294967295) == (std::raw::load(conf + 8) & 4294967295) && (std::raw::load(st + 56) & 4294967295) == (std::raw::load(conf + 16) & 4294967295) && std::raw::load(st + 64) == cn
+}
+
+// __resolv_conf_get(&_res): la configuración enlazada si coincide.
+fn ns_conf_get() -> int {
+    let st = ns_st()
+    if (std::raw::load(st + 40) & 1) == 0 {
+        return 0
+    }
+    let conf = std::raw::load(st + 176)
+    if conf == 0 {
+        return 0
+    }
+    if ns_conf_matches(conf) {
+        return conf
+    }
+    0
+}
+
+// __resolv_context_get: context_alloc + maybe_init. false si falla.
+fn ns_context_get() -> bool {
+    let st = ns_st()
+    std::raw::store(st + 640, ns_conf_get())
+    if (std::raw::load(st + 40) & 1) != 0 {
+        if (std::raw::load(st + 40) & 33554432) != 0 {
+            return true
+        }
+        let cc = std::raw::load(st + 640)
+        if cc != 0 && ns_replicated(cc) {
+            let cur = ns_get_current()
+            if cur == 0 {
+                return false
+            }
+            if cur != cc {
+                if std::raw::load(st + 72) > 0 {
+                    ns_iclose(true)
+                }
+                ns_attach(cur)
+                std::raw::store(st + 640, cur)
+            }
+        }
+        return true
+    }
+    let conf = ns_get_current()
+    if conf == 0 {
+        return false
+    }
+    ns_attach(conf)
+    std::raw::store(st + 640, ns_conf_get())
+    true
+}
+
+// __resolv_context_search_list.
+fn ns_search_list(i: int) -> int {
+    let st = ns_st()
+    let conf = std::raw::load(st + 640)
+    if conf != 0 {
+        if i < std::raw::load(conf + 136) {
+            return std::raw::load(std::raw::load(conf + 144) + 8 * i)
+        }
+        return 0
+    }
+    if i < std::raw::load(st + 448) && i < 6 {
+        return st + 192 + std::raw::load(st + 456 + 8 * i)
+    }
+    0
+}
+
+// ------------------------------------------------------------ nombres DNS
+
+// ns_name_pton: texto -> formato binario en dst (255 bytes). Devuelve la
+// longitud binaria o -1.
+fn ns_name_pton(src0: int, dst: int) -> int {
+    let eom = 255
+    let mut src = src0
+    let mut label = 0
+    let mut bp = 1
+    let mut escaped = false
+    loop {
+        let mut c = std::raw::load8(src)
+        src += 1
+        if c == 0 {
+            break
+        }
+        if escaped {
+            if nt_isdigit(c) {
+                let mut n = (c - 48) * 100
+                c = std::raw::load8(src)
+                src += 1
+                if c == 0 || !nt_isdigit(c) {
+                    gi_set_errno(90)
+                    return -1
+                }
+                n += (c - 48) * 10
+                c = std::raw::load8(src)
+                src += 1
+                if c == 0 || !nt_isdigit(c) {
+                    gi_set_errno(90)
+                    return -1
+                }
+                n += c - 48
+                if n > 255 {
+                    gi_set_errno(90)
+                    return -1
+                }
+                c = n
+            }
+            escaped = false
+        } else if c == 92 {
+            escaped = true
+            continue
+        } else if c == 46 {
+            let l = bp - label - 1
+            if (l & 192) != 0 || label >= eom {
+                gi_set_errno(90)
+                return -1
+            }
+            std::raw::store8(dst + label, l)
+            if std::raw::load8(src) == 0 {
+                if l != 0 {
+                    if bp >= eom {
+                        gi_set_errno(90)
+                        return -1
+                    }
+                    std::raw::store8(dst + bp, 0)
+                    bp += 1
+                }
+                if bp > 255 {
+                    gi_set_errno(90)
+                    return -1
+                }
+                return bp
+            }
+            if l == 0 || std::raw::load8(src) == 46 {
+                gi_set_errno(90)
+                return -1
+            }
+            label = bp
+            bp += 1
+            continue
+        }
+        if bp >= eom {
+            gi_set_errno(90)
+            return -1
+        }
+        std::raw::store8(dst + bp, c)
+        bp += 1
+    }
+    if escaped {
+        gi_set_errno(90)
+        return -1
+    }
+    let l = bp - label - 1
+    if (l & 192) != 0 || label >= eom {
+        gi_set_errno(90)
+        return -1
+    }
+    std::raw::store8(dst + label, l)
+    if l != 0 {
+        if bp >= eom {
+            gi_set_errno(90)
+            return -1
+        }
+        std::raw::store8(dst + bp, 0)
+        bp += 1
+    }
+    if bp > 255 {
+        gi_set_errno(90)
+        return -1
+    }
+    bp
+}
+
+fn ns_binary_hnok(dn0: int) -> bool {
+    let mut dn = dn0
+    loop {
+        let ll = std::raw::load8(dn)
+        if ll == 0 {
+            break
+        }
+        dn += 1
+        let e = dn + ll
+        loop {
+            let ch = std::raw::load8(dn)
+            let ok = nt_isdigit(ch) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 45 || ch == 95
+            if !ok {
+                return false
+            }
+            dn += 1
+            if dn >= e {
+                break
+            }
+        }
+    }
+    true
+}
+
+fn ns_res_binary_hnok(dn: int) -> bool {
+    let lead = std::raw::load8(dn) > 0 && std::raw::load8(dn + 1) == 45
+    !lead && ns_binary_hnok(dn)
+}
+
+// res_hnok (texto).
+fn ns_hnok(name: int) -> bool {
+    let mut i = 0
+    loop {
+        let c = std::raw::load8(name + i)
+        if c == 0 {
+            break
+        }
+        if c <= 32 || c > 126 {
+            return false
+        }
+        i += 1
+    }
+    let buf = rt_alloc_zero(256)
+    let r = ns_name_pton(name, buf)
+    let ok = r >= 0 && ns_res_binary_hnok(buf)
+    rt_free_block(buf)
+    ok
+}
+
+// ns_name_unpack(msg, eom, src, dst, 255). Devuelve lo consumido o -1.
+fn ns_unpack(msg: int, eom: int, src: int, dst: int, dstsiz: int) -> int {
+    let mut len = -1
+    let mut checked = 0
+    let mut dp = 0
+    let mut sp = src
+    if sp < msg || sp >= eom {
+        gi_set_errno(90)
+        return -1
+    }
+    loop {
+        let n = std::raw::load8(sp)
+        sp += 1
+        if n == 0 {
+            break
+        }
+        let kind = n & 192
+        if kind == 0 {
+            if n + 1 >= dstsiz - dp || n >= eom - sp {
+                gi_set_errno(90)
+                return -1
+            }
+            checked += n + 1
+            std::raw::store8(dst + dp, n)
+            dp += 1
+            rt_copy(dst + dp, sp, n)
+            dp += n
+            sp += n
+        } else if kind == 192 {
+            if sp >= eom {
+                gi_set_errno(90)
+                return -1
+            }
+            if len < 0 {
+                len = sp - src + 1
+            }
+            let target = std::raw::shl(n & 63, 8) | std::raw::load8(sp)
+            if target >= eom - msg {
+                gi_set_errno(90)
+                return -1
+            }
+            sp = msg + target
+            checked += 2
+            if checked >= eom - msg {
+                gi_set_errno(90)
+                return -1
+            }
+        } else {
+            gi_set_errno(90)
+            return -1
+        }
+    }
+    std::raw::store8(dst + dp, 0)
+    if len < 0 {
+        len = sp - src
+    }
+    len
+}
+
+fn ns_len_uncompressed(p0: int, eom: int) -> int {
+    let mut p = p0
+    loop {
+        if p == eom {
+            gi_set_errno(90)
+            return -1
+        }
+        let b = std::raw::load8(p)
+        p += 1
+        if b == 0 {
+            if p - p0 > 255 {
+                gi_set_errno(90)
+                return -1
+            }
+            return p - p0
+        }
+        if b <= 63 {
+            if b <= eom - p {
+                p += b
+            } else {
+                gi_set_errno(90)
+                return -1
+            }
+        } else {
+            gi_set_errno(90)
+            return -1
+        }
+    }
+    -1
+}
+
+// ns_name_ntop: binario -> texto en un constructor. Devuelve el texto.
+fn ns_ntop(src: int) -> any {
+    let b = sb_new(64)
+    let mut cp = src
+    let mut first = true
+    loop {
+        let n = std::raw::load8(cp)
+        cp += 1
+        if n == 0 {
+            break
+        }
+        if !first {
+            sb_byte(b, 46)
+        }
+        first = false
+        let mut k = 0
+        while k < n {
+            let c = std::raw::load8(cp)
+            cp += 1
+            let special = c == 34 || c == 46 || c == 59 || c == 92 || c == 40 || c == 41 || c == 64 || c == 36
+            if special {
+                sb_byte(b, 92)
+                sb_byte(b, c)
+            } else if c > 32 && c < 127 {
+                sb_byte(b, c)
+            } else {
+                sb_byte(b, 92)
+                sb_byte(b, 48 + c / 100)
+                sb_byte(b, 48 + (c / 10) % 10)
+                sb_byte(b, 48 + c % 10)
+            }
+            k += 1
+        }
+    }
+    if first {
+        sb_byte(b, 46)
+    }
+    sb_finish(b)
+}
+
+// Igualdad binaria sin distinguir mayúsculas ASCII (ns_samebinaryname).
+fn ns_samebinary(a0: int, b0: int) -> bool {
+    let mut a = a0
+    let mut b = b0
+    while std::raw::load8(a) != 0 && std::raw::load8(b) != 0 {
+        if std::raw::load8(a) != std::raw::load8(b) {
+            return false
+        }
+        let ll = std::raw::load8(a)
+        a += 1
+        b += 1
+        let mut i = 0
+        while i < ll {
+            let x = std::raw::load8(a)
+            let y = std::raw::load8(b)
+            if x != y && nt_toupper(x) != nt_toupper(y) {
+                return false
+            }
+            a += 1
+            b += 1
+            i += 1
+        }
+    }
+    std::raw::load8(a) == 0 && std::raw::load8(b) == 0
+}
+
+// ns_makecanon: copia con un solo punto final. 0 si no cabe.
+fn ns_makecanon(src: int) -> int {
+    let mut n = nt_strlen(src)
+    if n + 2 > 1025 {
+        return 0
+    }
+    let d = rt_alloc_zero(n + 2)
+    rt_copy(d, src, n)
+    while n >= 1 && std::raw::load8(d + n - 1) == 46 {
+        if n >= 2 && std::raw::load8(d + n - 2) == 92 && (n < 3 || std::raw::load8(d + n - 3) != 92) {
+            break
+        }
+        n -= 1
+        std::raw::store8(d + n, 0)
+    }
+    std::raw::store8(d + n, 46)
+    std::raw::store8(d + n + 1, 0)
+    d
+}
+
+// ns_samename: 1, 0 o -1.
+fn ns_samename(a: int, b: int) -> int {
+    let ta = ns_makecanon(a)
+    if ta == 0 {
+        return -1
+    }
+    let tb = ns_makecanon(b)
+    if tb == 0 {
+        rt_free_block(ta)
+        return -1
+    }
+    let r = nt_casecmp_eq(ta, tb)
+    rt_free_block(ta)
+    rt_free_block(tb)
+    if r {
+        return 1
+    }
+    0
+}
+
+// __res_context_hostalias: el alias (bloque) o 0.
+fn ns_hostalias(name: int) -> int {
+    let st = ns_st()
+    if (std::raw::load(st + 40) & 4096) != 0 {
+        return 0
+    }
+    let file = rt_getenv("HOSTALIASES")
+    if file == 0 {
+        return 0
+    }
+    let fd = std::raw::syscall(2, file, 524288, 0, 0, 0, 0)
+    if fd < 0 {
+        gi_set_errno(0 - fd)
+        return 0
+    }
+    let data = nt_read_fd(fd)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let pos = rt_alloc_zero(8)
+    let mut result = 0
+    loop {
+        let buf = nt_fgets(data, pos, 8192)
+        if buf == 0 {
+            break
+        }
+        let mut cp1 = buf
+        while std::raw::load8(cp1) != 0 && !nt_isspace(std::raw::load8(cp1)) {
+            cp1 += 1
+        }
+        if std::raw::load8(cp1) == 0 {
+            rt_free_block(buf)
+            break
+        }
+        std::raw::store8(cp1, 0)
+        if ns_samename(buf, name) == 1 {
+            cp1 += 1
+            while nt_isspace(std::raw::load8(cp1)) {
+                cp1 += 1
+            }
+            if std::raw::load8(cp1) == 0 {
+                rt_free_block(buf)
+                break
+            }
+            let mut cp2 = cp1 + 1
+            while std::raw::load8(cp2) != 0 && !nt_isspace(std::raw::load8(cp2)) {
+                cp2 += 1
+            }
+            std::raw::store8(cp2, 0)
+            let mut l = cp2 - cp1
+            if l > 1024 {
+                l = 1024
+            }
+            result = nt_cdup(cp1, l)
+            rt_free_block(buf)
+            break
+        }
+        rt_free_block(buf)
+    }
+    rt_free_block(pos)
+    rt_free_block(data)
+    result
+}
+
+// ------------------------------------------------------------ consultas
+
+// __res_context_mkquery (QUERY, clase IN). -1 si no cabe o el nombre es malo.
+fn ns_mkquery(name: int, qtype: int, buf: int, buflen0: int) -> int {
+    let st = ns_st()
+    if buflen0 < 12 {
+        return -1
+    }
+    let mut k = 0
+    while k < 12 {
+        std::raw::store8(buf + k, 0)
+        k += 1
+    }
+    let id = ns_random_bits() & 65535
+    std::raw::store8(buf, id & 255)
+    std::raw::store8(buf + 1, std::raw::shr(id, 8))
+    let opts = std::raw::load(st + 40)
+    if (opts & 67108864) != 0 {
+        std::raw::store8(buf + 3, 32)
+    }
+    if (opts & 64) != 0 {
+        std::raw::store8(buf + 2, 1)
+    }
+    let mut buflen = buflen0 - 12 - 4
+    if buflen < 0 {
+        return -1
+    }
+    let tmp = rt_alloc_zero(256)
+    let n = ns_name_pton(name, tmp)
+    if n < 0 {
+        rt_free_block(tmp)
+        return -1
+    }
+    // ns_name_pack sin compresión (solo hay un nombre)
+    if n > buflen {
+        rt_free_block(tmp)
+        gi_set_errno(90)
+        return -1
+    }
+    rt_copy(buf + 12, tmp, n)
+    rt_free_block(tmp)
+    let cp = buf + 12 + n
+    std::raw::store8(cp, std::raw::shr(qtype, 8))
+    std::raw::store8(cp + 1, qtype & 255)
+    std::raw::store8(cp + 2, 0)
+    std::raw::store8(cp + 3, 1)
+    std::raw::store8(buf + 5, 1)
+    12 + n + 4
+}
+
+// __res_nopt: registro OPT (EDNS0).
+fn ns_nopt(n0: int, buf: int, buflen: int, anslen: int) -> int {
+    if buflen - n0 < 11 {
+        return -1
+    }
+    let cp = buf + n0
+    std::raw::store8(cp, 0)
+    std::raw::store8(cp + 1, 0)
+    std::raw::store8(cp + 2, 41)
+    let mut size = anslen
+    if anslen < 512 {
+        size = 512
+    } else if anslen > 1200 {
+        size = 1200
+    }
+    std::raw::store8(cp + 3, std::raw::shr(size, 8))
+    std::raw::store8(cp + 4, size & 255)
+    std::raw::store8(cp + 5, 0)
+    std::raw::store8(cp + 6, 0)
+    std::raw::store8(cp + 7, 0)
+    std::raw::store8(cp + 8, 0)
+    std::raw::store8(cp + 9, 0)
+    std::raw::store8(cp + 10, 0)
+    let ar = std::raw::load8(buf + 10) * 256 + std::raw::load8(buf + 11) + 1
+    std::raw::store8(buf + 10, std::raw::shr(ar, 8) & 255)
+    std::raw::store8(buf + 11, ar & 255)
+    n0 + 11
+}
+
+fn ns_be16(p: int) -> int {
+    std::raw::load8(p) * 256 + std::raw::load8(p + 1)
+}
+
+// Bloque de consulta q: [0] búfer original (2048), [8] respuesta actual,
+// [16] su tamaño, [24] segunda respuesta, [32] su tamaño, [40] resplen2,
+// [48] segunda reservada, [56] hay segunda consulta (A y AAAA).
+
+// __res_context_query. type 0 = A y AAAA juntos.
+fn ns_query(q: int, name: int, qtype: int) -> int {
+    let st = ns_st()
+    let mut qsize = 1024
+    let mut qbuf = rt_alloc_zero(qsize)
+    let mut retried = false
+    let mut n = 0
+    let mut nq1 = -1
+    let mut q2 = 0
+    let mut nq2 = 0
+    loop {
+        // hp->rcode = NOERROR
+        let a = std::raw::load(q + 8)
+        std::raw::store8(a + 3, std::raw::load8(a + 3) & 240)
+        let edns = (std::raw::load(st + 40) & 1048576) != 0
+        if qtype == 0 {
+            n = ns_mkquery(name, 1, qbuf, qsize)
+            if n > 0 {
+                let mut skip = false
+                if edns {
+                    n = ns_nopt(n, qbuf, qsize, 1200)
+                    if n < 0 {
+                        skip = true
+                    }
+                }
+                if !skip {
+                    nq1 = n
+                    q2 = qbuf + n
+                    n = ns_mkquery(name, 28, q2, qsize - n)
+                    if n > 0 && edns {
+                        n = ns_nopt(n, q2, qsize, 1200)
+                    }
+                    nq2 = n
+                }
+            }
+        } else {
+            n = ns_mkquery(name, qtype, qbuf, qsize)
+            if n > 0 && edns {
+                n = ns_nopt(n, qbuf, qsize, 1200)
+            }
+            nq1 = n
+        }
+        if n <= 0 && !retried {
+            rt_free_block(qbuf)
+            qsize = 65536
+            if qtype == 0 {
+                qsize = 131072
+            }
+            qbuf = rt_alloc_zero(qsize)
+            retried = true
+            q2 = 0
+            nq2 = 0
+            continue
+        }
+        break
+    }
+    if n <= 0 {
+        ns_set_h(3)
+        rt_free_block(qbuf)
+        return n
+    }
+    n = ns_send(q, qbuf, nq1, q2, nq2)
+    rt_free_block(qbuf)
+    if n < 0 {
+        ns_set_h(2)
+        return n
+    }
+    let mut hp = std::raw::load(q + 8)
+    let mut hp2 = hp
+    if std::raw::load(q + 56) != 0 && std::raw::load(q + 40) >= 12 {
+        hp2 = std::raw::load(q + 24)
+        if n < 12 {
+            hp = hp2
+        }
+    }
+    let r1 = std::raw::load8(hp + 3) & 15
+    let r2 = std::raw::load8(hp2 + 3) & 15
+    let an1 = ns_be16(hp + 6)
+    let an2 = ns_be16(hp2 + 6)
+    if (r1 != 0 || an1 == 0) && (r2 != 0 || an2 == 0) {
+        let mut rc = r1
+        if r1 == 0 {
+            rc = r2
+        }
+        let good = (r1 == 0 && an1 != 0) || (r2 == 0 && an2 != 0)
+        if rc == 3 {
+            if good {
+                return n
+            }
+            ns_set_h(1)
+        } else if rc == 2 {
+            ns_set_h(2)
+        } else if rc == 0 {
+            if an1 != 0 || an2 != 0 {
+                return n
+            }
+            ns_set_h(4)
+        } else if rc == 1 || rc == 4 {
+            if good {
+                return n
+            }
+            ns_set_h(3)
+        } else {
+            ns_set_h(3)
+        }
+        return -1
+    }
+    n
+}
+
+// __res_context_querydomain.
+fn ns_querydomain(q: int, name: int, domain: int, qtype: int) -> int {
+    let n = nt_strlen(name)
+    if domain == 0 {
+        if n == 0 || n - 1 >= 1024 {
+            ns_set_h(3)
+            return -1
+        }
+        return ns_query(q, name, qtype)
+    }
+    let d = nt_strlen(domain)
+    if n + d + 1 >= 1025 {
+        ns_set_h(3)
+        return -1
+    }
+    let nb = rt_alloc_zero(n + d + 2)
+    rt_copy(nb, name, n)
+    std::raw::store8(nb + n, 46)
+    rt_copy(nb + n + 1, domain, d)
+    let r = ns_query(q, nb, qtype)
+    rt_free_block(nb)
+    r
+}
+
+// Tras un intento fallido: libera la segunda respuesta (res_search).
+fn ns_drop_second(q: int) {
+    if std::raw::load(q + 56) != 0 && std::raw::load(q + 48) != 0 {
+        rt_free_block(std::raw::load(q + 24))
+        std::raw::store(q + 24, 0)
+        std::raw::store(q + 32, 0)
+        std::raw::store(q + 48, 0)
+    }
+}
+
+fn ns_ok_result(q: int, ret: int) -> bool {
+    ret > 0 || (ret == 0 && std::raw::load(q + 56) != 0 && std::raw::load(q + 40) > 0)
+}
+
+// __res_context_search.
+fn ns_search(q: int, name: int, qtype: int) -> int {
+    let st = ns_st()
+    gi_set_errno(0)
+    ns_set_h(1)
+    let mut dots = 0
+    let nl = nt_strlen(name)
+    let mut i = 0
+    while i < nl {
+        if std::raw::load8(name + i) == 46 {
+            dots += 1
+        }
+        i += 1
+    }
+    let trailing = nl > 0 && std::raw::load8(name + nl - 1) == 46
+    if dots == 0 {
+        let alias = ns_hostalias(name)
+        if alias != 0 {
+            let r = ns_query(q, alias, qtype)
+            rt_free_block(alias)
+            return r
+        }
+    }
+    let mut saved = -1
+    let mut got_nodata = 0
+    let mut got_servfail = 0
+    let mut root_on_list = 0
+    let mut tried = 0
+    let mut searched = 0
+    if dots >= std::raw::load(st + 64) || trailing {
+        let ret = ns_querydomain(q, name, 0, qtype)
+        if ret > 0 || trailing || (ret == 0 && std::raw::load(q + 56) != 0 && std::raw::load(q + 40) > 0) {
+            return ret
+        }
+        saved = gi_herrno()
+        tried += 1
+        ns_drop_second(q)
+    }
+    let opts = std::raw::load(st + 40)
+    if (dots == 0 && (opts & 128) != 0) || (dots > 0 && !trailing && (opts & 512) != 0) {
+        let mut done = false
+        let mut di = 0
+        while !done {
+            let mut dname = ns_search_list(di)
+            di += 1
+            if dname == 0 {
+                break
+            }
+            searched = 1
+            if std::raw::load8(dname) == 46 {
+                dname += 1
+            }
+            if std::raw::load8(dname) == 0 {
+                root_on_list += 1
+            }
+            let ret = ns_querydomain(q, name, dname, qtype)
+            if ns_ok_result(q, ret) {
+                return ret
+            }
+            ns_drop_second(q)
+            if gi_errno() == 111 {
+                ns_set_h(2)
+                return -1
+            }
+            let rh = std::raw::load(st + 576)
+            if rh == 4 {
+                got_nodata += 1
+            } else if rh == 1 {
+            } else if rh == 2 && (std::raw::load8(std::raw::load(q) + 3) & 15) == 2 {
+                got_servfail += 1
+            } else {
+                done = true
+            }
+            if (std::raw::load(st + 40) & 512) == 0 {
+                done = true
+            }
+        }
+    }
+    if (dots > 0 || searched == 0 || (std::raw::load(st + 40) & 16777216) == 0) && tried == 0 && root_on_list == 0 {
+        let ret = ns_querydomain(q, name, 0, qtype)
+        if ns_ok_result(q, ret) {
+            return ret
+        }
+    }
+    ns_drop_second(q)
+    if saved != -1 {
+        ns_set_h(saved)
+    } else if got_nodata > 0 {
+        ns_set_h(4)
+    } else if got_servfail > 0 {
+        ns_set_h(2)
+    }
+    -1
+}
+
+// ------------------------------------------------------------ res_send
+
+// nameserver_offset (RES_ROTATE).
+fn ns_offset() -> int {
+    let st = ns_st()
+    let n = std::raw::load(st + 72)
+    if n <= 1 || (std::raw::load(st + 40) & 16384) == 0 {
+        return 0
+    }
+    let mut off = std::raw::load(st + 568) & 4294967295
+    std::raw::store(st + 568, (off + 2) & 4294967295)
+    if (off & 1) == 0 {
+        off = std::raw::shl(ns_random_bits(), 1) & 4294967295
+        std::raw::store(st + 568, ((off | 1) + 2) & 4294967295)
+    }
+    off = std::raw::shr(off, 1)
+    if n == 2 {
+        return off & 1
+    }
+    off % n
+}
+
+// Pone a cero el bit AD si no hay trust-ad.
+fn ns_mask_ad(buf: int) {
+    if (std::raw::load(ns_st() + 40) & 67108864) == 0 {
+        std::raw::store8(buf + 3, std::raw::load8(buf + 3) & 223)
+    }
+}
+
+// __res_context_send. sd = [v_circuit][gotsomewhere][terrno].
+fn ns_send(q: int, b1: int, n1: int, b2: int, n2: int) -> int {
+    let st = ns_st()
+    let nscount = std::raw::load(st + 72)
+    if nscount == 0 {
+        gi_set_errno(3)
+        return -1
+    }
+    let sd = rt_alloc_zero(24)
+    let vc = (std::raw::load(st + 40) & 8) != 0 || n1 > 512 || n2 > 512
+    std::raw::store(sd, 0)
+    if vc {
+        std::raw::store(sd, 1)
+    }
+    std::raw::store(sd + 16, 110)
+    let off = ns_offset()
+    let mut tr = 0
+    while tr < std::raw::load(st + 56) {
+        let mut shift = 0
+        while shift < std::raw::load(st + 72) {
+            let mut ns = shift + off
+            if ns >= std::raw::load(st + 72) {
+                ns -= std::raw::load(st + 72)
+            }
+            let mut next = false
+            let mut n = 0
+            loop {
+                if std::raw::load(sd) != 0 {
+                    tr = std::raw::load(st + 56)
+                    n = ns_send_vc(q, b1, n1, b2, n2, ns, sd)
+                    if n < 0 {
+                        rt_free_block(sd)
+                        return -1
+                    }
+                    if n == 0 && (b2 == 0 || std::raw::load(q + 40) == 0) {
+                        next = true
+                    }
+                    break
+                }
+                n = ns_send_dg(q, b1, n1, b2, n2, ns, sd)
+                if n < 0 {
+                    rt_free_block(sd)
+                    return -1
+                }
+                if n == 0 && (b2 == 0 || std::raw::load(q + 40) == 0) {
+                    next = true
+                    break
+                }
+                if std::raw::load(sd) != 0 {
+                    continue
+                }
+                break
+            }
+            if !next {
+                if n > 12 {
+                    ns_mask_ad(std::raw::load(q + 8))
+                }
+                if b2 != 0 && std::raw::load(q + 40) > 12 {
+                    ns_mask_ad(std::raw::load(q + 24))
+                }
+                ns_iclose(false)
+                rt_free_block(sd)
+                return n
+            }
+            shift += 1
+        }
+        tr += 1
+    }
+    ns_iclose(false)
+    if std::raw::load(sd) == 0 {
+        if std::raw::load(sd + 8) == 0 {
+            gi_set_errno(111)
+        } else {
+            gi_set_errno(110)
+        }
+    } else {
+        gi_set_errno(std::raw::load(sd + 16))
+    }
+    rt_free_block(sd)
+    -1
+}
+
+fn ns_close_err(q: int) -> int {
+    ns_iclose(false)
+    if std::raw::load(q + 56) != 0 {
+        std::raw::store(q + 40, 0)
+    }
+    0
+}
+
+// reopen: socket UDP no bloqueante conectado al servidor ns.
+fn ns_reopen(sd: int, ns: int) -> int {
+    let st = ns_st()
+    let cell = st + 536 + 8 * ns
+    if std::raw::load(cell) == 0 {
+        let sa = st + 80 + 32 * ns
+        let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+        let mut slen = 16
+        let mut fd = -1
+        if fam == 10 && std::raw::load(st + 520) == 0 {
+            fd = ns_sys(std::raw::syscall(41, 10, 526338, 0, 0, 0, 0))
+            if fd < 0 {
+                if gi_errno() == 97 {
+                    std::raw::store(st + 520, 1)
+                } else {
+                    std::raw::store(st + 520, 0)
+                }
+                fd = -1
+            }
+            slen = 28
+        } else if fam == 2 {
+            fd = ns_sys(std::raw::syscall(41, 2, 526338, 0, 0, 0, 0))
+            if fd < 0 {
+                fd = -1
+            }
+        }
+        if fd < 0 {
+            std::raw::store(sd + 16, gi_errno())
+            return -1
+        }
+        std::raw::store(cell, fd + 1)
+        let one = rt_alloc_zero(8)
+        std::raw::store(one, 1)
+        let mut r = 0
+        if fam == 2 {
+            r = ns_sys(std::raw::syscall(54, fd, 0, 11, one, 4, 0))
+        } else {
+            r = ns_sys(std::raw::syscall(54, fd, 41, 25, one, 4, 0))
+        }
+        rt_free_block(one)
+        if r < 0 {
+            let e = gi_errno()
+            ns_iclose(false)
+            gi_set_errno(e)
+            std::raw::store(sd + 16, e)
+            return -1
+        }
+        if ns_sys(std::raw::syscall(42, fd, sa, slen, 0, 0, 0)) < 0 {
+            ns_iclose(false)
+            return 0
+        }
+    }
+    1
+}
+
+fn ns_now(ts: int) {
+    std::raw::syscall(228, 0, ts, 0, 0, 0, 0)
+}
+
+// queriesmatch con la respuesta limitada a su longitud (ver cabecera).
+// Devuelve 1, 0 o -1 (glibc trata -1 como verdadero).
+fn ns_queriesmatch(b1: int, n1: int, b2: int, n2: int) -> int {
+    if n1 < 12 || n2 < 12 {
+        return -1
+    }
+    let op1 = std::raw::shr(std::raw::load8(b1 + 2), 3) & 15
+    let op2 = std::raw::shr(std::raw::load8(b2 + 2), 3) & 15
+    if op1 == 5 && op2 == 5 {
+        return 1
+    }
+    if std::raw::load8(b1 + 4) != std::raw::load8(b2 + 4) || std::raw::load8(b1 + 5) != std::raw::load8(b2 + 5) {
+        return 0
+    }
+    let mut qd = ns_be16(b1 + 4)
+    let mut cp = b1 + 12
+    let e1 = b1 + n1
+    let e2 = b2 + n2
+    let t1 = rt_alloc_zero(256)
+    let t2 = rt_alloc_zero(256)
+    let mut result = 1
+    while qd > 0 {
+        qd -= 1
+        let n = ns_unpack(b1, e1, cp, t1, 255)
+        if n < 0 {
+            result = -1
+            break
+        }
+        cp += n
+        if e1 - cp < 4 {
+            result = -1
+            break
+        }
+        let ty = ns_be16(cp)
+        let cl = ns_be16(cp + 2)
+        cp += 4
+        // __libc_res_nameinquery sobre la respuesta
+        let mut qd2 = ns_be16(b2 + 4)
+        let mut cp2 = b2 + 12
+        let mut found = 0
+        while qd2 > 0 {
+            qd2 -= 1
+            let m = ns_unpack(b2, e2, cp2, t2, 255)
+            if m < 0 {
+                found = -1
+                break
+            }
+            cp2 += m
+            if cp2 + 4 > e2 {
+                found = -1
+                break
+            }
+            let ty2 = ns_be16(cp2)
+            let cl2 = ns_be16(cp2 + 2)
+            cp2 += 4
+            if ty2 == ty && cl2 == cl && ns_samebinary(t1, t2) {
+                found = 1
+                break
+            }
+        }
+        if found == 0 {
+            result = 0
+            break
+        }
+    }
+    rt_free_block(t1)
+    rt_free_block(t2)
+    result
+}
+
+// send_dg.
+fn ns_send_dg(q: int, b1: int, n1: int, b2: int, n2: int, ns: int, sd: int) -> int {
+    let st = ns_st()
+    let has2 = b2 != 0
+    let mut seconds = std::raw::load(st + 48)
+    // retrans << ns con enteros de 32 bits
+    seconds = std::raw::shl(seconds, ns) & 4294967295
+    if seconds >= 2147483648 {
+        seconds -= 4294967296
+    }
+    if ns > 0 {
+        seconds = seconds / std::raw::load(st + 72)
+    }
+    if seconds <= 0 {
+        seconds = 1
+    }
+    let mut sro = (std::raw::load(st + 40) & 4194304) != 0
+    let mut sr = (std::raw::load(st + 40) & 2097152) != 0 || sro
+    let save_got = std::raw::load(sd + 8)
+    let now = rt_alloc_zero(16)
+    let finish = rt_alloc_zero(16)
+    let pfd = rt_alloc_zero(8)
+    let lenc = rt_alloc_zero(8)
+    let from = rt_alloc_zero(32)
+    let fromlen = rt_alloc_zero(8)
+    let result = ns_send_dg_run(q, b1, n1, b2, n2, ns, sd, has2, seconds, sro, sr, save_got, now, finish, pfd, lenc, from, fromlen)
+    rt_free_block(now)
+    rt_free_block(finish)
+    rt_free_block(pfd)
+    rt_free_block(lenc)
+    rt_free_block(from)
+    rt_free_block(fromlen)
+    result
+}
+
+fn ns_send_dg_run(q: int, b1: int, n1: int, b2: int, n2: int, ns: int, sd: int, has2: bool, seconds: int, sro0: bool, sr0: bool, save_got: int, now: int, finish: int, pfd: int, lenc: int, from: int, fromlen: int) -> int {
+    let st = ns_st()
+    let mut sro = sro0
+    let mut sr = sr0
+    let mut resplen = 0
+    // 0 = retry_reopen, 1 = retry
+    let mut entry = 0
+    loop {
+        if entry == 0 {
+            let rv = ns_reopen(sd, ns)
+            if rv <= 0 {
+                if has2 {
+                    std::raw::store(q + 40, 0)
+                }
+                return rv
+            }
+        }
+        // retry:
+        ns_now(now)
+        std::raw::store(finish, std::raw::load(now) + seconds)
+        std::raw::store(finish + 8, std::raw::load(now + 8))
+        let mut tsec = seconds
+        let mut tnsec = 0
+        let mut need_recompute = false
+        let mut force = false
+        let mut nwritten = 0
+        let mut recv1 = false
+        let mut recv2 = !has2
+        let mut fd = std::raw::load(st + 536 + 8 * ns) - 1
+        let mut events = 4
+        let mut restart = -1
+        loop {
+            if need_recompute || force {
+                ns_now(now)
+                let fs = std::raw::load(finish)
+                let fns = std::raw::load(finish + 8)
+                let s = std::raw::load(now)
+                let nn = std::raw::load(now + 8)
+                if fs < s || (fs == s && fns <= nn) {
+                    return ns_close_err(q)
+                }
+                tsec = fs - s
+                tnsec = fns - nn
+                if tnsec < 0 {
+                    tnsec += 1000000000
+                    tsec -= 1
+                }
+                need_recompute = false
+                force = false
+            }
+            let ptimeout = tsec * 1000 + tnsec / 1000000
+            let mut n = 0
+            std::raw::store(pfd, 0)
+            sa_put8(pfd, fd, 4)
+            sa_put8(pfd + 4, events, 2)
+            if nwritten == 0 {
+                n = ns_sys(std::raw::syscall(7, pfd, 1, 0, 0, 0, 0))
+            }
+            if n == 0 {
+                n = ns_sys(std::raw::syscall(7, pfd, 1, ptimeout, 0, 0, 0))
+                need_recompute = true
+            }
+            if n == 0 {
+                if resplen > 1 && (recv1 || (has2 && recv2)) {
+                    if !sr {
+                        std::raw::store(st + 40, std::raw::load(st + 40) | 2097152)
+                        sr = true
+                        std::raw::store(sd + 8, save_got)
+                        restart = 1
+                        break
+                    } else if !sro {
+                        std::raw::store(st + 40, std::raw::load(st + 40) | 4194304)
+                        sro = true
+                        std::raw::store(sd + 8, save_got)
+                        ns_iclose(false)
+                        restart = 0
+                        break
+                    }
+                    std::raw::store(q + 40, 1)
+                    return resplen
+                }
+                std::raw::store(sd + 8, 1)
+                if has2 {
+                    std::raw::store(q + 40, 0)
+                }
+                return 0
+            }
+            if n < 0 {
+                if gi_errno() == 4 {
+                    force = true
+                    continue
+                }
+                return ns_close_err(q)
+            }
+            gi_set_errno(0)
+            let rev = std::raw::load8(pfd + 6) + 256 * std::raw::load8(pfd + 7)
+            if (rev & 4) != 0 {
+                if nwritten == 0 && has2 && !sr {
+                    let iov = rt_alloc_zero(32)
+                    std::raw::store(iov, b1)
+                    std::raw::store(iov + 8, n1)
+                    std::raw::store(iov + 16, b2)
+                    std::raw::store(iov + 24, n2)
+                    let reqs = rt_alloc_zero(128)
+                    std::raw::store(reqs + 16, iov)
+                    std::raw::store(reqs + 24, 1)
+                    std::raw::store(reqs + 64 + 16, iov + 16)
+                    std::raw::store(reqs + 64 + 24, 1)
+                    let ndg = ns_sys(std::raw::syscall(307, fd, reqs, 2, 16384, 0, 0))
+                    let l0 = sa_u32(reqs + 56)
+                    let l1 = sa_u32(reqs + 120)
+                    rt_free_block(iov)
+                    rt_free_block(reqs)
+                    if ndg == 2 {
+                        if l0 != n1 || l1 != n2 {
+                            return ns_close_err(q)
+                        }
+                        events = 1
+                        nwritten += 2
+                    } else if ndg == 1 && l0 == n1 {
+                        // just_one
+                        if nwritten != 0 || !has2 || sr {
+                            events = 1
+                        } else {
+                            events = 5
+                        }
+                        nwritten += 1
+                    } else if ndg < 0 && (gi_errno() == 4 || gi_errno() == 11) {
+                        force = true
+                    } else {
+                        return ns_close_err(q)
+                    }
+                    continue
+                }
+                let mut srr = 0
+                let mut want = n1
+                if nwritten != 0 {
+                    srr = ns_sys(std::raw::syscall(44, fd, b2, n2, 16384, 0, 0))
+                    want = n2
+                } else {
+                    srr = ns_sys(std::raw::syscall(44, fd, b1, n1, 16384, 0, 0))
+                }
+                if srr != want {
+                    if gi_errno() == 4 || gi_errno() == 11 {
+                        force = true
+                        continue
+                    }
+                    return ns_close_err(q)
+                }
+                if nwritten != 0 || !has2 || sr {
+                    events = 1
+                } else {
+                    events = 5
+                }
+                nwritten += 1
+                continue
+            }
+            if (rev & 1) != 0 {
+                let second = (recv1 || recv2) && has2
+                let mut pc = q + 8
+                let mut sc = q + 16
+                if second {
+                    pc = q + 24
+                    sc = q + 32
+                }
+                if std::raw::load(sc) < 65536 {
+                    let r = ns_sys(std::raw::syscall(16, fd, 21531, lenc, 0, 0, 0))
+                    let avail = sa_u32(lenc)
+                    if r == 0 {
+                        if second {
+                            std::raw::store(q + 40, avail)
+                        }
+                        if !second {
+                            resplen = avail
+                        }
+                    }
+                    if r < 0 || std::raw::load(sc) < avail {
+                        std::raw::store(pc, rt_alloc_zero(65536))
+                        std::raw::store(sc, 65536)
+                        if second {
+                            std::raw::store(q + 48, 1)
+                        }
+                    }
+                }
+                let ans = std::raw::load(pc)
+                std::raw::store(fromlen, 28)
+                let got = ns_sys(std::raw::syscall(45, fd, ans, std::raw::load(sc), 0, from, fromlen))
+                if second {
+                    std::raw::store(q + 40, got)
+                } else {
+                    resplen = got
+                }
+                if got <= 0 {
+                    if gi_errno() == 4 || gi_errno() == 11 {
+                        need_recompute = true
+                        continue
+                    }
+                    return ns_close_err(q)
+                }
+                std::raw::store(sd + 8, 1)
+                if got < 12 {
+                    std::raw::store(sd + 16, 90)
+                    return ns_close_err(q)
+                }
+                let mut matching = 0
+                let aid0 = std::raw::load8(ans)
+                let aid1 = std::raw::load8(ans + 1)
+                if !recv1 && aid0 == std::raw::load8(b1) && aid1 == std::raw::load8(b1 + 1) && ns_queriesmatch(b1, n1, ans, got) != 0 {
+                    matching = 1
+                }
+                if !recv2 && aid0 == std::raw::load8(b2) && aid1 == std::raw::load8(b2 + 1) && ns_queriesmatch(b2, n2, ans, got) != 0 {
+                    matching = 2
+                }
+                if matching == 0 {
+                    need_recompute = true
+                    continue
+                }
+                let rcode = std::raw::load8(ans + 3) & 15
+                let flags2 = std::raw::load8(ans + 2)
+                let flags3 = std::raw::load8(ans + 3)
+                let bad = rcode == 2 || rcode == 4 || rcode == 5
+                let empty = rcode == 0 && ns_be16(ans + 6) == 0 && (flags2 & 4) == 0 && (flags3 & 128) == 0 && ns_be16(ans + 10) == 0
+                if bad || empty {
+                    if recv1 || (has2 && recv2) {
+                        std::raw::store(q + 40, 0)
+                        return resplen
+                    }
+                    if has2 {
+                        resplen = 0
+                        if matching == 1 {
+                            recv1 = true
+                        } else {
+                            recv2 = true
+                        }
+                        continue
+                    }
+                    return ns_close_err(q)
+                }
+                if (flags2 & 2) != 0 {
+                    std::raw::store(sd, 1)
+                    ns_iclose(false)
+                    if has2 {
+                        std::raw::store(q + 40, 0)
+                    }
+                    return 1
+                }
+                if matching == 1 {
+                    recv1 = true
+                } else {
+                    recv2 = true
+                }
+                if !(recv1 && recv2) {
+                    if sr {
+                        events = 4
+                        if sro {
+                            ns_iclose(false)
+                            let rv = ns_reopen(sd, ns)
+                            if rv <= 0 {
+                                if has2 {
+                                    std::raw::store(q + 40, 0)
+                                }
+                                return rv
+                            }
+                            fd = std::raw::load(st + 536 + 8 * ns) - 1
+                        }
+                    }
+                    continue
+                }
+                return resplen
+            }
+            if (rev & 56) != 0 {
+                return ns_close_err(q)
+            }
+            // poll no debería volver con otros bits: glibc llama a abort()
+            rt_native_fail("std::net::http_get", "res_send: poll returned unexpected events")
+            return ns_close_err(q)
+        }
+        entry = restart
+    }
+    0
+}
+
+// Lectura completa de n bytes de un socket bloqueante (bucles de send_vc).
+// Devuelve el último valor de read (> 0 si todo bien).
+fn ns_read_full(fd: int, p: int, n: int, retry_eintr: bool) -> int {
+    let mut cp = p
+    let mut len = n
+    let mut r = 0
+    while len != 0 {
+        r = ns_sys(std::raw::syscall(0, fd, cp, len, 0, 0, 0))
+        if r == -4 && retry_eintr {
+            continue
+        }
+        if r <= 0 {
+            break
+        }
+        cp += r
+        len -= r
+    }
+    r
+}
+
+// send_vc (TCP).
+fn ns_send_vc(q: int, b1: int, n1: int, b2: int, n2: int, ns: int, sd: int) -> int {
+    let st = ns_st()
+    let has2 = b2 != 0
+    let sa = st + 80 + 32 * ns
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let mut connreset = false
+    let hdr = rt_alloc_zero(8)
+    let mut resplen = 0
+    loop {
+        // same_ns:
+        if std::raw::load(st + 528) != 0 {
+            ns_iclose(false)
+        }
+        let fd = ns_sys(std::raw::syscall(41, fam, 524289, 0, 0, 0, 0))
+        if fd < 0 {
+            std::raw::store(sd + 16, gi_errno())
+            if has2 {
+                std::raw::store(q + 40, 0)
+            }
+            rt_free_block(hdr)
+            return -1
+        }
+        std::raw::store(st + 528, fd + 1)
+        gi_set_errno(0)
+        let mut slen = 28
+        if fam == 2 {
+            slen = 16
+        }
+        if ns_sys(std::raw::syscall(42, fd, sa, slen, 0, 0, 0)) < 0 {
+            std::raw::store(sd + 16, gi_errno())
+            rt_free_block(hdr)
+            return ns_close_err(q)
+        }
+        let lens = rt_alloc_zero(8)
+        std::raw::store8(lens, std::raw::shr(n1, 8) & 255)
+        std::raw::store8(lens + 1, n1 & 255)
+        std::raw::store8(lens + 2, std::raw::shr(n2, 8) & 255)
+        std::raw::store8(lens + 3, n2 & 255)
+        let iov = rt_alloc_zero(64)
+        std::raw::store(iov, lens)
+        std::raw::store(iov + 8, 2)
+        std::raw::store(iov + 16, b1)
+        std::raw::store(iov + 24, n1)
+        let mut niov = 2
+        let mut explen = 2 + n1
+        if has2 {
+            std::raw::store(iov + 32, lens + 2)
+            std::raw::store(iov + 40, 2)
+            std::raw::store(iov + 48, b2)
+            std::raw::store(iov + 56, n2)
+            niov = 4
+            explen += 2 + n2
+        }
+        let mut w = 0
+        loop {
+            w = ns_sys(std::raw::syscall(20, fd, iov, niov, 0, 0, 0))
+            if w != -4 {
+                break
+            }
+        }
+        rt_free_block(iov)
+        rt_free_block(lens)
+        if w != explen {
+            std::raw::store(sd + 16, gi_errno())
+            rt_free_block(hdr)
+            return ns_close_err(q)
+        }
+        let mut recv1 = false
+        let mut recv2 = !has2
+        let mut again = false
+        loop {
+            // read_len:
+            let r = ns_read_full(fd, hdr, 2, true)
+            if r <= 0 {
+                std::raw::store(sd + 16, gi_errno())
+                if gi_errno() == 104 && !connreset {
+                    ns_iclose(false)
+                    connreset = true
+                    again = true
+                    break
+                }
+                rt_free_block(hdr)
+                return ns_close_err(q)
+            }
+            let rlen = ns_be16(hdr)
+            let second = (recv1 || recv2) && has2
+            let mut pc = q + 8
+            let mut sc = q + 16
+            if second {
+                pc = q + 24
+                sc = q + 32
+                std::raw::store(q + 40, rlen)
+            } else {
+                resplen = rlen
+            }
+            if std::raw::load(sc) < rlen {
+                std::raw::store(pc, rt_alloc_zero(65536))
+                std::raw::store(sc, 65536)
+                if second {
+                    std::raw::store(q + 48, 1)
+                }
+            }
+            if rlen < 12 {
+                std::raw::store(sd + 16, 90)
+                rt_free_block(hdr)
+                return ns_close_err(q)
+            }
+            let ans = std::raw::load(pc)
+            let rr = ns_read_full(fd, ans, rlen, false)
+            if rr <= 0 {
+                std::raw::store(sd + 16, gi_errno())
+                rt_free_block(hdr)
+                return ns_close_err(q)
+            }
+            let a0 = std::raw::load8(ans)
+            let a1 = std::raw::load8(ans + 1)
+            let id1 = a0 == std::raw::load8(b1) && a1 == std::raw::load8(b1 + 1)
+            let mut id2 = false
+            if has2 {
+                id2 = a0 == std::raw::load8(b2) && a1 == std::raw::load8(b2 + 1)
+            }
+            if (recv1 || !id1) && (recv2 || !id2) {
+                continue
+            }
+            if !recv1 && id1 {
+                recv1 = true
+            } else {
+                recv2 = true
+            }
+            if !(recv1 && recv2) {
+                continue
+            }
+            rt_free_block(hdr)
+            return resplen
+        }
+        if !again {
+            break
+        }
+    }
+    rt_free_block(hdr)
+    0
+}
+
+// ------------------------------------------------------------ respuestas
+
+// Búfer de resultados (alloc_buffer sobre tmpbuf): ab = [posición][tamaño]
+// [fallado].
+fn ns_ab_alloc(ab: int, size: int, align: int) -> bool {
+    if std::raw::load(ab + 16) != 0 {
+        return false
+    }
+    let pos = std::raw::load(ab)
+    let pad = (align - pos % align) % align
+    if pos + pad + size > std::raw::load(ab + 8) {
+        std::raw::store(ab + 16, 1)
+        return false
+    }
+    std::raw::store(ab, pos + pad + size)
+    true
+}
+
+fn ns_rdata_len(qtype: int) -> int {
+    if qtype == 1 {
+        return 4
+    }
+    if qtype == 28 {
+        return 16
+    }
+    0
+}
+
+// gaih_getanswer_slice.
+fn ns_slice(pkt: int, len: int, ab: int, tl: int, canon0: bool) -> int {
+    let mut store_canon = canon0
+    let eom = pkt + len
+    if len < 12 || std::raw::load8(pkt + 4) != 0 || std::raw::load8(pkt + 5) != 1 {
+        gi_set_errno(90)
+        gi_set_herrno(3)
+        return -1
+    }
+    let c = ns_len_uncompressed(pkt + 12, eom)
+    if c < 0 {
+        gi_set_herrno(3)
+        return -1
+    }
+    let mut cur = pkt + 12 + c
+    if eom - cur < 4 {
+        gi_set_errno(90)
+        gi_set_herrno(3)
+        return -1
+    }
+    let qtype = ns_be16(cur)
+    cur += 4
+    let mut ancount = ns_be16(pkt + 6)
+    let expected = rt_alloc_zero(256)
+    rt_copy(expected, pkt + 12, c)
+    let mut alias = pkt + 12
+    if ancount == 0 || !ns_res_binary_hnok(alias) {
+        rt_free_block(expected)
+        gi_set_herrno(1)
+        return 0
+    }
+    let rname = rt_alloc_zero(256)
+    let nbuf = rt_alloc_zero(256)
+    let mut have = false
+    let mut status = 9
+    while ancount > 0 {
+        ancount -= 1
+        let used = ns_unpack(pkt, eom, cur, rname, 255)
+        if used < 0 {
+            status = -1
+            break
+        }
+        cur += used
+        if eom - cur < 10 {
+            gi_set_errno(90)
+            status = -1
+            break
+        }
+        let rtype = ns_be16(cur)
+        let rdlen = ns_be16(cur + 8)
+        cur += 10
+        if eom - cur < rdlen {
+            gi_set_errno(90)
+            status = -1
+            break
+        }
+        let rdata = cur
+        cur += rdlen
+        if rtype == 5 {
+            let n = ns_unpack(pkt, eom, rdata, nbuf, 255)
+            if n < 0 {
+                status = -1
+                break
+            }
+            rt_copy(expected, nbuf, 256)
+            if store_canon && ns_res_binary_hnok(nbuf) {
+                alias = rdata
+            }
+        } else if rtype == qtype && ns_samebinary(rname, expected) && rdlen == ns_rdata_len(qtype) {
+            if ns_ab_alloc(ab, 40, 8) {
+                if store_canon {
+                    let tmp = rt_alloc_zero(256)
+                    if ns_unpack(pkt, eom, alias, tmp, 255) >= 0 {
+                        let text = ns_ntop(tmp)
+                        if rt_slen(text) <= 64 {
+                            ns_ab_alloc(ab, rt_slen(text) + 1, 1)
+                        }
+                    }
+                    rt_free_block(tmp)
+                    store_canon = false
+                }
+                let a = rt_alloc_zero(16)
+                rt_copy(a, rdata, rdlen)
+                if rdlen == 4 {
+                    gi_tl_add(tl, 2, a, 4, 0)
+                } else {
+                    gi_tl_add(tl, 10, a, 16, 0)
+                }
+                rt_free_block(a)
+                have = true
+            }
+        }
+    }
+    rt_free_block(expected)
+    rt_free_block(rname)
+    rt_free_block(nbuf)
+    if status == -1 {
+        gi_set_herrno(3)
+        return -1
+    }
+    if have {
+        gi_set_herrno(0)
+        return 1
+    }
+    gi_set_herrno(1)
+    0
+}
+
+// _nss_dns_gethostbyname4_r. Tuplas en tl.
+fn ns_gethostbyname4(name0: int, tl: int, buflen: int) -> int {
+    let st = ns_st()
+    if !ns_hnok(name0) {
+        gi_set_herrno(1)
+        return 0
+    }
+    let mut name = name0
+    let mut alias = 0
+    let mut hasdot = false
+    let nl = nt_strlen(name0)
+    let mut i = 0
+    while i < nl {
+        if std::raw::load8(name0 + i) == 46 {
+            hasdot = true
+        }
+        i += 1
+    }
+    if !hasdot {
+        alias = ns_hostalias(name0)
+        if alias != 0 {
+            name = alias
+        }
+    }
+    let q = rt_alloc_zero(64)
+    let orig = rt_alloc_zero(2048)
+    std::raw::store(q, orig)
+    std::raw::store(q + 8, orig)
+    std::raw::store(q + 16, 2048)
+    let ab = rt_alloc_zero(24)
+    std::raw::store(ab + 8, buflen)
+    let olderr = gi_errno()
+    let mut status = 0
+    let mut n = 0
+    if (std::raw::load(st + 40) & 134217728) == 0 {
+        std::raw::store(q + 56, 1)
+        n = ns_search(q, name, 0)
+        if n >= 0 {
+            status = 0
+            let s1len = n
+            let p1 = std::raw::load(q + 8)
+            if s1len > 0 {
+                status = ns_slice(p1, s1len, ab, tl, true)
+            }
+            if std::raw::load(ab + 16) != 0 {
+                status = -2
+            } else {
+                let p2 = std::raw::load(q + 24)
+                let l2 = std::raw::load(q + 40)
+                if (status == 1 || status == 0) && p2 != 0 && l2 > 0 {
+                    let s2 = ns_slice(p2, l2, ab, tl, status != 1)
+                    if status != 1 && s2 != 0 {
+                        status = s2
+                    }
+                }
+            }
+        }
+    } else {
+        n = ns_search(q, name, 1)
+        if n >= 0 {
+            status = 0
+            if n > 0 {
+                status = ns_slice(std::raw::load(q + 8), n, ab, tl, true)
+            }
+        }
+    }
+    if n < 0 {
+        let e = gi_errno()
+        if e == 3 {
+            status = -2
+            gi_set_herrno(2)
+        } else if e == 24 || e == 23 {
+            gi_set_herrno(-1)
+            status = -1
+        } else if e == 111 || e == 110 {
+            status = -1
+        } else {
+            status = 0
+        }
+        if gi_herrno() == 2 {
+            gi_set_errno(11)
+        } else {
+            gi_set_errno(olderr)
+        }
+    }
+    if std::raw::load(ab + 16) != 0 {
+        gi_set_errno(34)
+        gi_set_herrno(-1)
+        status = -2
+    }
+    if std::raw::load(q + 48) != 0 {
+        rt_free_block(std::raw::load(q + 24))
+    }
+    if std::raw::load(q + 8) != orig {
+        rt_free_block(std::raw::load(q + 8))
+    }
+    rt_free_block(orig)
+    rt_free_block(q)
+    rt_free_block(ab)
+    if alias != 0 {
+        rt_free_block(alias)
+    }
+    status
+}

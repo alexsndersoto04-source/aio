@@ -1,0 +1,1273 @@
+// Transformadas y coeficientes VP8. Estas funciones operan sobre los bloques
+// del flujo comprimido, sin delegar la descodificación en otra biblioteca.
+fn im_webp_vp8_i32(value: int) -> int {
+    let bits = value & 4294967295
+    if bits >= 2147483648 { return bits - 4294967296 }
+    bits
+}
+
+fn im_webp_vp8_idct4x4(block: int) {
+    let mut i = 0
+    while i < 4 {
+        let a1 = std::raw::load(block + 8 * i) + std::raw::load(block + 8 * (8 + i))
+        let b1 = std::raw::load(block + 8 * i) - std::raw::load(block + 8 * (8 + i))
+        let t1 = std::raw::sar(std::raw::load(block + 8 * (4 + i)) * 35468, 16)
+        let t2 = std::raw::load(block + 8 * (12 + i)) + std::raw::sar(std::raw::load(block + 8 * (12 + i)) * 20091, 16)
+        let c1 = t1 - t2
+        let t3 = std::raw::load(block + 8 * (4 + i)) + std::raw::sar(std::raw::load(block + 8 * (4 + i)) * 20091, 16)
+        let t4 = std::raw::sar(std::raw::load(block + 8 * (12 + i)) * 35468, 16)
+        let d1 = t3 + t4
+        std::raw::store(block + 8 * i, im_webp_vp8_i32(a1 + d1))
+        std::raw::store(block + 8 * (4 + i), im_webp_vp8_i32(b1 + c1))
+        std::raw::store(block + 8 * (12 + i), im_webp_vp8_i32(a1 - d1))
+        std::raw::store(block + 8 * (8 + i), im_webp_vp8_i32(b1 - c1))
+        i += 1
+    }
+
+    i = 0
+    while i < 4 {
+        let base = 4 * i
+        let a1 = std::raw::load(block + 8 * base) + std::raw::load(block + 8 * (base + 2))
+        let b1 = std::raw::load(block + 8 * base) - std::raw::load(block + 8 * (base + 2))
+        let t1 = std::raw::sar(std::raw::load(block + 8 * (base + 1)) * 35468, 16)
+        let t2 = std::raw::load(block + 8 * (base + 3)) + std::raw::sar(std::raw::load(block + 8 * (base + 3)) * 20091, 16)
+        let c1 = t1 - t2
+        let t3 = std::raw::load(block + 8 * (base + 1)) + std::raw::sar(std::raw::load(block + 8 * (base + 1)) * 20091, 16)
+        let t4 = std::raw::sar(std::raw::load(block + 8 * (base + 3)) * 35468, 16)
+        let d1 = t3 + t4
+        std::raw::store(block + 8 * base, im_webp_vp8_i32(std::raw::sar(a1 + d1 + 4, 3)))
+        std::raw::store(block + 8 * (base + 3), im_webp_vp8_i32(std::raw::sar(a1 - d1 + 4, 3)))
+        std::raw::store(block + 8 * (base + 1), im_webp_vp8_i32(std::raw::sar(b1 + c1 + 4, 3)))
+        std::raw::store(block + 8 * (base + 2), im_webp_vp8_i32(std::raw::sar(b1 - c1 + 4, 3)))
+        i += 1
+    }
+}
+
+fn im_webp_vp8_iwht4x4(block: int) {
+    let mut i = 0
+    while i < 4 {
+        let a1 = std::raw::load(block + 8 * i) + std::raw::load(block + 8 * (12 + i))
+        let b1 = std::raw::load(block + 8 * (4 + i)) + std::raw::load(block + 8 * (8 + i))
+        let c1 = std::raw::load(block + 8 * (4 + i)) - std::raw::load(block + 8 * (8 + i))
+        let d1 = std::raw::load(block + 8 * i) - std::raw::load(block + 8 * (12 + i))
+        std::raw::store(block + 8 * i, im_webp_vp8_i32(a1 + b1))
+        std::raw::store(block + 8 * (4 + i), im_webp_vp8_i32(c1 + d1))
+        std::raw::store(block + 8 * (8 + i), im_webp_vp8_i32(a1 - b1))
+        std::raw::store(block + 8 * (12 + i), im_webp_vp8_i32(d1 - c1))
+        i += 1
+    }
+    i = 0
+    while i < 4 {
+        let base = 4 * i
+        let a1 = std::raw::load(block + 8 * base) + std::raw::load(block + 8 * (base + 3))
+        let b1 = std::raw::load(block + 8 * (base + 1)) + std::raw::load(block + 8 * (base + 2))
+        let c1 = std::raw::load(block + 8 * (base + 1)) - std::raw::load(block + 8 * (base + 2))
+        let d1 = std::raw::load(block + 8 * base) - std::raw::load(block + 8 * (base + 3))
+        let a2 = a1 + b1
+        let b2 = c1 + d1
+        let c2 = a1 - b1
+        let d2 = d1 - c1
+        std::raw::store(block + 8 * base, im_webp_vp8_i32(std::raw::sar(a2 + 3, 3)))
+        std::raw::store(block + 8 * (base + 1), im_webp_vp8_i32(std::raw::sar(b2 + 3, 3)))
+        std::raw::store(block + 8 * (base + 2), im_webp_vp8_i32(std::raw::sar(c2 + 3, 3)))
+        std::raw::store(block + 8 * (base + 3), im_webp_vp8_i32(std::raw::sar(d2 + 3, 3)))
+        i += 1
+    }
+}
+
+fn im_webp_vp8_read_token(function: string, reader: int, probabilities: int, plane: int, band: int, complexity: int, first_node: int) -> int {
+    let tree = [-11, 2, 0, 4, -1, 6, 8, 12, -2, 10, -3, -4, 14, 16, -5, -6, 18, 20, -7, -8, -9, -10]
+    let base = ((plane * 8 + band) * 3 + complexity) * 11
+    let mut node = first_node
+    let mut steps = 0
+    while steps < 11 {
+        let probability = std::raw::load(probabilities + 8 * (base + node))
+        let bit = if im_webp_vp8_read_bool(function, reader, probability) { 1 } else { 0 }
+        let branch = tree[2 * node + bit]
+        if branch <= 0 { return 0 - branch }
+        node = branch / 2
+        steps += 1
+    }
+    im_img_err(function, "Corrupt WebP VP8 coefficient tree")
+}
+
+fn im_webp_vp8_read_coefficients(function: string, reader: int, probabilities: int, plane: int, context: int, dc_quant: int, ac_quant: int, block: int) -> bool {
+    if plane < 0 || plane > 3 || context < 0 || context > 2 {
+        im_img_err(function, "Invalid WebP VP8 coefficient context")
+    }
+    let bands = im_webp_vp8_coeff_bands()
+    let category_probabilities = im_webp_vp8_dct_category_probs()
+    let category_base = im_webp_vp8_dct_category_base()
+    let zigzag = im_webp_vp8_zigzag()
+    let first = if plane == 0 { 1 } else { 0 }
+    let mut complexity = context
+    let mut skip = false
+    let mut has_coefficients = false
+    let mut i = first
+    while i < 16 {
+        let band = bands[i]
+        let token = im_webp_vp8_read_token(function, reader, probabilities, plane, band, complexity, if skip { 1 } else { 0 })
+        if token == 11 { break }
+        if token == 0 {
+            skip = true
+            complexity = 0
+            has_coefficients = true
+            i += 1
+            continue
+        }
+        let mut absolute = token
+        if token >= 5 && token <= 10 {
+            let category = token - 5
+            let mut extra = 0
+            let mut k = 0
+            while k < 12 {
+                let probability = category_probabilities[category * 12 + k]
+                if probability == 0 { break }
+                extra = extra * 2 + if im_webp_vp8_read_bool(function, reader, probability) { 1 } else { 0 }
+                k += 1
+            }
+            absolute = category_base[category] + extra
+        }
+        skip = false
+        if absolute == 1 { complexity = 1 } else { complexity = 2 }
+        if im_webp_vp8_read_flag(function, reader) { absolute = 0 - absolute }
+        let position = zigzag[i]
+        let quantizer = if position == 0 { dc_quant } else { ac_quant }
+        std::raw::store(block + 8 * position, im_webp_vp8_i32(absolute * quantizer))
+        has_coefficients = true
+        i += 1
+    }
+    has_coefficients
+}
+
+fn im_webp_vp8_add_residue(image: int, block: int, x0: int, y0: int, stride: int) {
+    let mut y = 0
+    while y < 4 {
+        let mut x = 0
+        while x < 4 {
+            let at = (y0 + y) * stride + x0 + x
+            let value = std::raw::load8(image + at) + std::raw::load(block + 8 * (y * 4 + x))
+            let clipped = if value < 0 { 0 } else if value > 255 { 255 } else { value }
+            std::raw::store8(image + at, clipped)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_avg2(a: int, b: int) -> int { (a + b + 1) / 2 }
+fn im_webp_vp8_avg3(a: int, b: int, c: int) -> int { (a + 2 * b + c + 2) / 4 }
+
+fn im_webp_vp8_clip8(value: int) -> int {
+    if value < 0 { return 0 }
+    if value > 255 { return 255 }
+    value
+}
+
+fn im_webp_vp8_ws_get(ws: int, stride: int, x: int, y: int) -> int {
+    std::raw::load8(ws + y * stride + x)
+}
+
+fn im_webp_vp8_ws_put(ws: int, stride: int, x: int, y: int, value: int) {
+    std::raw::store8(ws + y * stride + x, value)
+}
+
+fn im_webp_vp8_predict_dc(ws: int, size: int, stride: int, x0: int, y0: int, above: bool, left: bool) {
+    let mut sum = 0
+    let mut shift = if size == 8 { 2 } else { 3 }
+    let mut i = 0
+    if left {
+        while i < size {
+            sum += im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + i)
+            i += 1
+        }
+        shift += 1
+    }
+    if above {
+        i = 0
+        while i < size {
+            sum += im_webp_vp8_ws_get(ws, stride, x0 + i, y0 - 1)
+            i += 1
+        }
+        shift += 1
+    }
+    let dc = if !left && !above { 128 } else { (sum + std::raw::shl(1, shift - 1)) / std::raw::shl(1, shift) }
+    let mut y = 0
+    while y < size {
+        let mut x = 0
+        while x < size {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, dc)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_vertical(ws: int, size: int, stride: int, x0: int, y0: int) {
+    let mut y = 0
+    while y < size {
+        let mut x = 0
+        while x < size {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, im_webp_vp8_ws_get(ws, stride, x0 + x, y0 - 1))
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_horizontal(ws: int, size: int, stride: int, x0: int, y0: int) {
+    let mut y = 0
+    while y < size {
+        let left = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + y)
+        let mut x = 0
+        while x < size {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, left)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_true_motion(ws: int, size: int, stride: int, x0: int, y0: int) {
+    let p = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 - 1)
+    let mut y = 0
+    while y < size {
+        let left = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + y)
+        let mut x = 0
+        while x < size {
+            let top = im_webp_vp8_ws_get(ws, stride, x0 + x, y0 - 1)
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, im_webp_vp8_clip8(left + top - p))
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_dc(ws: int, stride: int, x0: int, y0: int) {
+    let mut sum = 4
+    let mut i = 0
+    while i < 4 {
+        sum += im_webp_vp8_ws_get(ws, stride, x0 + i, y0 - 1)
+        sum += im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + i)
+        i += 1
+    }
+    let dc = sum / 8
+    i = 0
+    while i < 4 {
+        let mut x = 0
+        while x < 4 {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + i, dc)
+            x += 1
+        }
+        i += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_tm(ws: int, stride: int, x0: int, y0: int) {
+    let p = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 - 1)
+    let mut y = 0
+    while y < 4 {
+        let left = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + y)
+        let mut x = 0
+        while x < 4 {
+            let top = im_webp_vp8_ws_get(ws, stride, x0 + x, y0 - 1)
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, im_webp_vp8_clip8(left + top - p))
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_ve(ws: int, stride: int, x0: int, y0: int) {
+    let p = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 - 1)
+    let a0 = im_webp_vp8_ws_get(ws, stride, x0, y0 - 1)
+    let a1 = im_webp_vp8_ws_get(ws, stride, x0 + 1, y0 - 1)
+    let a2 = im_webp_vp8_ws_get(ws, stride, x0 + 2, y0 - 1)
+    let a3 = im_webp_vp8_ws_get(ws, stride, x0 + 3, y0 - 1)
+    let a4 = im_webp_vp8_ws_get(ws, stride, x0 + 4, y0 - 1)
+    let v0 = im_webp_vp8_avg3(p, a0, a1)
+    let v1 = im_webp_vp8_avg3(a0, a1, a2)
+    let v2 = im_webp_vp8_avg3(a1, a2, a3)
+    let v3 = im_webp_vp8_avg3(a2, a3, a4)
+    let mut y = 0
+    while y < 4 {
+        im_webp_vp8_ws_put(ws, stride, x0, y0 + y, v0)
+        im_webp_vp8_ws_put(ws, stride, x0 + 1, y0 + y, v1)
+        im_webp_vp8_ws_put(ws, stride, x0 + 2, y0 + y, v2)
+        im_webp_vp8_ws_put(ws, stride, x0 + 3, y0 + y, v3)
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_he(ws: int, stride: int, x0: int, y0: int) {
+    let p = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 - 1)
+    let l0 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0)
+    let l1 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 1)
+    let l2 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 2)
+    let l3 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 3)
+    let values = [im_webp_vp8_avg3(p, l0, l1), im_webp_vp8_avg3(l0, l1, l2), im_webp_vp8_avg3(l1, l2, l3), im_webp_vp8_avg3(l2, l3, l3)]
+    let mut y = 0
+    while y < 4 {
+        let mut x = 0
+        while x < 4 {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, values[y])
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_ld(ws: int, stride: int, x0: int, y0: int) {
+    let a0 = im_webp_vp8_ws_get(ws, stride, x0, y0 - 1)
+    let a1 = im_webp_vp8_ws_get(ws, stride, x0 + 1, y0 - 1)
+    let a2 = im_webp_vp8_ws_get(ws, stride, x0 + 2, y0 - 1)
+    let a3 = im_webp_vp8_ws_get(ws, stride, x0 + 3, y0 - 1)
+    let a4 = im_webp_vp8_ws_get(ws, stride, x0 + 4, y0 - 1)
+    let a5 = im_webp_vp8_ws_get(ws, stride, x0 + 5, y0 - 1)
+    let a6 = im_webp_vp8_ws_get(ws, stride, x0 + 6, y0 - 1)
+    let a7 = im_webp_vp8_ws_get(ws, stride, x0 + 7, y0 - 1)
+    let v = [im_webp_vp8_avg3(a0,a1,a2), im_webp_vp8_avg3(a1,a2,a3), im_webp_vp8_avg3(a2,a3,a4), im_webp_vp8_avg3(a3,a4,a5), im_webp_vp8_avg3(a4,a5,a6), im_webp_vp8_avg3(a5,a6,a7), im_webp_vp8_avg3(a6,a7,a7)]
+    let mut y = 0
+    while y < 4 {
+        let mut x = 0
+        while x < 4 {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, v[y + x])
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_rd(ws: int, stride: int, x0: int, y0: int) {
+    let e0 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 3)
+    let e1 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 2)
+    let e2 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 + 1)
+    let e3 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0)
+    let e4 = im_webp_vp8_ws_get(ws, stride, x0 - 1, y0 - 1)
+    let e5 = im_webp_vp8_ws_get(ws, stride, x0, y0 - 1)
+    let e6 = im_webp_vp8_ws_get(ws, stride, x0 + 1, y0 - 1)
+    let e7 = im_webp_vp8_ws_get(ws, stride, x0 + 2, y0 - 1)
+    let e8 = im_webp_vp8_ws_get(ws, stride, x0 + 3, y0 - 1)
+    let v = [im_webp_vp8_avg3(e0,e1,e2), im_webp_vp8_avg3(e1,e2,e3), im_webp_vp8_avg3(e2,e3,e4), im_webp_vp8_avg3(e3,e4,e5), im_webp_vp8_avg3(e4,e5,e6), im_webp_vp8_avg3(e5,e6,e7), im_webp_vp8_avg3(e6,e7,e8)]
+    let mut y = 0
+    while y < 4 {
+        let mut x = 0
+        while x < 4 {
+            im_webp_vp8_ws_put(ws, stride, x0 + x, y0 + y, v[3 - y + x])
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_predict_b_mode(function: string, ws: int, stride: int, x0: int, y0: int, mode: int) {
+    if mode == 0 { im_webp_vp8_predict_b_dc(ws, stride, x0, y0); return }
+    if mode == 1 { im_webp_vp8_predict_b_tm(ws, stride, x0, y0); return }
+    if mode == 2 { im_webp_vp8_predict_b_ve(ws, stride, x0, y0); return }
+    if mode == 3 { im_webp_vp8_predict_b_he(ws, stride, x0, y0); return }
+    if mode == 4 { im_webp_vp8_predict_b_ld(ws, stride, x0, y0); return }
+    if mode == 5 { im_webp_vp8_predict_b_rd(ws, stride, x0, y0); return }
+    if mode == 6 { predict_bvrpred(ws, x0, y0, stride); return }
+    if mode == 7 { predict_bvlpred(ws, x0, y0, stride); return }
+    if mode == 8 { predict_bhdpred(ws, x0, y0, stride); return }
+    if mode == 9 { predict_bhupred(ws, x0, y0, stride); return }
+    im_img_err(function, "Invalid WebP VP8 block prediction mode")
+}
+
+fn predict_bvrpred(ws: int, x0: int, y0: int, stride: int) {
+    let p=im_webp_vp8_ws_get(ws,stride,x0-1,y0-1)
+    let a0=im_webp_vp8_ws_get(ws,stride,x0,y0-1);let a1=im_webp_vp8_ws_get(ws,stride,x0+1,y0-1)
+    let a2=im_webp_vp8_ws_get(ws,stride,x0+2,y0-1);let a3=im_webp_vp8_ws_get(ws,stride,x0+3,y0-1)
+    let l0=im_webp_vp8_ws_get(ws,stride,x0-1,y0);let l1=im_webp_vp8_ws_get(ws,stride,x0-1,y0+1);let l2=im_webp_vp8_ws_get(ws,stride,x0-1,y0+2)
+    let r00=im_webp_vp8_avg2(p,a0);let r01=im_webp_vp8_avg2(a0,a1);let r02=im_webp_vp8_avg2(a1,a2);let r03=im_webp_vp8_avg2(a2,a3)
+    let r10=im_webp_vp8_avg3(l0,p,a0);let r11=im_webp_vp8_avg3(p,a0,a1);let r12=im_webp_vp8_avg3(a0,a1,a2);let r13=im_webp_vp8_avg3(a1,a2,a3)
+    let r20=im_webp_vp8_avg3(l1,l0,p);let r30=im_webp_vp8_avg3(l2,l1,l0)
+    im_webp_vp8_ws_put(ws,stride,x0,y0,r00);im_webp_vp8_ws_put(ws,stride,x0+1,y0,r01);im_webp_vp8_ws_put(ws,stride,x0+2,y0,r02);im_webp_vp8_ws_put(ws,stride,x0+3,y0,r03)
+    im_webp_vp8_ws_put(ws,stride,x0,y0+1,r10);im_webp_vp8_ws_put(ws,stride,x0+1,y0+1,r11);im_webp_vp8_ws_put(ws,stride,x0+2,y0+1,r12);im_webp_vp8_ws_put(ws,stride,x0+3,y0+1,r13)
+    im_webp_vp8_ws_put(ws,stride,x0,y0+2,r20);im_webp_vp8_ws_put(ws,stride,x0+1,y0+2,r00);im_webp_vp8_ws_put(ws,stride,x0+2,y0+2,r01);im_webp_vp8_ws_put(ws,stride,x0+3,y0+2,r02)
+    im_webp_vp8_ws_put(ws,stride,x0,y0+3,r30);im_webp_vp8_ws_put(ws,stride,x0+1,y0+3,r10);im_webp_vp8_ws_put(ws,stride,x0+2,y0+3,r11);im_webp_vp8_ws_put(ws,stride,x0+3,y0+3,r12)
+}
+
+fn predict_bvlpred(ws: int, x0: int, y0: int, stride: int) {
+    let a0=im_webp_vp8_ws_get(ws,stride,x0,y0-1); let a1=im_webp_vp8_ws_get(ws,stride,x0+1,y0-1)
+    let a2=im_webp_vp8_ws_get(ws,stride,x0+2,y0-1); let a3=im_webp_vp8_ws_get(ws,stride,x0+3,y0-1)
+    let a4=im_webp_vp8_ws_get(ws,stride,x0+4,y0-1); let a5=im_webp_vp8_ws_get(ws,stride,x0+5,y0-1)
+    let a6=im_webp_vp8_ws_get(ws,stride,x0+6,y0-1); let a7=im_webp_vp8_ws_get(ws,stride,x0+7,y0-1)
+    im_webp_vp8_ws_put(ws,stride,x0,y0,im_webp_vp8_avg2(a0,a1))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+1,im_webp_vp8_avg3(a0,a1,a2))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+2,im_webp_vp8_avg2(a1,a2))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0,im_webp_vp8_avg2(a1,a2))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+1,im_webp_vp8_avg3(a1,a2,a3))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+3,im_webp_vp8_avg3(a1,a2,a3))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+2,im_webp_vp8_avg2(a2,a3))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0,im_webp_vp8_avg2(a2,a3))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+3,im_webp_vp8_avg3(a2,a3,a4))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+1,im_webp_vp8_avg3(a2,a3,a4))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+2,im_webp_vp8_avg2(a3,a4))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0,im_webp_vp8_avg2(a3,a4))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+3,im_webp_vp8_avg3(a3,a4,a5))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+1,im_webp_vp8_avg3(a3,a4,a5))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+2,im_webp_vp8_avg3(a4,a5,a6))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+3,im_webp_vp8_avg3(a5,a6,a7))
+}
+
+fn predict_bhdpred(ws: int, x0: int, y0: int, stride: int) {
+    let e0=im_webp_vp8_ws_get(ws,stride,x0-1,y0+3); let e1=im_webp_vp8_ws_get(ws,stride,x0-1,y0+2)
+    let e2=im_webp_vp8_ws_get(ws,stride,x0-1,y0+1); let e3=im_webp_vp8_ws_get(ws,stride,x0-1,y0)
+    let e4=im_webp_vp8_ws_get(ws,stride,x0-1,y0-1); let e5=im_webp_vp8_ws_get(ws,stride,x0,y0-1)
+    let e6=im_webp_vp8_ws_get(ws,stride,x0+1,y0-1); let e7=im_webp_vp8_ws_get(ws,stride,x0+2,y0-1)
+    im_webp_vp8_ws_put(ws,stride,x0,y0+3,im_webp_vp8_avg2(e0,e1))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+3,im_webp_vp8_avg3(e0,e1,e2))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+2,im_webp_vp8_avg2(e1,e2))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+3,im_webp_vp8_avg2(e1,e2))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+2,im_webp_vp8_avg3(e1,e2,e3))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+3,im_webp_vp8_avg3(e1,e2,e3))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+2,im_webp_vp8_avg2(e2,e3))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+1,im_webp_vp8_avg2(e2,e3))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+2,im_webp_vp8_avg3(e2,e3,e4))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+1,im_webp_vp8_avg3(e2,e3,e4))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+1,im_webp_vp8_avg2(e3,e4))
+    im_webp_vp8_ws_put(ws,stride,x0,y0,im_webp_vp8_avg2(e3,e4))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+1,im_webp_vp8_avg3(e3,e4,e5))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0,im_webp_vp8_avg3(e3,e4,e5))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0,im_webp_vp8_avg3(e4,e5,e6))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0,im_webp_vp8_avg3(e5,e6,e7))
+}
+
+fn predict_bhupred(ws: int, x0: int, y0: int, stride: int) {
+    let l0=im_webp_vp8_ws_get(ws,stride,x0-1,y0); let l1=im_webp_vp8_ws_get(ws,stride,x0-1,y0+1)
+    let l2=im_webp_vp8_ws_get(ws,stride,x0-1,y0+2); let l3=im_webp_vp8_ws_get(ws,stride,x0-1,y0+3)
+    im_webp_vp8_ws_put(ws,stride,x0,y0,im_webp_vp8_avg2(l0,l1))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0,im_webp_vp8_avg3(l0,l1,l2))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0,im_webp_vp8_avg2(l1,l2))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+1,im_webp_vp8_avg2(l1,l2))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0,im_webp_vp8_avg3(l1,l2,l3))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+1,im_webp_vp8_avg3(l1,l2,l3))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+1,im_webp_vp8_avg2(l2,l3))
+    im_webp_vp8_ws_put(ws,stride,x0,y0+2,im_webp_vp8_avg2(l2,l3))
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+1,im_webp_vp8_avg3(l2,l3,l3))
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+2,im_webp_vp8_avg3(l2,l3,l3))
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+2,l3)
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+2,l3)
+    im_webp_vp8_ws_put(ws,stride,x0,y0+3,l3)
+    im_webp_vp8_ws_put(ws,stride,x0+1,y0+3,l3)
+    im_webp_vp8_ws_put(ws,stride,x0+2,y0+3,l3)
+    im_webp_vp8_ws_put(ws,stride,x0+3,y0+3,l3)
+}
+
+fn im_webp_vp8_predict_macroblock(function: string, ws: int, stride: int, width_mode: int, bpred: int, blocks: int, above: bool, left: bool) {
+    if width_mode == 4 {
+        let mut y = 0
+        while y < 4 {
+            let mut x = 0
+            while x < 4 {
+                let index = y * 4 + x
+                im_webp_vp8_predict_b_mode(function, ws, stride, 1 + 4 * x, 1 + 4 * y, std::raw::load(bpred + 8 * index))
+                im_webp_vp8_add_residue(ws, blocks + 8 * (16 * index), 1 + 4 * x, 1 + 4 * y, stride)
+                x += 1
+            }
+            y += 1
+        }
+    } else {
+        if width_mode == 0 { im_webp_vp8_predict_dc(ws, 16, stride, 1, 1, above, left) }
+        else if width_mode == 1 { im_webp_vp8_predict_vertical(ws, 16, stride, 1, 1) }
+        else if width_mode == 2 { im_webp_vp8_predict_horizontal(ws, 16, stride, 1, 1) }
+        else if width_mode == 3 { im_webp_vp8_predict_true_motion(ws, 16, stride, 1, 1) }
+        else { im_img_err(function, "Invalid WebP VP8 luma mode") }
+        let mut y = 0
+        while y < 4 {
+            let mut x = 0
+            while x < 4 {
+                let index = y * 4 + x
+                im_webp_vp8_add_residue(ws, blocks + 8 * (16 * index), 1 + 4 * x, 1 + 4 * y, stride)
+                x += 1
+            }
+            y += 1
+        }
+    }
+}
+
+fn im_webp_vp8_predict_chroma(function: string, ws: int, stride: int, mode: int, blocks: int, block_offset: int, above: bool, left: bool) {
+    if mode == 0 { im_webp_vp8_predict_dc(ws, 8, stride, 1, 1, above, left) }
+    else if mode == 1 { im_webp_vp8_predict_vertical(ws, 8, stride, 1, 1) }
+    else if mode == 2 { im_webp_vp8_predict_horizontal(ws, 8, stride, 1, 1) }
+    else if mode == 3 { im_webp_vp8_predict_true_motion(ws, 8, stride, 1, 1) }
+    else { im_img_err(function, "Invalid WebP VP8 chroma mode") }
+    let mut y = 0
+    while y < 2 {
+        let mut x = 0
+        while x < 2 {
+            let index = block_offset + y * 2 + x
+            im_webp_vp8_add_residue(ws, blocks + 8 * (16 * index), 1 + 4 * x, 1 + 4 * y, stride)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_fill_luma_border(ws: int, plane: int, plane_stride: int, plane_width: int, mbx: int, mby: int) {
+    let stride = 21
+    let xbase = mbx * 16
+    let ybase = mby * 16
+    let mut x = 0
+    while x < 20 {
+        let value = if mby == 0 { 127 } else {
+            let source_x = if xbase + x < plane_width { xbase + x } else { plane_width - 1 }
+            std::raw::load8(plane + (ybase - 1) * plane_stride + source_x)
+        }
+        std::raw::store8(ws + x + 1, value)
+        x += 1
+    }
+    let mut y = 0
+    while y < 16 {
+        let value = if mbx == 0 { 129 } else {
+            std::raw::load8(plane + (ybase + y) * plane_stride + xbase - 1)
+        }
+        std::raw::store8(ws + (y + 1) * stride, value)
+        y += 1
+    }
+    let corner = if mby == 0 { 127 } else if mbx == 0 { 129 } else {
+        std::raw::load8(plane + (ybase - 1) * plane_stride + xbase - 1)
+    }
+    std::raw::store8(ws, corner)
+    let mut row = 4
+    while row <= 12 {
+        let mut col = 17
+        while col < 21 {
+            std::raw::store8(ws + row * stride + col, std::raw::load8(ws + col))
+            col += 1
+        }
+        row += 4
+    }
+}
+
+fn im_webp_vp8_fill_chroma_border(ws: int, plane: int, plane_stride: int, mbx: int, mby: int) {
+    let stride = 9
+    let xbase = mbx * 8
+    let ybase = mby * 8
+    let mut x = 0
+    while x < 8 {
+        let value = if mby == 0 { 127 } else {
+            std::raw::load8(plane + (ybase - 1) * plane_stride + xbase + x)
+        }
+        std::raw::store8(ws + x + 1, value)
+        x += 1
+    }
+    let mut y = 0
+    while y < 8 {
+        let value = if mbx == 0 { 129 } else {
+            std::raw::load8(plane + (ybase + y) * plane_stride + xbase - 1)
+        }
+        std::raw::store8(ws + (y + 1) * stride, value)
+        y += 1
+    }
+    let corner = if mby == 0 { 127 } else if mbx == 0 { 129 } else {
+        std::raw::load8(plane + (ybase - 1) * plane_stride + xbase - 1)
+    }
+    std::raw::store8(ws, corner)
+}
+
+fn im_webp_vp8_copy_macroblock(plane: int, plane_stride: int, ws: int, ws_stride: int, xbase: int, ybase: int, size: int) {
+    let mut y = 0
+    while y < size {
+        let mut x = 0
+        while x < size {
+            std::raw::store8(plane + (ybase + y) * plane_stride + xbase + x, std::raw::load8(ws + (y + 1) * ws_stride + x + 1))
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_vp8_fancy_chroma(main: int, first: int, second: int, last: int) -> int {
+    (9 * main + 3 * first + 3 * second + last + 8) / 16
+}
+
+fn im_webp_vp8_mulhi(value: int, coefficient: int) -> int {
+    std::raw::shr(value * coefficient, 8)
+}
+
+fn im_webp_vp8_yuv_rgb(output: int, index: int, y: int, u: int, v: int) {
+    let y_fixed = im_webp_vp8_mulhi(y, 19077)
+    let r = std::raw::sar(y_fixed + im_webp_vp8_mulhi(v, 26149) - 14234, 6)
+    let g = std::raw::sar(y_fixed - im_webp_vp8_mulhi(u, 6419) - im_webp_vp8_mulhi(v, 13320) + 8708, 6)
+    let b = std::raw::sar(y_fixed + im_webp_vp8_mulhi(u, 33050) - 17685, 6)
+    std::raw::store8(output + 3 * index, im_webp_vp8_clip8(r))
+    std::raw::store8(output + 3 * index + 1, im_webp_vp8_clip8(g))
+    std::raw::store8(output + 3 * index + 2, im_webp_vp8_clip8(b))
+}
+
+fn im_webp_vp8_chroma_at(plane: int, stride: int, row: int, index: int, width: int) -> int {
+    let bounded_row = if row < 0 { 0 } else { row }
+    let bounded_index = if index < 0 { 0 } else if index >= width { width - 1 } else { index }
+    std::raw::load8(plane + bounded_row * stride + bounded_index)
+}
+
+fn im_webp_vp8_convert_rgb(function: string, yplane: int, uplane: int, vplane: int, width: int, height: int, ystride: int, cstride: int) -> int {
+    let output = rt_alloc(width * height * 3)
+    let chroma_width = (width + 1) / 2
+    let chroma_height = (height + 1) / 2
+    let mut y = 0
+    while y < height {
+        let single_row = y == 0 || (height % 2 == 0 && y == height - 1)
+        let main_row = y / 2
+        let secondary_row = if single_row { main_row } else if y % 2 == 1 { main_row + 1 } else { main_row - 1 }
+        if main_row >= chroma_height || secondary_row >= chroma_height {
+            rt_free_block(output)
+            im_img_err(function, "Invalid WebP VP8 chroma rows")
+        }
+        let mut x = 0
+        while x < width {
+            let yi = std::raw::load8(yplane + y * ystride + x)
+            let chroma_index = x / 2
+            let main_u = im_webp_vp8_chroma_at(uplane, cstride, main_row, chroma_index, chroma_width)
+            let main_v = im_webp_vp8_chroma_at(vplane, cstride, main_row, chroma_index, chroma_width)
+            let mut u = main_u
+            let mut v = main_v
+            if !single_row {
+                let left_index = if x % 2 == 1 { chroma_index + 1 } else { chroma_index - 1 }
+                let next_u = im_webp_vp8_chroma_at(uplane, cstride, main_row, left_index, chroma_width)
+                let next_v = im_webp_vp8_chroma_at(vplane, cstride, main_row, left_index, chroma_width)
+                let other_u = im_webp_vp8_chroma_at(uplane, cstride, secondary_row, chroma_index, chroma_width)
+                let other_v = im_webp_vp8_chroma_at(vplane, cstride, secondary_row, chroma_index, chroma_width)
+                let other_next_u = im_webp_vp8_chroma_at(uplane, cstride, secondary_row, left_index, chroma_width)
+                let other_next_v = im_webp_vp8_chroma_at(vplane, cstride, secondary_row, left_index, chroma_width)
+                u = im_webp_vp8_fancy_chroma(main_u, next_u, other_u, other_next_u)
+                v = im_webp_vp8_fancy_chroma(main_v, next_v, other_v, other_next_v)
+            } else if y != 0 || x != 0 {
+                if x == width - 1 && width % 2 == 0 {
+                    u = main_u
+                    v = main_v
+                } else {
+                    let left_index = if x % 2 == 1 { chroma_index + 1 } else { chroma_index - 1 }
+                    let next_u = im_webp_vp8_chroma_at(uplane, cstride, main_row, left_index, chroma_width)
+                    let next_v = im_webp_vp8_chroma_at(vplane, cstride, main_row, left_index, chroma_width)
+                    u = im_webp_vp8_fancy_chroma(main_u, next_u, main_u, next_u)
+                    v = im_webp_vp8_fancy_chroma(main_v, next_v, main_v, next_v)
+                }
+            }
+            im_webp_vp8_yuv_rgb(output, y * width + x, yi, u, v)
+            x += 1
+        }
+        y += 1
+    }
+    output
+}
+
+fn im_webp_vp8_quant_index(function: string, base: int, delta: int) -> int {
+    let value = base + delta
+    if value < 0 { return 0 }
+    if value > 127 { return 127 }
+    value
+}
+
+fn im_webp_vp8_read_segment_updates(function: string, reader: int) -> int {
+    let state = rt_alloc_zero(128)
+    let update_map = im_webp_vp8_read_flag(function, reader)
+    let update_data = im_webp_vp8_read_flag(function, reader)
+    std::raw::store(state, if update_map { 1 } else { 0 })
+    if update_data {
+        let absolute = im_webp_vp8_read_flag(function, reader)
+        std::raw::store(state + 8, if absolute { 1 } else { 0 })
+        let mut i = 0
+        while i < 4 {
+            std::raw::store(state + 16 + 8 * i, im_webp_vp8_read_signed(function, reader, 7))
+            i += 1
+        }
+        i = 0
+        while i < 4 {
+            std::raw::store(state + 48 + 8 * i, im_webp_vp8_read_signed(function, reader, 6))
+            i += 1
+        }
+    }
+    let mut i = 0
+    while i < 3 {
+        let probability = if update_map && im_webp_vp8_read_flag(function, reader) {
+            im_webp_vp8_read_literal(function, reader, 8)
+        } else {
+            255
+        }
+        std::raw::store(state + 80 + 8 * i, probability)
+        i += 1
+    }
+    state
+}
+
+fn im_webp_vp8_make_quantizers(function: string, qindex: int, ydc_delta: int, y2dc_delta: int, y2ac_delta: int, uvdc_delta: int, uvac_delta: int, state: int, enabled: bool) -> int {
+    let dc_table = im_webp_vp8_dc_quant()
+    let ac_table = im_webp_vp8_ac_quant()
+    let quantizers = rt_alloc_zero(4 * 6 * 8)
+    let absolute = enabled && std::raw::load(state + 8) != 0
+    let mut segment = 0
+    while segment < 4 {
+        let segment_value = if enabled { std::raw::load(state + 16 + 8 * segment) } else { 0 }
+        let base = if absolute { segment_value } else { qindex + segment_value }
+        let ydc = dc_table[im_webp_vp8_quant_index(function, base, ydc_delta)]
+        let yac = ac_table[im_webp_vp8_quant_index(function, base, 0)]
+        let y2dc = dc_table[im_webp_vp8_quant_index(function, base, y2dc_delta)] * 2
+        let y2ac_raw = ac_table[im_webp_vp8_quant_index(function, base, y2ac_delta)] * 155 / 100
+        let y2ac = if y2ac_raw < 8 { 8 } else { y2ac_raw }
+        let uvdc_raw = dc_table[im_webp_vp8_quant_index(function, base, uvdc_delta)]
+        let uvdc = if uvdc_raw > 132 { 132 } else { uvdc_raw }
+        let uvac = ac_table[im_webp_vp8_quant_index(function, base, uvac_delta)]
+        let p = quantizers + 48 * segment
+        std::raw::store(p, ydc)
+        std::raw::store(p + 8, yac)
+        std::raw::store(p + 16, y2dc)
+        std::raw::store(p + 24, y2ac)
+        std::raw::store(p + 32, uvdc)
+        std::raw::store(p + 40, uvac)
+        segment += 1
+    }
+    quantizers
+}
+
+fn im_webp_vp8_decode_residuals(function: string, reader: int, probabilities: int, luma_mode: int, top: int, left: int, mbx: int, quantizers: int, segment: int, blocks: int) -> bool {
+    let quant = quantizers + 48 * segment
+    let ydc = std::raw::load(quant)
+    let yac = std::raw::load(quant + 8)
+    let y2dc = std::raw::load(quant + 16)
+    let y2ac = std::raw::load(quant + 24)
+    let uvdc = std::raw::load(quant + 32)
+    let uvac = std::raw::load(quant + 40)
+    let mut nonzero = false
+    if luma_mode != 4 {
+        let complexity = std::raw::load(top + 8 * (mbx * 9)) + std::raw::load(left)
+        let block = rt_alloc_zero(16 * 8)
+        let has = im_webp_vp8_read_coefficients(function, reader, probabilities, 1, complexity, y2dc, y2ac, block)
+        std::raw::store(top + 8 * (mbx * 9), if has { 1 } else { 0 })
+        std::raw::store(left, if has { 1 } else { 0 })
+        im_webp_vp8_iwht4x4(block)
+        let mut i = 0
+        while i < 16 {
+            std::raw::store(blocks + 8 * (16 * i), std::raw::load(block + 8 * i))
+            i += 1
+        }
+        rt_free_block(block)
+    }
+
+    let luma_plane = if luma_mode == 4 { 3 } else { 0 }
+    let mut y = 0
+    while y < 4 {
+        let mut left_complexity = std::raw::load(left + 8 * (y + 1))
+        let mut x = 0
+        while x < 4 {
+            let index = x + 4 * y
+            let block = blocks + 8 * (16 * index)
+            let complexity = std::raw::load(top + 8 * (mbx * 9 + x + 1)) + left_complexity
+            let has = im_webp_vp8_read_coefficients(function, reader, probabilities, luma_plane, complexity, ydc, yac, block)
+            if std::raw::load(block) != 0 || has {
+                im_webp_vp8_idct4x4(block)
+                nonzero = true
+            }
+            left_complexity = if has { 1 } else { 0 }
+            std::raw::store(top + 8 * (mbx * 9 + x + 1), if has { 1 } else { 0 })
+            x += 1
+        }
+        std::raw::store(left + 8 * (y + 1), left_complexity)
+        y += 1
+    }
+
+    let mut plane = 0
+    while plane < 2 {
+        let context_offset = if plane == 0 { 5 } else { 7 }
+        let block_offset = if plane == 0 { 16 } else { 20 }
+        let mut y = 0
+        while y < 2 {
+            let mut left_complexity = std::raw::load(left + 8 * (context_offset + y))
+            let mut x = 0
+            while x < 2 {
+                let index = block_offset + x + 2 * y
+                let block = blocks + 8 * (16 * index)
+                let complexity = std::raw::load(top + 8 * (mbx * 9 + context_offset + x)) + left_complexity
+                let has = im_webp_vp8_read_coefficients(function, reader, probabilities, 2, complexity, uvdc, uvac, block)
+                if std::raw::load(block) != 0 || has {
+                    im_webp_vp8_idct4x4(block)
+                    nonzero = true
+                }
+                left_complexity = if has { 1 } else { 0 }
+                std::raw::store(top + 8 * (mbx * 9 + context_offset + x), if has { 1 } else { 0 })
+                x += 1
+            }
+            std::raw::store(left + 8 * (context_offset + y), left_complexity)
+            y += 1
+        }
+        plane += 1
+    }
+    nonzero
+}
+
+fn im_webp_vp8_clear_skipped_context(luma_mode: int, top: int, left: int, mbx: int) {
+    if luma_mode != 4 {
+        std::raw::store(top + 8 * (mbx * 9), 0)
+        std::raw::store(left, 0)
+    }
+    let mut i = 1
+    while i < 9 {
+        std::raw::store(top + 8 * (mbx * 9 + i), 0)
+        std::raw::store(left + 8 * i, 0)
+        i += 1
+    }
+}
+
+fn im_webp_vp8_decode(function: string, data: int, size: int, decoded_bpp: int) -> int {
+    if size < 3 { im_img_err(function, "failed to fill whole buffer") }
+    let tag = std::raw::load8(data) + 256 * std::raw::load8(data + 1) + 65536 * std::raw::load8(data + 2)
+    let keyframe = (tag & 1) == 0
+    let first_partition_size = std::raw::shr(tag, 5)
+    if !keyframe { im_img_err(function, "Format error decoding WebP: Unsupported feature: Non-keyframe frames") }
+    if size < 6 { im_img_err(function, "failed to fill whole buffer") }
+    if std::raw::load8(data + 3) != 157 || std::raw::load8(data + 4) != 1 || std::raw::load8(data + 5) != 42 {
+        im_img_err(function, "Invalid WebP VP8 keyframe signature")
+    }
+    if size < 10 { im_img_err(function, "failed to fill whole buffer") }
+    let width = im_webp_vp8_u16(data + 6) & 16383
+    let height = im_webp_vp8_u16(data + 8) & 16383
+    if width == 0 || height == 0 { im_img_err(function, "Invalid WebP VP8 dimensions") }
+    if width > 8192 || height > 8192 { im_lim(function, "image dimensions", 8192) }
+    // La lectura WebP decide si el resultado final es RGB8 o RGBA8; este
+    // decoder produce RGB y no debe contar un búfer RGBA que no crea.
+    if width * height * decoded_bpp > 67108864 { im_img_err(function, "Memory limit exceeded") }
+    if first_partition_size > size - 10 { im_img_err(function, "failed to fill whole buffer") }
+    if first_partition_size == 0 { im_img_err(function, "Corrupt bitstream") }
+
+    let header = im_webp_vp8_reader(function, data + 10, first_partition_size)
+    let color_space = im_webp_vp8_read_literal(function, header, 1)
+    im_webp_vp8_read_literal(function, header, 1)
+    if color_space != 0 { im_img_err(function, "Invalid WebP VP8 color space") }
+    let segments_enabled = im_webp_vp8_read_flag(function, header)
+    let segment_state = if segments_enabled { im_webp_vp8_read_segment_updates(function, header) } else { rt_alloc_zero(128) }
+
+    let filter_type = im_webp_vp8_read_flag(function, header)
+    let filter_level = im_webp_vp8_read_literal(function, header, 6)
+    let sharpness = im_webp_vp8_read_literal(function, header, 3)
+    let filter_state = rt_alloc_zero(96)
+    std::raw::store(filter_state, if filter_type { 1 } else { 0 })
+    std::raw::store(filter_state + 8, filter_level)
+    std::raw::store(filter_state + 16, sharpness)
+    let adjustments_enabled = im_webp_vp8_read_flag(function, header)
+    std::raw::store(filter_state + 24, if adjustments_enabled { 1 } else { 0 })
+    if adjustments_enabled {
+        let mut i = 0
+        while i < 4 {
+            std::raw::store(filter_state + 32 + 8 * i, im_webp_vp8_read_signed(function, header, 6))
+            i += 1
+        }
+        i = 0
+        while i < 4 {
+            std::raw::store(filter_state + 64 + 8 * i, im_webp_vp8_read_signed(function, header, 6))
+            i += 1
+        }
+    }
+    let partition_count = std::raw::shl(1, im_webp_vp8_read_literal(function, header, 2))
+    im_webp_vp8_validate_partitions(function, data, size, first_partition_size, partition_count)
+    let qindex = im_webp_vp8_read_literal(function, header, 7)
+    let ydc_delta = im_webp_vp8_read_signed(function, header, 4)
+    let y2dc_delta = im_webp_vp8_read_signed(function, header, 4)
+    let y2ac_delta = im_webp_vp8_read_signed(function, header, 4)
+    let uvdc_delta = im_webp_vp8_read_signed(function, header, 4)
+    let uvac_delta = im_webp_vp8_read_signed(function, header, 4)
+    im_webp_vp8_read_literal(function, header, 1)
+
+    let token_probabilities = im_webp_vp8_read_token_probability_updates(function, header)
+    let has_skip_probability = im_webp_vp8_read_literal(function, header, 1) == 1
+    let skip_probability = if has_skip_probability { im_webp_vp8_read_literal(function, header, 8) } else { 0 }
+
+    let quantizers = im_webp_vp8_make_quantizers(function, qindex, ydc_delta, y2dc_delta, y2ac_delta, uvdc_delta, uvac_delta, segment_state, segments_enabled)
+    let mb_width = (width + 15) / 16
+    let mb_height = (height + 15) / 16
+    let luma_stride = mb_width * 16
+    let chroma_stride = mb_width * 8
+    let padded_height = mb_height * 16
+    let chroma_height = mb_height * 8
+    let yplane = rt_alloc_zero(luma_stride * padded_height)
+    let uplane = rt_alloc_zero(chroma_stride * chroma_height)
+    let vplane = rt_alloc_zero(chroma_stride * chroma_height)
+    let top_modes = rt_alloc_zero(mb_width * 4 * 8)
+    let left_modes = rt_alloc_zero(4 * 8)
+    let top_complexity = rt_alloc_zero(mb_width * 9 * 8)
+    let left_complexity = rt_alloc_zero(9 * 8)
+    let bpred = rt_alloc_zero(16 * 8)
+    let mbstate = rt_alloc_zero(mb_width * mb_height * 4 * 8)
+    let token_readers = im_webp_vp8_init_partitions(function, data, size, first_partition_size, partition_count)
+
+    let y_tree = [-4, 2, 4, 6, 0, -1, -2, -3]
+    let y_probabilities = [145, 156, 163, 128]
+    let block_tree = [0, 2, -1, 4, -2, 6, 8, 12, -3, 10, -5, -6, -4, 14, -7, 16, -8, -9]
+    let block_probabilities = im_webp_vp8_block_mode_probs()
+    let uv_tree = [0, 2, -1, 4, -2, -3]
+    let uv_probabilities = [142, 114, 183]
+    let luma_to_block_mode = [0, 2, 3, 1]
+    let block_tree_coeff = [-11, 2, 0, 4, -1, 6, 8, 12, -2, 10, -3, -4, 14, 16, -5, -6, 18, 20, -7, -8, -9, -10]
+    let bands = im_webp_vp8_coeff_bands()
+    let mut mby = 0
+    while mby < mb_height {
+        let mut i = 0
+        while i < 4 {
+            std::raw::store(left_modes + 8 * i, 0)
+            i += 1
+        }
+        i = 0
+        while i < 9 {
+            std::raw::store(left_complexity + 8 * i, 0)
+            i += 1
+        }
+        let row_token_reader = std::raw::load(token_readers + 8 * (mby % partition_count))
+        let mut mbx = 0
+        while mbx < mb_width {
+            let segment_id = if segments_enabled && std::raw::load(segment_state) != 0 {
+                let tree = [2, 4, 0, -1, -2, -3]
+                let probabilities = [std::raw::load(segment_state + 80), std::raw::load(segment_state + 88), std::raw::load(segment_state + 96)]
+                im_webp_vp8_read_tree(function, header, tree, probabilities, 0, 3, 0)
+            } else { 0 }
+            let skipped = if has_skip_probability { im_webp_vp8_read_bool(function, header, skip_probability) } else { false }
+            let luma_mode = im_webp_vp8_read_tree(function, header, y_tree, y_probabilities, 0, 4, 0)
+            if luma_mode < 0 || luma_mode > 4 { im_img_err(function, "Invalid WebP VP8 luma prediction mode") }
+            if luma_mode == 4 {
+                let mut by = 0
+                while by < 4 {
+                    let mut bx = 0
+                    while bx < 4 {
+                        let top_mode = std::raw::load(top_modes + 8 * (mbx * 4 + bx))
+                        let left_mode = std::raw::load(left_modes + 8 * by)
+                        let context = (top_mode * 10 + left_mode) * 9
+                        let mode = im_webp_vp8_read_tree(function, header, block_tree, block_probabilities, context, 9, 0)
+                        std::raw::store(bpred + 8 * (by * 4 + bx), mode)
+                        std::raw::store(top_modes + 8 * (mbx * 4 + bx), mode)
+                        std::raw::store(left_modes + 8 * by, mode)
+                        bx += 1
+                    }
+                    by += 1
+                }
+            } else {
+                let block_mode = luma_to_block_mode[luma_mode]
+                let mut k = 0
+                while k < 4 {
+                    std::raw::store(top_modes + 8 * (mbx * 4 + k), block_mode)
+                    std::raw::store(left_modes + 8 * k, block_mode)
+                    k += 1
+                }
+            }
+            let chroma_mode = im_webp_vp8_read_tree(function, header, uv_tree, uv_probabilities, 0, 3, 0)
+
+            let blocks = rt_alloc_zero(384 * 8)
+            let nonzero = if skipped {
+                im_webp_vp8_clear_skipped_context(luma_mode, top_complexity, left_complexity, mbx)
+                false
+            } else {
+                im_webp_vp8_decode_residuals(function, row_token_reader, token_probabilities, luma_mode, top_complexity, left_complexity, mbx, quantizers, segment_id, blocks)
+            }
+            let macroblock_state = mbstate + 32 * (mby * mb_width + mbx)
+            std::raw::store(macroblock_state, segment_id)
+            std::raw::store(macroblock_state + 8, luma_mode)
+            std::raw::store(macroblock_state + 16, if skipped { 1 } else { 0 })
+            std::raw::store(macroblock_state + 24, if nonzero { 1 } else { 0 })
+
+            let yws = rt_alloc_zero(17 * 21)
+            im_webp_vp8_fill_luma_border(yws, yplane, luma_stride, luma_stride, mbx, mby)
+            im_webp_vp8_predict_macroblock(function, yws, 21, luma_mode, bpred, blocks, mby != 0, mbx != 0)
+            im_webp_vp8_copy_macroblock(yplane, luma_stride, yws, 21, mbx * 16, mby * 16, 16)
+
+            let uws = rt_alloc_zero(9 * 9)
+            let vws = rt_alloc_zero(9 * 9)
+            im_webp_vp8_fill_chroma_border(uws, uplane, chroma_stride, mbx, mby)
+            im_webp_vp8_fill_chroma_border(vws, vplane, chroma_stride, mbx, mby)
+            im_webp_vp8_predict_chroma(function, uws, 9, chroma_mode, blocks, 16, mby != 0, mbx != 0)
+            im_webp_vp8_predict_chroma(function, vws, 9, chroma_mode, blocks, 20, mby != 0, mbx != 0)
+            im_webp_vp8_copy_macroblock(uplane, chroma_stride, uws, 9, mbx * 8, mby * 8, 8)
+            im_webp_vp8_copy_macroblock(vplane, chroma_stride, vws, 9, mbx * 8, mby * 8, 8)
+
+            rt_free_block(vws)
+            rt_free_block(uws)
+            rt_free_block(yws)
+            rt_free_block(blocks)
+            mbx += 1
+        }
+        mby += 1
+    }
+
+    im_webp_vp8_filter_frame(function, yplane, uplane, vplane, mb_width, mb_height, filter_state, segment_state, segments_enabled, mbstate)
+    let rgb = im_webp_vp8_convert_rgb(function, yplane, uplane, vplane, width, height, luma_stride, chroma_stride)
+    rt_free_block(mbstate)
+    rt_free_block(quantizers)
+    rt_free_block(filter_state)
+    rt_free_block(segment_state)
+    let mut partition_index=0
+    while partition_index<partition_count{
+        rt_free_block(std::raw::load(token_readers+8*partition_index))
+        partition_index+=1
+    }
+    rt_free_block(token_readers)
+    rt_free_block(bpred)
+    rt_free_block(left_complexity)
+    rt_free_block(top_complexity)
+    rt_free_block(left_modes)
+    rt_free_block(top_modes)
+    rt_free_block(vplane)
+    rt_free_block(uplane)
+    rt_free_block(yplane)
+    rt_free_block(token_probabilities)
+    rt_free_block(header)
+    let info = rt_alloc_zero(32)
+    std::raw::store(info, rgb)
+    std::raw::store(info + 8, width)
+    std::raw::store(info + 16, height)
+    std::raw::store(info + 24, 0)
+    info
+}
+
+fn im_webp_vp8_filter_clip(value: int) -> int {
+    if value < -128 { return -128 }
+    if value > 127 { return 127 }
+    value
+}
+
+fn im_webp_vp8_filter_u2s(value: int) -> int { value - 128 }
+fn im_webp_vp8_filter_s2u(value: int) -> int { im_webp_vp8_filter_clip(value) + 128 }
+fn im_webp_vp8_filter_diff(a: int, b: int) -> int { if a > b { a - b } else { b - a } }
+
+fn im_webp_vp8_filter_simple_ok(plane: int, point: int, stride: int, edge: int) -> bool {
+    let p0=std::raw::load8(plane+point-stride);let q0=std::raw::load8(plane+point)
+    let p1=std::raw::load8(plane+point-2*stride);let q1=std::raw::load8(plane+point+stride)
+    im_webp_vp8_filter_diff(p0,q0)*2+im_webp_vp8_filter_diff(p1,q1)/2<=edge
+}
+
+fn im_webp_vp8_filter_should(plane: int, point: int, stride: int, interior: int, edge: int) -> bool {
+    if !im_webp_vp8_filter_simple_ok(plane,point,stride,edge){return false}
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point-4*stride),std::raw::load8(plane+point-3*stride))<=interior&&
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point-3*stride),std::raw::load8(plane+point-2*stride))<=interior&&
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point-2*stride),std::raw::load8(plane+point-stride))<=interior&&
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point+3*stride),std::raw::load8(plane+point+2*stride))<=interior&&
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point+2*stride),std::raw::load8(plane+point+stride))<=interior&&
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point+stride),std::raw::load8(plane+point))<=interior
+}
+
+fn im_webp_vp8_filter_hev(plane: int, point: int, stride: int, threshold: int) -> bool {
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point-2*stride),std::raw::load8(plane+point-stride))>threshold||
+    im_webp_vp8_filter_diff(std::raw::load8(plane+point+stride),std::raw::load8(plane+point))>threshold
+}
+
+fn im_webp_vp8_filter_adjust(plane: int, point: int, stride: int, outer: bool) -> int {
+    let p1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-2*stride))
+    let p0=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-stride))
+    let q0=im_webp_vp8_filter_u2s(std::raw::load8(plane+point))
+    let q1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point+stride))
+    let outer_value=if outer{im_webp_vp8_filter_clip(p1-q1)}else{0}
+    let a=im_webp_vp8_filter_clip(outer_value+3*(q0-p0))
+    let b=std::raw::sar(im_webp_vp8_filter_clip(a+3),3)
+    let aa=std::raw::sar(im_webp_vp8_filter_clip(a+4),3)
+    std::raw::store8(plane+point,im_webp_vp8_filter_s2u(q0-aa))
+    std::raw::store8(plane+point-stride,im_webp_vp8_filter_s2u(p0+b))
+    aa
+}
+
+fn im_webp_vp8_filter_simple(plane: int, point: int, stride: int, edge: int) {
+    if im_webp_vp8_filter_simple_ok(plane,point,stride,edge){im_webp_vp8_filter_adjust(plane,point,stride,true)}
+}
+
+fn im_webp_vp8_filter_sub(plane: int, point: int, stride: int, hev: int, interior: int, edge: int) {
+    if im_webp_vp8_filter_should(plane,point,stride,interior,edge){
+        let high=im_webp_vp8_filter_hev(plane,point,stride,hev)
+        let adjustment=std::raw::sar(im_webp_vp8_filter_adjust(plane,point,stride,high)+1,1)
+        if !high{
+            let q1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point+stride))
+            let p1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-2*stride))
+            std::raw::store8(plane+point+stride,im_webp_vp8_filter_s2u(q1-adjustment))
+            std::raw::store8(plane+point-2*stride,im_webp_vp8_filter_s2u(p1+adjustment))
+        }
+    }
+}
+
+fn im_webp_vp8_filter_macro(plane: int, point: int, stride: int, hev: int, interior: int, edge: int) {
+    if !im_webp_vp8_filter_should(plane,point,stride,interior,edge){return}
+    if im_webp_vp8_filter_hev(plane,point,stride,hev){im_webp_vp8_filter_adjust(plane,point,stride,true);return}
+    let p2=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-3*stride))
+    let p1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-2*stride))
+    let p0=im_webp_vp8_filter_u2s(std::raw::load8(plane+point-stride))
+    let q0=im_webp_vp8_filter_u2s(std::raw::load8(plane+point))
+    let q1=im_webp_vp8_filter_u2s(std::raw::load8(plane+point+stride))
+    let q2=im_webp_vp8_filter_u2s(std::raw::load8(plane+point+2*stride))
+    let w=im_webp_vp8_filter_clip(im_webp_vp8_filter_clip(p1-q1)+3*(q0-p0))
+    let a=im_webp_vp8_filter_clip(std::raw::sar(27*w+63,7))
+    std::raw::store8(plane+point,im_webp_vp8_filter_s2u(q0-a));std::raw::store8(plane+point-stride,im_webp_vp8_filter_s2u(p0+a))
+    let a=im_webp_vp8_filter_clip(std::raw::sar(18*w+63,7))
+    std::raw::store8(plane+point+stride,im_webp_vp8_filter_s2u(q1-a));std::raw::store8(plane+point-2*stride,im_webp_vp8_filter_s2u(p1+a))
+    let a=im_webp_vp8_filter_clip(std::raw::sar(9*w+63,7))
+    std::raw::store8(plane+point+2*stride,im_webp_vp8_filter_s2u(q2-a));std::raw::store8(plane+point-3*stride,im_webp_vp8_filter_s2u(p2+a))
+}
+
+fn im_webp_vp8_filter_frame(function: string, yplane: int, uplane: int, vplane: int, mb_width: int, mb_height: int, filter_state: int, segment_state: int, segments_enabled: bool, mbstate: int) {
+    let frame_level=std::raw::load(filter_state+8)
+    if frame_level==0{return}
+    let simple=std::raw::load(filter_state)!=0
+    let sharpness=std::raw::load(filter_state+16)
+    let adjustments=std::raw::load(filter_state+24)!=0
+    let ystride=mb_width*16
+    let cstride=mb_width*8
+    let mut mby=0
+    while mby<mb_height{
+        let mut mbx=0
+        while mbx<mb_width{
+            let mstate=mbstate+32*(mby*mb_width+mbx)
+            let sid=std::raw::load(mstate)
+            let luma_mode=std::raw::load(mstate+8)
+            let skipped=std::raw::load(mstate+16)!=0
+            let nonzero=std::raw::load(mstate+24)!=0
+            let mut level=frame_level
+            if segments_enabled{
+                let feature=std::raw::load(segment_state+48+8*sid)
+                if std::raw::load(segment_state+8)!=0{level=feature}else{level+=feature}
+            }
+            if level<0{level=0};if level>63{level=63}
+            if adjustments{
+                level+=std::raw::load(filter_state+32)
+                if luma_mode==4{level+=std::raw::load(filter_state+64)}
+            }
+            if level<0{level=0};if level>63{level=63}
+            if level>0{
+                let mut interior=level
+                if sharpness>0{
+                    interior=std::raw::shr(interior,if sharpness>4{2}else{1})
+                    let max=9-sharpness
+                    if interior>max{interior=max}
+                }
+                if interior==0{interior=1}
+                let hev=if level>=40{2}else if level>=15{1}else{0}
+                let edge=(level+2)*2+interior
+                let subedge=2*level+interior
+                let dosub=luma_mode==4||(!skipped&&nonzero)
+                if mbx>0{
+                    let mut y=0
+                    while y<16{
+                        let point=(mby*16+y)*ystride+mbx*16
+                        if simple{im_webp_vp8_filter_simple(yplane,point,1,edge)}else{im_webp_vp8_filter_macro(yplane,point,1,hev,interior,edge)}
+                        y+=1
+                    }
+                    if !simple{
+                        y=0
+                        while y<8{
+                            let point=(mby*8+y)*cstride+mbx*8
+                            im_webp_vp8_filter_macro(uplane,point,1,hev,interior,edge)
+                            im_webp_vp8_filter_macro(vplane,point,1,hev,interior,edge)
+                            y+=1
+                        }
+                    }
+                }
+                if dosub{
+                    let mut x=4
+                    while x<16{
+                        let mut y=0
+                        while y<16{
+                            let point=(mby*16+y)*ystride+mbx*16+x
+                            if simple{im_webp_vp8_filter_simple(yplane,point,1,subedge)}else{im_webp_vp8_filter_sub(yplane,point,1,hev,interior,subedge)}
+                            y+=1
+                        }
+                        x+=4
+                    }
+                    if !simple{
+                        let mut y=0
+                        while y<8{
+                            let point=(mby*8+y)*cstride+mbx*8+4
+                            im_webp_vp8_filter_sub(uplane,point,1,hev,interior,subedge)
+                            im_webp_vp8_filter_sub(vplane,point,1,hev,interior,subedge)
+                            y+=1
+                        }
+                    }
+                }
+                if mby>0{
+                    let mut x=0
+                    while x<16{
+                        let point=mby*16*ystride+mbx*16+x
+                        if simple{im_webp_vp8_filter_simple(yplane,point,ystride,edge)}else{im_webp_vp8_filter_macro(yplane,point,ystride,hev,interior,edge)}
+                        x+=1
+                    }
+                    if !simple{
+                        x=0
+                        while x<8{
+                            let point=mby*8*cstride+mbx*8+x
+                            im_webp_vp8_filter_macro(uplane,point,cstride,hev,interior,edge)
+                            im_webp_vp8_filter_macro(vplane,point,cstride,hev,interior,edge)
+                            x+=1
+                        }
+                    }
+                }
+                if dosub{
+                    let mut y=4
+                    while y<16{
+                        let mut x=0
+                        while x<16{
+                            let point=(mby*16+y)*ystride+mbx*16+x
+                            if simple{im_webp_vp8_filter_simple(yplane,point,ystride,subedge)}else{im_webp_vp8_filter_sub(yplane,point,ystride,hev,interior,subedge)}
+                            x+=1
+                        }
+                        y+=4
+                    }
+                    if !simple{
+                        let mut x=0
+                        while x<8{
+                            let point=(mby*8+4)*cstride+mbx*8+x
+                            im_webp_vp8_filter_sub(uplane,point,cstride,hev,interior,subedge)
+                            im_webp_vp8_filter_sub(vplane,point,cstride,hev,interior,subedge)
+                            x+=1
+                        }
+                    }
+                }
+            }
+            mbx+=1
+        }
+        mby+=1
+    }
+}
+
+fn im_webp_vp8_alpha_at(rgba: int, width: int, x: int, y: int) -> int {
+    if x < 0 || y < 0 || x >= width { return 0 }
+    std::raw::load8(rgba + 4 * (y * width + x) + 3)
+}
+
+fn im_webp_vp8_alpha_predictor(rgba: int, width: int, x: int, y: int, method: int) -> int {
+    if method == 0 { return 0 }
+    if method == 1 {
+        if x == 0 && y == 0 { return 0 }
+        if x == 0 { return im_webp_vp8_alpha_at(rgba,width,x,y-1) }
+        return im_webp_vp8_alpha_at(rgba,width,x-1,y)
+    }
+    if method == 2 {
+        if x == 0 && y == 0 { return 0 }
+        if y == 0 { return im_webp_vp8_alpha_at(rgba,width,x-1,y) }
+        return im_webp_vp8_alpha_at(rgba,width,x,y-1)
+    }
+    let left=if x==0&&y==0{0}else if x==0{im_webp_vp8_alpha_at(rgba,width,x,y-1)}else if y==0{im_webp_vp8_alpha_at(rgba,width,x-1,y)}else{im_webp_vp8_alpha_at(rgba,width,x-1,y)}
+    let top=if x==0&&y==0{0}else if x==0{im_webp_vp8_alpha_at(rgba,width,x,y-1)}else if y==0{im_webp_vp8_alpha_at(rgba,width,x-1,y)}else{im_webp_vp8_alpha_at(rgba,width,x,y-1)}
+    let top_left=if x==0&&y==0{0}else if x==0{im_webp_vp8_alpha_at(rgba,width,x,y-1)}else if y==0{im_webp_vp8_alpha_at(rgba,width,x-1,y)}else{im_webp_vp8_alpha_at(rgba,width,x-1,y-1)}
+    im_webp_vp8_clip8(left+top-top_left)
+}
+
+fn im_webp_vp8_apply_alpha(function: string, chunk: int, chunk_size: int, width: int, height: int, rgba: int) {
+    if chunk_size < 1 { im_img_err(function, "Corrupt WebP ALPH chunk") }
+    let info=std::raw::load8(chunk)
+    let preprocessing=std::raw::shr(info,4)&3
+    let method=std::raw::shr(info,2)&3
+    let compression=info&3
+    if preprocessing>1{im_img_err(function,"Invalid WebP alpha preprocessing")}
+    if compression>1{im_img_err(function,"Invalid WebP alpha compression")}
+    let pixels=width*height
+    let mut decoded=0
+    if compression==0{
+        if chunk_size-1<pixels{im_img_err(function,"Corrupt WebP alpha data")}
+    }else{
+        decoded=im_webp_lossless_decode_alpha(function,chunk+1,chunk_size-1,width,height)
+    }
+    let mut y=0
+    while y<height{
+        let mut x=0
+        while x<width{
+            let i=y*width+x
+            let residual=if compression==0{std::raw::load8(chunk+1+i)}else{std::raw::load8(decoded+4*i+1)}
+            let predictor=im_webp_vp8_alpha_predictor(rgba,width,x,y,method)
+            std::raw::store8(rgba+4*i+3,(predictor+residual)&255)
+            x+=1
+        }
+        y+=1
+    }
+    if decoded!=0{rt_free_block(decoded)}
+}

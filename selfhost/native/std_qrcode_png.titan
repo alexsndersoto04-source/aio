@@ -1,0 +1,504 @@
+// PNG de std::qrcode: el mismo camino que image 0.25.10 (PngEncoder
+// Compression::Fast + Filter::Adaptive) sobre png 0.18.1 y fdeflate 0.3.7.
+
+fn qr_be32(b: int, v: int) {
+    sb_byte(b, std::raw::shr(v, 24) & 255)
+    sb_byte(b, std::raw::shr(v, 16) & 255)
+    sb_byte(b, std::raw::shr(v, 8) & 255)
+    sb_byte(b, v & 255)
+}
+
+fn qr_crc_feed(c0: int, p: int, n: int) -> int {
+    let t = cz_crc_table()
+    let mut c = c0
+    let mut i = 0
+    while i < n {
+        c = std::raw::load(t + 8 * ((c ^ std::raw::load8(p + i)) & 255)) ^ std::raw::shr(c, 8)
+        i += 1
+    }
+    c
+}
+
+fn qr_chunk(b: int, name: any, data: int, n: int) {
+    qr_be32(b, n)
+    let np = std::raw::bits(name) + 16
+    sb_raw(b, np, 4)
+    if n > 0 {
+        sb_raw(b, data, n)
+    }
+    let mut c = 4294967295
+    c = qr_crc_feed(c, np, 4)
+    if n > 0 {
+        c = qr_crc_feed(c, data, n)
+    }
+    qr_be32(b, c ^ 4294967295)
+}
+
+fn qr_zput(st: int, bits: int, n: int) {
+    let mut acc = std::raw::load(st + 8)
+    let mut nb = std::raw::load(st + 16)
+    acc = acc | std::raw::shl(bits, nb)
+    nb += n
+    let sb = std::raw::load(st)
+    while nb >= 8 {
+        sb_byte(sb, acc & 255)
+        acc = std::raw::shr(acc, 8)
+        nb -= 8
+    }
+    std::raw::store(st + 8, acc)
+    std::raw::store(st + 16, nb)
+}
+
+fn qr_zlit(st: int, b: int) {
+    qr_zput(st, qr_hcode(b), qr_hlen(b))
+}
+
+fn qr_zrun(st: int, run0: int) {
+    qr_zlit(st, 0)
+    let mut run = run0 - 1
+    while run >= 258 {
+        qr_zput(st, qr_hcode(285), qr_hlen(285) + 1)
+        run -= 258
+    }
+    if run > 4 {
+        let sym = qr_lsym(run - 3)
+        qr_zput(st, qr_hcode(sym), qr_hlen(sym))
+        let extra_n = qr_lext(run - 3)
+        let extra = (run - 3) & (std::raw::shl(1, extra_n) - 1)
+        qr_zput(st, extra, extra_n + 1)
+    } else if run > 0 {
+        qr_zput(st, 0, run * qr_hlen(0))
+    }
+}
+
+fn qr_adler_add(st: int, p: int, n: int) {
+    let mut a = std::raw::load(st + 24)
+    let mut b = std::raw::load(st + 32)
+    let mut i = 0
+    while i < n {
+        let mut stop = i + 5552
+        if stop > n {
+            stop = n
+        }
+        while i < stop {
+            a += std::raw::load8(p + i)
+            b += a
+            i += 1
+        }
+        a = a % 65521
+        b = b % 65521
+    }
+    std::raw::store(st + 24, a)
+    std::raw::store(st + 32, b)
+}
+
+fn qr_zdata(st: int, p: int, n: int) {
+    qr_adler_add(st, p, n)
+    let mut run = 0
+    let mut i = 0
+    let full = n / 8 * 8
+    while i < full {
+        let mut z = true
+        let mut k = 0
+        while k < 8 {
+            if std::raw::load8(p + i + k) != 0 {
+                z = false
+            }
+            k += 1
+        }
+        if z {
+            run += 8
+            i += 8
+            continue
+        }
+        if run > 0 {
+            let mut extra = 0
+            while extra < 8 && std::raw::load8(p + i + extra) == 0 {
+                extra += 1
+            }
+            qr_zrun(st, run + extra)
+            run = 0
+            if extra > 0 {
+                let mut lead = 0
+                while lead < 8 && std::raw::load8(p + i + 7 - lead) == 0 {
+                    lead += 1
+                }
+                run = lead
+                let mut j = extra
+                while j < 8 - lead {
+                    qr_zlit(st, std::raw::load8(p + i + j))
+                    j += 1
+                }
+                i += 8
+                continue
+            }
+        }
+        let mut lead = 0
+        while lead < 8 && std::raw::load8(p + i + 7 - lead) == 0 {
+            lead += 1
+        }
+        if lead > 0 {
+            let mut j = 0
+            while j < 8 - lead {
+                qr_zlit(st, std::raw::load8(p + i + j))
+                j += 1
+            }
+            run = lead
+            i += 8
+            continue
+        }
+        let mut j = 0
+        while j < 8 {
+            qr_zlit(st, std::raw::load8(p + i + j))
+            j += 1
+        }
+        i += 8
+    }
+    if run > 0 {
+        qr_zrun(st, run)
+    }
+    while i < n {
+        qr_zlit(st, std::raw::load8(p + i))
+        i += 1
+    }
+}
+
+fn qr_zfinish(st: int) -> any {
+    qr_zput(st, qr_hcode(256), qr_hlen(256))
+    let nb = std::raw::load(st + 16)
+    if (nb % 8) != 0 {
+        qr_zput(st, 0, 8 - nb % 8)
+    }
+    if std::raw::load(st + 16) > 0 {
+        sb_byte(std::raw::load(st), std::raw::load(st + 8) & 255)
+        std::raw::store(st + 8, 0)
+        std::raw::store(st + 16, 0)
+    }
+    let a = std::raw::load(st + 24)
+    let bsum = std::raw::load(st + 32)
+    qr_be32(std::raw::load(st), bsum * 65536 + a)
+    let out = sb_finish_bytes(std::raw::load(st))
+    rt_free_block(st)
+    out
+}
+
+fn qr_znew() -> int {
+    let st = rt_alloc(40)
+    std::raw::store(st, sb_new(512))
+    std::raw::store(st + 8, 0)
+    std::raw::store(st + 16, 0)
+    std::raw::store(st + 24, 1)
+    std::raw::store(st + 32, 0)
+    let h = fd_header_hex()
+    let mut i = 0
+    while i < 53 {
+        sb_byte(std::raw::load(st), qr_u8tab(h, i))
+        i += 1
+    }
+    qr_zput(st, qr_u8tab(h, 53), 5)
+    st
+}
+
+fn qr_umax(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    b
+}
+
+fn qr_umin(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    b
+}
+
+fn qr_paeth(a: int, b: int, c: int) -> int {
+    let pa = qr_umax(b, c) - qr_umin(c, b)
+    let pb = qr_umax(a, c) - qr_umin(c, a)
+    let mut pc = 255
+    if (a < c) == (c < b) {
+        pc = qr_umax(pa, pb) - qr_umin(pa, pb)
+    }
+    if pa <= pb && pa <= pc {
+        return a
+    }
+    if pb <= pc {
+        return b
+    }
+    c
+}
+
+fn qr_filt_row(kind: int, prev: int, cur: int, n: int, out: int) {
+    let mut i = 0
+    if kind == 1 {
+        std::raw::store8(out, std::raw::load8(cur))
+        i = 1
+        while i < n {
+            std::raw::store8(out + i, (std::raw::load8(cur + i) - std::raw::load8(cur + i - 1)) & 255)
+            i += 1
+        }
+        return
+    }
+    if kind == 2 {
+        while i < n {
+            std::raw::store8(out + i, (std::raw::load8(cur + i) - std::raw::load8(prev + i)) & 255)
+            i += 1
+        }
+        return
+    }
+    if kind == 3 {
+        std::raw::store8(out, (std::raw::load8(cur) - std::raw::load8(prev) / 2) & 255)
+        i = 1
+        while i < n {
+            let a = std::raw::load8(cur + i - 1)
+            let bv = std::raw::load8(prev + i)
+            std::raw::store8(out + i, (std::raw::load8(cur + i) - ((a & bv) + std::raw::shr(a ^ bv, 1))) & 255)
+            i += 1
+        }
+        return
+    }
+    std::raw::store8(out, (std::raw::load8(cur) - qr_paeth(0, std::raw::load8(prev), 0)) & 255)
+    i = 1
+    while i < n {
+        let a = std::raw::load8(cur + i - 1)
+        let bv = std::raw::load8(prev + i)
+        let cv = std::raw::load8(prev + i - 1)
+        std::raw::store8(out + i, (std::raw::load8(cur + i) - qr_paeth(a, bv, cv)) & 255)
+        i += 1
+    }
+}
+
+fn qr_sumabs(p: int, n: int) -> int {
+    let mut s = 0
+    let mut i = 0
+    while i < n {
+        let mut t = std::raw::load8(p + i)
+        if t >= 128 {
+            t = 256 - t
+        }
+        s += t
+        i += 1
+    }
+    s
+}
+
+fn qr_adaptive(prev: int, cur: int, n: int, out: int) -> int {
+    let mut best = 4
+    let mut best_c = 0 - 1
+    let mut k = 0
+    while k < 4 {
+        let mut kind = 2
+        if k == 1 {
+            kind = 1
+        }
+        if k == 2 {
+            kind = 3
+        }
+        if k == 3 {
+            kind = 4
+        }
+        qr_filt_row(kind, prev, cur, n, out)
+        let cost = qr_sumabs(out, n)
+        if best_c < 0 || cost <= best_c {
+            best_c = cost
+            best = kind
+            if cost == 0 {
+                return best
+            }
+        }
+        k += 1
+    }
+    if best != 4 {
+        qr_filt_row(best, prev, cur, n, out)
+    }
+    best
+}
+
+fn qr_stored_size(raw: int) -> int {
+    let m = 65535
+    let a = (raw - 1) / m
+    let b = raw % m + 5
+    return a * (m + 5) + b + 6
+}
+
+fn qr_pixels(c: int, side: int) -> int {
+    let w = std::raw::load(c)
+    let u = qr_unit(side, w)
+    let full = w + 8
+    let rw = full * u
+    let img = rt_alloc(8 + rw * rw)
+    std::raw::store(img, rw)
+    let pix = img + 8
+    let mut i = 0
+    while i < rw * rw {
+        std::raw::store8(pix + i, 255)
+        i += 1
+    }
+    let mut y = 0
+    while y < full {
+        let mut x = 0
+        while x < full {
+            let mut dark = false
+            if x >= 4 && x < 4 + w && y >= 4 && y < 4 + w {
+                dark = qr_is_dark(c, x - 4, y - 4)
+            }
+            if dark {
+                let mut dy = 0
+                while dy < u {
+                    let mut dx = 0
+                    while dx < u {
+                        std::raw::store8(pix + (y * u + dy) * rw + x * u + dx, 0)
+                        dx += 1
+                    }
+                    dy += 1
+                }
+            }
+            x += 1
+        }
+        y += 1
+    }
+    img
+}
+
+fn qr_deflate_rows(pix: int, rw: int, rh: int) -> any {
+    let st = qr_znew()
+    let prev0 = rt_alloc_zero(rw)
+    let mut prev = prev0
+    let filtered = rt_alloc(rw)
+    let row = rt_alloc(rw + 1)
+    let mut y = 0
+    while y < rh {
+        let cur = pix + y * rw
+        let kind = qr_adaptive(prev, cur, rw, filtered)
+        std::raw::store8(row, kind)
+        rt_copy(row + 1, filtered, rw)
+        qr_zdata(st, row, rw + 1)
+        prev = cur
+        y += 1
+    }
+    rt_free_block(prev0)
+    rt_free_block(filtered)
+    rt_free_block(row)
+    qr_zfinish(st)
+}
+
+fn qr_stored_rows(pix: int, rw: int, rh: int) -> any {
+    let b = sb_new(rw * rh + rh + 16)
+    sb_byte(b, 120)
+    sb_byte(b, 1)
+    let raw = rw * rh + rh
+    let src = rt_alloc(raw)
+    let mut y = 0
+    while y < rh {
+        std::raw::store8(src + y * (rw + 1), 0)
+        rt_copy(src + y * (rw + 1) + 1, pix + y * rw, rw)
+        y += 1
+    }
+    let mut pos = 0
+    while pos < raw {
+        let mut n = 65535
+        if pos + n > raw {
+            n = raw - pos
+        }
+        let last = pos + n == raw
+        let mut b0 = 0
+        if last {
+            b0 = 1
+        }
+        sb_byte(b, b0)
+        sb_byte(b, n & 255)
+        sb_byte(b, std::raw::shr(n, 8) & 255)
+        sb_byte(b, (n ^ 255) & 255)
+        sb_byte(b, std::raw::shr(n ^ 65535, 8) & 255)
+        sb_raw(b, src + pos, n)
+        pos += n
+    }
+    let ad = cz_adler(src, raw)
+    qr_be32(b, ad)
+    rt_free_block(src)
+    sb_finish_bytes(b)
+}
+
+fn qr_png_from(c: int, side: int) -> any {
+    let img = qr_pixels(c, side)
+    let rw = std::raw::load(img)
+    let pix = img + 8
+    let mut z = qr_deflate_rows(pix, rw, rw)
+    let mut zlen = rt_slen(z)
+    let raw_rows = (rw + 1) * rw
+    if zlen > qr_stored_size(raw_rows) {
+        std::raw::release(6, std::raw::bits(z))
+        z = qr_stored_rows(pix, rw, rw)
+        zlen = rt_slen(z)
+    }
+    let out = sb_new(zlen + 64)
+    sb_byte(out, 137)
+    sb_byte(out, 80)
+    sb_byte(out, 78)
+    sb_byte(out, 71)
+    sb_byte(out, 13)
+    sb_byte(out, 10)
+    sb_byte(out, 26)
+    sb_byte(out, 10)
+    let ih = rt_alloc(13)
+    std::raw::store8(ih, std::raw::shr(rw, 24) & 255)
+    std::raw::store8(ih + 1, std::raw::shr(rw, 16) & 255)
+    std::raw::store8(ih + 2, std::raw::shr(rw, 8) & 255)
+    std::raw::store8(ih + 3, rw & 255)
+    std::raw::store8(ih + 4, std::raw::shr(rw, 24) & 255)
+    std::raw::store8(ih + 5, std::raw::shr(rw, 16) & 255)
+    std::raw::store8(ih + 6, std::raw::shr(rw, 8) & 255)
+    std::raw::store8(ih + 7, rw & 255)
+    std::raw::store8(ih + 8, 8)
+    std::raw::store8(ih + 9, 0)
+    std::raw::store8(ih + 10, 0)
+    std::raw::store8(ih + 11, 0)
+    std::raw::store8(ih + 12, 0)
+    qr_chunk(out, "IHDR", ih, 13)
+    rt_free_block(ih)
+    qr_chunk(out, "IDAT", std::raw::bits(z) + 16, zlen)
+    qr_chunk(out, "IEND", 0, 0)
+    std::raw::release(6, std::raw::bits(z))
+    rt_free_block(img)
+    sb_finish_bytes(out)
+}
+
+fn qr_write_png(path: any, bytes: any, function: string) {
+    let cpath = rt_cstr(path)
+    let fd = std::raw::syscall(2, cpath, 524865, 438, 0, 0, 0)
+    rt_free_block(cpath)
+    if fd < 0 {
+        rt_native_fail(function, rt_concat("image write error: ", rt_os_error(0 - fd)))
+    }
+    let r = rt_write_all(fd, std::raw::bits(bytes) + 16, rt_slen(bytes))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail(function, rt_concat("image write error: ", rt_os_error(0 - r)))
+    }
+}
+
+fn std__qrcode__to_png(text: any, level: any, pixels: any) -> any {
+    let f = "std::qrcode::to_png"
+    rt_expect_str(text, f)
+    rt_expect_str(level, f)
+    let n = qr_u32_ok(pixels, f, "side_pixels")
+    let c = qr_build(text, level, f)
+    let s = qr_png_from(c, n)
+    qr_can_free(c)
+    s
+}
+
+fn std__qrcode__save_png(text: any, level: any, pixels: any, path: any) -> any {
+    let f = "std::qrcode::save_png"
+    rt_expect_str(text, f)
+    rt_expect_str(level, f)
+    let n = qr_u32_ok(pixels, f, "side_pixels")
+    rt_expect_str(path, f)
+    let c = qr_build(text, level, f)
+    let s = qr_png_from(c, n)
+    qr_can_free(c)
+    qr_write_png(path, s, f)
+    std::raw::release(6, std::raw::bits(s))
+    nil
+}

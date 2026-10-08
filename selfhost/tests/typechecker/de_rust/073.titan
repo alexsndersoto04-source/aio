@@ -1,0 +1,1 @@
+fn bits(left: any, right: any) -> int { left & right } fn main() {}

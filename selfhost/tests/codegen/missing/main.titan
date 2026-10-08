@@ -1,0 +1,5 @@
+import nowhere::deep
+
+fn main() {
+    print(1)
+}

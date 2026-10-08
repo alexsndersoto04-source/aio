@@ -1,0 +1,560 @@
+// ============================================================================
+// Lexer de Titan escrito en Titan (self-hosting, fase 1).
+//
+// Traducción fiel de crates/titan_lexer/src/lib.rs: mismos tokens, mismos
+// spans (byte start/end, línea y columna en caracteres), mismos errores y en
+// el mismo orden. La verificación es diferencial: `dump_tokens` produce el
+// mismo texto que `titan tokens <archivo>` (el lexer de Rust) byte por byte.
+//
+// Representación: el código fuente se convierte UNA vez en un array de chars
+// (indexar es O(1)); junto a él se precalculan, para cada posición, la línea,
+// la columna y el offset en bytes UTF-8 que tendría el lexer de Rust cuando
+// su cursor está en esa posición. Así cada función de escaneo es pura:
+// recibe una posición y devuelve la nueva.
+// ============================================================================
+
+struct Token {
+    kind: string,
+    text: string,
+    start: int,
+    end: int,
+    line: int,
+    col: int,
+}
+
+struct Source {
+    cs: array,
+    n: int,
+    lines: array,
+    cols: array,
+    offs: array,
+}
+
+// ---------------------------------------------------------------- utilidades
+
+fn utf8_len(c) -> int {
+    let code = std::text::char_code(c)
+    if code < 128 { return 1 }
+    if code < 2048 { return 2 }
+    if code < 65536 { return 3 }
+    4
+}
+
+fn is_digit(c) -> bool {
+    let code = std::text::char_code(c)
+    code >= 48 && code <= 57
+}
+
+fn is_ident_start(c) -> bool {
+    c == '_' || std::text::is_alphabetic(c)
+}
+
+fn is_ident_continue(c) -> bool {
+    c == '_' || std::text::is_alphanumeric(c)
+}
+
+// Construye la tabla de posiciones: para p en 0..=n, la línea/columna/offset
+// del cursor cuando está justo antes del carácter p.
+fn make_source(text: string) -> Source {
+    let cs = std::text::chars(text)
+    let n = len(cs)
+    let mut lines = []
+    let mut cols = []
+    let mut offs = []
+    let mut line = 1
+    let mut col = 1
+    let mut off = 0
+    for i in 0..n {
+        lines = std::array::push(lines, line)
+        cols = std::array::push(cols, col)
+        offs = std::array::push(offs, off)
+        let c = cs[i]
+        off += utf8_len(c)
+        if c == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += 1
+        }
+    }
+    lines = std::array::push(lines, line)
+    cols = std::array::push(cols, col)
+    offs = std::array::push(offs, off)
+    Source { cs: cs, n: n, lines: lines, cols: cols, offs: offs }
+}
+
+fn peek(src: Source, pos: int) -> any {
+    if pos < src.n { return src.cs[pos] }
+    nil
+}
+
+fn at(src: Source, pos: int, c) -> bool {
+    pos < src.n && src.cs[pos] == c
+}
+
+fn byte_offset(src: Source, pos: int) -> int {
+    if pos > src.n { return src.offs[src.n] }
+    src.offs[pos]
+}
+
+fn loc(src: Source, pos: int) -> string {
+    let l = src.lines[pos]
+    let c = src.cols[pos]
+    "{l}:{c}"
+}
+
+// --------------------------------------------------------------- trivialidad
+
+// Salta espacios y comentarios. Devuelve (nueva_pos, errores).
+fn skip_trivia(src: Source, start: int) -> any {
+    let mut pos = start
+    let mut errors = []
+    loop {
+        while pos < src.n && std::text::is_whitespace(src.cs[pos]) {
+            pos += 1
+        }
+        if at(src, pos, '/') && at(src, pos + 1, '/') {
+            while pos < src.n && src.cs[pos] != '\n' {
+                pos += 1
+            }
+            continue
+        }
+        if at(src, pos, '/') && at(src, pos + 1, '*') {
+            let where = loc(src, pos)
+            pos += 2
+            let mut depth = 1
+            while pos < src.n && depth > 0 {
+                if at(src, pos, '/') && at(src, pos + 1, '*') {
+                    pos += 2
+                    depth += 1
+                } else if at(src, pos, '*') && at(src, pos + 1, '/') {
+                    pos += 2
+                    depth -= 1
+                } else {
+                    pos += 1
+                }
+            }
+            if depth != 0 {
+                errors = std::array::push(errors, "unterminated block comment at " + where)
+            }
+            continue
+        }
+        break
+    }
+    return (pos, errors)
+}
+
+// ------------------------------------------------------------------ literales
+
+// Posición `pos` justo después de la comilla de apertura.
+// Devuelve (kind, text, nueva_pos, errores).
+fn lex_string(src: Source, start: int, where: string) -> any {
+    let mut pos = start
+    let mut value = ""
+    let mut errors = []
+    while pos < src.n {
+        let c = src.cs[pos]
+        if c == '"' {
+            return ("StringLit", value, pos + 1, errors)
+        }
+        if c == '\n' {
+            errors = std::array::push(errors, "unterminated string at " + where)
+            return ("Error", "unterminated string", pos, errors)
+        }
+        if c == '\\' {
+            pos += 1
+            if pos >= src.n {
+                break
+            }
+            let e = src.cs[pos]
+            pos += 1
+            if e == 'n' {
+                value += '\n'
+            } else if e == 'r' {
+                value += '\r'
+            } else if e == 't' {
+                value += '\t'
+            } else if e == '0' {
+                value += '\0'
+            } else if e == '"' {
+                value += '"'
+            } else if e == '\'' {
+                value += '\''
+            } else if e == '\\' {
+                value += '\\'
+            } else {
+                // Rust: line = self.line, column = self.col - 1 (saturating),
+                // con el cursor ya detrás del carácter de escape.
+                let l = src.lines[pos]
+                let mut col = src.cols[pos] - 1
+                if col < 0 { col = 0 }
+                errors = std::array::push(errors, "invalid escape \\" + e + " at {l}:{col}")
+                value += e
+            }
+            continue
+        }
+        value += c
+        pos += 1
+    }
+    errors = std::array::push(errors, "unterminated string at " + where)
+    return ("Error", "unterminated string", pos, errors)
+}
+
+fn lex_char(src: Source, start: int, where: string) -> any {
+    let mut pos = start
+    let mut errors = []
+    let first = peek(src, pos)
+    if first == nil {
+        errors = std::array::push(errors, "unterminated character literal at " + where)
+        return ("Error", "invalid character literal", pos, errors)
+    }
+    pos += 1
+    let mut value = first
+    if first == '\\' {
+        let e = peek(src, pos)
+        if e == nil {
+            errors = std::array::push(errors, "unterminated character literal at " + where)
+            return ("Error", "unterminated character", pos, errors)
+        }
+        pos += 1
+        if e == 'n' {
+            value = '\n'
+        } else if e == 'r' {
+            value = '\r'
+        } else if e == 't' {
+            value = '\t'
+        } else if e == '0' {
+            value = '\0'
+        } else if e == '\\' {
+            value = '\\'
+        } else if e == '\'' {
+            value = '\''
+        } else {
+            errors = std::array::push(errors, "invalid escape \\" + e + " at " + where)
+            value = e
+        }
+    } else if first == '\'' || first == '\n' {
+        errors = std::array::push(errors, "unterminated character literal at " + where)
+        return ("Error", "invalid character literal", pos, errors)
+    }
+    if !at(src, pos, '\'') {
+        errors = std::array::push(errors, "unterminated character literal at " + where)
+        return ("Error", "unterminated character", pos, errors)
+    }
+    return ("CharLit", "" + value, pos + 1, errors)
+}
+
+fn digit_or_underscore(src: Source, pos: int) -> bool {
+    pos < src.n && (is_digit(src.cs[pos]) || src.cs[pos] == '_')
+}
+
+// `start` apunta al primer dígito (ya consumido: start + 1 es lo siguiente).
+fn lex_number(src: Source, start: int) -> any {
+    let mut pos = start + 1
+    while digit_or_underscore(src, pos) {
+        pos += 1
+    }
+    let is_float = at(src, pos, '.') && pos + 1 < src.n && is_digit(src.cs[pos + 1])
+    if is_float {
+        pos += 1
+        while digit_or_underscore(src, pos) {
+            pos += 1
+        }
+    }
+    if at(src, pos, 'e') || at(src, pos, 'E') {
+        pos += 1
+        if at(src, pos, '+') || at(src, pos, '-') {
+            pos += 1
+        }
+        while digit_or_underscore(src, pos) {
+            pos += 1
+        }
+        return ("FloatLit", slice_text(src, start, pos), pos)
+    }
+    if is_float {
+        return ("FloatLit", slice_text(src, start, pos), pos)
+    }
+    return ("IntLit", slice_text(src, start, pos), pos)
+}
+
+fn slice_text(src: Source, start: int, end: int) -> string {
+    let mut out = ""
+    for i in start..end {
+        out += src.cs[i]
+    }
+    out
+}
+
+fn keyword_kind(word: string) -> string {
+    if word == "let" { return "Let" }
+    if word == "mut" { return "Mut" }
+    if word == "fn" { return "Fn" }
+    if word == "return" { return "Return" }
+    if word == "if" { return "If" }
+    if word == "else" { return "Else" }
+    if word == "match" { return "Match" }
+    if word == "for" { return "For" }
+    if word == "while" { return "While" }
+    if word == "loop" { return "Loop" }
+    if word == "break" { return "Break" }
+    if word == "continue" { return "Continue" }
+    if word == "in" { return "In" }
+    if word == "struct" { return "Struct" }
+    if word == "enum" { return "Enum" }
+    if word == "trait" { return "Trait" }
+    if word == "impl" { return "Impl" }
+    if word == "mod" { return "Module" }
+    if word == "import" { return "Import" }
+    if word == "pub" { return "Pub" }
+    if word == "const" { return "Const" }
+    if word == "unsafe" { return "Unsafe" }
+    if word == "spawn" { return "Spawn" }
+    if word == "go" { return "Go" }
+    if word == "true" { return "True" }
+    if word == "false" { return "False" }
+    if word == "nil" { return "Nil" }
+    if word == "self" { return "Self_" }
+    if word == "as" { return "As" }
+    if word == "extern" { return "Extern" }
+    if word == "type" { return "Type" }
+    "Ident"
+}
+
+// `start` apunta al primer carácter del identificador.
+fn lex_identifier(src: Source, start: int) -> any {
+    let mut pos = start + 1
+    while pos < src.n && is_ident_continue(src.cs[pos]) {
+        pos += 1
+    }
+    let word = slice_text(src, start, pos)
+    let kind = keyword_kind(word)
+    if kind == "Ident" {
+        return ("Ident", word, pos)
+    }
+    return (kind, "", pos)
+}
+
+// ------------------------------------------------------------------ operadores
+
+// Operador o puntuación que empieza en `c` (ya consumido; `pos` es lo
+// siguiente). Devuelve (kind, nueva_pos) o ("", pos) si `c` no es operador.
+fn lex_operator(src: Source, c, pos: int) -> any {
+    if c == '+' {
+        if at(src, pos, '=') { return ("PlusEq", pos + 1) }
+        return ("Plus", pos)
+    }
+    if c == '-' {
+        if at(src, pos, '>') { return ("ThinArrow", pos + 1) }
+        if at(src, pos, '=') { return ("MinusEq", pos + 1) }
+        return ("Minus", pos)
+    }
+    if c == '*' {
+        if at(src, pos, '=') { return ("StarEq", pos + 1) }
+        return ("Star", pos)
+    }
+    if c == '/' {
+        if at(src, pos, '=') { return ("SlashEq", pos + 1) }
+        return ("Slash", pos)
+    }
+    if c == '%' {
+        if at(src, pos, '=') { return ("PercentEq", pos + 1) }
+        return ("Percent", pos)
+    }
+    if c == '&' {
+        if at(src, pos, '&') { return ("LazyAnd", pos + 1) }
+        return ("Ampersand", pos)
+    }
+    if c == '|' {
+        if at(src, pos, '|') { return ("LazyOr", pos + 1) }
+        if at(src, pos, '>') { return ("PipeGt", pos + 1) }
+        return ("Pipe", pos)
+    }
+    if c == '^' { return ("Caret", pos) }
+    if c == '~' { return ("Tilde", pos) }
+    if c == '?' { return ("Question", pos) }
+    if c == '!' {
+        if at(src, pos, '=') { return ("NotEq", pos + 1) }
+        return ("Bang", pos)
+    }
+    if c == '=' {
+        if at(src, pos, '=') { return ("EqEq", pos + 1) }
+        if at(src, pos, '>') { return ("FatArrow", pos + 1) }
+        return ("Eq", pos)
+    }
+    if c == '<' {
+        if at(src, pos, '=') {
+            if at(src, pos + 1, '>') { return ("Spaceship", pos + 2) }
+            return ("LtEq", pos + 1)
+        }
+        return ("Lt", pos)
+    }
+    if c == '>' {
+        if at(src, pos, '=') { return ("GtEq", pos + 1) }
+        return ("Gt", pos)
+    }
+    if c == '(' { return ("LParen", pos) }
+    if c == ')' { return ("RParen", pos) }
+    if c == '{' { return ("LBrace", pos) }
+    if c == '}' { return ("RBrace", pos) }
+    if c == '[' { return ("LBracket", pos) }
+    if c == ']' { return ("RBracket", pos) }
+    if c == ',' { return ("Comma", pos) }
+    if c == ';' { return ("Semicolon", pos) }
+    if c == ':' {
+        if at(src, pos, ':') { return ("ColonColon", pos + 1) }
+        return ("Colon", pos)
+    }
+    if c == '.' {
+        if at(src, pos, '.') {
+            if at(src, pos + 1, '=') { return ("RangeInclusive", pos + 2) }
+            return ("Range", pos + 1)
+        }
+        return ("Dot", pos)
+    }
+    return ("", pos)
+}
+
+// --------------------------------------------------------------------- lexer
+
+// Devuelve (tokens, errores) exactamente como Lexer::tokenize de Rust.
+fn tokenize(text: string) -> any {
+    let src = make_source(text)
+    let mut tokens = []
+    let mut errors = []
+    let mut pos = 0
+    while pos < src.n {
+        let (p, trivia_errors) = skip_trivia(src, pos)
+        pos = p
+        for e in trivia_errors {
+            errors = std::array::push(errors, e)
+        }
+        if pos >= src.n {
+            break
+        }
+        let start = pos
+        let line = src.lines[pos]
+        let col = src.cols[pos]
+        let where = "{line}:{col}"
+        let c = src.cs[pos]
+        pos += 1
+        let mut kind = ""
+        let mut value = ""
+        let (op, after_op) = lex_operator(src, c, pos)
+        if op != "" {
+            kind = op
+            pos = after_op
+        } else if c == '#' {
+            if at(src, pos, '{') {
+                kind = "HashLBrace"
+                pos += 1
+            } else {
+                kind = "Error"
+                value = "stray '#' — did you mean '#{'?"
+            }
+        } else if c == '_' && !(pos < src.n && is_ident_continue(src.cs[pos])) {
+            kind = "Underscore"
+        } else if c == '"' {
+            let (k, v, p2, errs) = lex_string(src, pos, where)
+            kind = k
+            value = v
+            pos = p2
+            for e in errs {
+                errors = std::array::push(errors, e)
+            }
+        } else if c == '\'' {
+            let (k, v, p2, errs) = lex_char(src, pos, where)
+            kind = k
+            value = v
+            pos = p2
+            for e in errs {
+                errors = std::array::push(errors, e)
+            }
+        } else if is_digit(c) {
+            let (k, v, p2) = lex_number(src, start)
+            kind = k
+            value = v
+            pos = p2
+        } else if is_ident_start(c) {
+            let (k, v, p2) = lex_identifier(src, start)
+            kind = k
+            value = v
+            pos = p2
+        } else {
+            errors = std::array::push(errors, "invalid character '" + c + "' at " + where)
+            kind = "Error"
+            value = "" + c
+        }
+        let tok = Token {
+            kind: kind,
+            text: value,
+            start: byte_offset(src, start),
+            end: byte_offset(src, pos),
+            line: line,
+            col: col,
+        }
+        tokens = std::array::push(tokens, tok)
+    }
+    let end = byte_offset(src, pos)
+    let eof = Token {
+        kind: "Eof",
+        text: "",
+        start: end,
+        end: end,
+        line: src.lines[src.n],
+        col: src.cols[src.n],
+    }
+    tokens = std::array::push(tokens, eof)
+    return (tokens, errors)
+}
+
+// ------------------------------------------------------------ volcado canónico
+
+fn dump_escape(text: string) -> string {
+    let mut out = ""
+    for c in std::text::chars(text) {
+        if c == '\\' {
+            out += "\\\\"
+        } else if c == '"' {
+            out += "\\\""
+        } else if c == '\n' {
+            out += "\\n"
+        } else if c == '\r' {
+            out += "\\r"
+        } else if c == '\t' {
+            out += "\\t"
+        } else if c == '\0' {
+            out += "\\0"
+        } else {
+            out += c
+        }
+    }
+    out
+}
+
+fn kind_dump(tok: Token) -> string {
+    let k = tok.kind
+    if k == "Ident" || k == "IntLit" || k == "FloatLit" {
+        return k + " " + tok.text
+    }
+    if k == "StringLit" || k == "CharLit" || k == "Error" {
+        return k + " \"" + dump_escape(tok.text) + "\""
+    }
+    k
+}
+
+// Mismo formato que titan_lexer::dump_tokens (Rust).
+fn dump_tokens(text: string) -> string {
+    let (tokens, errors) = tokenize(text)
+    let mut out = ""
+    for tok in tokens {
+        let l = tok.line
+        let c = tok.col
+        let s = tok.start
+        let e = tok.end
+        out += "{l}:{c} {s}..{e} " + kind_dump(tok) + "\n"
+    }
+    for err in errors {
+        out += "error: " + dump_escape(err) + "\n"
+    }
+    out
+}

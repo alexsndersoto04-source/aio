@@ -1,0 +1,53 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn show_image(h: int, source: string) {
+    println(source)
+    println(std::image::width(h))
+    println(std::image::height(h))
+    println(std::image::color_type(h))
+    println(fingerprint(std::image::encode(h, "png")))
+    println(fingerprint(std::image::encode(h, "bmp")))
+}
+
+fn expect_rejected(data: any, label: string) {
+    let rejected = match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(h) => {
+            std::image::close(h)
+            false
+        },
+        Result::Err(_) => true,
+    }
+    std::testing::assert(rejected, "BMP rejects " + label)
+    println("rejected " + label)
+}
+
+fn main() {
+    let files = ["palette1.bmp", "palette2.bmp", "palette4.bmp", "palette8.bmp", "core8.bmp", "topdown24.bmp", "core24.bmp", "rgb555.bmp", "rgb565.bmp", "bitfield32.bmp", "rgba-v4.bmp", "rgb32.bmp", "rle8.bmp", "rle8-delta.bmp", "rle8-vertical-delta.bmp", "rle4.bmp"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let from_path = std::image::load(path)
+        show_image(from_path, "path " + files[i])
+        std::image::close(from_path)
+        let h = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(h, "bytes " + files[i])
+        let rotated = std::image::rotate90(h)
+        show_image(rotated, "rotate " + files[i])
+        std::image::close(rotated)
+        let gray = std::image::grayscale(h)
+        show_image(gray, "gray " + files[i])
+        std::image::close(gray)
+        std::image::close(h)
+        i += 1
+    }
+    expect_rejected(std::bytes::from_array([66, 77, 0, 0]), "short BMP")
+    let malformed = ["bad-offset.bmp", "truncated-pixels.bmp", "missing-masks.bmp"]
+    i = 0
+    while i < len(malformed) {
+        let path = "selfhost/native/image/testdata/" + malformed[i]
+        expect_rejected(std::fs::read_bytes(path), malformed[i])
+        i += 1
+    }
+}

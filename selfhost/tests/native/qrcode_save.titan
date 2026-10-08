@@ -1,0 +1,7 @@
+// Save-to-file error path (the no-OS ENOSYS behavior has its own bare test).
+fn main() {
+    match std::try::catch(|| { std::qrcode::save_png("x", "M", 40, "/no/existe/qr.png") }) {
+        Result::Ok(_) => std::testing::assert(false, "save_png must reject a missing output directory"),
+        Result::Err(message) => println("save dir ERR " + message),
+    }
+}

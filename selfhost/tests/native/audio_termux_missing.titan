@@ -1,0 +1,25 @@
+fn main() {
+    for seconds in [-1, 4294967296] {
+        let result = std::try::catch(|| std::audio::record_start("unused.wav", seconds))
+        match result {
+            Result::Ok(_) => std::testing::assert(false, "out-of-range recording duration must fail"),
+            Result::Err(message) => {
+                let expected = "native function 'std::audio::record_start' failed: seconds out of range"
+                std::testing::assert(std::text::equals(message, expected), "recording duration range error")
+            },
+        }
+    }
+    let available = std::audio::is_termux_media_available()
+    println("Termux media CLI available", available)
+    if !available {
+        let result = std::try::catch(|| std::audio::play("unused-when-CLI-is-missing.wav"))
+        match result {
+            Result::Ok(_) => std::testing::assert(false, "missing media CLI must fail"),
+            Result::Err(message) => {
+                let expected = "native function 'std::audio::play' failed: termux-api tool 'termux-media-player' is not installed. Run: pkg install termux-api"
+                std::testing::assert(std::text::equals(message, expected), "audio missing-CLI error")
+                println("audio missing-CLI error", message)
+            },
+        }
+    }
+}

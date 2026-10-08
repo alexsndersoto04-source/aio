@@ -1,0 +1,4 @@
+fn main() {
+    let x: any = 5
+    print(std::collections::length(x))
+}

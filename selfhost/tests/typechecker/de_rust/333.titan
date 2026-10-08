@@ -1,0 +1,1 @@
+fn read() -> any { match 1 { 1 => nil, _ => std::map::new() } }

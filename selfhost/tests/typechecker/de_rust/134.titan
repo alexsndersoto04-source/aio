@@ -1,0 +1,1 @@
+fn take(values: [int]) {} fn main() { let mixed = [1, "bad"] take(mixed) }

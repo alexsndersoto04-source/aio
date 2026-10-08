@@ -1,0 +1,4 @@
+// Bug 12: la VM de Rust hacía panic con un formato no válido.
+fn main() {
+    print(std::datetime::format(0, "%Y-%Q"))
+}

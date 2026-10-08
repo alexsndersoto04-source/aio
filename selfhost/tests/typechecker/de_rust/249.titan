@@ -1,0 +1,1 @@
+fn identity(value: int) -> int { value } fn main() { let operation = identity operation(1) }

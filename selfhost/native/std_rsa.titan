@@ -1,0 +1,1686 @@
+// Piezas criptográficas de std::jwt escritas en Titan, con el mismo
+// comportamiento que las bibliotecas que usa la VM:
+//
+// * base64 0.22.1: URL_SAFE_NO_PAD y STANDARD, con los mismos errores
+//   ("Invalid symbol B, offset I.", "Invalid input length: N",
+//   "Invalid padding", "Invalid last symbol B, offset I.").
+// * pem 3.0.6: el mismo lector (read_until ingenuo, cabeceras, espacios
+//   Unicode) y simple_asn1 0.6.4 (from_der tolerante) para clasificar la
+//   clave como hace jsonwebtoken 9.3.1.
+// * ring 0.17.14: DER estricto de RSAPrivateKey / RSAPublicKey, las mismas
+//   comprobaciones de la clave (con los nombres de KeyRejected), firma
+//   PKCS#1 v1.5 SHA-256 con CRT y la comprobación final m^e == c, y la
+//   verificación RSA_PKCS1_2048_8192_SHA256.
+//
+// Enteros grandes: bloques de memoria cruda, +0 número de miembros L y
+// luego L miembros de 30 bits (el primero es el menos significativo).
+// Las potencias modulares usan Montgomery con ventana de 4 bits.
+
+// ------------------------------------------------------------ base64
+
+fn jr_b64_val(b: int, mode: int) -> int {
+    if mode == 2 {
+        // alfabeto de bcrypt: ./A-Za-z0-9
+        if b == 46 {
+            return 0
+        }
+        if b == 47 {
+            return 1
+        }
+        if b >= 65 && b <= 90 {
+            return b - 63
+        }
+        if b >= 97 && b <= 122 {
+            return b - 69
+        }
+        if b >= 48 && b <= 57 {
+            return b + 6
+        }
+        return -1
+    }
+    let url = mode == 1
+    if b >= 65 && b <= 90 {
+        return b - 65
+    }
+    if b >= 97 && b <= 122 {
+        return b - 71
+    }
+    if b >= 48 && b <= 57 {
+        return b + 4
+    }
+    if url {
+        if b == 45 {
+            return 62
+        }
+        if b == 95 {
+            return 63
+        }
+        return -1
+    }
+    if b == 43 {
+        return 62
+    }
+    if b == 47 {
+        return 63
+    }
+    -1
+}
+
+fn jr_b64_sym(prefix: string, b: int, i: int) -> any {
+    rt_concat(rt_concat(rt_concat(rt_concat(prefix, rt_int_to_str(b)), ", offset "), rt_int_to_str(i)), ".")
+}
+
+// Decodifica src[0..n). Devuelve (nil, bytes) o (mensaje de error, nil).
+// mode: 0 estándar, 1 url, 2 bcrypt (url y bcrypt sin relleno, RequireNone).
+fn jr_b64_decode(src: int, n: int, mode: int) -> (any, any) {
+    let rem = n % 4
+    if rem == 1 {
+        let last = std::raw::load8(src + n - 1)
+        if last != 61 && jr_b64_val(last, mode) < 0 {
+            return (jr_b64_sym("Invalid symbol ", last, n - 1), nil)
+        }
+    }
+    let mut pre = n - rem
+    if rem == 0 {
+        pre = pre - 4
+    }
+    if pre < 0 {
+        pre = 0
+    }
+    let out = rt_alloc(n + 8)
+    let mut o = 0
+    let mut i = 0
+    while i < pre {
+        let mut acc = 0
+        let mut k = 0
+        while k < 4 {
+            let b = std::raw::load8(src + i + k)
+            let v = jr_b64_val(b, mode)
+            if v < 0 {
+                rt_free_block(out)
+                return (jr_b64_sym("Invalid symbol ", b, i + k), nil)
+            }
+            acc = acc * 64 + v
+            k += 1
+        }
+        std::raw::store8(out + o, std::raw::shr(acc, 16) & 255)
+        std::raw::store8(out + o + 1, std::raw::shr(acc, 8) & 255)
+        std::raw::store8(out + o + 2, acc & 255)
+        o += 3
+        i += 4
+    }
+    let mut morsels = 0
+    let mut pads = 0
+    let mut first_pad = 0
+    let mut last_sym = 0
+    let mut acc = 0
+    let mut li = 0
+    while pre + li < n {
+        let b = std::raw::load8(src + pre + li)
+        if b == 61 {
+            if li < 2 {
+                let mut bad = li
+                if pads > 0 {
+                    bad = first_pad
+                }
+                rt_free_block(out)
+                return (jr_b64_sym("Invalid symbol ", 61, pre + bad), nil)
+            }
+            if pads == 0 {
+                first_pad = li
+            }
+            pads += 1
+        } else {
+            if pads > 0 {
+                rt_free_block(out)
+                return (jr_b64_sym("Invalid symbol ", 61, pre + first_pad), nil)
+            }
+            last_sym = b
+            let v = jr_b64_val(b, mode)
+            if v < 0 {
+                rt_free_block(out)
+                return (jr_b64_sym("Invalid symbol ", b, pre + li), nil)
+            }
+            acc = acc * 64 + v
+            morsels += 1
+        }
+        li += 1
+    }
+    if morsels == 1 {
+        rt_free_block(out)
+        return (rt_concat("Invalid input length: ", rt_int_to_str(pre + 1)), nil)
+    }
+    let mut bad_pad = false
+    if mode != 0 {
+        bad_pad = pads > 0
+    } else {
+        bad_pad = (pads + morsels) % 4 != 0
+    }
+    if bad_pad {
+        rt_free_block(out)
+        return ("Invalid padding", nil)
+    }
+    let nbytes = morsels * 6 / 8
+    let extra = morsels * 6 - nbytes * 8
+    if (acc & (std::raw::shl(1, extra) - 1)) != 0 {
+        rt_free_block(out)
+        return (jr_b64_sym("Invalid last symbol ", last_sym, pre + morsels - 1), nil)
+    }
+    let v = std::raw::shr(acc, extra)
+    let mut k = 0
+    while k < nbytes {
+        std::raw::store8(out + o + k, std::raw::shr(v, 8 * (nbytes - 1 - k)) & 255)
+        k += 1
+    }
+    o += nbytes
+    let res = rt_bytes_from(out, o)
+    rt_free_block(out)
+    return (nil, res)
+}
+
+fn jr_b64url_digit(v: int) -> int {
+    if v < 26 {
+        return 65 + v
+    }
+    if v < 52 {
+        return 71 + v
+    }
+    if v < 62 {
+        return v - 4
+    }
+    if v == 62 {
+        return 45
+    }
+    95
+}
+
+// base64 URL sin '=' de src[0..n).
+fn jr_b64url(src: int, n: int) -> any {
+    let b = sb_new(n * 4 / 3 + 4)
+    let mut i = 0
+    while i + 3 <= n {
+        let x = std::raw::load8(src + i) * 65536 + std::raw::load8(src + i + 1) * 256 + std::raw::load8(src + i + 2)
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 18) & 63))
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 12) & 63))
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 6) & 63))
+        sb_byte(b, jr_b64url_digit(x & 63))
+        i += 3
+    }
+    let r = n - i
+    if r == 1 {
+        let x = std::raw::load8(src + i)
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 2)))
+        sb_byte(b, jr_b64url_digit((x & 3) * 16))
+    } else if r == 2 {
+        let x = std::raw::load8(src + i) * 256 + std::raw::load8(src + i + 1)
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 10)))
+        sb_byte(b, jr_b64url_digit(std::raw::shr(x, 4) & 63))
+        sb_byte(b, jr_b64url_digit((x & 15) * 4))
+    }
+    sb_finish(b)
+}
+
+// ------------------------------------------------------------ PEM (pem 3.0.6)
+
+// read_until: busca `marker` en p[s..e) como pem (sin volver a mirar el byte
+// que rompe una coincidencia). Devuelve (inicio del resto, fin de lo leído)
+// o (-1, 0).
+fn jr_read_until(p: int, s: int, e: int, marker: string) -> (int, int) {
+    let mp = std::raw::bits(marker) + 16
+    let ml = rt_slen(marker)
+    let len = e - s
+    let mut index = 0
+    let mut found = 0
+    while len - index >= ml - found {
+        if std::raw::load8(p + s + index) == std::raw::load8(mp + found) {
+            found += 1
+        } else {
+            found = 0
+        }
+        index += 1
+        if found == ml {
+            return (s + index, s + index - found)
+        }
+    }
+    return (-1, 0)
+}
+
+fn jr_skip_ws(p: int, s: int, e: int) -> int {
+    let mut i = s
+    while i < e {
+        let c = std::raw::load8(p + i)
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            return i
+        }
+        i += 1
+    }
+    i
+}
+
+fn jr_find(p: int, s: int, e: int, pat: string) -> int {
+    let pp = std::raw::bits(pat) + 16
+    let pl = rt_slen(pat)
+    let mut i = s
+    while i + pl <= e {
+        let mut k = 0
+        while k < pl && std::raw::load8(p + i + k) == std::raw::load8(pp + k) {
+            k += 1
+        }
+        if k == pl {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// char::is_whitespace (propiedad Unicode White_Space).
+fn jr_uni_ws(c: int) -> bool {
+    if c >= 9 && c <= 13 {
+        return true
+    }
+    if c == 32 || c == 133 || c == 160 || c == 5760 {
+        return true
+    }
+    if c >= 8192 && c <= 8202 {
+        return true
+    }
+    c == 8232 || c == 8233 || c == 8239 || c == 8287 || c == 12288
+}
+
+// Largo en bytes del carácter UTF-8 que empieza con el byte b (ya validado).
+fn jr_utf8_len(b: int) -> int {
+    if b < 128 {
+        return 1
+    }
+    if b < 224 {
+        return 2
+    }
+    if b < 240 {
+        return 3
+    }
+    4
+}
+
+fn jr_utf8_cp(p: int, len: int) -> int {
+    let b = std::raw::load8(p)
+    if len == 1 {
+        return b
+    }
+    if len == 2 {
+        return (b & 31) * 64 + (std::raw::load8(p + 1) & 63)
+    }
+    if len == 3 {
+        return (b & 15) * 4096 + (std::raw::load8(p + 1) & 63) * 64 + (std::raw::load8(p + 2) & 63)
+    }
+    return (b & 7) * 262144 + (std::raw::load8(p + 1) & 63) * 4096 + (std::raw::load8(p + 2) & 63) * 64 + (std::raw::load8(p + 3) & 63)
+}
+
+// pem::parse. Devuelve (etiqueta, contenido en bytes) o (nil, nil).
+fn jr_pem(p: int, n: int) -> (any, any) {
+    let (a, a0) = jr_read_until(p, 0, n, "-----BEGIN ")
+    if a < 0 {
+        return (nil, nil)
+    }
+    let (b, bend) = jr_read_until(p, a, n, "-----")
+    if b < 0 {
+        return (nil, nil)
+    }
+    let c = jr_skip_ws(p, b, n)
+    let (d, dend) = jr_read_until(p, c, n, "-----END ")
+    if d < 0 {
+        return (nil, nil)
+    }
+    let (f, fend) = jr_read_until(p, d, n, "-----")
+    if f < 0 {
+        return (nil, nil)
+    }
+    if bend == a || fend == d {
+        return (nil, nil)
+    }
+    if !rt_valid_utf8(p + a, bend - a) || !rt_valid_utf8(p + d, fend - d) {
+        return (nil, nil)
+    }
+    if bend - a != fend - d {
+        return (nil, nil)
+    }
+    let mut k = 0
+    while k < bend - a {
+        if std::raw::load8(p + a + k) != std::raw::load8(p + d + k) {
+            return (nil, nil)
+        }
+        k += 1
+    }
+    // Cabeceras y datos.
+    let mut hs = c
+    let mut he = c
+    let mut ds = c
+    let pos = jr_find(p, c, dend, "\n\n")
+    if pos >= 0 {
+        he = pos
+        ds = pos + 2
+    } else {
+        let pos2 = jr_find(p, c, dend, "\r\n\r\n")
+        if pos2 >= 0 {
+            he = pos2
+            ds = pos2 + 4
+        }
+    }
+    if !rt_valid_utf8(p + hs, he - hs) || !rt_valid_utf8(p + ds, dend - ds) {
+        return (nil, nil)
+    }
+    // Cada línea de cabecera (lines()) debe tener ':'.
+    let mut i = hs
+    while i < he {
+        let mut has_colon = false
+        while i < he && std::raw::load8(p + i) != 10 {
+            if std::raw::load8(p + i) == 58 {
+                has_colon = true
+            }
+            i += 1
+        }
+        if !has_colon {
+            return (nil, nil)
+        }
+        i += 1
+    }
+    // Datos sin espacios Unicode, luego base64 STANDARD.
+    let tmp = rt_alloc(dend - ds + 8)
+    let mut t = 0
+    i = ds
+    while i < dend {
+        let len = jr_utf8_len(std::raw::load8(p + i))
+        if !jr_uni_ws(jr_utf8_cp(p + i, len)) {
+            let mut q = 0
+            while q < len {
+                std::raw::store8(tmp + t, std::raw::load8(p + i + q))
+                t += 1
+                q += 1
+            }
+        }
+        i += len
+    }
+    let (err, contents) = jr_b64_decode(tmp, t, 0)
+    rt_free_block(tmp)
+    if err != nil {
+        return (nil, nil)
+    }
+    let tag = rt_str_alloc(bend - a)
+    rt_copy(tag + 16, p + a, bend - a)
+    return (rt_sval(tag), contents)
+}
+
+// ------------------------------------------------------------ ASN.1 (simple_asn1 0.6.4)
+
+fn jr_digits(p: int, s: int, count: int) -> int {
+    let mut v = 0
+    let mut k = 0
+    while k < count {
+        let c = std::raw::load8(p + s + k)
+        if c < 48 || c > 57 {
+            return -1
+        }
+        v = v * 10 + c - 48
+        k += 1
+    }
+    v
+}
+
+fn jr_month_days(y: int, m: int, leap: bool) -> int {
+    if m == 2 {
+        if leap {
+            return 29
+        }
+        return 28
+    }
+    if m == 4 || m == 6 || m == 9 || m == 11 {
+        return 30
+    }
+    31
+}
+
+// MMDDhhmmss en p[s..s+10) válidos para el año y.
+fn jr_date_ok(p: int, s: int, leap: bool) -> bool {
+    let mo = jr_digits(p, s, 2)
+    let d = jr_digits(p, s + 2, 2)
+    let h = jr_digits(p, s + 4, 2)
+    let mi = jr_digits(p, s + 6, 2)
+    let se = jr_digits(p, s + 8, 2)
+    if mo < 1 || mo > 12 || d < 1 || h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59 {
+        return false
+    }
+    d <= jr_month_days(0, mo, leap)
+}
+
+fn jr_utctime_ok(p: int, s: int, len: int) -> bool {
+    if len != 13 {
+        return false
+    }
+    let yy = jr_digits(p, s, 2)
+    if yy < 0 {
+        return false
+    }
+    let mut y = 2000 + yy
+    if yy >= 50 {
+        y = 1900 + yy
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+    jr_date_ok(p, s + 2, leap) && std::raw::load8(p + s + 12) == 90
+}
+
+fn jr_gentime_ok(p: int, s: int, len: int) -> bool {
+    if len < 15 || !rt_valid_utf8(p + s, len) {
+        return false
+    }
+    let mut dot = false
+    let mut k = 0
+    while k < len {
+        let c = std::raw::load8(p + s + k)
+        if c >= 128 {
+            return false
+        }
+        if c == 46 {
+            dot = true
+        }
+        k += 1
+    }
+    // Copia con el '.' insertado en 14 y '0' antes del último hasta 25.
+    let cap = len + 32
+    let t = rt_alloc(cap)
+    let mut n = 0
+    k = 0
+    while k < len {
+        if !dot && k == 14 {
+            std::raw::store8(t + n, 46)
+            n += 1
+        }
+        std::raw::store8(t + n, std::raw::load8(p + s + k))
+        n += 1
+        k += 1
+    }
+    if !dot && len == 14 {
+        std::raw::store8(t + n, 46)
+        n += 1
+    }
+    while n < 25 {
+        std::raw::store8(t + n, std::raw::load8(t + n - 1))
+        std::raw::store8(t + n - 1, 48)
+        n += 1
+    }
+    let mut i = 0
+    let c0 = std::raw::load8(t)
+    let mut neg = false
+    if c0 == 43 || c0 == 45 {
+        neg = c0 == 45
+        i = 1
+    }
+    let mut ok = n - i >= 4
+    let mut y = 0
+    if ok {
+        y = jr_digits(t, i, 4)
+        ok = y >= 0
+        i += 4
+    }
+    if neg {
+        y = 0 - y
+    }
+    let leap = y % 4 == 0 && (y % 25 != 0 || y % 16 == 0)
+    if ok {
+        ok = n - i >= 10 && jr_date_ok(t, i, leap)
+        i += 10
+    }
+    if ok {
+        ok = i < n && std::raw::load8(t + i) == 46
+        i += 1
+    }
+    let mut digits = 0
+    while ok && i < n && std::raw::load8(t + i) >= 48 && std::raw::load8(t + i) <= 57 {
+        digits += 1
+        i += 1
+    }
+    if ok {
+        ok = digits >= 1 && digits <= 9 && i == n - 1 && std::raw::load8(t + i) == 90
+    }
+    rt_free_block(t)
+    ok
+}
+
+fn jr_printable(c: int) -> bool {
+    if c >= 65 && c <= 90 {
+        return true
+    }
+    if c >= 97 && c <= 122 {
+        return true
+    }
+    if c >= 48 && c <= 57 {
+        return true
+    }
+    c == 32 || c == 39 || c == 40 || c == 41 || c == 43 || c == 44 || c == 45 || c == 46 || c == 47 || c == 58 || c == 61 || c == 63
+}
+
+// from_der tolerante sobre p[s..e). Devuelve un array de bloques o nil si
+// simple_asn1 da error. Bloques: [1, hijos] SEQUENCE, [2, componentes] OID,
+// [3, inicio, largo] BIT STRING (sin el byte de bits sobrantes),
+// [4, inicio, largo] OCTET STRING, [0] el resto.
+fn jr_asn1(p: int, s: int, e: int) -> any {
+    let mut out: any = rt_array_new(0)
+    let mut i = s
+    while i < e {
+        let b = std::raw::load8(p + i)
+        i += 1
+        let class = std::raw::shr(b, 6)
+        let mut tag = b & 31
+        if tag == 31 {
+            tag = 0
+            let mut more = true
+            while more {
+                if i >= e {
+                    return nil
+                }
+                let x = std::raw::load8(p + i)
+                i += 1
+                if tag < 1099511627776 {
+                    tag = tag * 128 + (x & 127)
+                }
+                more = x >= 128
+            }
+        }
+        if i >= e {
+            return nil
+        }
+        let l0 = std::raw::load8(p + i)
+        i += 1
+        let mut len = l0
+        if l0 >= 128 {
+            let mut lenlen = l0 & 127
+            if lenlen > 8 {
+                return nil
+            }
+            len = 0
+            while lenlen > 0 {
+                if i >= e {
+                    return nil
+                }
+                if len > 72057594037927935 {
+                    return nil
+                }
+                len = len * 256 + std::raw::load8(p + i)
+                i += 1
+                lenlen -= 1
+            }
+        }
+        if len < 0 || len > e - i {
+            return nil
+        }
+        let bs = i
+        let be = i + len
+        i = be
+        if class != 0 {
+            out = std::array::push(out, [0])
+            continue
+        }
+        if tag == 1 {
+            if len != 1 {
+                return nil
+            }
+            out = std::array::push(out, [0])
+        } else if tag == 3 {
+            if len == 0 {
+                out = std::array::push(out, [3, bs, 0])
+            } else {
+                if std::raw::load8(p + bs) > 8 * (len - 1) {
+                    return nil
+                }
+                out = std::array::push(out, [3, bs + 1, len - 1])
+            }
+        } else if tag == 4 {
+            out = std::array::push(out, [4, bs, len])
+        } else if tag == 6 {
+            if len == 0 {
+                return nil
+            }
+            let f = std::raw::load8(p + bs)
+            let mut comps: any = rt_array_new(0)
+            if f < 40 {
+                comps = std::array::push(std::array::push(comps, 0), f)
+            } else if f < 80 {
+                comps = std::array::push(std::array::push(comps, 1), f - 40)
+            } else {
+                comps = std::array::push(std::array::push(comps, 2), f - 80)
+            }
+            let mut k = bs + 1
+            while k < be {
+                let mut v = 0
+                let mut more = true
+                while more {
+                    if k >= be {
+                        return nil
+                    }
+                    let x = std::raw::load8(p + k)
+                    k += 1
+                    if v < 1099511627776 {
+                        v = v * 128 + (x & 127)
+                    }
+                    more = x >= 128
+                }
+                comps = std::array::push(comps, v)
+            }
+            out = std::array::push(out, [2, comps])
+        } else if tag == 12 || tag == 20 || tag == 28 || tag == 30 {
+            if !rt_valid_utf8(p + bs, len) {
+                return nil
+            }
+            out = std::array::push(out, [0])
+        } else if tag == 16 || tag == 17 {
+            let kids = jr_asn1(p, bs, be)
+            if kids == nil {
+                return nil
+            }
+            if tag == 16 {
+                out = std::array::push(out, [1, kids])
+            } else {
+                out = std::array::push(out, [0])
+            }
+        } else if tag == 19 {
+            let mut k = bs
+            while k < be {
+                if !jr_printable(std::raw::load8(p + k)) {
+                    return nil
+                }
+                k += 1
+            }
+            out = std::array::push(out, [0])
+        } else if tag == 23 {
+            if !jr_utctime_ok(p, bs, len) {
+                return nil
+            }
+            out = std::array::push(out, [0])
+        } else if tag == 24 {
+            if !jr_gentime_ok(p, bs, len) {
+                return nil
+            }
+            out = std::array::push(out, [0])
+        } else {
+            out = std::array::push(out, [0])
+        }
+    }
+    if rt_seq_len(out) == 0 {
+        return nil
+    }
+    out
+}
+
+fn jr_oid_is(comps: any, want: any) -> bool {
+    let n = rt_seq_len(want)
+    if rt_seq_len(comps) != n {
+        return false
+    }
+    let mut k = 0
+    while k < n {
+        if std::raw::bits(rt_seq_get(comps, k)) != std::raw::bits(rt_seq_get(want, k)) {
+            return false
+        }
+        k += 1
+    }
+    true
+}
+
+// classify_pem de jsonwebtoken: 0 ninguno, 1 RSA, 2 EC, 3 Ed25519.
+fn jr_classify(blocks: any) -> int {
+    let n = rt_seq_len(blocks)
+    let mut k = 0
+    while k < n {
+        let blk = rt_seq_get(blocks, k)
+        let kind = std::raw::bits(rt_seq_get(blk, 0))
+        if kind == 1 {
+            let c = jr_classify(rt_seq_get(blk, 1))
+            if c != 0 {
+                return c
+            }
+        } else if kind == 2 {
+            let comps = rt_seq_get(blk, 1)
+            if jr_oid_is(comps, [1, 2, 840, 10045, 2, 1]) {
+                return 2
+            }
+            if jr_oid_is(comps, [1, 2, 840, 113549, 1, 1, 1]) {
+                return 1
+            }
+            if jr_oid_is(comps, [1, 3, 101, 112]) {
+                return 3
+            }
+        }
+        k += 1
+    }
+    0
+}
+
+// extract_first_bitstring: (inicio, largo) o (-1, 0).
+fn jr_first_bitstring(blocks: any) -> (int, int) {
+    let n = rt_seq_len(blocks)
+    let mut k = 0
+    while k < n {
+        let blk = rt_seq_get(blocks, k)
+        let kind = std::raw::bits(rt_seq_get(blk, 0))
+        if kind == 1 {
+            let (s, l) = jr_first_bitstring(rt_seq_get(blk, 1))
+            if s >= 0 {
+                return (s, l)
+            }
+        } else if kind == 3 || kind == 4 {
+            return (std::raw::bits(rt_seq_get(blk, 1)), std::raw::bits(rt_seq_get(blk, 2)))
+        }
+        k += 1
+    }
+    return (-1, 0)
+}
+
+// PemEncodedKey::new + as_rsa_key. Devuelve (nil, DER en bytes) o
+// ("InvalidKeyFormat" / "InvalidEcdsaKey", nil).
+fn jr_rsa_der(pem: any) -> (any, any) {
+    let (tag, contents) = jr_pem(rt_bdata(pem), rt_slen(pem))
+    if tag == nil {
+        return ("InvalidKeyFormat", nil)
+    }
+    let cp = rt_bdata(contents)
+    let blocks = jr_asn1(cp, 0, rt_slen(contents))
+    if blocks == nil {
+        return ("InvalidKeyFormat", nil)
+    }
+    if rt_str_eq(tag, "RSA PRIVATE KEY") || rt_str_eq(tag, "RSA PUBLIC KEY") {
+        return (nil, contents)
+    }
+    if rt_str_eq(tag, "PRIVATE KEY") || rt_str_eq(tag, "PUBLIC KEY") || rt_str_eq(tag, "CERTIFICATE") {
+        let c = jr_classify(blocks)
+        if c != 1 {
+            return ("InvalidKeyFormat", nil)
+        }
+        let (s, l) = jr_first_bitstring(blocks)
+        if s < 0 {
+            return ("InvalidEcdsaKey", nil)
+        }
+        return (nil, rt_bytes_from(cp + s, l))
+    }
+    return ("InvalidKeyFormat", nil)
+}
+
+// ------------------------------------------------------------ enteros grandes
+
+fn jr_mask() -> int { 1073741823 }
+
+fn jr_new(l: int) -> int {
+    let a = rt_alloc(8 + 8 * l)
+    std::raw::store(a, l)
+    let mut i = 0
+    while i < l {
+        std::raw::store(a + 8 + 8 * i, 0)
+        i += 1
+    }
+    a
+}
+
+fn jr_limb(a: int, i: int) -> int {
+    if i >= std::raw::load(a) {
+        return 0
+    }
+    std::raw::load(a + 8 + 8 * i)
+}
+
+fn jr_limbs_for(nbytes: int) -> int {
+    (8 * nbytes + 29) / 30
+}
+
+fn jr_from_be(src: int, n: int, l: int) -> int {
+    let a = jr_new(l)
+    let mut k = 0
+    while k < n {
+        let b = std::raw::load8(src + n - 1 - k)
+        let pos = 8 * k
+        let li = pos / 30
+        let off = pos - 30 * li
+        if li < l {
+            let q = a + 8 + 8 * li
+            std::raw::store(q, std::raw::load(q) | (std::raw::shl(b, off) & jr_mask()))
+            if off > 22 && li + 1 < l {
+                std::raw::store(q + 8, std::raw::load(q + 8) | std::raw::shr(b, 30 - off))
+            }
+        }
+        k += 1
+    }
+    a
+}
+
+fn jr_to_be(a: int, out: int, k: int) {
+    let l = std::raw::load(a)
+    let mut j = 0
+    while j < k {
+        let pos = 8 * j
+        let li = pos / 30
+        let off = pos - 30 * li
+        let mut v = 0
+        if li < l {
+            v = std::raw::shr(std::raw::load(a + 8 + 8 * li), off)
+            if off > 22 && li + 1 < l {
+                v = v | std::raw::shl(std::raw::load(a + 16 + 8 * li), 30 - off)
+            }
+        }
+        std::raw::store8(out + k - 1 - j, v & 255)
+        j += 1
+    }
+}
+
+fn jr_bitlen(x0: int) -> int {
+    let mut x = x0
+    let mut n = 0
+    while x > 0 {
+        x = std::raw::shr(x, 1)
+        n += 1
+    }
+    n
+}
+
+fn jr_bits(a: int) -> int {
+    let mut i = std::raw::load(a) - 1
+    while i >= 0 {
+        let v = std::raw::load(a + 8 + 8 * i)
+        if v != 0 {
+            return 30 * i + jr_bitlen(v)
+        }
+        i -= 1
+    }
+    0
+}
+
+fn jr_is_zero(a: int) -> bool {
+    jr_bits(a) == 0
+}
+
+fn jr_cmp(a: int, b: int) -> int {
+    let mut i = std::raw::load(a)
+    if std::raw::load(b) > i {
+        i = std::raw::load(b)
+    }
+    i -= 1
+    while i >= 0 {
+        let x = jr_limb(a, i)
+        let y = jr_limb(b, i)
+        if x > y {
+            return 1
+        }
+        if x < y {
+            return -1
+        }
+        i -= 1
+    }
+    0
+}
+
+// a -= b (a >= b).
+fn jr_sub_into(a: int, b: int) {
+    let l = std::raw::load(a)
+    let mut borrow = 0
+    let mut i = 0
+    while i < l {
+        let mut s = std::raw::load(a + 8 + 8 * i) - jr_limb(b, i) - borrow
+        if s < 0 {
+            s += 1073741824
+            borrow = 1
+        } else {
+            borrow = 0
+        }
+        std::raw::store(a + 8 + 8 * i, s)
+        i += 1
+    }
+}
+
+// a += b (a tiene sitio).
+fn jr_add_into(a: int, b: int) {
+    let l = std::raw::load(a)
+    let mut carry = 0
+    let mut i = 0
+    while i < l {
+        let s = std::raw::load(a + 8 + 8 * i) + jr_limb(b, i) + carry
+        std::raw::store(a + 8 + 8 * i, s & jr_mask())
+        carry = std::raw::shr(s, 30)
+        i += 1
+    }
+}
+
+fn jr_resize(a: int, l: int) -> int {
+    let r = jr_new(l)
+    let mut i = 0
+    while i < l {
+        std::raw::store(r + 8 + 8 * i, jr_limb(a, i))
+        i += 1
+    }
+    r
+}
+
+// x mod m (resultado con los miembros de m), bit a bit.
+fn jr_mod(x: int, m: int) -> int {
+    let l = std::raw::load(m)
+    let r = jr_new(l + 1)
+    let mut bit = jr_bits(x) - 1
+    while bit >= 0 {
+        let wi = bit / 30
+        let mut carry = std::raw::shr(jr_limb(x, wi), bit - 30 * wi) & 1
+        let mut i = 0
+        while i <= l {
+            let q = r + 8 + 8 * i
+            let s = 2 * std::raw::load(q) + carry
+            std::raw::store(q, s & jr_mask())
+            carry = std::raw::shr(s, 30)
+            i += 1
+        }
+        if jr_cmp(r, m) >= 0 {
+            jr_sub_into(r, m)
+        }
+        bit -= 1
+    }
+    let out = jr_resize(r, l)
+    rt_free_block(r)
+    out
+}
+
+// Producto completo a*b.
+fn jr_mul(a: int, b: int) -> int {
+    let la = std::raw::load(a)
+    let lb = std::raw::load(b)
+    let r = jr_new(la + lb + 1)
+    let mut i = 0
+    while i < la {
+        let ai = std::raw::load(a + 8 + 8 * i)
+        let mut carry = 0
+        let mut j = 0
+        while j < lb {
+            let q = r + 8 + 8 * (i + j)
+            let s = std::raw::load(q) + ai * std::raw::load(b + 8 + 8 * j) + carry
+            std::raw::store(q, s & jr_mask())
+            carry = std::raw::shr(s, 30)
+            j += 1
+        }
+        let mut k = i + lb
+        while carry != 0 {
+            let q = r + 8 + 8 * k
+            let s = std::raw::load(q) + carry
+            std::raw::store(q, s & jr_mask())
+            carry = std::raw::shr(s, 30)
+            k += 1
+        }
+        i += 1
+    }
+    r
+}
+
+// Contexto de Montgomery para un módulo impar m: +0 m, +8 L, +16 -m^-1 mod
+// 2^30, +24 R^2 mod m, +32 temporal (L+2 miembros), +40 el número 1.
+fn jr_ctx(m: int) -> int {
+    let l = std::raw::load(m)
+    let c = rt_alloc(48)
+    std::raw::store(c, m)
+    std::raw::store(c + 8, l)
+    let m0 = std::raw::load(m + 8)
+    let mut x = m0
+    let mut k = 0
+    while k < 5 {
+        let y = (m0 * x) & jr_mask()
+        let z = (2 - y + 1073741824) & jr_mask()
+        x = (x * z) & jr_mask()
+        k += 1
+    }
+    std::raw::store(c + 16, (1073741824 - x) & jr_mask())
+    // R^2 mod m doblando 1 un total de 60L veces.
+    let r = jr_new(l + 1)
+    std::raw::store(r + 8, 1)
+    let mut t = 0
+    while t < 60 * l {
+        let mut carry = 0
+        let mut i = 0
+        while i <= l {
+            let q = r + 8 + 8 * i
+            let s = 2 * std::raw::load(q) + carry
+            std::raw::store(q, s & jr_mask())
+            carry = std::raw::shr(s, 30)
+            i += 1
+        }
+        if jr_cmp(r, m) >= 0 {
+            jr_sub_into(r, m)
+        }
+        t += 1
+    }
+    std::raw::store(c + 24, jr_resize(r, l))
+    rt_free_block(r)
+    std::raw::store(c + 32, rt_alloc(8 * (l + 2)))
+    let one = jr_new(l)
+    std::raw::store(one + 8, 1)
+    std::raw::store(c + 40, one)
+    c
+}
+
+fn jr_ctx_free(c: int) {
+    rt_free_block(std::raw::load(c + 24))
+    rt_free_block(std::raw::load(c + 32))
+    rt_free_block(std::raw::load(c + 40))
+    rt_free_block(c)
+}
+
+// out = a*b/R mod m (a, b < m; out puede ser a o b).
+fn jr_mm(c: int, a: int, b: int, out: int) {
+    let m = std::raw::load(c)
+    let l = std::raw::load(c + 8)
+    let inv = std::raw::load(c + 16)
+    let t = std::raw::load(c + 32)
+    let mk = jr_mask()
+    let mut j = 0
+    while j < l + 2 {
+        std::raw::store(t + 8 * j, 0)
+        j += 1
+    }
+    let ap = a + 8
+    let bp = b + 8
+    let mp = m + 8
+    let tl = t + 8 * l
+    let mut i = 0
+    while i < l {
+        let ai = std::raw::load(ap + 8 * i)
+        let mut carry = 0
+        j = 0
+        while j < l {
+            let s = std::raw::load(t + 8 * j) + ai * std::raw::load(bp + 8 * j) + carry
+            std::raw::store(t + 8 * j, s & mk)
+            carry = std::raw::shr(s, 30)
+            j += 1
+        }
+        let s1 = std::raw::load(tl) + carry
+        std::raw::store(tl, s1 & mk)
+        std::raw::store(tl + 8, std::raw::shr(s1, 30))
+        let u = (std::raw::load(t) * inv) & mk
+        carry = std::raw::shr(std::raw::load(t) + u * std::raw::load(mp), 30)
+        j = 1
+        while j < l {
+            let s = std::raw::load(t + 8 * j) + u * std::raw::load(mp + 8 * j) + carry
+            std::raw::store(t + 8 * j - 8, s & mk)
+            carry = std::raw::shr(s, 30)
+            j += 1
+        }
+        let s2 = std::raw::load(tl) + carry
+        std::raw::store(tl - 8, s2 & mk)
+        std::raw::store(tl, std::raw::load(tl + 8) + std::raw::shr(s2, 30))
+        i += 1
+    }
+    // ¿t >= m?
+    let mut ge = std::raw::load(tl) != 0
+    if !ge {
+        ge = true
+        let mut k = l - 1
+        while k >= 0 {
+            let x = std::raw::load(t + 8 * k)
+            let y = std::raw::load(mp + 8 * k)
+            if x != y {
+                ge = x > y
+                break
+            }
+            k -= 1
+        }
+    }
+    let op = out + 8
+    if ge {
+        let mut borrow = 0
+        j = 0
+        while j < l {
+            let mut s = std::raw::load(t + 8 * j) - std::raw::load(mp + 8 * j) - borrow
+            if s < 0 {
+                s += 1073741824
+                borrow = 1
+            } else {
+                borrow = 0
+            }
+            std::raw::store(op + 8 * j, s)
+            j += 1
+        }
+    } else {
+        j = 0
+        while j < l {
+            std::raw::store(op + 8 * j, std::raw::load(t + 8 * j))
+            j += 1
+        }
+    }
+}
+
+// a*b mod m (a, b < m).
+fn jr_modmul(c: int, a: int, b: int) -> int {
+    let r = jr_new(std::raw::load(c + 8))
+    jr_mm(c, a, b, r)
+    jr_mm(c, r, std::raw::load(c + 24), r)
+    r
+}
+
+// base^e mod m con el exponente en bytes big-endian ep[0..en) (base < m).
+fn jr_modexp(c: int, base: int, ep: int, en: int) -> int {
+    let l = std::raw::load(c + 8)
+    let rr = std::raw::load(c + 24)
+    let one = std::raw::load(c + 40)
+    let table = rt_alloc(8 * 16)
+    let t0 = jr_new(l)
+    jr_mm(c, one, rr, t0)
+    std::raw::store(table, t0)
+    let t1 = jr_new(l)
+    jr_mm(c, base, rr, t1)
+    std::raw::store(table + 8, t1)
+    let mut k = 2
+    while k < 16 {
+        let tk = jr_new(l)
+        jr_mm(c, std::raw::load(table + 8 * k - 8), t1, tk)
+        std::raw::store(table + 8 * k, tk)
+        k += 1
+    }
+    let acc = jr_resize(t0, l)
+    let mut started = false
+    let mut i = 0
+    while i < 2 * en {
+        let byte = std::raw::load8(ep + i / 2)
+        let mut nib = byte & 15
+        if i % 2 == 0 {
+            nib = std::raw::shr(byte, 4)
+        }
+        if started {
+            jr_mm(c, acc, acc, acc)
+            jr_mm(c, acc, acc, acc)
+            jr_mm(c, acc, acc, acc)
+            jr_mm(c, acc, acc, acc)
+        }
+        if nib != 0 {
+            jr_mm(c, acc, std::raw::load(table + 8 * nib), acc)
+            started = true
+        }
+        i += 1
+    }
+    jr_mm(c, acc, one, acc)
+    k = 0
+    while k < 16 {
+        rt_free_block(std::raw::load(table + 8 * k))
+        k += 1
+    }
+    rt_free_block(table)
+    acc
+}
+
+// ------------------------------------------------------------ DER (ring)
+
+// read_tag_and_get_value. Devuelve (tag, inicio, largo, siguiente) o tag -1.
+fn jr_der_tlv(p: int, i: int, e: int) -> (int, int, int, int) {
+    if i >= e {
+        return (-1, 0, 0, 0)
+    }
+    let tag = std::raw::load8(p + i)
+    if (tag & 31) == 31 {
+        return (-1, 0, 0, 0)
+    }
+    if i + 1 >= e {
+        return (-1, 0, 0, 0)
+    }
+    let l0 = std::raw::load8(p + i + 1)
+    let mut k = i + 2
+    let mut len = l0
+    if l0 >= 128 {
+        if l0 == 129 {
+            if k >= e {
+                return (-1, 0, 0, 0)
+            }
+            len = std::raw::load8(p + k)
+            k += 1
+            if len < 128 {
+                return (-1, 0, 0, 0)
+            }
+        } else if l0 == 130 {
+            if k + 1 >= e {
+                return (-1, 0, 0, 0)
+            }
+            len = std::raw::load8(p + k) * 256 + std::raw::load8(p + k + 1)
+            k += 2
+            if len <= 255 {
+                return (-1, 0, 0, 0)
+            }
+        } else {
+            return (-1, 0, 0, 0)
+        }
+    }
+    if len > e - k {
+        return (-1, 0, 0, 0)
+    }
+    return (tag, k, len, k + len)
+}
+
+// nonnegative_integer: (inicio, largo, siguiente) sin el 0 inicial necesario,
+// o inicio -1.
+fn jr_der_int(p: int, i: int, e: int) -> (int, int, int) {
+    let (tag, s, len, next) = jr_der_tlv(p, i, e)
+    if tag != 2 || len == 0 {
+        return (-1, 0, 0)
+    }
+    let f = std::raw::load8(p + s)
+    if f == 0 {
+        if len == 1 {
+            return (s, 1, next)
+        }
+        if std::raw::load8(p + s + 1) >= 128 {
+            return (s + 1, len - 1, next)
+        }
+        return (-1, 0, 0)
+    }
+    if f >= 128 {
+        return (-1, 0, 0)
+    }
+    return (s, len, next)
+}
+
+fn jr_slice_bits(p: int, s: int, l: int) -> int {
+    8 * (l - 1) + jr_bitlen(std::raw::load8(p + s))
+}
+
+// Compara dos enteros big-endian (pueden tener ceros delante).
+fn jr_slice_cmp(p: int, xs0: int, xl0: int, bs0: int, bl0: int) -> int {
+    let mut xs = xs0
+    let mut xl = xl0
+    let mut bs = bs0
+    let mut bl = bl0
+    while xl > 0 && std::raw::load8(p + xs) == 0 {
+        xs += 1
+        xl -= 1
+    }
+    while bl > 0 && std::raw::load8(p + bs) == 0 {
+        bs += 1
+        bl -= 1
+    }
+    if xl != bl {
+        if xl > bl {
+            return 1
+        }
+        return -1
+    }
+    let mut k = 0
+    while k < xl {
+        let x = std::raw::load8(p + xs + k)
+        let y = std::raw::load8(p + bs + k)
+        if x != y {
+            if x > y {
+                return 1
+            }
+            return -1
+        }
+        k += 1
+    }
+    0
+}
+
+// OwnedModulusValue::from_be_bytes: nil o el nombre del KeyRejected.
+fn jr_modval(p: int, s: int, l: int) -> any {
+    let limbs = (l + 7) / 8
+    if limbs < 4 {
+        return "UnexpectedError"
+    }
+    if limbs > 128 {
+        return "TooLarge"
+    }
+    if std::raw::load8(p + s) == 0 {
+        return "InvalidEncoding"
+    }
+    if (std::raw::load8(p + s + l - 1) & 1) == 0 {
+        return "InvalidComponent"
+    }
+    nil
+}
+
+// PublicKey::from_modulus_and_exponent (mínimo 2048 bits).
+fn jr_pub_check(p: int, ns: int, nl: int, es: int, el: int, maxbits: int, emin: int) -> any {
+    let err = jr_modval(p, ns, nl)
+    if err != nil {
+        return err
+    }
+    if 8 * nl < 2048 {
+        return "TooSmall"
+    }
+    if jr_slice_bits(p, ns, nl) > maxbits {
+        return "TooLarge"
+    }
+    if el > 5 {
+        return "TooLarge"
+    }
+    if std::raw::load8(p + es) == 0 {
+        return "InvalidEncoding"
+    }
+    let mut v = 0
+    let mut k = 0
+    while k < el {
+        v = v * 256 + std::raw::load8(p + es + k)
+        k += 1
+    }
+    if v < emin {
+        return "TooSmall"
+    }
+    if v > 8589934591 {
+        return "TooLarge"
+    }
+    if (v & 1) == 0 {
+        return "InvalidComponent"
+    }
+    nil
+}
+
+// Clave privada lista para firmar: array [der, ns, nl, es, el, ps, pl, qs,
+// ql, dps, dpl, dqs, dql, qis, qil] (inicio y largo de cada entero en der).
+fn jr_kf(key: any, i: int) -> int {
+    std::raw::bits(rt_seq_get(key, i))
+}
+
+// RsaKeyPair::from_der. Devuelve (nil, clave) o (nombre del KeyRejected, nil).
+fn jr_private_key(der: any) -> (any, any) {
+    let p = rt_bdata(der)
+    let total = rt_slen(der)
+    let (tag, s0, len0, next0) = jr_der_tlv(p, 0, total)
+    if tag != 48 {
+        return ("InvalidEncoding", nil)
+    }
+    let e0 = s0 + len0
+    let (vs, vl, i1) = jr_der_int(p, s0, e0)
+    if vs < 0 || vl != 1 {
+        return ("InvalidEncoding", nil)
+    }
+    if std::raw::load8(p + vs) != 0 {
+        return ("VersionNotSupported", nil)
+    }
+    let mut starts: any = rt_array_new(0)
+    let mut lens: any = rt_array_new(0)
+    let mut i = i1
+    let mut k = 0
+    while k < 8 {
+        let (s, l, nx) = jr_der_int(p, i, e0)
+        if s < 0 {
+            return ("InvalidEncoding", nil)
+        }
+        starts = std::array::push(starts, s)
+        lens = std::array::push(lens, l)
+        i = nx
+        k += 1
+    }
+    let mut key: any = [der]
+    k = 0
+    while k < 8 {
+        if k != 2 {
+            key = std::array::push(std::array::push(key, rt_seq_get(starts, k)), rt_seq_get(lens, k))
+        }
+        k += 1
+    }
+    let ds = std::raw::bits(rt_seq_get(starts, 2))
+    let dl = std::raw::bits(rt_seq_get(lens, 2))
+    let err = jr_key_check(p, key, ds, dl)
+    if err != nil {
+        return (err, nil)
+    }
+    if i != e0 || next0 != total {
+        return ("InvalidEncoding", nil)
+    }
+    return (nil, key)
+}
+
+fn jr_prime_check(p: int, s: int, l: int, half: int) -> any {
+    let err = jr_modval(p, s, l)
+    if err != nil {
+        return err
+    }
+    let bits = jr_slice_bits(p, s, l)
+    if bits != half {
+        return "InconsistentComponents"
+    }
+    if bits % 512 != 0 {
+        return "PrivateModulusLenNotMultipleOf512Bits"
+    }
+    nil
+}
+
+// dP < p e impar (PrivateExponent::from_be_bytes_padded).
+fn jr_crt_exp_ok(p: int, s: int, l: int, m_s: int, m_l: int) -> bool {
+    if jr_slice_cmp(p, s, l, m_s, m_l) >= 0 {
+        return false
+    }
+    return (std::raw::load8(p + s + l - 1) & 1) == 1
+}
+
+fn jr_key_check(p: int, key: any, ds: int, dl: int) -> any {
+    let err = jr_pub_check(p, jr_kf(key, 1), jr_kf(key, 2), jr_kf(key, 3), jr_kf(key, 4), 4096, 65537)
+    if err != nil {
+        return err
+    }
+    let nbits = jr_slice_bits(p, jr_kf(key, 1), jr_kf(key, 2))
+    let half = (nbits + 1) / 2
+    let e1 = jr_prime_check(p, jr_kf(key, 5), jr_kf(key, 6), half)
+    if e1 != nil {
+        return e1
+    }
+    let e2 = jr_prime_check(p, jr_kf(key, 7), jr_kf(key, 8), half)
+    if e2 != nil {
+        return e2
+    }
+    // p·q ≡ 0 (mod n).
+    let ln = jr_limbs_for(jr_kf(key, 2))
+    let n = jr_from_be(p + jr_kf(key, 1), jr_kf(key, 2), ln)
+    let cn = jr_ctx(n)
+    let pn = jr_from_be(p + jr_kf(key, 5), jr_kf(key, 6), ln)
+    let qn = jr_from_be(p + jr_kf(key, 7), jr_kf(key, 8), ln)
+    let pq = jr_modmul(cn, pn, qn)
+    let pq_zero = jr_is_zero(pq)
+    rt_free_block(pq)
+    rt_free_block(pn)
+    rt_free_block(qn)
+    jr_ctx_free(cn)
+    rt_free_block(n)
+    if !pq_zero {
+        return "InconsistentComponents"
+    }
+    if jr_modval(p, ds, dl) != nil {
+        return "InvalidComponent"
+    }
+    if jr_slice_bits(p, ds, dl) <= half {
+        return "InconsistentComponents"
+    }
+    if jr_slice_cmp(p, ds, dl, jr_kf(key, 1), jr_kf(key, 2)) >= 0 {
+        return "InconsistentComponents"
+    }
+    if jr_slice_cmp(p, jr_kf(key, 13), jr_kf(key, 14), jr_kf(key, 5), jr_kf(key, 6)) >= 0 {
+        return "InvalidComponent"
+    }
+    // qInv·q ≡ 1 (mod p).
+    let lp = jr_limbs_for(jr_kf(key, 6))
+    let pb = jr_from_be(p + jr_kf(key, 5), jr_kf(key, 6), lp)
+    let cp = jr_ctx(pb)
+    let qb = jr_from_be(p + jr_kf(key, 7), jr_kf(key, 8), jr_limbs_for(jr_kf(key, 8)))
+    let qmodp = jr_mod(qb, pb)
+    let qi = jr_from_be(p + jr_kf(key, 13), jr_kf(key, 14), lp)
+    let prod = jr_modmul(cp, qi, qmodp)
+    let ok = jr_cmp(prod, std::raw::load(cp + 40)) == 0
+    rt_free_block(prod)
+    rt_free_block(qi)
+    rt_free_block(qmodp)
+    rt_free_block(qb)
+    jr_ctx_free(cp)
+    rt_free_block(pb)
+    if !ok {
+        return "InconsistentComponents"
+    }
+    if !jr_crt_exp_ok(p, jr_kf(key, 9), jr_kf(key, 10), jr_kf(key, 5), jr_kf(key, 6)) {
+        return "InconsistentComponents"
+    }
+    if !jr_crt_exp_ok(p, jr_kf(key, 11), jr_kf(key, 12), jr_kf(key, 7), jr_kf(key, 8)) {
+        return "InconsistentComponents"
+    }
+    nil
+}
+
+// EM de PKCS#1 v1.5 con SHA-256 (k bytes).
+fn jr_em(hash: int, k: int) -> int {
+    let em = rt_alloc(k + 8)
+    let prefix = [48, 49, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 1, 5, 0, 4, 32]
+    let ps = k - 3 - 51
+    std::raw::store8(em, 0)
+    std::raw::store8(em + 1, 1)
+    let mut i = 0
+    while i < ps {
+        std::raw::store8(em + 2 + i, 255)
+        i += 1
+    }
+    std::raw::store8(em + 2 + ps, 0)
+    i = 0
+    while i < 19 {
+        std::raw::store8(em + 3 + ps + i, std::raw::bits(rt_seq_get(prefix, i)))
+        i += 1
+    }
+    i = 0
+    while i < 32 {
+        std::raw::store8(em + 22 + ps + i, std::raw::load8(hash + i))
+        i += 1
+    }
+    em
+}
+
+// Firma RS256 de msg[0..mlen). Devuelve (nil, firma en bytes) o
+// ("RsaFailedSigning", nil).
+fn jr_sign(key: any, msg: int, mlen: int) -> (any, any) {
+    let p = rt_bdata(rt_seq_get(key, 0))
+    let k = jr_kf(key, 2)
+    let ln = jr_limbs_for(k)
+    let lp = jr_limbs_for(jr_kf(key, 6))
+    let lq = jr_limbs_for(jr_kf(key, 8))
+    let hash = hs_sha256(msg, mlen)
+    let em = jr_em(hash, k)
+    rt_free_block(hash)
+    let n = jr_from_be(p + jr_kf(key, 1), jr_kf(key, 2), ln)
+    let pb = jr_from_be(p + jr_kf(key, 5), jr_kf(key, 6), lp)
+    let qb = jr_from_be(p + jr_kf(key, 7), jr_kf(key, 8), lq)
+    let c = jr_from_be(em, k, ln)
+    rt_free_block(em)
+    let cn = jr_ctx(n)
+    let cp = jr_ctx(pb)
+    let cq = jr_ctx(qb)
+    let cpm = jr_mod(c, pb)
+    let m1 = jr_modexp(cp, cpm, p + jr_kf(key, 9), jr_kf(key, 10))
+    let cqm = jr_mod(c, qb)
+    let m2 = jr_modexp(cq, cqm, p + jr_kf(key, 11), jr_kf(key, 12))
+    let m2p = jr_mod(m2, pb)
+    let diff = jr_resize(m1, lp + 1)
+    if jr_cmp(m1, m2p) < 0 {
+        jr_add_into(diff, pb)
+    }
+    jr_sub_into(diff, m2p)
+    let diffp = jr_resize(diff, lp)
+    let qi = jr_from_be(p + jr_kf(key, 13), jr_kf(key, 14), lp)
+    let h = jr_modmul(cp, qi, diffp)
+    let qh = jr_mul(qb, h)
+    let qhn = jr_mod(qh, n)
+    let msum = jr_resize(m2, ln + 1)
+    jr_add_into(msum, qhn)
+    if jr_cmp(msum, n) >= 0 {
+        jr_sub_into(msum, n)
+    }
+    let m = jr_resize(msum, ln)
+    // Comprobación contra fallos: m^e == c.
+    let check = jr_modexp(cn, m, p + jr_kf(key, 3), jr_kf(key, 4))
+    let good = jr_cmp(check, c) == 0
+    let mut out: any = nil
+    if good {
+        let buf = rt_alloc(k + 8)
+        jr_to_be(m, buf, k)
+        out = rt_bytes_from(buf, k)
+        rt_free_block(buf)
+    }
+    rt_free_block(check)
+    rt_free_block(m)
+    rt_free_block(msum)
+    rt_free_block(qhn)
+    rt_free_block(qh)
+    rt_free_block(h)
+    rt_free_block(qi)
+    rt_free_block(diffp)
+    rt_free_block(diff)
+    rt_free_block(m2p)
+    rt_free_block(m2)
+    rt_free_block(cqm)
+    rt_free_block(m1)
+    rt_free_block(cpm)
+    jr_ctx_free(cq)
+    jr_ctx_free(cp)
+    jr_ctx_free(cn)
+    rt_free_block(c)
+    rt_free_block(qb)
+    rt_free_block(pb)
+    rt_free_block(n)
+    if !good {
+        return ("RsaFailedSigning", nil)
+    }
+    return (nil, out)
+}
+
+fn jr_positive(p: int, i: int, e: int) -> (int, int, int) {
+    let (s, l, nx) = jr_der_int(p, i, e)
+    if s < 0 {
+        return (-1, 0, 0)
+    }
+    if l == 1 && std::raw::load8(p + s) == 0 {
+        return (-1, 0, 0)
+    }
+    return (s, l, nx)
+}
+
+// RSA_PKCS1_2048_8192_SHA256 con la clave pública DER (RSAPublicKey).
+fn jr_verify(der: any, msg: int, mlen: int, sig: any) -> bool {
+    let p = rt_bdata(der)
+    let total = rt_slen(der)
+    let (tag, s0, len0, next0) = jr_der_tlv(p, 0, total)
+    if tag != 48 || next0 != total {
+        return false
+    }
+    let e0 = s0 + len0
+    let (ns, nl, i1) = jr_positive(p, s0, e0)
+    if ns < 0 {
+        return false
+    }
+    let (es, el, i2) = jr_positive(p, i1, e0)
+    if es < 0 || i2 != e0 {
+        return false
+    }
+    if jr_pub_check(p, ns, nl, es, el, 8192, 3) != nil {
+        return false
+    }
+    let k = nl
+    if rt_slen(sig) != k {
+        return false
+    }
+    let ln = jr_limbs_for(k)
+    let n = jr_from_be(p + ns, nl, ln)
+    let s = jr_from_be(rt_bdata(sig), k, ln)
+    if jr_cmp(s, n) >= 0 || jr_is_zero(s) {
+        rt_free_block(s)
+        rt_free_block(n)
+        return false
+    }
+    let cn = jr_ctx(n)
+    let m = jr_modexp(cn, s, p + es, el)
+    let got = rt_alloc(k + 8)
+    jr_to_be(m, got, k)
+    let hash = hs_sha256(msg, mlen)
+    let em = jr_em(hash, k)
+    let mut same = true
+    let mut i = 0
+    while i < k {
+        if std::raw::load8(got + i) != std::raw::load8(em + i) {
+            same = false
+        }
+        i += 1
+    }
+    rt_free_block(em)
+    rt_free_block(hash)
+    rt_free_block(got)
+    rt_free_block(m)
+    jr_ctx_free(cn)
+    rt_free_block(s)
+    rt_free_block(n)
+    same
+}

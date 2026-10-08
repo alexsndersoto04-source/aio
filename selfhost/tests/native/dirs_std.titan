@@ -1,0 +1,8 @@
+// std::dirs escrito en Titan (fase 6). El resultado depende del entorno; la
+// VM y el ejecutable nativo corren en el mismo.
+fn main() {
+    print(std::dirs::home(), std::dirs::config(), std::dirs::cache(), std::dirs::data(), std::dirs::data_local())
+    print(std::dirs::state(), std::dirs::executable(), std::dirs::runtime(), std::dirs::preference())
+    print(std::dirs::desktop(), std::dirs::documents(), std::dirs::downloads(), std::dirs::pictures())
+    print(std::dirs::music(), std::dirs::videos(), std::dirs::public(), std::dirs::temp(), std::dirs::current())
+}

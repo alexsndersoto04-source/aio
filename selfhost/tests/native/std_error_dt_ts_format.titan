@@ -1,0 +1,4 @@
+// Instante fuera del rango de fechas.
+fn main() {
+    print(std::datetime::format(8210266876800, "%Y"))
+}

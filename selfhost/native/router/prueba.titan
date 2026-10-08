@@ -1,0 +1,52 @@
+// Prueba diferencial de std::router: el archivo tiene casos con una línea
+// "N M", N rutas y M caminos (en hexadecimal). Para cada caso crea un router,
+// inserta las rutas (con valor "vI") y busca los caminos con at y matches.
+// Escribe los resultados (o errores) en hexadecimal. Se ejecuta en la VM
+// (zett run) y compilado con el backend nativo; fuzz.py compara las salidas.
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+fn un(h: string) -> string {
+    std::encoding::utf8_decode(std::encoding::hex_decode(h))
+}
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + hx("{v}"),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+fn num(s: string) -> int {
+    match std::text::parse_int(s) {
+        Option::Some(n) => n,
+        _ => 0,
+    }
+}
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let head = std::text::lines(std::text::replace(ls[i], " ", "\n"))
+        let n = num(head[0])
+        let m = num(head[1])
+        i += 1
+        let r = std::router::new()
+        let mut k = 0
+        while k < n {
+            let p = un(ls[i + k])
+            let v = "v{k}"
+            println("I " + show(std::try::catch(|| { std::router::insert(r, p, v) })))
+            k += 1
+        }
+        i += n
+        k = 0
+        while k < m {
+            let p = un(ls[i + k])
+            println("A " + show(std::try::catch(|| { std::router::at(r, p) })))
+            println("M " + show(std::try::catch(|| { std::router::matches(r, p) })))
+            k += 1
+        }
+        i += m
+        std::router::drop(r)
+    }
+}

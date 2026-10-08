@@ -1,0 +1,5 @@
+// print_styled: el fondo se revisa después del frente.
+fn main() {
+    std::term::print_styled("red", "#12345g", "x")
+    print("no llega")
+}

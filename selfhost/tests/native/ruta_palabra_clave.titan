@@ -1,0 +1,7 @@
+// Bugs 11 y 16: `nil` y `spawn` son palabras clave; después de `::` ahora se
+// leen como nombres (std::uuid::nil, std::process::spawn).
+fn main() {
+    print(std::uuid::nil())
+    let nil_es = nil
+    print(nil_es == nil)
+}

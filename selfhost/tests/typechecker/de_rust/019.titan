@@ -1,0 +1,1 @@
+fn main() { let first = channel(1) let second = channel(1) select([first[1], second[1]], 10) select((first[1], second[1]), 10) }

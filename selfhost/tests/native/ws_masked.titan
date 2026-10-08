@@ -1,0 +1,14 @@
+// La máscara de cliente usa entropía segura. No imprimimos la clave aleatoria;
+// comprobamos el marco enmascarado y que el payload se recupere intacto.
+fn main() {
+    let hello = std::encoding::utf8_encode("hello")
+    let masked = std::ws::encode(1, hello, true)
+    match std::ws::parse(masked, true, 1024) {
+        Option::None => std::testing::assert(false, "masked WebSocket frame must parse"),
+        Option::Some(message) => {
+            let payload = std::encoding::utf8_decode(std::map::get(message, "payload"))
+            std::testing::assert(payload == "hello", "masked frame preserves payload")
+            println("masked payload " + payload)
+        },
+    }
+}

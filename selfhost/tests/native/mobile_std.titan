@@ -1,0 +1,39 @@
+fn main() {
+    println("estado inicial: " + (std::mobile::state() == "Running"))
+    println("rechaza evento vacio: " + (!std::mobile::trigger("")))
+
+    let mut long_event = ""
+    for i in 0..257 {
+        long_event = long_event + "x"
+    }
+    println("rechaza evento largo: " + (!std::mobile::trigger(long_event)))
+
+    println("pausa: " + std::mobile::trigger("onPause"))
+    println("estado pausado: " + (std::mobile::state() == "Paused"))
+    println("evento desconocido: " + std::mobile::trigger("onLowMemory"))
+    println("desconocido no cambia estado: " + (std::mobile::state() == "Paused"))
+    println("reanuda: " + std::mobile::trigger("onResume"))
+    println("estado activo: " + (std::mobile::state() == "Running"))
+    println("destruye: " + std::mobile::trigger("onDestroy"))
+    println("estado destruido: " + (std::mobile::state() == "Destroyed"))
+    println("recrea: " + std::mobile::trigger("onResume"))
+    println("estado recreado: " + (std::mobile::state() == "Running"))
+
+    let events = std::mobile::poll_events()
+    println("cantidad y orden: " + (len(events) == 5
+        && events[0] == "onPause"
+        && events[1] == "onLowMemory"
+        && events[2] == "onResume"
+        && events[3] == "onDestroy"
+        && events[4] == "onResume"))
+    println("poll vacio: " + (len(std::mobile::poll_events()) == 0))
+
+    for i in 0..1024 {
+        std::mobile::trigger("onPause")
+    }
+    println("limite de cola: " + (!std::mobile::trigger("onResume")))
+    println("drena cola completa: " + (len(std::mobile::poll_events()) == 1024))
+    println("recupera capacidad: " + std::mobile::trigger("onResume"))
+    println("drena recuperacion: " + (len(std::mobile::poll_events()) == 1))
+    println("estado final: " + (std::mobile::state() == "Running"))
+}

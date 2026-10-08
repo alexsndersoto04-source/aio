@@ -1,0 +1,18 @@
+// La llamada a `leaf` (pequeña) la integra el optimizador; aun así debe
+// contar para el límite de profundidad igual que en la VM: el error llega
+// al llamar a `leaf` en el nivel más hondo, antes de imprimir.
+fn leaf(n: int) -> int {
+    n + 1
+}
+
+fn down(n: int) -> int {
+    let x = leaf(n)
+    if n % 1000 == 0 {
+        print("nivel {n}")
+    }
+    down(x)
+}
+
+fn main() {
+    print(down(0))
+}

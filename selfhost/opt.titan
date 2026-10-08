@@ -1,0 +1,871 @@
+// Optimizador de Titan: el `opt` de LLVM, pero escrito en Titan y para el
+// bytecode de Titan (su representación intermedia).
+//
+// Va entre el generador de bytecode (codegen.titan) y los backends (el propio
+// y el de LLVM), y se aplica al programa y al runtime. Cada pasada cambia el
+// código por otro más corto que hace EXACTAMENTE lo mismo que la VM: mismos
+// resultados, mismos errores (un desbordamiento que ocurriría al ejecutar se
+// deja para cuando se ejecute) y mismas cuentas de referencias.
+//
+// Pasadas (se repiten mientras el código se acorte):
+//   1. Saltos encadenados: un salto a un `Jump` va directo a su destino.
+//   2. Mirilla ("peephole") sobre el final del código ya emitido:
+//      - cálculo en compilación de operaciones con constantes
+//        (2 + 3 -> 5; "a" + "b" -> "ab"; 1 < 2 -> true; -(5) -> -5; !true -> false),
+//        solo si no puede dar error;
+//      - una constante (o una lectura de variable, o un Dup) que se descarta
+//        con Pop desaparece;
+//      - `JumpIfFalse` tras una constante: salto fijo o nada;
+//      - un salto a la instrucción siguiente desaparece.
+//      - asignación usada como instrucción: Dup; StoreLocal x; Pop -> StoreLocal x.
+//      Nunca se junta una instrucción a la que se llega por un salto con la
+//      anterior (el resultado sería distinto por ese camino).
+//   3. Código inalcanzable: se quita.
+//   4. Integración de funciones pequeñas ("inlining"), opcional
+//      (TITAN_INLINE=1); ver más abajo.
+// Al final se renumeran los destinos de los saltos.
+// Prefijo `ot_`.
+
+// Una instrucción ya emitida, con su posición original y si es destino de algún salto.
+struct OtItem {
+    op: Op,
+    target: bool,
+    loc: any,
+}
+
+fn ot_min_int() -> int {
+    -9223372036854775807 - 1
+}
+
+fn ot_op(k: string, n: int) -> Op {
+    Op { k: k, n: n, m: 0, s: "", s2: "", flag: false, list: [] }
+}
+
+fn ot_bool(b: bool) -> Op {
+    Op { k: "PushBool", n: 0, m: 0, s: "", s2: "", flag: b, list: [] }
+}
+
+fn ot_is_const(op: Op) -> bool {
+    let k = op.k
+    k == "PushInt" || k == "PushBool" || k == "PushNil" || k == "PushStr" || k == "PushChar" || k == "PushFloat"
+}
+
+// Falso de la VM: nil y false.
+fn ot_const_falsy(op: Op) -> bool {
+    op.k == "PushNil" || (op.k == "PushBool" && !op.flag)
+}
+
+// Suma/resta/multiplicación de enteros sin desbordar, o nil.
+fn ot_int_arith(k: string, a: int, b: int) -> any {
+    let max = 9223372036854775807
+    let min = ot_min_int()
+    if k == "Add" {
+        if (b > 0 && a > max - b) || (b < 0 && a < min - b) {
+            return nil
+        }
+        return a + b
+    }
+    if k == "Sub" {
+        if (b < 0 && a > max + b) || (b > 0 && a < min + b) {
+            return nil
+        }
+        return a - b
+    }
+    if k == "Mul" {
+        let lim = 3037000499
+        if a > lim || a < 0 - lim || b > lim || b < 0 - lim {
+            return nil
+        }
+        return a * b
+    }
+    if k == "Div" || k == "Mod" {
+        if b == 0 || (a == min && b == -1) {
+            return nil
+        }
+        if k == "Div" {
+            return a / b
+        }
+        return a % b
+    }
+    if k == "BitAnd" {
+        return a & b
+    }
+    if k == "BitOr" {
+        return a | b
+    }
+    if k == "BitXor" {
+        return a ^ b
+    }
+    nil
+}
+
+fn ot_int_cmp(k: string, a: int, b: int) -> any {
+    if k == "Lt" {
+        return a < b
+    }
+    if k == "Gt" {
+        return a > b
+    }
+    if k == "Lte" {
+        return a <= b
+    }
+    if k == "Gte" {
+        return a >= b
+    }
+    if k == "Eq" {
+        return a == b
+    }
+    if k == "Neq" {
+        return a != b
+    }
+    nil
+}
+
+// Operación binaria con dos constantes: (G, instrucción) o (G, nil).
+fn ot_fold2(g: G, x: Op, y: Op, k: string) -> (G, any) {
+    if x.k == "PushInt" && y.k == "PushInt" {
+        let v = ot_int_arith(k, x.n, y.n)
+        if v != nil {
+            return (g, ot_op("PushInt", v))
+        }
+        let c = ot_int_cmp(k, x.n, y.n)
+        if c != nil {
+            return (g, ot_bool(c))
+        }
+        return (g, nil)
+    }
+    if x.k == "PushBool" && y.k == "PushBool" {
+        if k == "Eq" {
+            return (g, ot_bool(x.flag == y.flag))
+        }
+        if k == "Neq" {
+            return (g, ot_bool(x.flag != y.flag))
+        }
+        return (g, nil)
+    }
+    if x.k == "PushStr" && y.k == "PushStr" {
+        let a = g.table[x.n]
+        let b = g.table[y.n]
+        if k == "Eq" {
+            return (g, ot_bool(a == b))
+        }
+        if k == "Neq" {
+            return (g, ot_bool(a != b))
+        }
+        let joined = len(a) + len(b)
+        if k == "Add" && joined <= 4096 {
+            let (g2, idx) = cg_intern(g, a + b)
+            return (g2, ot_op("PushStr", idx))
+        }
+    }
+    return (g, nil)
+}
+
+fn ot_fold1(x: Op, k: string) -> any {
+    if k == "Not" {
+        return ot_bool(ot_const_falsy(x))
+    }
+    if x.k == "PushInt" {
+        if k == "Neg" && x.n != ot_min_int() {
+            return ot_op("PushInt", 0 - x.n)
+        }
+        if k == "BitNot" {
+            return ot_op("PushInt", -1 - x.n)
+        }
+    }
+    nil
+}
+
+fn ot_is_binary(k: string) -> bool {
+    k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor"
+}
+
+fn ot_pop_last(items: array, n: int) -> array {
+    let mut out = items
+    let mut i = 0
+    while i < n {
+        out = std::array::pop(out)
+        i += 1
+    }
+    out
+}
+
+// Destino final de un salto (sigue los `Jump` encadenados; sin bucles infinitos).
+fn ot_final_target(code: array, t0: int) -> int {
+    let mut t = t0
+    let mut steps = 0
+    while t < len(code) && code[t].k == "Jump" && steps < 64 {
+        t = code[t].n
+        steps += 1
+    }
+    t
+}
+
+// Una pasada de mirilla sobre una función. Devuelve (G, código nuevo).
+fn ot_peephole(g0: G, code0: array, locs: array) -> (G, array, array) {
+    let mut g = g0
+    let total = len(code0)
+    // Saltos encadenados.
+    let mut code = []
+    for op in code0 {
+        if op.k == "Jump" || op.k == "JumpIfFalse" {
+            code = std::array::push(code, Op { k: op.k, n: ot_final_target(code0, op.n), m: op.m, s: op.s, s2: op.s2, flag: op.flag, list: op.list })
+        } else {
+            code = std::array::push(code, op)
+        }
+    }
+    let mut is_target = []
+    let mut i = 0
+    while i <= total {
+        is_target = std::array::push(is_target, false)
+        i += 1
+    }
+    for op in code {
+        if op.k == "Jump" || op.k == "JumpIfFalse" {
+            is_target = std::array::set(is_target, op.n, true)
+        }
+    }
+    // newpos[i] = posición en `out` donde empieza la instrucción i.
+    let mut newpos = []
+    let mut out = []
+    i = 0
+    while i < total {
+        let op = code[i]
+        let here = is_target[i]
+        newpos = std::array::push(newpos, len(out))
+        let n = len(out)
+        let mut done = false
+        if !here {
+            // Constantes con operación binaria.
+            if !done && ot_is_binary(op.k) && n >= 2 && !out[n - 1].target && ot_is_const(out[n - 2].op) && ot_is_const(out[n - 1].op) {
+                let (g2, r) = ot_fold2(g, out[n - 2].op, out[n - 1].op, op.k)
+                g = g2
+                if r != nil {
+                    let first = out[n - 2].target
+                    let floc = out[n - 2].loc
+                    out = ot_pop_last(out, 2)
+                    out = std::array::push(out, OtItem { op: r, target: first, loc: floc })
+                    done = true
+                }
+            }
+            // Constante con operación unaria.
+            if !done && (op.k == "Neg" || op.k == "BitNot" || op.k == "Not") && n >= 1 && ot_is_const(out[n - 1].op) {
+                let r = ot_fold1(out[n - 1].op, op.k)
+                if r != nil {
+                    let first = out[n - 1].target
+                    let floc = out[n - 1].loc
+                    out = ot_pop_last(out, 1)
+                    out = std::array::push(out, OtItem { op: r, target: first, loc: floc })
+                    done = true
+                }
+            }
+            // Asignación usada como instrucción: Dup; StoreLocal x; Pop -> StoreLocal x.
+            if !done && op.k == "Pop" && n >= 2 && out[n - 2].op.k == "Dup" && out[n - 1].op.k == "StoreLocal" && !out[n - 1].target {
+                let store = out[n - 1]
+                let first = out[n - 2].target
+                out = ot_pop_last(out, 2)
+                out = std::array::push(out, OtItem { op: store.op, target: first, loc: store.loc })
+                done = true
+            }
+            // Valor que se descarta enseguida.
+            if !done && op.k == "Pop" && n >= 1 {
+                let last = out[n - 1].op
+                if ot_is_const(last) || last.k == "PushLocal" || last.k == "Dup" {
+                    out = ot_pop_last(out, 1)
+                    done = true
+                }
+            }
+            // JumpIfFalse tras una constante.
+            if !done && op.k == "JumpIfFalse" && n >= 1 && ot_is_const(out[n - 1].op) {
+                let first = out[n - 1].target
+                let floc = out[n - 1].loc
+                let falsy = ot_const_falsy(out[n - 1].op)
+                out = ot_pop_last(out, 1)
+                if falsy {
+                    out = std::array::push(out, OtItem { op: Op { k: "Jump", n: op.n, m: 0, s: "", s2: "", flag: false, list: [] }, target: first, loc: floc })
+                } else if first {
+                    // El destino de algún salto: se deja una instrucción neutra
+                    // en su lugar para no perderlo (Jump a la siguiente).
+                    out = std::array::push(out, OtItem { op: Op { k: "Jump", n: i + 1, m: 0, s: "", s2: "", flag: false, list: [] }, target: true, loc: floc })
+                }
+                done = true
+            }
+        }
+        if !done {
+            out = std::array::push(out, OtItem { op: op, target: here, loc: locs[i] })
+        }
+        i += 1
+    }
+    newpos = std::array::push(newpos, len(out))
+    // Renumerar los saltos; quitar los saltos a la instrucción siguiente.
+    let mut fixed = []
+    let mut flocs = []
+    let mut j = 0
+    while j < len(out) {
+        let op = out[j].op
+        flocs = std::array::push(flocs, out[j].loc)
+        if op.k == "Jump" || op.k == "JumpIfFalse" {
+            fixed = std::array::push(fixed, Op { k: op.k, n: newpos[op.n], m: op.m, s: op.s, s2: op.s2, flag: op.flag, list: op.list })
+        } else {
+            fixed = std::array::push(fixed, op)
+        }
+        j += 1
+    }
+    return (g, fixed, flocs)
+}
+
+// Quita los `Jump` a la instrucción siguiente y el código inalcanzable.
+fn ot_prune(code: array, locs: array) -> (array, array) {
+    let total = len(code)
+    let mut reach = []
+    let mut i = 0
+    while i <= total {
+        reach = std::array::push(reach, false)
+        i += 1
+    }
+    let mut work = [0]
+    while len(work) > 0 {
+        let pc = work[len(work) - 1]
+        work = std::array::pop(work)
+        if pc > total || reach[pc] {
+            continue
+        }
+        reach = std::array::set(reach, pc, true)
+        if pc == total {
+            continue
+        }
+        let op = code[pc]
+        if op.k == "Jump" {
+            work = std::array::push(work, op.n)
+        } else if op.k == "JumpIfFalse" {
+            work = std::array::push(work, op.n)
+            work = std::array::push(work, pc + 1)
+        } else if op.k != "Ret" {
+            work = std::array::push(work, pc + 1)
+        }
+    }
+    // Se queda lo alcanzable, salvo un Jump cuyo destino es la siguiente
+    // instrucción que se queda.
+    let mut keep = []
+    i = 0
+    while i < total {
+        keep = std::array::push(keep, reach[i])
+        i += 1
+    }
+    i = 0
+    while i < total {
+        let op = code[i]
+        if keep[i] && op.k == "Jump" {
+            let mut nx = i + 1
+            while nx < total && !keep[nx] {
+                nx += 1
+            }
+            let mut dest = op.n
+            while dest < total && !keep[dest] {
+                dest += 1
+            }
+            if dest == nx {
+                keep = std::array::set(keep, i, false)
+            }
+        }
+        i += 1
+    }
+    let mut newpos = []
+    let mut count = 0
+    i = 0
+    while i < total {
+        newpos = std::array::push(newpos, count)
+        if keep[i] {
+            count += 1
+        }
+        i += 1
+    }
+    newpos = std::array::push(newpos, count)
+    let mut out = []
+    let mut olocs = []
+    i = 0
+    while i < total {
+        if keep[i] {
+            olocs = std::array::push(olocs, locs[i])
+            let op = code[i]
+            if op.k == "Jump" || op.k == "JumpIfFalse" {
+                out = std::array::push(out, Op { k: op.k, n: newpos[op.n], m: op.m, s: op.s, s2: op.s2, flag: op.flag, list: op.list })
+            } else {
+                out = std::array::push(out, op)
+            }
+        }
+        i += 1
+    }
+    return (out, olocs)
+}
+
+// ------------------------------------------------------------ última lectura (moves)
+//
+// Análisis de vida de las variables (hacia atrás, hasta punto fijo): si un
+// `PushLocal x` es la última lectura de x (ningún camino la vuelve a leer
+// antes de escribirla), se cambia por `TakeLocal x`, que entrega el valor sin
+// sumar una referencia y deja nil en la variable. El resultado es el mismo,
+// pero el valor queda con un solo dueño y el runtime puede modificarlo en el
+// sitio en vez de copiarlo (push/set/concat/insert sobre arrays, mapas y
+// textos). Leen variables: PushLocal, TakeLocal y MakeClosure (sus capturas);
+// las escriben: StoreLocal y TakeLocal.
+
+// Conjuntos de variables: arrays de palabras de 62 bits.
+fn ot_bits() -> array {
+    let mut out = []
+    let mut v = 1
+    let mut i = 0
+    while i < 62 {
+        out = std::array::push(out, v)
+        if i < 61 {
+            v = v * 2
+        }
+        i += 1
+    }
+    out
+}
+
+fn ot_set_new(words: int) -> array {
+    let mut s = []
+    let mut i = 0
+    while i < words {
+        s = std::array::push(s, 0)
+        i += 1
+    }
+    s
+}
+
+fn ot_set_has(s: array, bits: array, i: int) -> bool {
+    (s[i / 62] & bits[i % 62]) != 0
+}
+
+fn ot_set_add(s: array, bits: array, i: int) -> array {
+    let w = i / 62
+    std::array::set(s, w, s[w] | bits[i % 62])
+}
+
+fn ot_set_del(s: array, bits: array, i: int) -> array {
+    let w = i / 62
+    let b = bits[i % 62]
+    std::array::set(s, w, s[w] & (-1 - b))
+}
+
+fn ot_set_union(a: array, b: array) -> array {
+    let mut out = a
+    let mut i = 0
+    while i < len(a) {
+        out = std::array::set(out, i, a[i] | b[i])
+        i += 1
+    }
+    out
+}
+
+fn ot_set_eq(a: array, b: array) -> bool {
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Variables vivas justo después de cada instrucción.
+fn ot_live_out(code: array, locals: int) -> array {
+    let total = len(code)
+    let bits = ot_bits()
+    let words = (locals + 61) / 62 + 1
+    let empty = ot_set_new(words)
+    let mut live_in = []
+    let mut live_out = []
+    let mut i = 0
+    while i <= total {
+        live_in = std::array::push(live_in, empty)
+        live_out = std::array::push(live_out, empty)
+        i += 1
+    }
+    let mut changed = true
+    while changed {
+        changed = false
+        let mut pc = total - 1
+        while pc >= 0 {
+            let op = code[pc]
+            let k = op.k
+            let mut out = empty
+            if k == "Jump" {
+                out = live_in[op.n]
+            } else if k == "JumpIfFalse" {
+                out = ot_set_union(live_in[op.n], live_in[pc + 1])
+            } else if k != "Ret" {
+                out = live_in[pc + 1]
+            }
+            let mut inn = out
+            if k == "StoreLocal" {
+                inn = ot_set_del(inn, bits, op.n)
+            } else if k == "PushLocal" || k == "TakeLocal" {
+                inn = ot_set_add(inn, bits, op.n)
+            } else if k == "MakeClosure" {
+                for c in op.list {
+                    inn = ot_set_add(inn, bits, c)
+                }
+            }
+            if !ot_set_eq(out, live_out[pc]) {
+                live_out = std::array::set(live_out, pc, out)
+            }
+            if !ot_set_eq(inn, live_in[pc]) {
+                live_in = std::array::set(live_in, pc, inn)
+                changed = true
+            }
+            pc -= 1
+        }
+    }
+    live_out
+}
+
+fn ot_moves(f: Func) -> Func {
+    let code = f.code
+    let mut any_read = false
+    for op in code {
+        if op.k == "PushLocal" {
+            any_read = true
+        }
+    }
+    if !any_read {
+        return f
+    }
+    let live = ot_live_out(code, f.locals)
+    let bits = ot_bits()
+    let mut out = []
+    let mut pc = 0
+    while pc < len(code) {
+        let op = code[pc]
+        if op.k == "PushLocal" && !ot_set_has(live[pc], bits, op.n) {
+            out = std::array::push(out, ot_with_n(ot_op("TakeLocal", 0), op.n))
+        } else {
+            out = std::array::push(out, op)
+        }
+        pc += 1
+    }
+    Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: f.locals, max_stack: f.max_stack, code: out, locs: f.locs }
+}
+
+fn ot_function(g0: G, f: Func, moves: bool) -> (G, Func) {
+    let mut g = g0
+    let mut code = f.code
+    let mut locs = f.locs
+    let mut rounds = 0
+    while rounds < 8 {
+        let before = len(code)
+        let (g2, c2, l2) = ot_peephole(g, code, locs)
+        g = g2
+        let (c3, l3) = ot_prune(c2, l2)
+        code = c3
+        locs = l3
+        rounds += 1
+        if len(code) == before {
+            break
+        }
+    }
+    let nf = Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: f.locals, max_stack: f.max_stack, code: code, locs: locs }
+    if !moves || std::env::get("TITAN_MOVES") == "0" {
+        return (g, nf)
+    }
+    return (g, ot_moves(nf))
+}
+
+// ------------------------------------------------------------ integración (inlining)
+//
+// Una llamada a una función pequeña se cambia por el cuerpo de la función:
+//
+//   Call(f, argc)  ->  InlEnter                     (cuenta la profundidad como una llamada)
+//                      StoreLocal(base+argc-1) ... StoreLocal(base)   (los argumentos)
+//                      cuerpo de f (variables movidas a base.., Ret -> salto al final)
+//                      PushNil StoreLocal(base+i) por cada variable de f  (se sueltan,
+//                                                  como al volver de la llamada)
+//                      InlLeave
+//
+// InlEnter/InlLeave suben y bajan el mismo contador de profundidad que una
+// llamada real, con el mismo límite y el mismo error; así un programa que
+// agota la pila falla en el mismo punto. Solo se integran funciones sin
+// capturas, sin `?` (que saldría de la función que llama), sin cierres y en
+// las que cada `Ret` deja exactamente un valor en la pila. Se integra un solo
+// nivel (los cuerpos que se copian son los de antes de integrar).
+
+// (sacados, apilados) de cada instrucción; igual que lv_effect de llvm.titan.
+fn ot_effect(op: Op) -> (int, int) {
+    let k = op.k
+    let n = op.n
+    if k == "PushInt" || k == "PushNil" || k == "PushBool" || k == "PushFloat" || k == "PushChar" || k == "PushStr" || k == "PushLocal" || k == "TakeLocal" || k == "MakeClosure" {
+        return (0, 1)
+    }
+    if k == "StoreLocal" || k == "Pop" || k == "JumpIfFalse" {
+        return (1, 0)
+    }
+    if k == "Dup" {
+        return (1, 2)
+    }
+    if ot_is_binary(k) || k == "Index" || k == "ArraySortBy" {
+        return (2, 1)
+    }
+    if k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Try" {
+        return (1, 1)
+    }
+    if k == "Call" {
+        return (op.m, 1)
+    }
+    if k == "CallNative" || k == "Print" || k == "NewArray" || k == "NewTuple" {
+        return (n, 1)
+    }
+    if k == "NewStruct" {
+        return (len(op.list), 1)
+    }
+    if k == "NewEnum" {
+        if op.flag {
+            return (1, 1)
+        }
+        return (0, 1)
+    }
+    if k == "CallValue" {
+        return (n + 1, 1)
+    }
+    return (0, 0)
+}
+
+// Instrucciones que puede tener una función para poder integrarla.
+fn ot_inl_ok(k: string) -> bool {
+    if ot_is_const(Op { k: k, n: 0, m: 0, s: "", s2: "", flag: false, list: [] }) || ot_is_binary(k) {
+        return true
+    }
+    k == "PushLocal" || k == "TakeLocal" || k == "StoreLocal" || k == "Pop" || k == "Dup" || k == "Jump" || k == "JumpIfFalse" || k == "Index" || k == "ArraySortBy" || k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Call" || k == "CallNative" || k == "Print" || k == "NewArray" || k == "NewTuple" || k == "NewStruct" || k == "NewEnum" || k == "CallValue" || k == "Ret"
+}
+
+// Profundidad de la pila al empezar cada instrucción (-1 = inalcanzable;
+// la posición len(code) es salir por el final), o nil si no cuadra.
+fn ot_depths(code: array) -> any {
+    let total = len(code)
+    let mut depth = []
+    let mut i = 0
+    while i <= total {
+        depth = std::array::push(depth, -1)
+        i += 1
+    }
+    depth = std::array::set(depth, 0, 0)
+    let mut work = [0]
+    while len(work) > 0 {
+        let pc = work[len(work) - 1]
+        work = std::array::pop(work)
+        if pc >= total {
+            continue
+        }
+        let op = code[pc]
+        let d = depth[pc]
+        let (pops, pushes) = ot_effect(op)
+        if pops > d {
+            return nil
+        }
+        let nd = d - pops + pushes
+        let mut succ = [pc + 1]
+        if op.k == "Jump" {
+            succ = [op.n]
+        } else if op.k == "JumpIfFalse" {
+            succ = [op.n, pc + 1]
+        } else if op.k == "Ret" {
+            succ = []
+        }
+        for s in succ {
+            if s > total {
+                return nil
+            }
+            if depth[s] == -1 {
+                depth = std::array::set(depth, s, nd)
+                work = std::array::push(work, s)
+            } else if depth[s] != nd {
+                return nil
+            }
+        }
+    }
+    depth
+}
+
+fn ot_inl_limit() -> int {
+    8
+}
+
+fn ot_inlinable(f: Func) -> bool {
+    let total = len(f.code)
+    if f.captures != 0 || total == 0 || total > ot_inl_limit() || len(f.locs) != total {
+        return false
+    }
+    for op in f.code {
+        if !ot_inl_ok(op.k) {
+            return false
+        }
+    }
+    let d = ot_depths(f.code)
+    if d == nil || d[total] != -1 {
+        return false
+    }
+    let mut i = 0
+    while i < total {
+        if f.code[i].k == "Ret" && d[i] != -1 && d[i] != 1 {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn ot_with_n(op: Op, n: int) -> Op {
+    Op { k: op.k, n: n, m: op.m, s: op.s, s2: op.s2, flag: op.flag, list: op.list }
+}
+
+// Integra en `f` (función número `me`) las llamadas a funciones integrables.
+// Devuelve la función nueva, o nil si no había nada que integrar.
+fn ot_inline_into(f: Func, me: int, funcs: array, ok: array) -> any {
+    let total = len(f.code)
+    if len(f.locs) != total {
+        return nil
+    }
+    let base = f.locals
+    let mut extra = 0
+    let mut out = []
+    let mut olocs = []
+    // Para cada instrucción de `out`: true si su destino de salto ya es una
+    // posición nueva (cuerpos integrados); false si es de `f` (se renumera).
+    let mut absolute = []
+    let mut newpos = []
+    let mut changed = false
+    let mut i = 0
+    while i < total {
+        let op = f.code[i]
+        let loc = f.locs[i]
+        newpos = std::array::push(newpos, len(out))
+        let n = op.n
+        if op.k == "Call" && !op.flag && n != me && n >= 0 && n < len(funcs) && ok[n] && funcs[n].arity == op.m {
+            changed = true
+            let c = funcs[n]
+            out = std::array::push(out, ot_op("InlEnter", 0))
+            olocs = std::array::push(olocs, loc)
+            absolute = std::array::push(absolute, false)
+            let mut a = c.arity - 1
+            while a >= 0 {
+                out = std::array::push(out, ot_op("StoreLocal", base + a))
+                olocs = std::array::push(olocs, loc)
+                absolute = std::array::push(absolute, false)
+                a -= 1
+            }
+            let start = len(out)
+            let finish = start + len(c.code)
+            let mut j = 0
+            while j < len(c.code) {
+                let cop = c.code[j]
+                let ck = cop.k
+                let mut nop = cop
+                let mut abs = false
+                if ck == "Ret" {
+                    nop = ot_op("Jump", finish)
+                    abs = true
+                } else if ck == "Jump" || ck == "JumpIfFalse" {
+                    nop = ot_with_n(cop, start + cop.n)
+                    abs = true
+                } else if ck == "PushLocal" || ck == "StoreLocal" || ck == "TakeLocal" {
+                    nop = ot_with_n(cop, base + cop.n)
+                }
+                out = std::array::push(out, nop)
+                olocs = std::array::push(olocs, c.locs[j])
+                absolute = std::array::push(absolute, abs)
+                j += 1
+            }
+            let mut v = 0
+            while v < c.locals {
+                out = std::array::push(out, ot_op("PushNil", 0))
+                out = std::array::push(out, ot_op("StoreLocal", base + v))
+                olocs = std::array::push(olocs, loc)
+                olocs = std::array::push(olocs, loc)
+                absolute = std::array::push(absolute, false)
+                absolute = std::array::push(absolute, false)
+                v += 1
+            }
+            out = std::array::push(out, ot_op("InlLeave", 0))
+            olocs = std::array::push(olocs, loc)
+            absolute = std::array::push(absolute, false)
+            if c.locals > extra {
+                extra = c.locals
+            }
+        } else {
+            out = std::array::push(out, op)
+            olocs = std::array::push(olocs, loc)
+            absolute = std::array::push(absolute, false)
+        }
+        i += 1
+    }
+    if !changed {
+        return nil
+    }
+    newpos = std::array::push(newpos, len(out))
+    let mut code = []
+    let mut j = 0
+    while j < len(out) {
+        let op = out[j]
+        if (op.k == "Jump" || op.k == "JumpIfFalse") && !absolute[j] {
+            code = std::array::push(code, ot_with_n(op, newpos[op.n]))
+        } else {
+            code = std::array::push(code, op)
+        }
+        j += 1
+    }
+    Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: base + extra, max_stack: f.max_stack, code: code, locs: olocs }
+}
+
+// Optimiza todas las funciones del programa (`moves`: aplicar la pasada de
+// última lectura; no al runtime nativo, cuyo código guarda direcciones de
+// memoria en enteros y necesita que las variables mantengan vivos los
+// objetos hasta el final de la función). Primero cada una por separado,
+// luego integra las llamadas a funciones pequeñas y vuelve a optimizar las
+// que cambiaron. La integración va apagada salvo con TITAN_INLINE=1: medido
+// sobre el propio compilador (build.titan), no lo hace más rápido ni con el
+// backend propio (41,7 s contra 41,4 s) ni con LLVM (7,8 s contra 7,6 s; LLVM
+// ya integra por su cuenta) y agranda el ejecutable. Queda probada (243
+// programas) para cuando haya pasadas que se aprovechen de ella
+// (propagación de constantes a través de variables).
+fn ot_optimize(g0: G, moves: bool) -> G {
+    let mut g = g0
+    let mut funcs = []
+    for f in g0.funcs {
+        let (g2, nf) = ot_function(g, f, moves)
+        g = g2
+        funcs = std::array::push(funcs, nf)
+    }
+    if std::env::get("TITAN_INLINE") != "1" {
+        return gs_funcs(g, funcs)
+    }
+    let mut ok = []
+    for f in funcs {
+        ok = std::array::push(ok, ot_inlinable(f))
+    }
+    let mut result = []
+    let mut i = 0
+    while i < len(funcs) {
+        let f = funcs[i]
+        let inl = ot_inline_into(f, i, funcs, ok)
+        if inl == nil {
+            result = std::array::push(result, f)
+        } else {
+            let (g2, nf) = ot_function(g, inl, moves)
+            g = g2
+            result = std::array::push(result, nf)
+        }
+        i += 1
+    }
+    gs_funcs(g, result)
+}
+
+// Número total de instrucciones (para medir).
+fn ot_count(g: G) -> int {
+    let mut n = 0
+    for f in g.funcs {
+        n += len(f.code)
+    }
+    n
+}

@@ -1,0 +1,63 @@
+// Real PCM WAV encoding and filesystem output, compared byte-for-byte with
+// the precompiled Zett VM by the native/LLVM/ARM64 differential batteries.
+fn result_error(value: Result) -> string {
+    match value {
+        Result::Ok(_) => "unexpected success",
+        Result::Err(message) => message,
+    }
+}
+
+fn signed_i16(bytes: any, offset: int) -> int {
+    let values = std::bytes::to_array(bytes)
+    let value = values[offset] + values[offset + 1] * 256
+    if value >= 32768 { return value - 65536 }
+    value
+}
+
+fn main() {
+    let samples = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 3, -3]
+    let encoded = std::audio::encode_wav(samples, 48000, 2)
+    std::testing::assert(std::bytes::length(encoded) == 60, "PCM16 header and sample byte count")
+    std::testing::assert(std::bytes::slice(encoded, 0, 4) == std::encoding::utf8_encode("RIFF"), "RIFF signature")
+    std::testing::assert(std::bytes::slice(encoded, 8, 12) == std::encoding::utf8_encode("WAVE"), "WAVE signature")
+    std::testing::assert(std::bytes::slice(encoded, 12, 16) == std::encoding::utf8_encode("fmt "), "fmt chunk")
+    std::testing::assert(std::bytes::slice(encoded, 36, 40) == std::encoding::utf8_encode("data"), "data chunk")
+    std::testing::assert(std::bytes::read_u32_le(encoded, 4) == 52, "RIFF size")
+    std::testing::assert(std::bytes::read_u32_le(encoded, 16) == 16, "PCM fmt chunk size")
+    std::testing::assert(std::bytes::read_u32_le(encoded, 24) == 48000, "sample rate")
+    std::testing::assert(std::bytes::read_u32_le(encoded, 28) == 192000, "byte rate")
+    std::testing::assert(std::bytes::read_u32_le(encoded, 40) == 16, "data size")
+    let raw = std::bytes::to_array(encoded)
+    std::testing::assert(raw[20] == 1 && raw[21] == 0, "integer PCM format")
+    std::testing::assert(raw[22] == 2 && raw[23] == 0, "channel count")
+    std::testing::assert(raw[32] == 4 && raw[33] == 0, "block alignment")
+    std::testing::assert(raw[34] == 16 && raw[35] == 0, "bits per sample")
+    std::testing::assert(signed_i16(encoded, 44) == 16383, "positive sample truncates toward zero")
+    std::testing::assert(signed_i16(encoded, 46) == -16383, "negative sample truncates toward zero")
+    std::testing::assert(signed_i16(encoded, 48) == 32767 && signed_i16(encoded, 50) == -32767, "full-scale samples")
+    std::testing::assert(signed_i16(encoded, 52) == 32767 && signed_i16(encoded, 54) == -32767, "samples are clipped to [-1, 1]")
+    println("encoded WAV: ", std::encoding::hex_encode(encoded))
+
+    let path = "/tmp/aio-audio-wav-io-test.wav"
+    std::audio::write_wav(path, samples, 48000, 2)
+    let written = std::fs::read_bytes(path)
+    std::testing::assert(written == encoded, "write_wav writes the same bytes as encode_wav")
+    println("written WAV: ", std::encoding::hex_encode(written))
+    std::fs::remove_file(path)
+
+    let empty = std::audio::encode_wav([], 44100, 1)
+    std::testing::assert(std::bytes::length(empty) == 44, "empty WAV contains its header")
+    println("empty WAV: ", std::encoding::hex_encode(empty))
+
+    let encode_channels_error = result_error(std::try::catch(|| std::audio::encode_wav(samples, 48000, 0)))
+    std::testing::assert(encode_channels_error == "native function 'std::audio::encode_wav' failed: invalid parameter: channels must be >= 1", "encode_wav rejects zero channels")
+    println("encode_wav channels error: ", encode_channels_error)
+    let write_channels_error = result_error(std::try::catch(|| std::audio::write_wav(path, samples, 48000, 0)))
+    std::testing::assert(write_channels_error == "native function 'std::audio::write_wav' failed: invalid parameter: channels must be >= 1", "write_wav rejects zero channels")
+    println("write_wav channels error: ", write_channels_error)
+
+    let missing_path_error = result_error(std::try::catch(|| std::audio::write_wav("/tmp/aio-audio-wav-missing-parent/never.wav", samples, 48000, 2)))
+    std::testing::assert(std::text::starts_with(missing_path_error, "native function 'std::audio::write_wav' failed: WAV error:"), "write_wav reports a WAV error")
+    std::testing::assert(std::text::contains(missing_path_error, "No such file or directory"), "write_wav preserves the filesystem error")
+    println("write_wav filesystem error: ", missing_path_error)
+}

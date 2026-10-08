@@ -1,0 +1,1 @@
+fn sink(first: any, second: any) {} fn inferred() { sink(return 1, return "unreachable") } fn main() { let number: int = inferred() }

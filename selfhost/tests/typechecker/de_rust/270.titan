@@ -1,0 +1,1 @@
+fn use_database(database: Sqlite) { std::sqlite::ping(database) } fn main() {}

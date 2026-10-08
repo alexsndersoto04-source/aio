@@ -1,0 +1,1 @@
+{declarations} fn main() {{ let point = Point {{ x: 1 }} point.add(true) }}

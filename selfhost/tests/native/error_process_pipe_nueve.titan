@@ -1,0 +1,3 @@
+fn main() {
+    std::process::pipe(["echo", "cat", "cat", "cat", "cat", "cat", "cat", "cat", "cat"])
+}

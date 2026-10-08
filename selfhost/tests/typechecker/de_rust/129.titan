@@ -1,0 +1,1 @@
+fn keep(value: any) -> bool { true } fn main() { let values: [int] = filter([1], keep) }

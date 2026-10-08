@@ -1,0 +1,20 @@
+// Para cada base (una por línea, en hex) busca el mayor n con X{n} válido en la VM.
+fn ok(x: string, n: int) -> bool {
+    std::regex::is_valid("(?:" + x + ")" + "{" + "{n}" + "}")
+}
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let x = std::encoding::utf8_decode(std::encoding::hex_decode(ls[i]))
+        let mut lo = 0
+        let mut hi = 4000000
+        while hi - lo > 1 {
+            let m = (lo + hi) / 2
+            if ok(x, m) { lo = m } else { hi = m }
+        }
+        println("{lo}")
+        i += 1
+    }
+}

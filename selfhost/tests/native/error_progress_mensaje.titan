@@ -1,0 +1,11 @@
+fn main() {
+    let mut m = ""
+    let mut i = 0
+    while i < 4097 {
+        m = m + "b"
+        i += 1
+    }
+    // Se comprueba antes de buscar la barra: falla aunque el id no exista.
+    std::progress::finish(12345, m)
+    print("no llega")
+}

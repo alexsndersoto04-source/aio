@@ -1,0 +1,1 @@
+fn halt() -> ! { loop { match true { true => { loop {} }, false => { break } } } } fn main() {}

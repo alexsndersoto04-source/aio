@@ -1,0 +1,1573 @@
+// Biblioteca estándar nativa: std::yaml (lectura), segunda parte.
+// Analizador de libyaml (unsafe-libyaml 0.2.11, parser.rs), cargador de
+// serde_yaml 0.9.34 (loader.rs), deserializador (de.rs) con el visitante de
+// serde_json::Value, y las nativas parse / parse_multi. El lector y el
+// escáner están en std_yaml.titan (mismo estado `y`).
+//
+// Evento (8 palabras): tipo, mark (3), ancla (sb o 0), tag (sb o 0),
+// valor (sb o 0 = vacío), estilo. Tipos: 1 STREAM-START, 2 STREAM-END,
+// 3 DOCUMENT-START, 4 DOCUMENT-END, 5 ALIAS (en el documento: el ancla pasa
+// a ser el número de alias en +32), 6 SCALAR, 7 SEQUENCE-START,
+// 8 SEQUENCE-END, 9 MAPPING-START, 10 MAPPING-END, 11 VOID (documento vacío).
+//
+// Estados del analizador: 0 STREAM_START, 1 IMPLICIT_DOCUMENT_START,
+// 2 DOCUMENT_START, 3 DOCUMENT_CONTENT, 4 DOCUMENT_END, 5 BLOCK_NODE,
+// 6 BLOCK_NODE_OR_INDENTLESS_SEQUENCE, 7 FLOW_NODE,
+// 8 BLOCK_SEQUENCE_FIRST_ENTRY, 9 BLOCK_SEQUENCE_ENTRY,
+// 10 INDENTLESS_SEQUENCE_ENTRY, 11 BLOCK_MAPPING_FIRST_KEY,
+// 12 BLOCK_MAPPING_KEY, 13 BLOCK_MAPPING_VALUE, 14 FLOW_SEQUENCE_FIRST_ENTRY,
+// 15 FLOW_SEQUENCE_ENTRY, 16 FLOW_SEQUENCE_ENTRY_MAPPING_KEY,
+// 17 FLOW_SEQUENCE_ENTRY_MAPPING_VALUE, 18 FLOW_SEQUENCE_ENTRY_MAPPING_END,
+// 19 FLOW_MAPPING_FIRST_KEY, 20 FLOW_MAPPING_KEY, 21 FLOW_MAPPING_VALUE,
+// 22 FLOW_MAPPING_EMPTY_VALUE, 23 END.
+
+// ------------------------------------------------------------ estado
+
+fn ym_new(text: any) -> int {
+    let y = rt_alloc_zero(512)
+    std::raw::store(y, std::raw::bits(text) + 16)
+    std::raw::store(y + 8, rt_slen(text))
+    std::raw::store(y + 224, rt_alloc(16 * 96))
+    std::raw::store(y + 248, 16)
+    std::raw::store(y + 256, ym_vnew())
+    std::raw::store(y + 264, ym_vnew())
+    std::raw::store(y + 280, ym_vnew())
+    std::raw::store(y + 288, ym_vnew())
+    std::raw::store(y + 296, ym_vnew())
+    std::raw::store(y + 304, ym_vnew())
+    std::raw::store(y + 312, ym_vnew())
+    std::raw::store(y + 360, ym_vnew())
+    y
+}
+
+fn ym_free(y: int) {
+    let sbs = std::raw::load(y + 304)
+    let n = ym_vlen(sbs)
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load(ym_vat(sbs, i))
+        rt_free_block(std::raw::load(b + 16))
+        rt_free_block(b)
+        i += 1
+    }
+    ym_vfree(sbs)
+    rt_free_block(std::raw::load(y + 224))
+    ym_vfree(std::raw::load(y + 256))
+    ym_vfree(std::raw::load(y + 264))
+    ym_vfree(std::raw::load(y + 280))
+    ym_vfree(std::raw::load(y + 288))
+    ym_vfree(std::raw::load(y + 296))
+    ym_vfree(std::raw::load(y + 312))
+    ym_vfree(std::raw::load(y + 360))
+    rt_free_block(y)
+}
+
+// ------------------------------------------------------------ errores
+
+fn ym_mark_text(line: int, column: int) -> any {
+    let l = line + 1
+    let c = column + 1
+    let ls = rt_int_to_str(l)
+    let cs = rt_int_to_str(c)
+    rt_concat(rt_concat(rt_concat("line ", ls), " column "), cs)
+}
+
+// Display del error de libyaml (serde_yaml libyaml/error.rs).
+fn ym_libyaml_text(y: int) -> any {
+    let pl = std::raw::load(y + 112)
+    let pc = std::raw::load(y + 120)
+    let mut s: any = rt_concat(ym_msg(std::raw::load(y + 88)), "")
+    if pl != 0 || pc != 0 {
+        s = rt_concat(rt_concat(s, " at "), ym_mark_text(pl, pc))
+    } else if std::raw::load(y + 96) != 0 {
+        let off = rt_int_to_str(std::raw::load(y + 96))
+        s = rt_concat(rt_concat(s, " at position "), off)
+    }
+    let context = std::raw::load(y + 128)
+    if context != 0 {
+        s = rt_concat(rt_concat(s, ", "), ym_msg(context))
+        let cl = std::raw::load(y + 144)
+        let cc = std::raw::load(y + 152)
+        if (cl != 0 || cc != 0) && (cl != pl || cc != pc) {
+            s = rt_concat(rt_concat(s, " at "), ym_mark_text(cl, cc))
+        }
+    }
+    s
+}
+
+// Texto con " at line L column C" si la marca no es (0, 0).
+fn ym_with_mark(msg: any, line: int, column: int) -> any {
+    if line != 0 || column != 0 {
+        return rt_concat(rt_concat(msg, " at "), ym_mark_text(line, column))
+    }
+    msg
+}
+
+fn ym_fail(y: int, function: string, msg: any) {
+    ym_free(y)
+    rt_native_fail(function, rt_concat("YAML parse error: ", msg))
+}
+
+// Error del documento: el del analizador o "unknown anchor".
+fn ym_doc_error_text(y: int) -> any {
+    if std::raw::load(y + 320) == 2 {
+        return ym_with_mark("unknown anchor", std::raw::load(y + 336), std::raw::load(y + 344))
+    }
+    ym_libyaml_text(y)
+}
+
+fn ym_parse_err(y: int, context: int, ci: int, cl: int, cc: int, problem: int, pi: int, pl: int, pc: int) {
+    std::raw::store(y + 80, 3)
+    std::raw::store(y + 128, context)
+    std::raw::store(y + 136, ci)
+    std::raw::store(y + 144, cl)
+    std::raw::store(y + 152, cc)
+    std::raw::store(y + 88, problem)
+    std::raw::store(y + 104, pi)
+    std::raw::store(y + 112, pl)
+    std::raw::store(y + 120, pc)
+}
+
+// ------------------------------------------------------------ eventos
+
+fn ym_ev(ev: int, kind: int, mi: int, ml: int, mc: int) {
+    std::raw::store(ev, kind)
+    std::raw::store(ev + 8, mi)
+    std::raw::store(ev + 16, ml)
+    std::raw::store(ev + 24, mc)
+    std::raw::store(ev + 32, 0)
+    std::raw::store(ev + 40, 0)
+    std::raw::store(ev + 48, 0)
+    std::raw::store(ev + 56, 1)
+}
+
+fn ym_ev_tok(ev: int, kind: int, t: int) {
+    ym_ev(ev, kind, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+}
+
+fn ym_ev_empty_at_end(ev: int, t: int) {
+    ym_ev(ev, 6, std::raw::load(t + 32), std::raw::load(t + 40), std::raw::load(t + 48))
+}
+
+fn ym_ttype(t: int) -> int {
+    std::raw::load(t)
+}
+
+fn ym_set_state(y: int, s: int) {
+    std::raw::store(y + 272, s)
+}
+
+fn ym_push_state(y: int, s: int) {
+    ym_vpush(std::raw::load(y + 280), s)
+}
+
+fn ym_pop_state(y: int) {
+    std::raw::store(y + 272, ym_vpop(std::raw::load(y + 280)))
+}
+
+fn ym_push_mark(y: int, t: int) {
+    let v = std::raw::load(y + 288)
+    ym_vpush(v, std::raw::load(t + 8))
+    ym_vpush(v, std::raw::load(t + 16))
+    ym_vpush(v, std::raw::load(t + 24))
+}
+
+// Saca una marca y devuelve dónde quedó (sigue legible hasta el próximo push).
+fn ym_pop_mark(y: int) -> int {
+    let v = std::raw::load(y + 288)
+    std::raw::store(v, std::raw::load(v) - 3)
+    ym_vat(v, std::raw::load(v))
+}
+
+fn ym_parse_err_popmark(y: int, context: int, problem: int, t: int) {
+    let m = ym_pop_mark(y)
+    ym_parse_err(y, context, std::raw::load(m), std::raw::load(m + 8), std::raw::load(m + 16), problem, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+}
+
+// ------------------------------------------------------------ directivas
+
+fn ym_sb_same(a: int, b: int) -> bool {
+    let n = std::raw::load(a)
+    if n != std::raw::load(b) {
+        return false
+    }
+    let da = std::raw::load(a + 16)
+    let db = std::raw::load(b + 16)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(da + i) != std::raw::load8(db + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Copia como C string (yaml_strdup: hasta el primer NUL).
+fn ym_sb_strdup(y: int, b: int) -> int {
+    let out = ym_sb(y)
+    sb_raw(out, std::raw::load(b + 16), ym_sb_clen(b))
+    out
+}
+
+fn ym_append_tag_directive(y: int, handle: int, prefix: int, allow_duplicates: bool, t: int) -> bool {
+    let v = std::raw::load(y + 296)
+    let n = ym_vlen(v) / 2
+    let mut i = 0
+    while i < n {
+        if ym_sb_same(std::raw::load(ym_vat(v, 2 * i)), handle) {
+            if allow_duplicates {
+                return true
+            }
+            ym_parse_err(y, 0, 0, 0, 0, 42, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+            return false
+        }
+        i += 1
+    }
+    ym_vpush(v, ym_sb_strdup(y, handle))
+    ym_vpush(v, ym_sb_strdup(y, prefix))
+    true
+}
+
+fn ym_sb_text(y: int, s: string) -> int {
+    let b = ym_sb(y)
+    sb_str(b, s)
+    b
+}
+
+fn ym_process_directives(y: int) -> bool {
+    let mut has_version = false
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    while ym_ttype(t) == 3 || ym_ttype(t) == 4 {
+        if ym_ttype(t) == 3 {
+            if has_version {
+                ym_parse_err(y, 0, 0, 0, 0, 40, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+                return false
+            }
+            let major = std::raw::load(t + 72)
+            let minor = std::raw::load(t + 80)
+            if major != 1 || (minor != 1 && minor != 2) {
+                ym_parse_err(y, 0, 0, 0, 0, 41, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+                return false
+            }
+            has_version = true
+        } else {
+            if !ym_append_tag_directive(y, std::raw::load(t + 56), std::raw::load(t + 64), false, t) {
+                return false
+            }
+        }
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+    }
+    if !ym_append_tag_directive(y, ym_sb_text(y, "!"), ym_sb_text(y, "!"), true, t) {
+        return false
+    }
+    ym_append_tag_directive(y, ym_sb_text(y, "!!"), ym_sb_text(y, "tag:yaml.org,2002:"), true, t)
+}
+
+// ------------------------------------------------------------ estados
+
+fn ym_parse_stream_start(y: int, ev: int) -> bool {
+    let t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) != 1 {
+        ym_parse_err(y, 0, 0, 0, 0, 32, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+        return false
+    }
+    ym_set_state(y, 1)
+    ym_ev_tok(ev, 1, t)
+    ym_skip_token(y)
+    true
+}
+
+fn ym_parse_document_start(y: int, ev: int, implicit: bool) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if !implicit {
+        while ym_ttype(t) == 6 {
+            ym_skip_token(y)
+            t = ym_peek_token(y)
+            if t == 0 {
+                return false
+            }
+        }
+    }
+    let k = ym_ttype(t)
+    if implicit && k != 3 && k != 4 && k != 5 && k != 2 {
+        if !ym_process_directives(y) {
+            return false
+        }
+        ym_push_state(y, 4)
+        ym_set_state(y, 5)
+        ym_ev_tok(ev, 3, t)
+        return true
+    }
+    if k != 2 {
+        let si = std::raw::load(t + 8)
+        let sl = std::raw::load(t + 16)
+        let sc = std::raw::load(t + 24)
+        if !ym_process_directives(y) {
+            return false
+        }
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) != 5 {
+            ym_parse_err(y, 0, 0, 0, 0, 33, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+            return false
+        }
+        ym_push_state(y, 4)
+        ym_set_state(y, 3)
+        ym_ev(ev, 3, si, sl, sc)
+        ym_skip_token(y)
+        return true
+    }
+    ym_set_state(y, 23)
+    ym_ev_tok(ev, 2, t)
+    ym_skip_token(y)
+    true
+}
+
+fn ym_parse_document_content(y: int, ev: int) -> bool {
+    let t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    let k = ym_ttype(t)
+    if k == 3 || k == 4 || k == 5 || k == 6 || k == 2 {
+        ym_pop_state(y)
+        ym_ev_tok(ev, 6, t)
+        return true
+    }
+    ym_parse_node(y, ev, true, false)
+}
+
+fn ym_parse_document_end(y: int, ev: int) -> bool {
+    let t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    ym_ev_tok(ev, 4, t)
+    if ym_ttype(t) == 6 {
+        ym_skip_token(y)
+    }
+    std::raw::store(std::raw::load(y + 296), 0)
+    ym_set_state(y, 2)
+    true
+}
+
+fn ym_parse_node(y: int, ev: int, block: bool, indentless: bool) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 18 {
+        ym_pop_state(y)
+        ym_ev_tok(ev, 5, t)
+        std::raw::store(ev + 32, std::raw::load(t + 56))
+        ym_skip_token(y)
+        return true
+    }
+    let mut anchor = 0
+    let mut handle = 0
+    let mut suffix = 0
+    let mut tag = 0
+    let mut si = std::raw::load(t + 8)
+    let mut sl = std::raw::load(t + 16)
+    let mut sc = std::raw::load(t + 24)
+    let mut ti = 0
+    let mut tl = 0
+    let mut tc = 0
+    if ym_ttype(t) == 19 {
+        anchor = std::raw::load(t + 56)
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) == 20 {
+            handle = std::raw::load(t + 56)
+            suffix = std::raw::load(t + 64)
+            ti = std::raw::load(t + 8)
+            tl = std::raw::load(t + 16)
+            tc = std::raw::load(t + 24)
+            ym_skip_token(y)
+            t = ym_peek_token(y)
+            if t == 0 {
+                return false
+            }
+        }
+    } else if ym_ttype(t) == 20 {
+        handle = std::raw::load(t + 56)
+        suffix = std::raw::load(t + 64)
+        ti = si
+        tl = sl
+        tc = sc
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) == 19 {
+            anchor = std::raw::load(t + 56)
+            ym_skip_token(y)
+            t = ym_peek_token(y)
+            if t == 0 {
+                return false
+            }
+        }
+    }
+    if handle != 0 {
+        if ym_sb_first(handle) == 0 {
+            tag = suffix
+        } else {
+            let v = std::raw::load(y + 296)
+            let n = ym_vlen(v) / 2
+            let mut i = 0
+            while i < n {
+                if ym_sb_same(std::raw::load(ym_vat(v, 2 * i)), handle) {
+                    let prefix = std::raw::load(ym_vat(v, 2 * i + 1))
+                    tag = ym_sb(y)
+                    sb_raw(tag, std::raw::load(prefix + 16), ym_sb_clen(prefix))
+                    sb_raw(tag, std::raw::load(suffix + 16), ym_sb_clen(suffix))
+                    break
+                }
+                i += 1
+            }
+            if tag == 0 {
+                ym_parse_err(y, 65, si, sl, sc, 34, ti, tl, tc)
+                return false
+            }
+        }
+    }
+    let k = ym_ttype(t)
+    let mut kind = 0
+    let mut next = 0
+    if indentless && k == 14 {
+        kind = 7
+        next = 10
+    } else if k == 21 {
+        ym_pop_state(y)
+        ym_ev(ev, 6, si, sl, sc)
+        std::raw::store(ev + 32, anchor)
+        std::raw::store(ev + 40, tag)
+        std::raw::store(ev + 48, std::raw::load(t + 56))
+        std::raw::store(ev + 56, std::raw::load(t + 72))
+        ym_skip_token(y)
+        return true
+    } else if k == 10 {
+        kind = 7
+        next = 14
+    } else if k == 12 {
+        kind = 9
+        next = 19
+    } else if block && k == 7 {
+        kind = 7
+        next = 8
+    } else if block && k == 8 {
+        kind = 9
+        next = 11
+    } else if anchor != 0 || tag != 0 {
+        ym_pop_state(y)
+        ym_ev(ev, 6, si, sl, sc)
+        std::raw::store(ev + 32, anchor)
+        std::raw::store(ev + 40, tag)
+        return true
+    } else {
+        let mut context = 67
+        if block {
+            context = 66
+        }
+        ym_parse_err(y, context, si, sl, sc, 35, std::raw::load(t + 8), std::raw::load(t + 16), std::raw::load(t + 24))
+        return false
+    }
+    ym_set_state(y, next)
+    ym_ev(ev, kind, si, sl, sc)
+    std::raw::store(ev + 32, anchor)
+    std::raw::store(ev + 40, tag)
+    true
+}
+
+fn ym_parse_block_sequence_entry(y: int, ev: int, first: bool) -> bool {
+    if first {
+        ym_push_mark(y, ym_peek_token(y))
+        ym_skip_token(y)
+    }
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 14 {
+        let mi = std::raw::load(t + 32)
+        let ml = std::raw::load(t + 40)
+        let mc = std::raw::load(t + 48)
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) != 14 && ym_ttype(t) != 9 {
+            ym_push_state(y, 9)
+            return ym_parse_node(y, ev, true, false)
+        }
+        ym_set_state(y, 9)
+        ym_ev(ev, 6, mi, ml, mc)
+        return true
+    }
+    if ym_ttype(t) == 9 {
+        ym_pop_state(y)
+        ym_pop_mark(y)
+        ym_ev_tok(ev, 8, t)
+        ym_skip_token(y)
+        return true
+    }
+    ym_parse_err_popmark(y, 68, 36, t)
+    false
+}
+
+fn ym_parse_indentless_sequence_entry(y: int, ev: int) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 14 {
+        let mi = std::raw::load(t + 32)
+        let ml = std::raw::load(t + 40)
+        let mc = std::raw::load(t + 48)
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        let k = ym_ttype(t)
+        if k != 14 && k != 16 && k != 17 && k != 9 {
+            ym_push_state(y, 10)
+            return ym_parse_node(y, ev, true, false)
+        }
+        ym_set_state(y, 10)
+        ym_ev(ev, 6, mi, ml, mc)
+        return true
+    }
+    ym_pop_state(y)
+    ym_ev_tok(ev, 8, t)
+    true
+}
+
+fn ym_parse_block_mapping_key(y: int, ev: int, first: bool) -> bool {
+    if first {
+        ym_push_mark(y, ym_peek_token(y))
+        ym_skip_token(y)
+    }
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 16 {
+        let mi = std::raw::load(t + 32)
+        let ml = std::raw::load(t + 40)
+        let mc = std::raw::load(t + 48)
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        let k = ym_ttype(t)
+        if k != 16 && k != 17 && k != 9 {
+            ym_push_state(y, 13)
+            return ym_parse_node(y, ev, true, true)
+        }
+        ym_set_state(y, 13)
+        ym_ev(ev, 6, mi, ml, mc)
+        return true
+    }
+    if ym_ttype(t) == 9 {
+        ym_pop_state(y)
+        ym_pop_mark(y)
+        ym_ev_tok(ev, 10, t)
+        ym_skip_token(y)
+        return true
+    }
+    ym_parse_err_popmark(y, 69, 37, t)
+    false
+}
+
+fn ym_parse_block_mapping_value(y: int, ev: int) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 17 {
+        let mi = std::raw::load(t + 32)
+        let ml = std::raw::load(t + 40)
+        let mc = std::raw::load(t + 48)
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        let k = ym_ttype(t)
+        if k != 16 && k != 17 && k != 9 {
+            ym_push_state(y, 12)
+            return ym_parse_node(y, ev, true, true)
+        }
+        ym_set_state(y, 12)
+        ym_ev(ev, 6, mi, ml, mc)
+        return true
+    }
+    ym_set_state(y, 12)
+    ym_ev_tok(ev, 6, t)
+    true
+}
+
+fn ym_parse_flow_sequence_entry(y: int, ev: int, first: bool) -> bool {
+    if first {
+        ym_push_mark(y, ym_peek_token(y))
+        ym_skip_token(y)
+    }
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) != 11 {
+        if !first {
+            if ym_ttype(t) == 15 {
+                ym_skip_token(y)
+                t = ym_peek_token(y)
+                if t == 0 {
+                    return false
+                }
+            } else {
+                ym_parse_err_popmark(y, 70, 38, t)
+                return false
+            }
+        }
+        if ym_ttype(t) == 16 {
+            ym_set_state(y, 16)
+            ym_ev_tok(ev, 9, t)
+            ym_skip_token(y)
+            return true
+        }
+        if ym_ttype(t) != 11 {
+            ym_push_state(y, 15)
+            return ym_parse_node(y, ev, false, false)
+        }
+    }
+    ym_pop_state(y)
+    ym_pop_mark(y)
+    ym_ev_tok(ev, 8, t)
+    ym_skip_token(y)
+    true
+}
+
+fn ym_parse_flow_sequence_entry_mapping_key(y: int, ev: int) -> bool {
+    let t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    let k = ym_ttype(t)
+    if k != 17 && k != 15 && k != 11 {
+        ym_push_state(y, 17)
+        return ym_parse_node(y, ev, false, false)
+    }
+    let mi = std::raw::load(t + 32)
+    let ml = std::raw::load(t + 40)
+    let mc = std::raw::load(t + 48)
+    ym_skip_token(y)
+    ym_set_state(y, 17)
+    ym_ev(ev, 6, mi, ml, mc)
+    true
+}
+
+fn ym_parse_flow_sequence_entry_mapping_value(y: int, ev: int) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) == 17 {
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) != 15 && ym_ttype(t) != 11 {
+            ym_push_state(y, 18)
+            return ym_parse_node(y, ev, false, false)
+        }
+    }
+    ym_set_state(y, 18)
+    ym_ev_tok(ev, 6, t)
+    true
+}
+
+fn ym_parse_flow_sequence_entry_mapping_end(y: int, ev: int) -> bool {
+    let t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    ym_set_state(y, 15)
+    ym_ev_tok(ev, 10, t)
+    true
+}
+
+fn ym_parse_flow_mapping_key(y: int, ev: int, first: bool) -> bool {
+    if first {
+        ym_push_mark(y, ym_peek_token(y))
+        ym_skip_token(y)
+    }
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if ym_ttype(t) != 13 {
+        if !first {
+            if ym_ttype(t) == 15 {
+                ym_skip_token(y)
+                t = ym_peek_token(y)
+                if t == 0 {
+                    return false
+                }
+            } else {
+                ym_parse_err_popmark(y, 71, 39, t)
+                return false
+            }
+        }
+        if ym_ttype(t) == 16 {
+            ym_skip_token(y)
+            t = ym_peek_token(y)
+            if t == 0 {
+                return false
+            }
+            let k = ym_ttype(t)
+            if k != 17 && k != 15 && k != 13 {
+                ym_push_state(y, 21)
+                return ym_parse_node(y, ev, false, false)
+            }
+            ym_set_state(y, 21)
+            ym_ev_tok(ev, 6, t)
+            return true
+        }
+        if ym_ttype(t) != 13 {
+            ym_push_state(y, 22)
+            return ym_parse_node(y, ev, false, false)
+        }
+    }
+    ym_pop_state(y)
+    ym_pop_mark(y)
+    ym_ev_tok(ev, 10, t)
+    ym_skip_token(y)
+    true
+}
+
+fn ym_parse_flow_mapping_value(y: int, ev: int, empty: bool) -> bool {
+    let mut t = ym_peek_token(y)
+    if t == 0 {
+        return false
+    }
+    if empty {
+        ym_set_state(y, 20)
+        ym_ev_tok(ev, 6, t)
+        return true
+    }
+    if ym_ttype(t) == 17 {
+        ym_skip_token(y)
+        t = ym_peek_token(y)
+        if t == 0 {
+            return false
+        }
+        if ym_ttype(t) != 15 && ym_ttype(t) != 13 {
+            ym_push_state(y, 20)
+            return ym_parse_node(y, ev, false, false)
+        }
+    }
+    ym_set_state(y, 20)
+    ym_ev_tok(ev, 6, t)
+    true
+}
+
+// yaml_parser_parse: false si hay error (queda en y+80).
+fn ym_parse(y: int, ev: int) -> bool {
+    std::raw::store(ev, 0)
+    if std::raw::load(y + 168) != 0 || std::raw::load(y + 80) != 0 || std::raw::load(y + 272) == 23 {
+        return true
+    }
+    let s = std::raw::load(y + 272)
+    if s == 0 { return ym_parse_stream_start(y, ev) }
+    if s == 1 { return ym_parse_document_start(y, ev, true) }
+    if s == 2 { return ym_parse_document_start(y, ev, false) }
+    if s == 3 { return ym_parse_document_content(y, ev) }
+    if s == 4 { return ym_parse_document_end(y, ev) }
+    if s == 5 { return ym_parse_node(y, ev, true, false) }
+    if s == 6 { return ym_parse_node(y, ev, true, true) }
+    if s == 7 { return ym_parse_node(y, ev, false, false) }
+    if s == 8 { return ym_parse_block_sequence_entry(y, ev, true) }
+    if s == 9 { return ym_parse_block_sequence_entry(y, ev, false) }
+    if s == 10 { return ym_parse_indentless_sequence_entry(y, ev) }
+    if s == 11 { return ym_parse_block_mapping_key(y, ev, true) }
+    if s == 12 { return ym_parse_block_mapping_key(y, ev, false) }
+    if s == 13 { return ym_parse_block_mapping_value(y, ev) }
+    if s == 14 { return ym_parse_flow_sequence_entry(y, ev, true) }
+    if s == 15 { return ym_parse_flow_sequence_entry(y, ev, false) }
+    if s == 16 { return ym_parse_flow_sequence_entry_mapping_key(y, ev) }
+    if s == 17 { return ym_parse_flow_sequence_entry_mapping_value(y, ev) }
+    if s == 18 { return ym_parse_flow_sequence_entry_mapping_end(y, ev) }
+    if s == 19 { return ym_parse_flow_mapping_key(y, ev, true) }
+    if s == 20 { return ym_parse_flow_mapping_key(y, ev, false) }
+    if s == 21 { return ym_parse_flow_mapping_value(y, ev, false) }
+    if s == 22 { return ym_parse_flow_mapping_value(y, ev, true) }
+    false
+}
+
+// ------------------------------------------------------------ cargador (loader.rs)
+
+fn ym_push_event(y: int, ev: int) {
+    let v = std::raw::load(y + 312)
+    let mut k = 0
+    while k < 64 {
+        ym_vpush(v, std::raw::load(ev + k))
+        k += 8
+    }
+}
+
+fn ym_event_count(y: int) -> int {
+    ym_vlen(std::raw::load(y + 312)) / 8
+}
+
+// Ancla de un nodo: número de alias nuevo (anchors.len()) y su evento.
+fn ym_define_anchor(y: int, anchors: any, name: any) -> any {
+    let id = std::map::length(anchors)
+    let out = std::map::insert(anchors, name, id)
+    let aliases = std::raw::load(y + 360)
+    let at = ym_event_count(y)
+    if id < ym_vlen(aliases) {
+        std::raw::store(ym_vat(aliases, id), at)
+    } else {
+        ym_vpush(aliases, at)
+    }
+    out
+}
+
+// Loader::next_document. false = no hay más documentos. El error del
+// documento (si lo hay) queda en y+320: 1 del analizador, 2 "unknown anchor".
+fn ym_next_document(y: int, first: bool) -> bool {
+    if std::raw::load(y + 352) != 0 {
+        return false
+    }
+    std::raw::store(std::raw::load(y + 312), 0)
+    std::raw::store(std::raw::load(y + 360), 0)
+    std::raw::store(y + 320, 0)
+    let mut anchors: any = std::map::new()
+    let ev = rt_alloc(64)
+    while true {
+        if std::raw::load(y + 80) != 0 || !ym_parse(y, ev) {
+            std::raw::store(y + 320, 1)
+            rt_free_block(ev)
+            return true
+        }
+        let kind = std::raw::load(ev)
+        if kind == 1 || kind == 3 {
+            continue
+        }
+        if kind == 2 {
+            std::raw::store(y + 352, 1)
+            if first && ym_event_count(y) == 0 {
+                std::raw::store(ev, 11)
+                ym_push_event(y, ev)
+            }
+            rt_free_block(ev)
+            return first
+        }
+        if kind == 4 {
+            rt_free_block(ev)
+            return true
+        }
+        if kind == 5 {
+            let name = ym_sb_str(std::raw::load(ev + 32))
+            if !std::map::contains(anchors, name) {
+                std::raw::store(y + 320, 2)
+                std::raw::store(y + 328, std::raw::load(ev + 8))
+                std::raw::store(y + 336, std::raw::load(ev + 16))
+                std::raw::store(y + 344, std::raw::load(ev + 24))
+                rt_free_block(ev)
+                return true
+            }
+            let id = std::raw::bits(std::map::get(anchors, name))
+            std::raw::store(ev + 32, id)
+        } else if kind == 6 || kind == 7 || kind == 9 {
+            let a = std::raw::load(ev + 32)
+            if a != 0 {
+                anchors = ym_define_anchor(y, anchors, ym_sb_str(a))
+            }
+        }
+        ym_push_event(y, ev)
+    }
+    true
+}
+
+// ------------------------------------------------------------ rutas (path.rs)
+//
+// Bloque de 3 palabras: tipo (0 raíz, 1 secuencia, 2 mapa, 3 alias,
+// 4 desconocido), padre, dato (índice o sb de la clave).
+
+fn ym_path_new(kind: int, parent: int, data: int) -> int {
+    let p = rt_alloc(24)
+    std::raw::store(p, kind)
+    std::raw::store(p + 8, parent)
+    std::raw::store(p + 16, data)
+    p
+}
+
+fn ym_text_of(b: int) -> any {
+    if b == 0 {
+        return rt_concat("", "")
+    }
+    ym_sb_str(b)
+}
+
+fn ym_path_text(p: int) -> any {
+    let kind = std::raw::load(p)
+    if kind == 0 {
+        return rt_concat(".", "")
+    }
+    let parent = std::raw::load(p + 8)
+    if kind == 1 {
+        let idx = rt_int_to_str(std::raw::load(p + 16))
+        return rt_concat(rt_concat(rt_concat(ym_path_text(parent), "["), idx), "]")
+    }
+    if kind == 2 {
+        return rt_concat(ym_path_parent(parent), ym_text_of(std::raw::load(p + 16)))
+    }
+    if kind == 3 {
+        return ym_path_text(parent)
+    }
+    rt_concat(ym_path_parent(parent), "?")
+}
+
+fn ym_path_parent(p: int) -> any {
+    if std::raw::load(p) == 0 {
+        return rt_concat("", "")
+    }
+    rt_concat(ym_path_text(p), ".")
+}
+
+// ------------------------------------------------------------ deserializador
+//
+// d: +0 estado y, +8 nativa (0 parse, 1 parse_multi), +16 jumpcount.
+
+fn ym_fname(code: int) -> string {
+    if code == 0 {
+        return "std::yaml::parse"
+    }
+    "std::yaml::parse_multi"
+}
+
+fn ym_dfail(d: int, msg: any) {
+    ym_fail(std::raw::load(d), ym_fname(std::raw::load(d + 8)), msg)
+}
+
+// Error de serde (Message) con la ruta y la marca del evento.
+fn ym_msg_fail(d: int, msg: any, path: int, e: int) {
+    let ps = ym_path_text(path)
+    let mut text: any = msg
+    if !(rt_slen(ps) == 1 && std::raw::load8(std::raw::bits(ps) + 16) == 46) {
+        text = rt_concat(rt_concat(ps, ": "), msg)
+    }
+    ym_dfail(d, ym_with_mark(text, std::raw::load(e + 16), std::raw::load(e + 24)))
+}
+
+// Se acabaron los eventos: el error del documento (o fin inesperado).
+fn ym_de_eof(d: int) {
+    let y = std::raw::load(d)
+    if std::raw::load(y + 320) != 0 {
+        ym_dfail(d, ym_doc_error_text(y))
+    }
+    ym_dfail(d, rt_concat("EOF while parsing a value", ""))
+}
+
+fn ym_evp(d: int, i: int) -> int {
+    ym_vat(std::raw::load(std::raw::load(d) + 312), i * 8)
+}
+
+fn ym_evn(d: int) -> int {
+    ym_event_count(std::raw::load(d))
+}
+
+fn ym_bytes_is(p: int, n: int, s: string) -> bool {
+    if rt_slen(s) != n {
+        return false
+    }
+    let q = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) != std::raw::load8(q + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// parse_tag: tag que empieza por '!' y (sin él, si queda algo) es UTF-8.
+fn ym_is_enum_tag(tag: int) -> bool {
+    if tag == 0 {
+        return false
+    }
+    let n = ym_sb_clen(tag)
+    let p = std::raw::load(tag + 16)
+    if n == 0 || std::raw::load8(p) != 33 {
+        return false
+    }
+    if n == 1 {
+        return true
+    }
+    rt_valid_utf8(p + 1, n - 1)
+}
+
+fn ym_is_null_word(p: int, n: int) -> bool {
+    ym_bytes_is(p, n, "null") || ym_bytes_is(p, n, "Null") || ym_bytes_is(p, n, "NULL") || ym_bytes_is(p, n, "~")
+}
+
+// 1 true, 0 false, -1 ninguno.
+fn ym_parse_bool(p: int, n: int) -> int {
+    if ym_bytes_is(p, n, "true") || ym_bytes_is(p, n, "True") || ym_bytes_is(p, n, "TRUE") {
+        return 1
+    }
+    if ym_bytes_is(p, n, "false") || ym_bytes_is(p, n, "False") || ym_bytes_is(p, n, "FALSE") {
+        return 0
+    }
+    -1
+}
+
+fn ym_is_ascii_digit(c: int) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn ym_digits_but_not_number(p0: int, n0: int) -> bool {
+    let mut p = p0
+    let mut n = n0
+    if n > 0 && (std::raw::load8(p) == 45 || std::raw::load8(p) == 43) {
+        p += 1
+        n -= 1
+    }
+    if n <= 1 || std::raw::load8(p) != 48 {
+        return false
+    }
+    let mut i = 1
+    while i < n {
+        if !ym_is_ascii_digit(std::raw::load8(p + i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// from_str_radix con 128 bits en 4 trozos de 32. st: +0 negativo,
+// +8..+32 trozos (del menos al más significativo), +40 desbordó 128 bits.
+fn ym_radix(p: int, n: int, radix: int, signed: bool, preneg: bool, st: int) -> bool {
+    let mut k = 0
+    while k < 48 {
+        std::raw::store(st + k, 0)
+        k += 8
+    }
+    if n == 0 {
+        return false
+    }
+    let mut i = 0
+    if preneg {
+        std::raw::store(st, 1)
+    } else {
+        let c0 = std::raw::load8(p)
+        if (c0 == 43 || c0 == 45) && n == 1 {
+            return false
+        }
+        if c0 == 43 {
+            i = 1
+        } else if c0 == 45 && signed {
+            std::raw::store(st, 1)
+            i = 1
+        }
+    }
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let mut dv = 99
+        if c >= 48 && c <= 57 {
+            dv = c - 48
+        } else if c >= 97 && c <= 122 {
+            dv = c - 87
+        } else if c >= 65 && c <= 90 {
+            dv = c - 55
+        }
+        if dv >= radix {
+            return false
+        }
+        let mut carry = dv
+        let mut j = 0
+        while j < 4 {
+            let x = std::raw::load(st + 8 + 8 * j) * radix + carry
+            std::raw::store(st + 8 + 8 * j, x & 4294967295)
+            carry = x / 4294967296
+            j += 1
+        }
+        if carry != 0 {
+            std::raw::store(st + 40, 1)
+        }
+        i += 1
+    }
+    true
+}
+
+fn ym_fits(st: int, bits: int, signed: bool) -> bool {
+    if std::raw::load(st + 40) != 0 {
+        return false
+    }
+    let neg = std::raw::load(st) != 0
+    let l0 = std::raw::load(st + 8)
+    let l1 = std::raw::load(st + 16)
+    let l2 = std::raw::load(st + 24)
+    let l3 = std::raw::load(st + 32)
+    let half = 2147483648
+    if bits == 64 {
+        if l2 != 0 || l3 != 0 {
+            return false
+        }
+        if !signed {
+            return true
+        }
+        if neg {
+            return l1 < half || (l1 == half && l0 == 0)
+        }
+        return l1 < half
+    }
+    if !signed {
+        return true
+    }
+    if neg {
+        return l3 < half || (l3 == half && l2 == 0 && l1 == 0 && l0 == 0)
+    }
+    l3 < half
+}
+
+// Prefijo "0x" / "0o" / "0b" en p (c = 'x', 'o' o 'b').
+fn ym_radix_of(c: int) -> int {
+    if c == 120 {
+        return 16
+    }
+    if c == 111 {
+        return 8
+    }
+    2
+}
+
+fn ym_parse_unsigned(p: int, n: int, bits: int, st: int) -> bool {
+    let mut up = p
+    let mut un = n
+    if un > 0 && std::raw::load8(up) == 43 {
+        up += 1
+        un -= 1
+    }
+    let mut k = 0
+    while k < 3 {
+        let mut c = 120
+        if k == 1 {
+            c = 111
+        } else if k == 2 {
+            c = 98
+        }
+        if un >= 2 && std::raw::load8(up) == 48 && std::raw::load8(up + 1) == c {
+            let rn = un - 2
+            if rn > 0 && (std::raw::load8(up + 2) == 43 || std::raw::load8(up + 2) == 45) {
+                return false
+            }
+            if ym_radix(up + 2, rn, ym_radix_of(c), false, false, st) && ym_fits(st, bits, false) {
+                return true
+            }
+        }
+        k += 1
+    }
+    if un > 0 && (std::raw::load8(up) == 43 || std::raw::load8(up) == 45) {
+        return false
+    }
+    if ym_digits_but_not_number(p, n) {
+        return false
+    }
+    ym_radix(up, un, 10, false, false, st) && ym_fits(st, bits, false)
+}
+
+fn ym_parse_negative(p: int, n: int, bits: int, st: int) -> bool {
+    let mut k = 0
+    while k < 3 {
+        let mut c = 120
+        if k == 1 {
+            c = 111
+        } else if k == 2 {
+            c = 98
+        }
+        if n >= 3 && std::raw::load8(p) == 45 && std::raw::load8(p + 1) == 48 && std::raw::load8(p + 2) == c {
+            if ym_radix(p + 3, n - 3, ym_radix_of(c), true, true, st) && ym_fits(st, bits, true) {
+                return true
+            }
+        }
+        k += 1
+    }
+    if ym_digits_but_not_number(p, n) {
+        return false
+    }
+    ym_radix(p, n, 10, true, false, st) && ym_fits(st, bits, true)
+}
+
+fn ym_low64(st: int) -> int {
+    std::raw::wadd(std::raw::wmul(std::raw::load(st + 16), 4294967296), std::raw::load(st + 8))
+}
+
+// visit_int + visitante de Value. 0 ninguno, 1 entero (st+48),
+// 2 u64 mayor que i64::MAX (st+48, se convierte a float), 3 fuera de rango.
+fn ym_visit_int(p: int, n: int, st: int) -> int {
+    if ym_parse_unsigned(p, n, 64, st) {
+        let v = ym_low64(st)
+        std::raw::store(st + 48, v)
+        if v >= 0 {
+            return 1
+        }
+        return 2
+    }
+    if ym_parse_negative(p, n, 64, st) {
+        let mag = ym_low64(st)
+        if std::raw::load(st) != 0 {
+            std::raw::store(st + 48, std::raw::wsub(0, mag))
+        } else {
+            std::raw::store(st + 48, mag)
+        }
+        return 1
+    }
+    if ym_parse_unsigned(p, n, 128, st) {
+        return 3
+    }
+    if ym_parse_negative(p, n, 128, st) {
+        return 3
+    }
+    0
+}
+
+// parse_f64. 0 ninguno, 1 finito (bits en st+48), 2 infinito o NaN (nil).
+fn ym_parse_f64(p: int, n: int, st: int) -> int {
+    let mut up = p
+    let mut un = n
+    if n > 0 && std::raw::load8(p) == 43 {
+        up = p + 1
+        un = n - 1
+        if un > 0 && (std::raw::load8(up) == 43 || std::raw::load8(up) == 45) {
+            return 0
+        }
+    }
+    if ym_bytes_is(up, un, ".inf") || ym_bytes_is(up, un, ".Inf") || ym_bytes_is(up, un, ".INF") {
+        return 2
+    }
+    if ym_bytes_is(p, n, "-.inf") || ym_bytes_is(p, n, "-.Inf") || ym_bytes_is(p, n, "-.INF") {
+        return 2
+    }
+    if ym_bytes_is(p, n, ".nan") || ym_bytes_is(p, n, ".NaN") || ym_bytes_is(p, n, ".NAN") {
+        return 2
+    }
+    let s = rt_str_alloc(un)
+    rt_copy(s + 16, up, un)
+    let bits = fl_parse(rt_sval(s))
+    if bits == nil {
+        return 0
+    }
+    let b = std::raw::bits(bits)
+    if !js_finite(b) {
+        return 0
+    }
+    std::raw::store(st + 48, b)
+    1
+}
+
+fn ym_str_value(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    rt_copy(s + 16, p, n)
+    rt_sval(s)
+}
+
+fn ym_invalid_value(d: int, p: int, n: int, expected: string, path: int, e: int) {
+    let shown = rt_debug_str(p, n)
+    let msg = rt_concat(rt_concat(rt_concat("invalid value: string ", shown), ", expected "), expected)
+    ym_msg_fail(d, msg, path, e)
+}
+
+fn ym_number_value(d: int, code: int, st: int, path: int, e: int) -> any {
+    if code == 1 {
+        return std::raw::value(1, std::raw::load(st + 48))
+    }
+    if code == 2 {
+        return rt_float(js_u64_to_f(std::raw::load(st + 48)))
+    }
+    ym_msg_fail(d, rt_concat("JSON number out of range", ""), path, e)
+    nil
+}
+
+fn ym_untagged(d: int, p: int, n: int, path: int, e: int) -> any {
+    if n == 0 || ym_is_null_word(p, n) {
+        return nil
+    }
+    let b = ym_parse_bool(p, n)
+    if b == 1 {
+        return true
+    }
+    if b == 0 {
+        return false
+    }
+    let st = std::raw::load(d + 24)
+    let code = ym_visit_int(p, n, st)
+    if code != 0 {
+        return ym_number_value(d, code, st, path, e)
+    }
+    if !ym_digits_but_not_number(p, n) {
+        let f = ym_parse_f64(p, n, st)
+        if f == 1 {
+            return rt_float(std::raw::load(st + 48))
+        }
+        if f == 2 {
+            return nil
+        }
+    }
+    ym_str_value(p, n)
+}
+
+fn ym_visit_scalar(d: int, e: int, path: int) -> any {
+    let vsb = std::raw::load(e + 48)
+    let mut p = 0
+    let mut n = 0
+    if vsb != 0 {
+        p = std::raw::load(vsb + 16)
+        n = std::raw::load(vsb)
+    }
+    let plain = std::raw::load(e + 56) == 1
+    let tag = std::raw::load(e + 40)
+    if tag != 0 {
+        let tp = std::raw::load(tag + 16)
+        let tn = ym_sb_clen(tag)
+        let st = std::raw::load(d + 24)
+        if ym_bytes_is(tp, tn, "tag:yaml.org,2002:bool") {
+            let b = ym_parse_bool(p, n)
+            if b == 1 {
+                return true
+            }
+            if b == 0 {
+                return false
+            }
+            ym_invalid_value(d, p, n, "a boolean", path, e)
+        }
+        if ym_bytes_is(tp, tn, "tag:yaml.org,2002:int") {
+            let code = ym_visit_int(p, n, st)
+            if code == 0 {
+                ym_invalid_value(d, p, n, "an integer", path, e)
+            }
+            return ym_number_value(d, code, st, path, e)
+        }
+        if ym_bytes_is(tp, tn, "tag:yaml.org,2002:float") {
+            let f = ym_parse_f64(p, n, st)
+            if f == 1 {
+                return rt_float(std::raw::load(st + 48))
+            }
+            if f == 2 {
+                return nil
+            }
+            ym_invalid_value(d, p, n, "a float", path, e)
+        }
+        if ym_bytes_is(tp, tn, "tag:yaml.org,2002:null") {
+            if ym_is_null_word(p, n) {
+                return nil
+            }
+            ym_invalid_value(d, p, n, "null", path, e)
+        }
+        if tn > 0 && std::raw::load8(tp) == 33 && plain {
+            return ym_untagged(d, p, n, path, e)
+        }
+        return ym_str_value(p, n)
+    }
+    if plain {
+        return ym_untagged(d, p, n, path, e)
+    }
+    ym_str_value(p, n)
+}
+
+// jump(): alias → nodo anclado, con la misma profundidad.
+fn ym_de_jump(d: int, e: int, path: int, depth: int, any_mode: bool, first: bool) -> any {
+    let jc = std::raw::load(d + 16) + 1
+    std::raw::store(d + 16, jc)
+    if jc > ym_evn(d) * 100 {
+        ym_dfail(d, rt_concat("repetition limit exceeded", ""))
+    }
+    let aliases = std::raw::load(std::raw::load(d) + 360)
+    let cell = rt_alloc(8)
+    std::raw::store(cell, std::raw::load(ym_vat(aliases, std::raw::load(e + 32))))
+    let ap = ym_path_new(3, path, 0)
+    let mut v: any = nil
+    if any_mode {
+        v = ym_de_any(d, cell, ap, depth)
+    } else {
+        v = ym_de_str(d, cell, ap, first)
+    }
+    rt_free_block(ap)
+    rt_free_block(cell)
+    v
+}
+
+// deserialize_str (claves de mapa).
+fn ym_de_str(d: int, posp: int, path: int, first: bool) -> any {
+    let i = std::raw::load(posp)
+    if i >= ym_evn(d) {
+        ym_de_eof(d)
+    }
+    std::raw::store(posp, i + 1)
+    let e = ym_evp(d, i)
+    let k = std::raw::load(e)
+    if k == 6 {
+        return ym_text_of(std::raw::load(e + 48))
+    }
+    if k == 5 {
+        return ym_de_jump(d, e, path, 0, false, first)
+    }
+    let mut what = "map"
+    if k == 7 {
+        what = "sequence"
+    }
+    let mut expected = "a string"
+    if first {
+        expected = "a string key"
+    }
+    ym_msg_fail(d, rt_concat(rt_concat(rt_concat("invalid type: ", what), ", expected "), expected), path, e)
+    nil
+}
+
+// deserialize_any con el visitante de serde_json::Value.
+fn ym_de_any(d: int, posp: int, path: int, depth: int) -> any {
+    let i = std::raw::load(posp)
+    let count = ym_evn(d)
+    if i >= count {
+        ym_de_eof(d)
+    }
+    std::raw::store(posp, i + 1)
+    let e = ym_evp(d, i)
+    let k = std::raw::load(e)
+    if k == 5 {
+        return ym_de_jump(d, e, path, depth, true, false)
+    }
+    if k == 11 {
+        return nil
+    }
+    if ym_is_enum_tag(std::raw::load(e + 40)) {
+        ym_msg_fail(d, rt_concat("invalid type: enum, expected any valid JSON value", ""), path, e)
+    }
+    if k == 6 {
+        return ym_visit_scalar(d, e, path)
+    }
+    if depth == 0 {
+        ym_dfail(d, ym_with_mark(rt_concat("recursion limit exceeded", ""), std::raw::load(e + 16), std::raw::load(e + 24)))
+    }
+    if k == 7 {
+        let mut out: any = rt_array_new(0)
+        let mut idx = 0
+        while true {
+            let j = std::raw::load(posp)
+            if j >= count {
+                ym_de_eof(d)
+            }
+            let kk = std::raw::load(ym_evp(d, j))
+            if kk == 8 || kk == 11 {
+                break
+            }
+            let cp = ym_path_new(1, path, idx)
+            idx += 1
+            out = std::array::push(out, ym_de_any(d, posp, cp, depth - 1))
+            rt_free_block(cp)
+        }
+        std::raw::store(posp, std::raw::load(posp) + 1)
+        return out
+    }
+    let mut out: any = std::map::new()
+    let mut first = true
+    while true {
+        let j = std::raw::load(posp)
+        if j >= count {
+            ym_de_eof(d)
+        }
+        let ke = ym_evp(d, j)
+        let kk = std::raw::load(ke)
+        if kk == 10 || kk == 11 {
+            break
+        }
+        let key = ym_de_str(d, posp, path, first)
+        let mut vp = 0
+        if kk == 6 {
+            vp = ym_path_new(2, path, std::raw::load(ke + 48))
+        } else {
+            vp = ym_path_new(4, path, 0)
+        }
+        let v = ym_de_any(d, posp, vp, depth - 1)
+        rt_free_block(vp)
+        out = std::map::insert(out, key, v)
+        first = false
+    }
+    std::raw::store(posp, std::raw::load(posp) + 1)
+    out
+}
+
+// Deserializa el documento cargado; después, su error si lo tuvo.
+fn ym_deserialize(y: int, code: int) -> any {
+    let d = rt_alloc(32)
+    std::raw::store(d, y)
+    std::raw::store(d + 8, code)
+    std::raw::store(d + 16, 0)
+    std::raw::store(d + 24, rt_alloc(56))
+    let cell = rt_alloc(8)
+    std::raw::store(cell, 0)
+    let root = ym_path_new(0, 0, 0)
+    let v = ym_de_any(d, cell, root, 128)
+    rt_free_block(root)
+    rt_free_block(cell)
+    rt_free_block(std::raw::load(d + 24))
+    rt_free_block(d)
+    if std::raw::load(y + 320) != 0 {
+        ym_fail(y, ym_fname(code), ym_doc_error_text(y))
+    }
+    v
+}
+
+// ------------------------------------------------------------ nativas
+
+fn std__yaml__parse(text: any) -> any {
+    rt_expect_str(text, "std::yaml::parse")
+    let y = ym_new(text)
+    ym_next_document(y, true)
+    let v = ym_deserialize(y, 0)
+    if ym_next_document(y, false) {
+        ym_fail(y, "std::yaml::parse", rt_concat("deserializing from YAML containing more than one document is not supported", ""))
+    }
+    ym_free(y)
+    v
+}
+
+fn std__yaml__parse_multi(text: any) -> any {
+    rt_expect_str(text, "std::yaml::parse_multi")
+    let y = ym_new(text)
+    let mut out: any = rt_array_new(0)
+    let mut first = true
+    while ym_next_document(y, first) {
+        first = false
+        out = std::array::push(out, ym_deserialize(y, 1))
+    }
+    ym_free(y)
+    out
+}

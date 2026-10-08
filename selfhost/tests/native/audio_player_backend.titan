@@ -1,0 +1,11 @@
+// Differential check for the real PATH-based desktop audio backend discovery.
+fn main() {
+    let backend = std::audio::player_backend()
+    let known = backend == "" || backend == "mpv" || backend == "afplay" || backend == "paplay" || backend == "aplay" || backend == "ffplay" || backend == "soundplayer"
+    std::testing::assert(known, "player_backend must return an installed supported backend or an empty string")
+    let non_executable_fixture = std::env::get("TITAN_AUDIO_BACKEND_NONEXEC_ONLY")
+    if non_executable_fixture == "1" {
+        std::testing::assert_eq(backend, "", "a regular PATH file without execute permission is not a usable audio backend")
+    }
+    println("backend", backend)
+}

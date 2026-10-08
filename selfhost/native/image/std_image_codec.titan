@@ -1,0 +1,356 @@
+// Códecs BMP, PNG, JPEG y GIF nativos, comparados con la VM.
+fn im_le16(b: int, v: int) {
+    sb_byte(b, v & 255)
+    sb_byte(b, std::raw::shr(v, 8) & 255)
+}
+
+fn im_le32(b: int, v: int) {
+    sb_byte(b, v & 255)
+    sb_byte(b, std::raw::shr(v, 8) & 255)
+    sb_byte(b, std::raw::shr(v, 16) & 255)
+    sb_byte(b, std::raw::shr(v, 24) & 255)
+}
+
+fn im_ld16(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1)
+}
+
+fn im_ld32(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2) + 16777216 * std::raw::load8(p + 3)
+}
+
+fn im_pad4(n: int) -> int {
+    (n + 3) & (0 - 4)
+}
+
+fn im_bmp_encode(function: string, e: int) -> any {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    if c >= 5 {
+        let out_color = c - 4
+        let channels = im_channels(c)
+        let sample_count = w * h * channels
+        let converted = rt_alloc(sample_count)
+        let source = std::raw::load(e + 32)
+        let mut i = 0
+        while i < sample_count {
+            let value = im_sample_get(source + 2 * i, 2)
+            std::raw::store8(converted + i, (value + 128) / 257)
+            i += 1
+        }
+        let temporary = rt_alloc(40)
+        std::raw::store(temporary, std::raw::load(e))
+        std::raw::store(temporary + 8, w)
+        std::raw::store(temporary + 16, h)
+        std::raw::store(temporary + 24, out_color)
+        std::raw::store(temporary + 32, converted)
+        let result = im_bmp_encode(function, temporary)
+        rt_free_block(converted)
+        rt_free_block(temporary)
+        return result
+    }
+    let mut dib = 40
+    let mut pixsz = 3
+    let mut pal = 0
+    if c == 4 {
+        dib = 108
+        pixsz = 4
+    }
+    if c == 1 || c == 2 {
+        pixsz = 1
+        pal = 256
+    }
+    let row = im_pad4(w * pixsz)
+    let img = row * h
+    let palb = pal * 4
+    let off = 14 + dib + palb
+    let total = off + img
+    if total > 67108864 {
+        im_lim(function, "encoded image output bytes", 67108864)
+    }
+    let b = sb_new(total)
+    sb_byte(b, 66)
+    sb_byte(b, 77)
+    im_le32(b, total)
+    im_le16(b, 0)
+    im_le16(b, 0)
+    im_le32(b, off)
+    im_le32(b, dib)
+    im_le32(b, w)
+    im_le32(b, h)
+    im_le16(b, 1)
+    im_le16(b, pixsz * 8)
+    if dib >= 108 {
+        im_le32(b, 3)
+    } else {
+        im_le32(b, 0)
+    }
+    im_le32(b, img)
+    im_le32(b, 0)
+    im_le32(b, 0)
+    im_le32(b, pal)
+    im_le32(b, 0)
+    if dib >= 108 {
+        im_le32(b, 16711680)
+        im_le32(b, 65280)
+        im_le32(b, 255)
+        im_le32(b, 4278190080)
+        im_le32(b, 1934772034)
+        let mut z = 0
+        while z < 12 {
+            im_le32(b, 0)
+            z += 1
+        }
+    }
+    if pal != 0 {
+        let mut i = 0
+        while i < 256 {
+            sb_byte(b, i)
+            sb_byte(b, i)
+            sb_byte(b, i)
+            sb_byte(b, 0)
+            i += 1
+        }
+    }
+    let src = std::raw::load(e + 32)
+    let bpp = im_bpp(c)
+    let mut y = h - 1
+    while y >= 0 {
+        let mut x = 0
+        while x < w {
+            let p = src + (y * w + x) * bpp
+            if c == 4 {
+                sb_byte(b, std::raw::load8(p + 2))
+                sb_byte(b, std::raw::load8(p + 1))
+                sb_byte(b, std::raw::load8(p))
+                sb_byte(b, std::raw::load8(p + 3))
+            } else if c == 3 {
+                sb_byte(b, std::raw::load8(p + 2))
+                sb_byte(b, std::raw::load8(p + 1))
+                sb_byte(b, std::raw::load8(p))
+            } else {
+                sb_byte(b, std::raw::load8(p))
+            }
+            x += 1
+        }
+        let mut used = w * pixsz
+        while used < row {
+            sb_byte(b, 0)
+            used += 1
+        }
+        y -= 1
+    }
+    sb_finish_bytes(b)
+}
+
+fn im_filt_row(kind: int, prev: int, cur: int, n: int, bpp: int, out: int) {
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(cur + i)
+        let mut a = 0
+        if i >= bpp {
+            a = std::raw::load8(cur + i - bpp)
+        }
+        let bv = std::raw::load8(prev + i)
+        let mut cv = 0
+        if i >= bpp {
+            cv = std::raw::load8(prev + i - bpp)
+        }
+        let mut y = x
+        if kind == 1 {
+            y = (x - a) & 255
+        }
+        if kind == 2 {
+            y = (x - bv) & 255
+        }
+        if kind == 3 {
+            y = (x - ((a + bv) / 2)) & 255
+        }
+        if kind == 4 {
+            y = (x - qr_paeth(a, bv, cv)) & 255
+        }
+        std::raw::store8(out + i, y)
+        i += 1
+    }
+}
+
+fn im_png_idat(pix: int, w: int, h: int, bpp: int, sample_bytes: int) -> any {
+    let rw = w * bpp
+    let st = qr_znew()
+    let prev = rt_alloc_zero(rw)
+    let cur = rt_alloc(rw)
+    let filtered = rt_alloc(rw)
+    let row = rt_alloc(rw + 1)
+    let mut y = 0
+    while y < h {
+        rt_copy(cur, pix + y * rw, rw)
+        if sample_bytes == 2 {
+            let mut off = 0
+            while off < rw {
+                let low = std::raw::load8(cur + off)
+                let high = std::raw::load8(cur + off + 1)
+                std::raw::store8(cur + off, high)
+                std::raw::store8(cur + off + 1, low)
+                off += 2
+            }
+        }
+        let mut best = 2
+        let mut best_c = 0 - 1
+        let mut k = 0
+        while k < 4 {
+            let mut kind = 2
+            if k == 1 { kind = 1 }
+            if k == 2 { kind = 3 }
+            if k == 3 { kind = 4 }
+            im_filt_row(kind, prev, cur, rw, bpp, filtered)
+            let cost = qr_sumabs(filtered, rw)
+            if best_c < 0 || cost <= best_c {
+                best_c = cost
+                best = kind
+            }
+            if cost == 0 { break }
+            k += 1
+        }
+        im_filt_row(best, prev, cur, rw, bpp, filtered)
+        std::raw::store8(row, best)
+        rt_copy(row + 1, filtered, rw)
+        qr_zdata(st, row, rw + 1)
+        rt_copy(prev, cur, rw)
+        y += 1
+    }
+    rt_free_block(prev)
+    rt_free_block(cur)
+    rt_free_block(filtered)
+    rt_free_block(row)
+    qr_zfinish(st)
+}
+
+fn im_png_stored(pix: int, w: int, h: int, bpp: int, sample_bytes: int) -> any {
+    let rw = w * bpp
+    let raw_len = (rw + 1) * h
+    let raw = rt_alloc(raw_len)
+    let mut y = 0
+    while y < h {
+        let row = raw + y * (rw + 1)
+        std::raw::store8(row, 0)
+        rt_copy(row + 1, pix + y * rw, rw)
+        if sample_bytes == 2 {
+            let mut off = 0
+            while off < rw {
+                let low = std::raw::load8(row + 1 + off)
+                let high = std::raw::load8(row + 1 + off + 1)
+                std::raw::store8(row + 1 + off, high)
+                std::raw::store8(row + 1 + off + 1, low)
+                off += 2
+            }
+        }
+        y += 1
+    }
+    let out = sb_new(qr_stored_size(raw_len))
+    sb_byte(out, 120)
+    sb_byte(out, 1)
+    let mut pos = 0
+    while pos < raw_len {
+        let mut n = 65535
+        if pos + n > raw_len { n = raw_len - pos }
+        let last = pos + n == raw_len
+        let b0 = if last { 1 } else { 0 }
+        sb_byte(out, b0)
+        sb_byte(out, n & 255)
+        sb_byte(out, std::raw::shr(n, 8) & 255)
+        sb_byte(out, (n ^ 255) & 255)
+        sb_byte(out, std::raw::shr(n ^ 65535, 8) & 255)
+        sb_raw(out, raw + pos, n)
+        pos += n
+    }
+    qr_be32(out, cz_adler(raw, raw_len))
+    rt_free_block(raw)
+    sb_finish_bytes(out)
+}
+
+fn im_png_encode(e: int) -> any {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let sample_bytes = im_sample_bytes(c)
+    let pix = std::raw::load(e + 32)
+    let mut z = im_png_idat(pix, w, h, bpp, sample_bytes)
+    let zlen = rt_slen(z)
+    if zlen > qr_stored_size((w * bpp + 1) * h) {
+        z = im_png_stored(pix, w, h, bpp, sample_bytes)
+    }
+    let out = sb_new(64 + rt_slen(z))
+    sb_byte(out, 137)
+    sb_byte(out, 80)
+    sb_byte(out, 78)
+    sb_byte(out, 71)
+    sb_byte(out, 13)
+    sb_byte(out, 10)
+    sb_byte(out, 26)
+    sb_byte(out, 10)
+    let ih = rt_alloc(13)
+    std::raw::store8(ih, std::raw::shr(w, 24) & 255)
+    std::raw::store8(ih + 1, std::raw::shr(w, 16) & 255)
+    std::raw::store8(ih + 2, std::raw::shr(w, 8) & 255)
+    std::raw::store8(ih + 3, w & 255)
+    std::raw::store8(ih + 4, std::raw::shr(h, 24) & 255)
+    std::raw::store8(ih + 5, std::raw::shr(h, 16) & 255)
+    std::raw::store8(ih + 6, std::raw::shr(h, 8) & 255)
+    std::raw::store8(ih + 7, h & 255)
+    let bit_depth = if sample_bytes == 2 { 16 } else { 8 }
+    std::raw::store8(ih + 8, bit_depth)
+    let mut ct = 2
+    if c == 1 || c == 5 { ct = 0 }
+    if c == 2 || c == 6 { ct = 4 }
+    if c == 4 || c == 8 { ct = 6 }
+    std::raw::store8(ih + 9, ct)
+    std::raw::store8(ih + 10, 0)
+    std::raw::store8(ih + 11, 0)
+    std::raw::store8(ih + 12, 0)
+    qr_chunk(out, "IHDR", ih, 13)
+    rt_free_block(ih)
+    qr_chunk(out, "IDAT", std::raw::bits(z) + 16, rt_slen(z))
+    qr_chunk(out, "IEND", 0, 0)
+    sb_finish_bytes(out)
+}
+
+fn im_format_eq(format: any, name: string) -> bool {
+    if rt_slen(format) != rt_slen(name) { return false }
+    let fp = std::raw::bits(format) + 16
+    let np = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    let mut i = 0
+    while i < n {
+        let mut a = std::raw::load8(fp + i)
+        let b = std::raw::load8(np + i)
+        if a >= 65 && a <= 90 { a += 32 }
+        if a != b { return false }
+        i += 1
+    }
+    true
+}
+
+fn im_encode_do(function: string, e: int, format: any) -> any {
+    rt_expect_str(format, function)
+    let mut encoded: any = nil
+    if im_format_eq(format, "png") {
+        encoded = im_png_encode(e)
+    } else if im_format_eq(format, "bmp") {
+        encoded = im_bmp_encode(function, e)
+    } else if im_format_eq(format, "jpg") || im_format_eq(format, "jpeg") {
+        encoded = im_jpeg_encode(function, e)
+    } else if im_format_eq(format, "gif") {
+        encoded = im_gif_encode(function, e)
+    } else if im_format_eq(format, "webp") {
+        encoded = im_webp_encode(function, e)
+    } else {
+        im_fail(function, "unknown format '" + std__text__lowercase(format) + "' (try png, jpeg, webp, bmp, gif)")
+    }
+    if rt_slen(encoded) > 67108864 {
+        std::raw::release(6, std::raw::bits(encoded))
+        im_lim(function, "encoded image output bytes", 67108864)
+    }
+    encoded
+}

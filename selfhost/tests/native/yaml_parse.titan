@@ -1,0 +1,40 @@
+// std::yaml::parse: valores (escalares, bloques, flujo, anclas, etiquetas).
+fn show(label: string, text: string) {
+    let r = std::try::catch(|| { std::yaml::parse(text) })
+    match r {
+        Result::Ok(v) => println(label + " = " + std::json::stringify(v)),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn hexs(h: string) -> string {
+    std::encoding::utf8_decode(std::encoding::hex_decode(h))
+}
+
+fn main() {
+    show("mapa", "name: TITAN\nversion: 0.2\nkeywords: [rust, vm, wasm]\n")
+    show("anidado", "server:\n  host: localhost\n  ports:\n    - 80\n    - 443\n  tls: {on: true, cert: ~}\n")
+    show("vacio", "")
+    show("solo comentario", "# nada\n")
+    show("documento vacio", "---\n")
+    show("nulos", "[~, null, Null, NULL, '', !!null ~, !!null NULL]")
+    show("booleanos", "[true, True, TRUE, false, False, FALSE, yes, no, on, !!bool true]")
+    show("enteros", "[0, -0, +0, 12, -7, +5, 0x1F, 0o17, 0b101, -0x10, -0o7, -0b11, +0x5, 007, -007, 1_000]")
+    show("limites", "[9223372036854775807, -9223372036854775808, 9223372036854775808, 18446744073709551615, 0xFFFFFFFFFFFFFFFF, -0x8000000000000000]")
+    show("decimales", "[1.5, -1.5, +1.5, .5, 5., 1e3, 1E-3, +1e+3, 1e400, .inf, -.Inf, +.INF, .nan, inf, nan]")
+    show("etiquetas", "[!!str 12, !!int 12, !!float 1, !!float .inf, !<tag:x> y, !!binary aGk=, '12', \"12\"]")
+    show("comillas", "['it''s', \"t\\tab \\x41 \\u00e9 \\U0001F600 \\N\\_\\L\\P\", 'a\n\n  b', \"multi\n  line\"]")
+    show("literal", "a: |\n  line1\n   line2\n\nb: |-\n  sin fin\nc: |+\n  con fin\n\nd: |2\n    sangrado\n")
+    show("plegado", "a: >\n  folded\n  text\n\n  para\n\n    mas\nb: >-\n  x\n  y\n")
+    show("plano multilinea", "c: plain\n  multi line\n\n  otra\n")
+    show("anclas", "base: &b {x: 1, y: [1, 2]}\nother: *b\nlist: [&s hi, *s]\n")
+    show("ancla redefinida", "a: &x 1\nb: &x 2\nc: *x\n")
+    show("claves", "? a\n: 1\n1: uno\ntrue: si\n~: nulo\n'q': comilla\n")
+    show("duplicadas", "a: 1\nb: 2\na: 3\n")
+    show("flujo raro", "[a: 1, b, ? x : y, {k: v}]")
+    show("directivas", "%YAML 1.1\n%TAG !e! tag:e.com,2000:\n--- !e!foo 1\n")
+    show("utf8", "ñandú: 日本語\n" + hexs("65cc81") + ": \"\\u00f1\"\n")
+    show("bom", hexs("efbbbf613a20310a"))
+    show("seq en mapa", "a:\n- 1\n- 2\nb:\n  - - x\n    - y\n")
+    show("fin documento", "a: 1\n...\n")
+}

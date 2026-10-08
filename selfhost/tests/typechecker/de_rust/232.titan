@@ -1,0 +1,1 @@
+fn completes() -> ! { loop { true && { break } } } fn main() {}

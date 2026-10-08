@@ -1,0 +1,22 @@
+fn cmp(a: int, b: int) -> int {
+    a - b
+}
+
+fn main() {
+    let s = "  Hola, señor ñandú  "
+    print(std::text::trim(s), len(std::text::trim(s)))
+    print(std::text::chars("añb"), std::text::char_code('ñ'), std::text::from_char_code(241))
+    print(std::text::substring("mañana", 1, 4), std::text::substring("abc", 2, 99), std::text::substring("abc", 3, 1))
+    print(std::text::contains("titan", "ta"), std::text::contains("titan", "x"), std::text::contains("a", ""))
+    print(std::text::starts_with("titan", "ti"), std::text::ends_with("titan", "an"), std::text::ends_with("a", "abc"))
+    print(std::text::is_alphabetic('ñ'), std::text::is_alphabetic('1'), std::text::is_alphanumeric('9'))
+    print(std::text::is_uppercase('Ñ'), std::text::is_uppercase('n'), std::text::is_whitespace(' '), std::text::is_whitespace('x'))
+    print(std::path::join("a", "b"), std::path::join("a/", "b"), std::path::join("a", "/b"), std::path::join("", "b"))
+    print(std::path::parent("/a/b"), std::path::parent("/a"), std::path::parent("/"), std::path::parent("a"), std::path::parent("a/b/"), std::path::parent(""))
+    print(std::path::canonical("/tmp/../tmp/./"), std::path::canonical("/"))
+    print(std::fs::exists("/tmp"), std::fs::is_dir("/tmp"), std::fs::is_file("/tmp"), std::fs::exists("/no/existe"))
+    print(std::fs::is_file("/etc/hostname"), len(std::fs::read_text("/etc/hostname")) > 0)
+    print(std::env::get("HOME"), std::env::get("NO_EXISTE_ESTA_VARIABLE"))
+    print(sort_by([5, 3, 9, 1, 3], |a, b| cmp(a, b)))
+    print(sort_by(["pera", "kiwi", "uva"], |a, b| len(a) - len(b)))
+}

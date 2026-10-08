@@ -1,0 +1,1 @@
+fn read() -> string { match "Titan" { "Titan" => "ok", _ => 0 } } fn main() {}

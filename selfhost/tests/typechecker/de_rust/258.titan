@@ -1,0 +1,1 @@
+fn main() { let callback = || return 42 let value: int = callback() }

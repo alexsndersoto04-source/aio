@@ -1,0 +1,61 @@
+// Cobertura de match: enums con y sin payload, bool, literales, or-patterns y guardas.
+enum Forma { Circulo(int), Punto, Caja(string) }
+
+fn area(f: Forma) -> int {
+    match f {
+        Forma::Circulo(r) => r * 3
+        Forma::Punto => 0
+        Forma::Caja(_) => 1
+    }
+}
+
+fn falta(f: Forma) -> int {
+    match f {
+        Forma::Circulo(r) => r
+        Forma::Punto => 0
+    }
+}
+
+fn con_guarda(f: Forma) -> int {
+    match f {
+        Forma::Circulo(r) if r > 1 => r
+        Forma::Punto => 0
+        Forma::Caja(s) => 2
+    }
+}
+
+fn literal_payload(f: Forma) -> int {
+    match f {
+        Forma::Circulo(1) => 1
+        Forma::Punto => 0
+        Forma::Caja(s) => 2
+    }
+}
+
+fn booleanos(b: bool) -> int {
+    match b {
+        true => 1
+        false => 0
+        true => 2
+    }
+}
+
+fn enteros(n: int) -> string {
+    match n {
+        1 | 2 => "poco"
+        3 => "tres"
+        1 => "otra vez"
+    }
+}
+
+fn variante_mala(f: Forma) -> int {
+    match f {
+        Forma::Nada => 1
+        _ => 0
+    }
+}
+
+fn main() {
+    print(area(Forma::Punto) + falta(Forma::Punto) + con_guarda(Forma::Punto) + literal_payload(Forma::Punto) + booleanos(true) + variante_mala(Forma::Punto))
+    print(enteros(1))
+}

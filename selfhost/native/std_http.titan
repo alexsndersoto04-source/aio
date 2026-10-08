@@ -1,0 +1,1776 @@
+// std::http (13 nativas). Reproduce http.rs, multipart.rs, http_client.rs
+// y los ayudantes de native.rs. HTTP usa TCP; HTTPS usa OpenSSL real, con
+// validación de certificados y nombre. No baja a HTTP sin cifrar. Prefijo `ht_`.
+// Globales +3120: puntero al estado (id de petición y límites de ritmo).
+
+fn ht_g() -> int { std::raw::globals() + 3120 }
+
+fn ht_st() -> int {
+    let g = ht_g()
+    let s = std::raw::load(g)
+    if s != 0 {
+        return s
+    }
+    let p = rt_alloc_zero(16)
+    std::raw::store(p, 1)
+    std::raw::store(g, p)
+    p
+}
+
+fn ht_fail(function: string, message: string) {
+    rt_native_fail(function, message)
+}
+
+fn ht_some(v: any) -> any { rt_enum_new(v, "Option", "Some") }
+
+fn ht_none() -> any {
+    let p = rt_alloc(48)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, std::raw::bits("Option"))
+    std::raw::store(p + 16, std::raw::bits("None"))
+    std::raw::store(p + 24, 0)
+    std::raw::store(p + 32, 0)
+    std::raw::store(p + 40, 0)
+    std::raw::adopt(11, p)
+}
+
+fn ht_bool(v: any, function: string) -> int {
+    if std::raw::tag(v) != 3 {
+        rt_native_fail(function, "expected bool")
+    }
+    if std::raw::bits(v) != 0 {
+        return 1
+    }
+    0
+}
+
+fn ht_token(s: any) -> int {
+    let n = rt_slen(s)
+    if n == 0 {
+        return 0
+    }
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        let alnum = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+        let extra = b == 33 || b == 35 || b == 36 || b == 37 || b == 38 || b == 39 || b == 42 || b == 43 || b == 45 || b == 46 || b == 94 || b == 95 || b == 96 || b == 124 || b == 126
+        if !alnum && !extra {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn ht_ieq(a: any, b: any) -> int {
+    let na = rt_slen(a)
+    if na != rt_slen(b) {
+        return 0
+    }
+    let pa = std::raw::bits(a) + 16
+    let pb = std::raw::bits(b) + 16
+    let mut i = 0
+    while i < na {
+        let mut ca = std::raw::load8(pa + i)
+        let mut cb = std::raw::load8(pb + i)
+        if ca >= 65 && ca <= 90 { ca += 32 }
+        if cb >= 65 && cb <= 90 { cb += 32 }
+        if ca != cb {
+            return 0
+        }
+        i += 1
+    }
+    1
+}
+
+fn ht_lower(s: any) -> any {
+    let n = rt_slen(s)
+    let o = rt_str_alloc(n)
+    let src = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(src + i)
+        if c >= 65 && c <= 90 { c += 32 }
+        std::raw::store8(o + 16 + i, c)
+        i += 1
+    }
+    rt_sval(o)
+}
+
+fn ht_has_crlf(s: any) -> int {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 13 || c == 10 {
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn ht_find4(p: int, n: int) -> int {
+    let mut i = 0
+    while i + 3 < n {
+        if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 && std::raw::load8(p + i + 2) == 13 && std::raw::load8(p + i + 3) == 10 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn ht_find(p: int, n: int, q: int, m: int) -> int {
+    if m <= 0 {
+        return 0
+    }
+    if n < m {
+        return -1
+    }
+    let mut i = 0
+    while i + m <= n {
+        let mut j = 0
+        while j < m && std::raw::load8(p + i + j) == std::raw::load8(q + j) {
+            j += 1
+        }
+        if j == m {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn ht_ctrl(s: any) -> int {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) < 32 {
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn ht_usize(s: any) -> int {
+    let n = rt_slen(s)
+    if n == 0 {
+        return -1
+    }
+    let p = std::raw::bits(s) + 16
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 {
+            return -1
+        }
+        let d = c - 48
+        if v > (9223372036854775807 - d) / 10 {
+            return -1
+        }
+        v = v * 10 + d
+        i += 1
+    }
+    v
+}
+
+fn ht_hexn(s: any) -> int {
+    let n = rt_slen(s)
+    if n == 0 {
+        return -1
+    }
+    let p = std::raw::bits(s) + 16
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let mut d = -1
+        if c >= 48 && c <= 57 { d = c - 48 }
+        if c >= 97 && c <= 102 { d = c - 87 }
+        if c >= 65 && c <= 70 { d = c - 55 }
+        if d < 0 {
+            return -1
+        }
+        if v > 1152921504606846975 {
+            return -1
+        }
+        v = v * 16 + d
+        i += 1
+    }
+    v
+}
+
+fn ht_hex16(v: int) -> any {
+    let o = rt_str_alloc(16)
+    let mut x = v
+    let mut i = 15
+    while i >= 0 {
+        let d = x & 15
+        let mut c = 48 + d
+        if d >= 10 {
+            c = 87 + d
+        }
+        std::raw::store8(o + 16 + i, c)
+        x = std::raw::shr(x, 4)
+        i -= 1
+    }
+    "titan-" + rt_sval(o)
+}
+
+fn ht_now() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000 + ns / 1000000
+}
+
+fn ht_pct(s: any, function: string) -> any {
+    let n = rt_slen(s)
+    let src = rt_bdata(s)
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(src + i) == 37 {
+            if i + 2 >= n {
+                ht_fail(function, "invalid percent encoding in route/query")
+            }
+            let a = rt_hex_value(std::raw::load8(src + i + 1))
+            let c = rt_hex_value(std::raw::load8(src + i + 2))
+            if a < 0 || c < 0 {
+                ht_fail(function, "invalid percent encoding in route/query")
+            }
+            sb_byte(b, a * 16 + c)
+            i += 3
+        } else {
+            sb_byte(b, std::raw::load8(src + i))
+            i += 1
+        }
+    }
+    if !rt_valid_utf8(std::raw::load(b + 16), sb_len(b)) {
+        ht_fail(function, "invalid percent encoding in route/query")
+    }
+    sb_finish(b)
+}
+
+fn ht_plus(s: any) -> any {
+    let n = rt_slen(s)
+    let o = rt_str_alloc(n)
+    let src = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(src + i)
+        if c == 43 { c = 32 }
+        std::raw::store8(o + 16 + i, c)
+        i += 1
+    }
+    rt_sval(o)
+}
+
+fn ht_trim_slashes(s: any) -> any {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut a = 0
+    let mut b = n
+    while a < b && std::raw::load8(p + a) == 47 { a += 1 }
+    while b > a && std::raw::load8(p + b - 1) == 47 { b -= 1 }
+    rt_substr_bytes(s, a, b)
+}
+
+fn ht_split_slash(s: any) -> any {
+    let t = ht_trim_slashes(s)
+    let n = rt_slen(t)
+    let p = std::raw::bits(t) + 16
+    let mut out = []
+    let mut start = 0
+    let mut i = 0
+    while i <= n {
+        if i == n || std::raw::load8(p + i) == 47 {
+            if i > start {
+                out = std::array::push(out, rt_substr_bytes(t, start, i))
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    out
+}
+
+fn ht_reason(status: int) -> any {
+    if status == 100 { return "Continue" }
+    if status == 101 { return "Switching Protocols" }
+    if status == 200 { return "OK" }
+    if status == 201 { return "Created" }
+    if status == 202 { return "Accepted" }
+    if status == 204 { return "No Content" }
+    if status == 206 { return "Partial Content" }
+    if status == 301 { return "Moved Permanently" }
+    if status == 302 { return "Found" }
+    if status == 304 { return "Not Modified" }
+    if status == 307 { return "Temporary Redirect" }
+    if status == 308 { return "Permanent Redirect" }
+    if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
+    if status == 403 { return "Forbidden" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 408 { return "Request Timeout" }
+    if status == 409 { return "Conflict" }
+    if status == 413 { return "Content Too Large" }
+    if status == 415 { return "Unsupported Media Type" }
+    if status == 422 { return "Unprocessable Content" }
+    if status == 426 { return "Upgrade Required" }
+    if status == 429 { return "Too Many Requests" }
+    if status == 500 { return "Internal Server Error" }
+    if status == 501 { return "Not Implemented" }
+    if status == 502 { return "Bad Gateway" }
+    if status == 503 { return "Service Unavailable" }
+    if status == 504 { return "Gateway Timeout" }
+    nil
+}
+
+fn ht_u16(v: int, function: string, msg: string) -> int {
+    if v < 0 || v > 65535 {
+        ht_fail(function, msg)
+    }
+    v
+}
+
+fn std__http__reason_phrase(status: any) -> any {
+    let function = "std::http::reason_phrase"
+    rt_expect_int(status, function)
+    let s = ht_u16(std::raw::bits(status), function, "HTTP status out of range")
+    ht_reason(s)
+}
+
+fn std__http__parse_request(buffer: any) -> any {
+    let function = "std::http::parse_request"
+    rt_expect_bytes(buffer, function)
+    let n = rt_slen(buffer)
+    let p = rt_bdata(buffer)
+    let end = ht_find4(p, n)
+    if end < 0 {
+        if n > 65536 {
+            ht_fail(function, "HTTP headers exceed configured limit")
+        }
+        return ht_none()
+    }
+    if end + 4 > 65536 {
+        ht_fail(function, "HTTP headers exceed configured limit")
+    }
+    if !rt_valid_utf8(p, end) {
+        ht_fail(function, "malformed HTTP header")
+    }
+    let text = rt_str_alloc(end)
+    rt_copy(text + 16, p, end)
+    let head = rt_sval(text)
+    let mut line0 = ""
+    let mut got0 = 0
+    let mut i = 0
+    let mut start = 0
+    let mut headers: any = rt_map_alloc(0, 4)
+    let mut nlen = 0
+    let mut nlen2 = -1
+    let mut has_len = 0
+    let mut host_count = 0
+    let mut count = 0
+    while i <= end {
+        let mut crlf = 0
+        if i + 1 < end {
+            if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 { crlf = 1 }
+        }
+        if i == end || crlf != 0 {
+            if got0 == 0 {
+                line0 = rt_substr_bytes(head, start, i)
+                got0 = 1
+            } else if i > start {
+                count += 1
+                if count > 100 {
+                    ht_fail(function, "too many HTTP headers")
+                }
+                let line = rt_substr_bytes(head, start, i)
+                let ln = rt_slen(line)
+                if ln > 0 {
+                    let c0 = std::raw::load8(std::raw::bits(line) + 16)
+                    if c0 == 32 || c0 == 9 {
+                        ht_fail(function, "malformed HTTP header")
+                    }
+                }
+                let lp = std::raw::bits(line) + 16
+                let mut colon = -1
+                let mut k = 0
+                while k < ln {
+                    if std::raw::load8(lp + k) == 58 {
+                        colon = k
+                        break
+                    }
+                    k += 1
+                }
+                if colon < 0 {
+                    ht_fail(function, "malformed HTTP header")
+                }
+                let name0 = rt_substr_bytes(line, 0, colon)
+                let value = std__text__trim(rt_substr_bytes(line, colon + 1, ln))
+                if ht_token(name0) == 0 || ht_has_crlf(value) != 0 {
+                    ht_fail(function, "malformed HTTP header")
+                }
+                let name = ht_lower(name0)
+                if name == "content-length" {
+                    let L = ht_usize(value)
+                    if L < 0 {
+                        ht_fail(function, "invalid Content-Length")
+                    }
+                    if has_len != 0 && nlen != L {
+                        ht_fail(function, "conflicting Content-Length headers")
+                    }
+                    if has_len != 0 {
+                        nlen2 = L
+                    }
+                    nlen = L
+                    has_len = 1
+                }
+                if name == "transfer-encoding" {
+                    ht_fail(function, "Transfer-Encoding is not accepted with this codec")
+                }
+                if name == "host" {
+                    host_count += 1
+                }
+                let pos = rt_map_find(headers, name)
+                if pos >= 0 {
+                    let old = rt_map_value_at(headers, pos)
+                    headers = std__map__insert(headers, name, old + ", " + value)
+                } else {
+                    headers = std__map__insert(headers, name, value)
+                }
+            }
+            if i == end { break }
+            i += 2
+            start = i
+            continue
+        }
+        i += 1
+    }
+    if rt_slen(line0) > 8192 {
+        ht_fail(function, "malformed HTTP request line")
+    }
+    let mut sp1 = -1
+    let mut sp2 = -1
+    let mut extra = 0
+    let rl = rt_slen(line0)
+    let rp = std::raw::bits(line0) + 16
+    let mut si = 0
+    while si < rl {
+        if std::raw::load8(rp + si) == 32 {
+            if sp1 < 0 { sp1 = si }
+            else if sp2 < 0 { sp2 = si }
+            else { extra = 1 }
+        }
+        si += 1
+    }
+    if sp1 < 0 || sp2 < 0 || extra != 0 {
+        ht_fail(function, "malformed HTTP request line")
+    }
+    let method = rt_substr_bytes(line0, 0, sp1)
+    let target = rt_substr_bytes(line0, sp1 + 1, sp2)
+    let version = rt_substr_bytes(line0, sp2 + 1, rl)
+    if ht_token(method) == 0 || rt_slen(target) == 0 || ht_ctrl(target) != 0 {
+        ht_fail(function, "malformed HTTP request line")
+    }
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        ht_fail(function, "unsupported HTTP version '" + version + "'")
+    }
+    if version == "HTTP/1.1" && host_count != 1 {
+        ht_fail(function, "HTTP/1.1 requires exactly one Host header")
+    }
+    let mut body_length = 0
+    if has_len != 0 {
+        body_length = nlen
+    }
+    if body_length > 16777216 {
+        ht_fail(function, "HTTP body exceeds configured limit")
+    }
+    let consumed = end + 4 + body_length
+    if n < consumed {
+        return ht_none()
+    }
+    let mut path = target
+    let mut query: any = nil
+    let tn = rt_slen(target)
+    let tp = std::raw::bits(target) + 16
+    let mut qat = -1
+    let mut qi = 0
+    while qi < tn {
+        if std::raw::load8(tp + qi) == 63 {
+            qat = qi
+            break
+        }
+        qi += 1
+    }
+    if qat >= 0 {
+        path = rt_substr_bytes(target, 0, qat)
+        query = rt_substr_bytes(target, qat + 1, tn)
+    }
+    let mut conn = ""
+    let cpos = rt_map_find(headers, "connection")
+    if cpos >= 0 {
+        conn = ht_lower(rt_map_value_at(headers, cpos))
+    }
+    let mut keep = 0
+    if version == "HTTP/1.1" {
+        if conn != "close" { keep = 1 }
+    } else {
+        if conn == "keep-alive" { keep = 1 }
+    }
+    let mut keepv: any = false
+    if keep != 0 { keepv = true }
+    let mut m = rt_map_alloc(0, 8)
+    m = std__map__insert(m, "body", rt_bytes_from(p + end + 4, body_length))
+    m = std__map__insert(m, "consumed", consumed)
+    m = std__map__insert(m, "headers", headers)
+    m = std__map__insert(m, "keep_alive", keepv)
+    m = std__map__insert(m, "method", method)
+    m = std__map__insert(m, "path", path)
+    m = std__map__insert(m, "query", query)
+    m = std__map__insert(m, "target", target)
+    m = std__map__insert(m, "version", version)
+    ht_some(m)
+}
+
+fn std__http__build_response(status: any, headers: any, body: any, keep_alive: any) -> any {
+    let function = "std::http::build_response"
+    rt_expect_int(status, function)
+    rt_expect_map(headers, function)
+    rt_expect_bytes(body, function)
+    let st = ht_u16(std::raw::bits(status), function, "HTTP status out of range")
+    let reason = ht_reason(st)
+    if std::raw::tag(reason) == 0 {
+        ht_fail(function, "invalid response status " + rt_int_to_str(st))
+    }
+    let ka = ht_bool(keep_alive, function)
+    let b = sb_new(64 + rt_slen(body))
+    sb_str(b, "HTTP/1.1 ")
+    sb_str(b, rt_int_to_str(st))
+    sb_byte(b, 32)
+    sb_str(b, reason)
+    sb_str(b, "\r\n")
+    let hp = std::raw::bits(headers)
+    let hn = std::raw::load(hp + 8)
+    let hd = std::raw::load(hp + 24)
+    let mut i = 0
+    while i < hn {
+        let e = hd + 24 * i
+        let name = std::raw::value(5, std::raw::load(e))
+        let val = std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+        if std::raw::tag(val) != 5 {
+            ht_fail(function, "expected string")
+        }
+        if ht_token(name) == 0 || ht_has_crlf(val) != 0 || ht_ieq(name, "content-length") != 0 || ht_ieq(name, "connection") != 0 {
+            ht_fail(function, "invalid response header name or value")
+        }
+        sb_str(b, name)
+        sb_str(b, ": ")
+        sb_str(b, val)
+        sb_str(b, "\r\n")
+        i += 1
+    }
+    sb_str(b, "Content-Length: ")
+    sb_str(b, rt_int_to_str(rt_slen(body)))
+    sb_str(b, "\r\nConnection: ")
+    if ka != 0 {
+        sb_str(b, "keep-alive")
+    } else {
+        sb_str(b, "close")
+    }
+    sb_str(b, "\r\n\r\n")
+    sb_raw(b, rt_bdata(body), rt_slen(body))
+    sb_finish_bytes(b)
+}
+
+fn ht_route_ok(parts: any, function: string) {
+    let n = len(parts)
+    let mut names: any = rt_map_alloc(0, 4)
+    let mut i = 0
+    while i < n {
+        let part = parts[i]
+        let pn = rt_slen(part)
+        if pn > 0 && std::raw::load8(std::raw::bits(part) + 16) == 58 {
+            let name = rt_substr_bytes(part, 1, pn)
+            if rt_slen(name) == 0 || rt_map_find(names, name) >= 0 {
+                ht_fail(function, "invalid route pattern")
+            }
+            names = std__map__insert(names, name, 1)
+        }
+        if pn > 0 && std::raw::load8(std::raw::bits(part) + 16) == 42 {
+            let name = rt_substr_bytes(part, 1, pn)
+            if rt_slen(name) == 0 || i + 1 != n || rt_map_find(names, name) >= 0 {
+                ht_fail(function, "invalid route pattern")
+            }
+            names = std__map__insert(names, name, 1)
+        }
+        i += 1
+    }
+}
+
+fn std__http__route_match(pattern: any, path: any) -> any {
+    let function = "std::http::route_match"
+    rt_expect_str(pattern, function)
+    rt_expect_str(path, function)
+    let pp = ht_split_slash(pattern)
+    let tp = ht_split_slash(path)
+    ht_route_ok(pp, function)
+    let mut params: any = rt_map_alloc(0, 4)
+    let mut path_index = 0
+    let pn = len(pp)
+    let tn = len(tp)
+    let mut i = 0
+    while i < pn {
+        let part = pp[i]
+        let plen = rt_slen(part)
+        let mut p0 = 0
+        if plen > 0 {
+            p0 = std::raw::load8(std::raw::bits(part) + 16)
+        }
+        if p0 == 42 {
+            let name = rt_substr_bytes(part, 1, plen)
+            if rt_slen(name) == 0 || i + 1 != pn {
+                ht_fail(function, "invalid route pattern")
+            }
+            let mut rest = ""
+            let mut j = path_index
+            while j < tn {
+                if j > path_index { rest = rest + "/" }
+                rest = rest + tp[j]
+                j += 1
+            }
+            params = std__map__insert(params, name, ht_pct(rest, function))
+            path_index = tn
+            break
+        }
+        if path_index >= tn {
+            return ht_none()
+        }
+        let value = tp[path_index]
+        if p0 == 58 {
+            let name = rt_substr_bytes(part, 1, plen)
+            if rt_slen(name) == 0 || rt_map_find(params, name) >= 0 {
+                ht_fail(function, "invalid route pattern")
+            }
+            params = std__map__insert(params, name, ht_pct(value, function))
+        } else if part != value {
+            return ht_none()
+        }
+        path_index += 1
+        i += 1
+    }
+    if path_index != tn {
+        return ht_none()
+    }
+    ht_some(params)
+}
+
+fn std__http__parse_query(query: any, max_pairs: any) -> any {
+    let function = "std::http::parse_query"
+    rt_expect_str(query, function)
+    rt_expect_int(max_pairs, function)
+    let limit = std::raw::bits(max_pairs)
+    if limit < 0 {
+        ht_fail(function, "expected nonnegative integer")
+    }
+    let mut out: any = rt_map_alloc(0, 4)
+    if rt_slen(query) == 0 {
+        return out
+    }
+    let n = rt_slen(query)
+    let p = std::raw::bits(query) + 16
+    let mut start = 0
+    let mut i = 0
+    let mut index = 0
+    while i <= n {
+        if i == n || std::raw::load8(p + i) == 38 {
+            if index >= limit {
+                ht_fail(function, "query pair count exceeds configured limit")
+            }
+            let pair = rt_substr_bytes(query, start, i)
+            let pn = rt_slen(pair)
+            let pp = std::raw::bits(pair) + 16
+            let mut eq = -1
+            let mut k = 0
+            while k < pn {
+                if std::raw::load8(pp + k) == 61 {
+                    eq = k
+                    break
+                }
+                k += 1
+            }
+            let mut key = pair
+            let mut val = ""
+            if eq >= 0 {
+                key = rt_substr_bytes(pair, 0, eq)
+                val = rt_substr_bytes(pair, eq + 1, pn)
+            }
+            key = ht_pct(ht_plus(key), function)
+            val = ht_pct(ht_plus(val), function)
+            let pos = rt_map_find(out, key)
+            if pos >= 0 {
+                let arr = rt_map_value_at(out, pos)
+                out = std__map__insert(out, key, std::array::push(arr, val))
+            } else {
+                let arr = std::array::push([], val)
+                out = std__map__insert(out, key, arr)
+            }
+            index += 1
+            start = i + 1
+        }
+        i += 1
+    }
+    out
+}
+
+fn ht_resp_headers(response: any, function: string) -> any {
+    if std::raw::tag(response) != 9 {
+        ht_fail(function, "HTTP response must be map")
+    }
+    let pos = rt_map_find(response, "headers")
+    if pos < 0 {
+        return std__map__insert(response, "headers", rt_map_alloc(0, 4))
+    }
+    let h = rt_map_value_at(response, pos)
+    if std::raw::tag(h) != 9 {
+        ht_fail(function, "HTTP response headers must be map")
+    }
+    response
+}
+
+fn ht_hdrs(response: any) -> any {
+    rt_map_value_at(response, rt_map_find(response, "headers"))
+}
+
+fn ht_put_resp(response: any, headers: any) -> any {
+    std__map__insert(response, "headers", headers)
+}
+
+fn std__http__security_headers(response: any) -> any {
+    let function = "std::http::security_headers"
+    let mut r = ht_resp_headers(response, function)
+    let mut h = ht_hdrs(r)
+    if rt_map_find(h, "X-Content-Type-Options") < 0 {
+        h = std__map__insert(h, "X-Content-Type-Options", "nosniff")
+    }
+    if rt_map_find(h, "X-Frame-Options") < 0 {
+        h = std__map__insert(h, "X-Frame-Options", "DENY")
+    }
+    if rt_map_find(h, "Referrer-Policy") < 0 {
+        h = std__map__insert(h, "Referrer-Policy", "no-referrer")
+    }
+    if rt_map_find(h, "Content-Security-Policy") < 0 {
+        h = std__map__insert(h, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    }
+    ht_put_resp(r, h)
+}
+
+fn std__http__cors(response: any, origin: any, methods: any) -> any {
+    let function = "std::http::cors"
+    rt_expect_str(origin, function)
+    rt_expect_str(methods, function)
+    if ht_has_crlf(origin) != 0 || ht_has_crlf(methods) != 0 {
+        ht_fail(function, "invalid CORS header value")
+    }
+    let mut r = ht_resp_headers(response, function)
+    let mut h = ht_hdrs(r)
+    h = std__map__insert(h, "Access-Control-Allow-Origin", origin)
+    h = std__map__insert(h, "Access-Control-Allow-Methods", methods)
+    h = std__map__insert(h, "Vary", "Origin")
+    ht_put_resp(r, h)
+}
+
+fn std__http__request_id(request: any) -> any {
+    let function = "std::http::request_id"
+    rt_expect_map(request, function)
+    let st = ht_st()
+    let id = std::raw::load(st)
+    if id < 1 {
+        ht_fail(function, "HTTP request identifier space exhausted")
+    }
+    let nxt = id + 1
+    if nxt < 1 {
+        ht_fail(function, "HTTP request identifier space exhausted")
+    }
+    std::raw::store(st, nxt)
+    std__map__insert(request, "request_id", ht_hex16(id))
+}
+
+fn std__http__rate_limit(key: any, maximum: any, window: any) -> any {
+    let function = "std::http::rate_limit"
+    rt_expect_str(key, function)
+    rt_expect_int(maximum, function)
+    rt_expect_int(window, function)
+    let maxv = std::raw::bits(maximum)
+    let win = std::raw::bits(window)
+    if maxv < 0 {
+        ht_fail(function, "rate limit maximum must be nonnegative")
+    }
+    if win < 0 {
+        ht_fail(function, "rate limit window must be nonnegative")
+    }
+    if maxv == 0 || win == 0 {
+        return false
+    }
+    let kn = rt_slen(key)
+    if kn == 0 || kn > 256 {
+        ht_fail(function, "invalid rate limit key")
+    }
+    let st = ht_st()
+    let mut head = std::raw::load(st + 8)
+    let now = ht_now()
+    let mut nkeys = 0
+    let mut cur = head
+    let mut found = 0
+    while cur != 0 {
+        nkeys += 1
+        let ks = std::raw::load(cur + 8)
+        if ks == kn {
+            let mut same = 1
+            let mut i = 0
+            while i < kn {
+                if std::raw::load8(cur + 32 + i) != std::raw::load8(std::raw::bits(key) + 16 + i) {
+                    same = 0
+                }
+                i += 1
+            }
+            if same != 0 {
+                found = cur
+            }
+        }
+        cur = std::raw::load(cur)
+    }
+    if found == 0 {
+        if nkeys >= 4096 {
+            ht_fail(function, "rate limit key quota exceeded")
+        }
+        found = rt_alloc(32 + kn)
+        std::raw::store(found, head)
+        std::raw::store(found + 8, kn)
+        std::raw::store(found + 16, now)
+        std::raw::store(found + 24, 0)
+        rt_copy(found + 32, std::raw::bits(key) + 16, kn)
+        std::raw::store(st + 8, found)
+    }
+    let start = std::raw::load(found + 16)
+    if now - start >= win {
+        std::raw::store(found + 16, now)
+        std::raw::store(found + 24, 0)
+    }
+    let c = std::raw::load(found + 24)
+    if c >= maxv {
+        return false
+    }
+    std::raw::store(found + 24, c + 1)
+    true
+}
+
+fn ht_resp_map(status: int, ctype: any, body: any) -> any {
+    let mut h = rt_map_alloc(0, 4)
+    h = std__map__insert(h, "Content-Type", ctype)
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "body", body)
+    m = std__map__insert(m, "headers", h)
+    m = std__map__insert(m, "keep_alive", true)
+    std__map__insert(m, "status", status)
+}
+
+fn std__http__json_response(status: any, value: any) -> any {
+    let function = "std::http::json_response"
+    rt_expect_int(status, function)
+    let s = std__json__stringify(value)
+    ht_resp_map(std::raw::bits(status), "application/json; charset=utf-8", std__encoding__utf8_encode(s))
+}
+
+fn std__http__error_response(status: any, message: any) -> any {
+    let function = "std::http::error_response"
+    rt_expect_int(status, function)
+    rt_expect_str(message, function)
+    let mut em = rt_map_alloc(0, 4)
+    em = std__map__insert(em, "error", message)
+    let s = std__json__stringify(em)
+    ht_resp_map(std::raw::bits(status), "application/json; charset=utf-8", std__encoding__utf8_encode(s))
+}
+
+fn ht_disp(value: any, function: string) -> any {
+    let n = rt_slen(value)
+    let p = std::raw::bits(value) + 16
+    let mut start = 0
+    let mut i = 0
+    let mut first = 1
+    let mut name: any = nil
+    let mut filename: any = nil
+    while i <= n {
+        if i == n || std::raw::load8(p + i) == 59 {
+            let piece = std__text__trim(rt_substr_bytes(value, start, i))
+            if first != 0 {
+                if ht_ieq(piece, "form-data") == 0 {
+                    ht_fail(function, "multipart Content-Disposition is invalid")
+                }
+                first = 0
+            } else {
+                let pn = rt_slen(piece)
+                let pp = std::raw::bits(piece) + 16
+                let mut eq = -1
+                let mut k = 0
+                while k < pn {
+                    if std::raw::load8(pp + k) == 61 {
+                        eq = k
+                        break
+                    }
+                    k += 1
+                }
+                if eq >= 0 {
+                    let key = std__text__trim(rt_substr_bytes(piece, 0, eq))
+                    let mut val = std__text__trim(rt_substr_bytes(piece, eq + 1, pn))
+                    let vn = rt_slen(val)
+                    if vn >= 2 {
+                        if std::raw::load8(std::raw::bits(val) + 16) == 34 && std::raw::load8(std::raw::bits(val) + 16 + vn - 1) == 34 {
+                            val = rt_substr_bytes(val, 1, vn - 1)
+                        }
+                    }
+                    if val == "." || val == ".." {
+                        ht_fail(function, "multipart Content-Disposition is invalid")
+                    }
+                    let vp = std::raw::bits(val) + 16
+                    let vnn = rt_slen(val)
+                    let mut t = 0
+                    while t < vnn {
+                        let c = std::raw::load8(vp + t)
+                        if c == 13 || c == 10 || c == 47 || c == 92 {
+                            ht_fail(function, "multipart Content-Disposition is invalid")
+                        }
+                        t += 1
+                    }
+                    if key == "name" { name = val }
+                    if key == "filename" { filename = val }
+                }
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    if std::raw::tag(name) == 0 || rt_slen(name) == 0 {
+        ht_fail(function, "multipart Content-Disposition is invalid")
+    }
+    let mut out = rt_map_alloc(0, 4)
+    out = std__map__insert(out, "name", name)
+    std__map__insert(out, "filename", filename)
+}
+
+fn std__http__parse_multipart(content_type: any, body: any, max_parts: any, max_part: any) -> any {
+    let function = "std::http::parse_multipart"
+    rt_expect_str(content_type, function)
+    rt_expect_bytes(body, function)
+    rt_expect_int(max_parts, function)
+    rt_expect_int(max_part, function)
+    let mp = std::raw::bits(max_parts)
+    let mb = std::raw::bits(max_part)
+    if mp < 0 || mb < 0 {
+        ht_fail(function, "expected nonnegative integer")
+    }
+    let ct = content_type
+    let cn = rt_slen(ct)
+    let cp = std::raw::bits(ct) + 16
+    let mut semi = 0
+    while semi < cn && std::raw::load8(cp + semi) != 59 { semi += 1 }
+    let main = std__text__trim(rt_substr_bytes(ct, 0, semi))
+    if ht_ieq(main, "multipart/form-data") == 0 {
+        ht_fail(function, "missing or invalid multipart boundary")
+    }
+    let mut boundary = ""
+    let mut gotb = 0
+    let mut start = semi + 1
+    let mut i = semi + 1
+    while i <= cn {
+        if i == cn || std::raw::load8(cp + i) == 59 {
+            let param = std__text__trim(rt_substr_bytes(ct, start, i))
+            let pn = rt_slen(param)
+            let pp = std::raw::bits(param) + 16
+            let mut eq = -1
+            let mut k = 0
+            while k < pn {
+                if std::raw::load8(pp + k) == 61 { eq = k; break }
+                k += 1
+            }
+            if eq >= 0 {
+                let key = std__text__trim(rt_substr_bytes(param, 0, eq))
+                if ht_ieq(key, "boundary") != 0 {
+                    let mut val = std__text__trim(rt_substr_bytes(param, eq + 1, pn))
+                    let vn = rt_slen(val)
+                    if vn >= 2 {
+                        if std::raw::load8(std::raw::bits(val) + 16) == 34 && std::raw::load8(std::raw::bits(val) + 16 + vn - 1) == 34 {
+                            val = rt_substr_bytes(val, 1, vn - 1)
+                        }
+                    }
+                    if rt_slen(val) == 0 || rt_slen(val) > 70 {
+                        ht_fail(function, "missing or invalid multipart boundary")
+                    }
+                    let vp = std::raw::bits(val) + 16
+                    let vnn = rt_slen(val)
+                    let mut t = 0
+                    while t < vnn {
+                        let c = std::raw::load8(vp + t)
+                        if c < 32 || c == 32 {
+                            ht_fail(function, "missing or invalid multipart boundary")
+                        }
+                        t += 1
+                    }
+                    boundary = val
+                    gotb = 1
+                }
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    if gotb == 0 {
+        ht_fail(function, "missing or invalid multipart boundary")
+    }
+    let delim = std__encoding__utf8_encode("--" + boundary)
+    let dn = rt_slen(delim)
+    let dp = rt_bdata(delim)
+    let bn = rt_slen(body)
+    let bp = rt_bdata(body)
+    if bn < dn {
+        ht_fail(function, "malformed multipart body")
+    }
+    let mut same = 1
+    i = 0
+    while i < dn {
+        if std::raw::load8(bp + i) != std::raw::load8(dp + i) { same = 0 }
+        i += 1
+    }
+    if same == 0 {
+        ht_fail(function, "malformed multipart body")
+    }
+    let mut cursor = dn
+    let mut output = []
+    loop {
+        if cursor + 2 <= bn && std::raw::load8(bp + cursor) == 45 && std::raw::load8(bp + cursor + 1) == 45 {
+            cursor += 2
+            if cursor == bn || (cursor + 2 == bn && std::raw::load8(bp + cursor) == 13 && std::raw::load8(bp + cursor + 1) == 10) {
+                return output
+            }
+            ht_fail(function, "malformed multipart body")
+        }
+        if cursor + 2 > bn || std::raw::load8(bp + cursor) != 13 || std::raw::load8(bp + cursor + 1) != 10 {
+            ht_fail(function, "malformed multipart body")
+        }
+        cursor += 2
+        let header_end = ht_find4(bp + cursor, bn - cursor)
+        if header_end < 0 {
+            ht_fail(function, "malformed multipart body")
+        }
+        if header_end > 16384 {
+            ht_fail(function, "multipart headers exceed limits")
+        }
+        if !rt_valid_utf8(bp + cursor, header_end) {
+            ht_fail(function, "multipart headers exceed limits")
+        }
+        let hraw = rt_str_alloc(header_end)
+        rt_copy(hraw + 16, bp + cursor, header_end)
+        let htext = rt_sval(hraw)
+        let mut headers: any = rt_map_alloc(0, 4)
+        let mut hi = 0
+        let mut hs = 0
+        let mut hcount = 0
+        while hi <= header_end {
+            let mut cr = 0
+            if hi + 1 < header_end {
+                if std::raw::load8(bp + cursor + hi) == 13 && std::raw::load8(bp + cursor + hi + 1) == 10 { cr = 1 }
+            }
+            if hi == header_end || cr != 0 {
+                if hi > hs {
+                    if hcount >= 32 {
+                        ht_fail(function, "multipart headers exceed limits")
+                    }
+                    hcount += 1
+                    let line = rt_substr_bytes(htext, hs, hi)
+                    let ln = rt_slen(line)
+                    let lp = std::raw::bits(line) + 16
+                    let mut colon = -1
+                    let mut k = 0
+                    while k < ln {
+                        if std::raw::load8(lp + k) == 58 { colon = k; break }
+                        k += 1
+                    }
+                    if colon < 0 {
+                        ht_fail(function, "multipart headers exceed limits")
+                    }
+                    let hn0 = rt_substr_bytes(line, 0, colon)
+                    let hv = std__text__trim(rt_substr_bytes(line, colon + 1, ln))
+                    if rt_slen(hn0) == 0 || ht_has_crlf(hv) != 0 {
+                        ht_fail(function, "multipart headers exceed limits")
+                    }
+                    headers = std__map__insert(headers, ht_lower(hn0), hv)
+                }
+                if hi == header_end { break }
+                hi += 2
+                hs = hi
+                continue
+            }
+            hi += 1
+        }
+        cursor += header_end + 4
+        let mark = std__encoding__utf8_encode("\r\n--" + boundary)
+        let mn = rt_slen(mark)
+        let data_end = ht_find(bp + cursor, bn - cursor, rt_bdata(mark), mn)
+        if data_end < 0 {
+            ht_fail(function, "malformed multipart body")
+        }
+        if data_end > mb {
+            ht_fail(function, "multipart part exceeds size limit")
+        }
+        if len(output) >= mp {
+            ht_fail(function, "multipart part count exceeds limit")
+        }
+        let dpos = rt_map_find(headers, "content-disposition")
+        if dpos < 0 {
+            ht_fail(function, "multipart Content-Disposition is invalid")
+        }
+        let disp = ht_disp(rt_map_value_at(headers, dpos), function)
+        let mut ctype: any = nil
+        let ctpos = rt_map_find(headers, "content-type")
+        if ctpos >= 0 {
+            ctype = rt_map_value_at(headers, ctpos)
+        }
+        let mut part = rt_map_alloc(0, 4)
+        part = std__map__insert(part, "content_type", ctype)
+        part = std__map__insert(part, "data", rt_bytes_from(bp + cursor, data_end))
+        part = std__map__insert(part, "filename", std__map__get(disp, "filename"))
+        part = std__map__insert(part, "headers", headers)
+        part = std__map__insert(part, "name", std__map__get(disp, "name"))
+        output = std::array::push(output, part)
+        cursor += data_end + 2 + dn
+    }
+    output
+}
+
+fn ht_parse_url(url: any, function: string) -> any {
+    let n = rt_slen(url)
+    let p = std::raw::bits(url) + 16
+    let mut secure = 0
+    let mut rest_off = 0
+    if n >= 8 {
+        let mut https = 1
+        let h = "https://"
+        let mut k = 0
+        while k < 8 {
+            if std::raw::load8(p + k) != std::raw::load8(std::raw::bits(h) + 16 + k) { https = 0 }
+            k += 1
+        }
+        if https != 0 {
+            secure = 1
+            rest_off = 8
+        }
+    }
+    if rest_off == 0 {
+        if n < 7 {
+            ht_fail(function, "invalid HTTP URL")
+        }
+        let h = "http://"
+        let mut ok = 1
+        let mut k = 0
+        while k < 7 {
+            if std::raw::load8(p + k) != std::raw::load8(std::raw::bits(h) + 16 + k) { ok = 0 }
+            k += 1
+        }
+        if ok == 0 {
+            ht_fail(function, "invalid HTTP URL")
+        }
+        rest_off = 7
+    }
+    let rest = rt_substr_bytes(url, rest_off, n)
+    let rn = rt_slen(rest)
+    let rp = std::raw::bits(rest) + 16
+    let mut i = 0
+    while i < rn {
+        let c = std::raw::load8(rp + i)
+        if c == 64 || c == 35 {
+            ht_fail(function, "invalid HTTP URL")
+        }
+        i += 1
+    }
+    let mut slash = -1
+    i = 0
+    while i < rn {
+        if std::raw::load8(rp + i) == 47 {
+            slash = i
+            break
+        }
+        i += 1
+    }
+    let mut authority = rest
+    let mut path = "/"
+    if slash >= 0 {
+        authority = rt_substr_bytes(rest, 0, slash)
+        path = rt_substr_bytes(rest, slash, rn)
+    }
+    let an = rt_slen(authority)
+    let ap = std::raw::bits(authority) + 16
+    let mut colon = -1
+    i = an - 1
+    while i >= 0 {
+        if std::raw::load8(ap + i) == 58 {
+            colon = i
+            break
+        }
+        i -= 1
+    }
+    let mut host = authority
+    let mut port = 80
+    if secure != 0 { port = 443 }
+    if colon >= 0 {
+        host = rt_substr_bytes(authority, 0, colon)
+        let ps = rt_substr_bytes(authority, colon + 1, an)
+        port = ht_usize(ps)
+        if port < 1 || port > 65535 {
+            ht_fail(function, "invalid HTTP URL")
+        }
+    }
+    if rt_slen(host) == 0 || port == 0 {
+        ht_fail(function, "invalid HTTP URL")
+    }
+    let mut m = rt_map_alloc(0, 4)
+    m = std__map__insert(m, "authority", authority)
+    m = std__map__insert(m, "host", host)
+    m = std__map__insert(m, "path", path)
+    m = std__map__insert(m, "port", port)
+    std__map__insert(m, "secure", secure)
+}
+
+fn ht_resolve(base: any, location: any, function: string) -> any {
+    if rt_slen(location) >= 7 {
+        let l = location
+        if std::text::starts_with(l, "http://") || std::text::starts_with(l, "https://") {
+            return location
+        }
+    }
+    let u = ht_parse_url(base, function)
+    let mut scheme = "http"
+    if std::raw::bits(std__map__get(u, "secure")) != 0 {
+        scheme = "https"
+    }
+    let auth = std__map__get(u, "authority")
+    if rt_slen(location) > 0 && std::raw::load8(std::raw::bits(location) + 16) == 47 {
+        return scheme + "://" + auth + location
+    }
+    let bpath = std__map__get(u, "path")
+    let bn = rt_slen(bpath)
+    let bp = std::raw::bits(bpath) + 16
+    let mut slash = -1
+    let mut i = bn - 1
+    while i >= 0 {
+        if std::raw::load8(bp + i) == 47 {
+            slash = i
+            break
+        }
+        i -= 1
+    }
+    let mut directory = ""
+    if slash >= 0 {
+        directory = rt_substr_bytes(bpath, 0, slash)
+    }
+    scheme + "://" + auth + directory + "/" + location
+}
+
+fn ht_ipv4_literal(host: any) -> bool {
+    let p = std::raw::bits(host) + 16
+    let n = rt_slen(host)
+    let mut i = 0
+    let mut dots = 0
+    let mut digits = 0
+    let mut value = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 46 {
+            if digits == 0 || value > 255 { return false }
+            dots += 1
+            digits = 0
+            value = 0
+        } else if c >= 48 && c <= 57 {
+            if digits >= 3 { return false }
+            value = value * 10 + c - 48
+            digits += 1
+        } else {
+            return false
+        }
+        i += 1
+    }
+    dots == 3 && digits > 0 && value <= 255
+}
+
+// Abre una sesión TLS real con OpenSSL, verifica la cadena y el nombre del
+// servidor, envía la petición HTTP por stdin y devuelve los bytes recibidos.
+// OpenSSL hereda SSL_CERT_FILE/SSL_CERT_DIR, por lo que pueden usarse las
+// autoridades del sistema o una CA indicada explícitamente por el programa.
+fn ht_tls_exchange(host: any, port: int, request: any, timeout: int, maximum: int, function: string) -> any {
+    let address = host + ":" + rt_int_to_str(port)
+    let mut argv: any = ["openssl", "s_client", "-quiet", "-connect", address, "-verify", "10", "-verify_return_error", "-verify_quiet", "-alpn", "http/1.1"]
+    if ht_ipv4_literal(host) {
+        argv = std::array::push(argv, "-noservername")
+        argv = std::array::push(argv, "-verify_ip")
+        argv = std::array::push(argv, host)
+    } else {
+        argv = std::array::push(argv, "-servername")
+        argv = std::array::push(argv, host)
+        argv = std::array::push(argv, "-verify_hostname")
+        argv = std::array::push(argv, host)
+    }
+    let output_limit = maximum + 1048576
+    let result = ps_run_raw_timeout(function, argv, request, timeout, output_limit)
+    if std::map::get(result, "timed_out") {
+        ht_fail(function, "HTTP I/O error: timed out")
+    }
+    let code = std::map::get(result, "exit_code")
+    let error_bytes = std::map::get(result, "stderr")
+    if code != 0 {
+        let detail = std::text::trim(dr_lossy(error_bytes))
+        if detail == "" {
+            ht_fail(function, "TLS error: OpenSSL handshake failed")
+        }
+        let mut short_detail = detail
+        if std::text::length(short_detail) > 2048 {
+            short_detail = std::text::substring(short_detail, 0, 2048)
+        }
+        ht_fail(function, "TLS error: " + short_detail)
+    }
+    let input_error = std::map::get(result, "input_error")
+    if input_error != 0 {
+        ht_fail(function, "TLS error: failed to send the HTTP request")
+    }
+    std::map::get(result, "stdout")
+}
+
+fn ht_set_to(fd: int, ms: int, function: string) {
+    let tv = rt_alloc(16)
+    std::raw::store(tv, ms / 1000)
+    std::raw::store(tv + 8, (ms % 1000) * 1000)
+    let r1 = std::raw::syscall(54, fd, 1, 20, tv, 16, 0)
+    let r2 = std::raw::syscall(54, fd, 1, 21, tv, 16, 0)
+    rt_free_block(tv)
+    if r1 < 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, rt_os_error(0 - r1))
+    }
+    if r2 < 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, rt_os_error(0 - r2))
+    }
+}
+
+fn ht_send_all(fd: int, p: int, n: int, function: string) {
+    let mut done = 0
+    while done < n {
+        let w = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if w == -4 { continue }
+        if w < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, rt_os_error(0 - w))
+        }
+        if w == 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, "failed to write whole buffer")
+        }
+        done += w
+    }
+}
+
+fn ht_recv(fd: int, buf: int, n: int, function: string) -> int {
+    loop {
+        let g = std::raw::syscall(45, fd, buf, n, 0, 0, 0)
+        if g == -4 { continue }
+        if g < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, rt_os_error(0 - g))
+        }
+        return g
+    }
+    0
+}
+
+fn ht_chunked_done(p: int, n: int) -> int {
+    let mut i = 0
+    while i + 5 <= n {
+        if std::raw::load8(p + i) == 48 && std::raw::load8(p + i + 1) == 13 && std::raw::load8(p + i + 2) == 10 && std::raw::load8(p + i + 3) == 13 && std::raw::load8(p + i + 4) == 10 {
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn ht_decode_chunked(data: any, maximum: int, function: string) -> any {
+    let mut p = rt_bdata(data)
+    let mut n = rt_slen(data)
+    let mut off = 0
+    let b = sb_new(64)
+    loop {
+        let rest = n - off
+        let cr = ht_find(p + off, rest, std::raw::bits("\r\n") + 16, 2)
+        if cr < 0 {
+            ht_fail(function, "malformed HTTP response")
+        }
+        if !rt_valid_utf8(p + off, cr) {
+            ht_fail(function, "malformed HTTP response")
+        }
+        let line = rt_str_alloc(cr)
+        rt_copy(line + 16, p + off, cr)
+        let text = rt_sval(line)
+        let tn = rt_slen(text)
+        let tp = std::raw::bits(text) + 16
+        let mut sc = tn
+        let mut i = 0
+        while i < tn {
+            if std::raw::load8(tp + i) == 59 { sc = i; break }
+            i += 1
+        }
+        let size_text = rt_substr_bytes(text, 0, sc)
+        let size = ht_hexn(size_text)
+        if size < 0 {
+            ht_fail(function, "malformed HTTP response")
+        }
+        off += cr + 2
+        if size == 0 {
+            return sb_finish_bytes(b)
+        }
+        if off + size + 2 > n {
+            ht_fail(function, "malformed HTTP response")
+        }
+        if std::raw::load8(p + off + size) != 13 || std::raw::load8(p + off + size + 1) != 10 {
+            ht_fail(function, "malformed HTTP response")
+        }
+        if sb_len(b) + size > maximum {
+            ht_fail(function, "HTTP response body exceeds configured limit")
+        }
+        sb_raw(b, p + off, size)
+        off += size + 2
+    }
+    sb_finish_bytes(b)
+}
+
+fn ht_single(method: any, url: any, headers: any, body: any, maximum: int, timeout: int, function: string) -> any {
+    if ht_token(method) == 0 {
+        ht_fail(function, "invalid HTTP method or header")
+    }
+    let u = ht_parse_url(url, function)
+    let secure = std::raw::bits(std__map__get(u, "secure")) != 0
+    let host = std__map__get(u, "host")
+    let port = std::raw::bits(std__map__get(u, "port"))
+    let mut fd = -1
+    if !secure {
+        fd = nt_connect(function, std::raw::bits(host) + 16, rt_slen(host), port)
+        ht_set_to(fd, timeout, function)
+    }
+    let b = sb_new(128 + rt_slen(body))
+    sb_str(b, method)
+    sb_byte(b, 32)
+    sb_str(b, std__map__get(u, "path"))
+    sb_str(b, " HTTP/1.1\r\nHost: ")
+    sb_str(b, std__map__get(u, "authority"))
+    sb_str(b, "\r\nConnection: close\r\nContent-Length: ")
+    sb_str(b, rt_int_to_str(rt_slen(body)))
+    sb_str(b, "\r\n")
+    let hp = std::raw::bits(headers)
+    let hn = std::raw::load(hp + 8)
+    let hd = std::raw::load(hp + 24)
+    let mut i = 0
+    while i < hn {
+        let e = hd + 24 * i
+        let name = std::raw::value(5, std::raw::load(e))
+        let val = std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))
+        if std::raw::tag(val) != 5 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, "expected string")
+        }
+        let low = ht_lower(name)
+        if ht_token(name) == 0 || ht_has_crlf(val) != 0 || low == "host" || low == "connection" || low == "content-length" || low == "transfer-encoding" {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, "invalid HTTP method or header")
+        }
+        sb_str(b, name)
+        sb_str(b, ": ")
+        sb_str(b, val)
+        sb_str(b, "\r\n")
+        i += 1
+    }
+    sb_str(b, "\r\n")
+    sb_raw(b, rt_bdata(body), rt_slen(body))
+    let req = sb_finish_bytes(b)
+    let mut tls_response: any = nil
+    if secure {
+        tls_response = ht_tls_exchange(host, port, req, timeout, maximum, function)
+    } else {
+        ht_send_all(fd, rt_bdata(req), rt_slen(req), function)
+    }
+    let acc = sb_new(8192)
+    if secure {
+        sb_raw(acc, rt_bdata(tls_response), rt_slen(tls_response))
+    }
+    let buf = rt_alloc(8192)
+    let mut header_end = ht_find4(std::raw::load(acc + 16), sb_len(acc))
+    if secure && header_end < 0 {
+        rt_free_block(buf)
+        ht_fail(function, "malformed HTTP response")
+    }
+    while header_end < 0 {
+        if sb_len(acc) > 65536 {
+            rt_free_block(buf)
+            if fd >= 0 { std::raw::syscall(3, fd, 0, 0, 0, 0, 0) }
+            ht_fail(function, "malformed HTTP response")
+        }
+        let got = ht_recv(fd, buf, 8192, function)
+        if got == 0 {
+            rt_free_block(buf)
+            if fd >= 0 { std::raw::syscall(3, fd, 0, 0, 0, 0, 0) }
+            ht_fail(function, "malformed HTTP response")
+        }
+        sb_raw(acc, buf, got)
+        header_end = ht_find4(std::raw::load(acc + 16), sb_len(acc))
+    }
+    let alln = sb_len(acc)
+    let allp = std::raw::load(acc + 16)
+    if !rt_valid_utf8(allp, header_end) {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "malformed HTTP response")
+    }
+    let hraw = rt_str_alloc(header_end)
+    rt_copy(hraw + 16, allp, header_end)
+    let htext = rt_sval(hraw)
+    let mut e = 0
+    let hlen = header_end
+    while e + 1 < hlen && !(std::raw::load8(allp + e) == 13 && std::raw::load8(allp + e + 1) == 10) {
+        e += 1
+    }
+    if e + 1 >= hlen { e = hlen }
+    let status_line = rt_substr_bytes(htext, 0, e)
+    let mut w1 = -1
+    let mut w2 = -1
+    let sln = rt_slen(status_line)
+    let slp = std::raw::bits(status_line) + 16
+    i = 0
+    while i < sln {
+        if std::raw::load8(slp + i) == 32 {
+            if w1 < 0 { w1 = i }
+            else if w2 < 0 { w2 = i }
+        }
+        i += 1
+    }
+    if w1 < 0 || w2 < 0 {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "malformed HTTP response")
+    }
+    let stxt = rt_substr_bytes(status_line, w1 + 1, w2)
+    let status = ht_usize(stxt)
+    if status < 0 || status > 65535 {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "malformed HTTP response")
+    }
+    let mut rh: any = rt_map_alloc(0, 4)
+    let mut lengths = []
+    let mut transfers = []
+    let mut s = e + 2
+    while s < hlen {
+        let mut t = s
+        while t + 1 < hlen && !(std::raw::load8(allp + t) == 13 && std::raw::load8(allp + t + 1) == 10) {
+            t += 1
+        }
+        if t + 1 >= hlen { t = hlen }
+        if t > s {
+            let line = rt_substr_bytes(htext, s, t)
+            let ln = rt_slen(line)
+            let lp = std::raw::bits(line) + 16
+            let mut colon = -1
+            let mut k = 0
+            while k < ln {
+                if std::raw::load8(lp + k) == 58 { colon = k; break }
+                k += 1
+            }
+            if colon < 0 {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "malformed HTTP response")
+            }
+            let name = ht_lower(rt_substr_bytes(line, 0, colon))
+            let value = std__text__trim(rt_substr_bytes(line, colon + 1, ln))
+            if name == "content-length" {
+                let L = ht_usize(value)
+                if L < 0 {
+                    rt_free_block(buf)
+                    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                    ht_fail(function, "malformed HTTP response")
+                }
+                lengths = std::array::push(lengths, L)
+            }
+            if name == "transfer-encoding" {
+                transfers = std::array::push(transfers, ht_lower(value))
+            }
+            let pos = rt_map_find(rh, name)
+            if pos >= 0 {
+                rh = std__map__insert(rh, name, rt_map_value_at(rh, pos) + ", " + value)
+            } else {
+                rh = std__map__insert(rh, name, value)
+            }
+        }
+        if t + 2 > hlen { break }
+        s = t + 2
+    }
+    let nl = len(lengths)
+    let nt = len(transfers)
+    if nl >= 2 {
+        if lengths[0] != lengths[1] {
+            rt_free_block(buf)
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, "malformed HTTP response")
+        }
+    }
+    if nt > 0 && nl > 0 {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "malformed HTTP response")
+    }
+    if nt > 1 {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "unsupported HTTP transfer encoding")
+    }
+    if nt == 1 && transfers[0] != "chunked" {
+        rt_free_block(buf)
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        ht_fail(function, "unsupported HTTP transfer encoding")
+    }
+    let mut bodyb = rt_bytes_from(allp + header_end + 4, alln - header_end - 4)
+    if nt > 0 {
+        while ht_chunked_done(rt_bdata(bodyb), rt_slen(bodyb)) == 0 {
+            if secure {
+                rt_free_block(buf)
+                ht_fail(function, "malformed HTTP response")
+            }
+            let got = ht_recv(fd, buf, 8192, function)
+            if got == 0 {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "malformed HTTP response")
+            }
+            if rt_slen(bodyb) + got > maximum + 1048576 {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "HTTP response body exceeds configured limit")
+            }
+            let nb = rt_alloc(rt_slen(bodyb) + got)
+            rt_copy(nb, rt_bdata(bodyb), rt_slen(bodyb))
+            rt_copy(nb + rt_slen(bodyb), buf, got)
+            bodyb = rt_bytes_from(nb, rt_slen(bodyb) + got)
+            rt_free_block(nb)
+        }
+        bodyb = ht_decode_chunked(bodyb, maximum, function)
+    } else if nl > 0 {
+        let need = lengths[0]
+        if need > maximum {
+            rt_free_block(buf)
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            ht_fail(function, "HTTP response body exceeds configured limit")
+        }
+        while rt_slen(bodyb) < need {
+            if secure {
+                rt_free_block(buf)
+                ht_fail(function, "malformed HTTP response")
+            }
+            let got = ht_recv(fd, buf, 8192, function)
+            if got == 0 {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "malformed HTTP response")
+            }
+            if rt_slen(bodyb) + got > maximum {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "HTTP response body exceeds configured limit")
+            }
+            let nb = rt_alloc(rt_slen(bodyb) + got)
+            rt_copy(nb, rt_bdata(bodyb), rt_slen(bodyb))
+            rt_copy(nb + rt_slen(bodyb), buf, got)
+            bodyb = rt_bytes_from(nb, rt_slen(bodyb) + got)
+            rt_free_block(nb)
+        }
+        bodyb = rt_bytes_from(rt_bdata(bodyb), need)
+    } else if !secure {
+        loop {
+            let got = ht_recv(fd, buf, 8192, function)
+            if got == 0 { break }
+            if rt_slen(bodyb) + got > maximum {
+                rt_free_block(buf)
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                ht_fail(function, "HTTP response body exceeds configured limit")
+            }
+            let nb = rt_alloc(rt_slen(bodyb) + got)
+            rt_copy(nb, rt_bdata(bodyb), rt_slen(bodyb))
+            rt_copy(nb + rt_slen(bodyb), buf, got)
+            bodyb = rt_bytes_from(nb, rt_slen(bodyb) + got)
+            rt_free_block(nb)
+        }
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let mut out = rt_map_alloc(0, 4)
+    out = std__map__insert(out, "body", bodyb)
+    out = std__map__insert(out, "final_url", url)
+    out = std__map__insert(out, "headers", rh)
+    std__map__insert(out, "status", status)
+}
+
+fn std__http__request(method: any, url: any, headers: any, body: any, maximum: any, redirects: any, timeout: any) -> any {
+    let function = "std::http::request"
+    rt_expect_str(method, function)
+    rt_expect_str(url, function)
+    rt_expect_map(headers, function)
+    rt_expect_bytes(body, function)
+    rt_expect_int(maximum, function)
+    rt_expect_int(redirects, function)
+    rt_expect_int(timeout, function)
+    let maxb = std::raw::bits(maximum)
+    let red = std::raw::bits(redirects)
+    let to = std::raw::bits(timeout)
+    if maxb < 0 { ht_fail(function, "expected nonnegative integer") }
+    if red < 0 { ht_fail(function, "expected nonnegative integer") }
+    if to < 0 { ht_fail(function, "HTTP timeout must be nonnegative") }
+    if to == 0 { ht_fail(function, "HTTP timeout must be positive") }
+    let mut meth = method
+    let mut u = url
+    let mut bd = body
+    let mut r = 0
+    while r <= red {
+        let resp = ht_single(meth, u, headers, bd, maxb, to, function)
+        let st = std::raw::bits(std__map__get(resp, "status"))
+        if st == 301 || st == 302 || st == 303 || st == 307 || st == 308 {
+            if r == red {
+                ht_fail(function, "too many redirects")
+            }
+            let hh = std__map__get(resp, "headers")
+            if std::raw::tag(hh) != 9 || rt_map_find(hh, "location") < 0 {
+                ht_fail(function, "malformed HTTP response")
+            }
+            let loc = rt_map_value_at(hh, rt_map_find(hh, "location"))
+            u = ht_resolve(u, loc, function)
+            if st == 303 {
+                meth = "GET"
+                bd = std__encoding__utf8_encode("")
+            }
+            r += 1
+            continue
+        }
+        return resp
+    }
+    ht_fail(function, "too many redirects")
+    nil
+}

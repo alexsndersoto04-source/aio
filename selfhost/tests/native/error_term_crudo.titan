@@ -1,0 +1,6 @@
+// enable_raw sin terminal falla (con terminal, se deja como estaba).
+fn main() {
+    std::term::enable_raw()
+    std::term::disable_raw()
+    print("con terminal")
+}

@@ -1,0 +1,1701 @@
+// Backend real de ventanas para el runtime nativo: cliente X11 local en Linux.
+// No crea ventanas ni eventos ficticios y no depende de procesos externos. Si
+// DISPLAY no apunta a un servidor X11 local accesible, live_open devuelve -1.
+// Presenta los cuadros RGBA de std::gui y traduce eventos X11 a std::input y a
+// los hooks físicos del árbol GUI. La integración sigue pendiente de compilarse
+// y probarse con el binario nativo y un servidor X11 real.
+
+const WN_STATE_SLOT: int = 3528
+const WN_STATE_BYTES: int = 192
+const WN_TABLE_OFFSET: int = 64
+const WN_MAX_HANDLES: int = 16
+const WN_MAX_DIMENSION: int = 4096
+const WN_MAX_TITLE_BYTES: int = 4096
+const WN_MAX_PIXELS: int = 16777216
+const WN_ENTRY_BYTES: int = 368
+
+const WN_HANDLE: int = 0
+const WN_FD: int = 8
+const WN_OPEN: int = 16
+const WN_XID: int = 24
+const WN_GC: int = 32
+const WN_ROOT: int = 40
+const WN_RESOURCE_BASE: int = 48
+const WN_RESOURCE_MASK: int = 56
+const WN_RESOURCE_NEXT: int = 64
+const WN_VISUAL: int = 72
+const WN_DEPTH: int = 80
+const WN_BLACK_PIXEL: int = 88
+const WN_MAX_REQUEST: int = 96
+const WN_TITLE: int = 104
+const WN_WIDTH: int = 112
+const WN_HEIGHT: int = 120
+const WN_ATOM_WM_NAME: int = 128
+const WN_ATOM_STRING: int = 136
+const WN_ATOM_NET_WM_NAME: int = 144
+const WN_ATOM_UTF8_STRING: int = 152
+const WN_ATOM_WM_PROTOCOLS: int = 160
+const WN_ATOM_DELETE_WINDOW: int = 168
+const WN_MIN_KEYCODE: int = 176
+const WN_MAX_KEYCODE: int = 184
+const WN_BITS_PER_PIXEL: int = 192
+const WN_SCANLINE_PAD: int = 200
+const WN_IMAGE_ORDER: int = 208
+const WN_RED_MASK: int = 216
+const WN_GREEN_MASK: int = 224
+const WN_BLUE_MASK: int = 232
+const WN_KEYMAP: int = 240
+const WN_KEY_DOWN: int = 248
+const WN_EVENT_BUFFER: int = 256
+const WN_EVENT_LENGTH: int = 264
+const WN_EVENT_QUEUE: int = 272
+const WN_EVENT_COUNT: int = 280
+const WN_MOUSE_X: int = 288
+const WN_MOUSE_Y: int = 296
+const WN_BUTTON_BITS: int = 304
+const WN_CLOSE_REPORTED: int = 312
+const WN_VISUAL_CLASS: int = 320
+const WN_GUI_ROOT: int = 328
+const WN_SERVER_WIDTH: int = 336
+const WN_SERVER_HEIGHT: int = 344
+const WN_LAST_MOUSE_X: int = 352
+const WN_LAST_MOUSE_Y: int = 360
+const WN_EVENT_LIMIT: int = 1024
+const WN_EVENT_BUFFER_BYTES: int = 8192
+
+// The six logical std::window calls mirror window.rs: they manage real
+// process-local handles and queued resize events, without requiring a display.
+const WL_STATE_SLOT: int = 3552
+const WL_MAX_HANDLES: int = 64
+const WL_MAX_EVENTS: int = 1024
+const WL_MAX_TITLE_BYTES: int = 65536
+const WL_MAX_DIMENSION: int = 16384
+const WL_ENTRY_BYTES: int = 56
+
+fn wn_state() -> int {
+    let slot = std::raw::globals() + WN_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(WN_STATE_BYTES)
+    std::raw::store(created, 1)
+    std::raw::store(slot, created)
+    created
+}
+
+fn wn_find_index(state: int, handle: int) -> int {
+    if handle <= 0 { return 0 }
+    let count = std::raw::load(state + 8)
+    let mut i = 0
+    while i < count {
+        let entry = std::raw::load(state + WN_TABLE_OFFSET + 8 * i)
+        if std::raw::load(entry + WN_HANDLE) == handle { return i + 1 }
+        i += 1
+    }
+    0
+}
+
+fn wn_entry(state: int, index: int) -> int {
+    if index <= 0 || index > std::raw::load(state + 8) { return 0 }
+    std::raw::load(state + WN_TABLE_OFFSET + 8 * (index - 1))
+}
+
+fn x11_u16(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1)
+}
+
+fn x11_u16_be(p: int) -> int {
+    256 * std::raw::load8(p) + std::raw::load8(p + 1)
+}
+
+fn x11_u32(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2) + 16777216 * std::raw::load8(p + 3)
+}
+
+fn x11_i16(p: int) -> int {
+    let value = x11_u16(p)
+    if value >= 32768 { return value - 65536 }
+    value
+}
+
+fn x11_put16(p: int, value: int) {
+    std::raw::store8(p, value & 255)
+    std::raw::store8(p + 1, std::raw::shr(value, 8) & 255)
+}
+
+fn x11_put32(p: int, value: int) {
+    std::raw::store8(p, value & 255)
+    std::raw::store8(p + 1, std::raw::shr(value, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(value, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(value, 24) & 255)
+}
+
+fn x11_padded(n: int) -> int {
+    ((n + 3) / 4) * 4
+}
+
+fn x11_slice(start: int, count: int) -> any {
+    let out = rt_str_alloc(count)
+    if count > 0 { rt_copy(out + 16, start, count) }
+    rt_sval(out)
+}
+
+fn x11_span_equals(start: int, count: int, expected: any) -> bool {
+    if count != rt_slen(expected) { return false }
+    let p = std::raw::bits(expected) + 16
+    let mut i = 0
+    while i < count {
+        if std::raw::load8(start + i) != std::raw::load8(p + i) { return false }
+        i += 1
+    }
+    true
+}
+
+fn x11_display_number(display: any) -> int {
+    let p = std::raw::bits(display) + 16
+    let n = rt_slen(display)
+    let mut colon = -1
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 58 {
+            colon = i
+            break
+        }
+        i += 1
+    }
+    if colon < 0 { return -1 }
+    i = colon + 1
+    let number = 0
+    let mut value = 0
+    let mut digits = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 { break }
+        value = value * 10 + c - 48
+        if value > 59535 { return -1 }
+        digits += 1
+        i += 1
+    }
+    if digits == 0 { return number }
+    value
+}
+
+fn x11_display_host_is_supported(display: any) -> bool {
+    let p = std::raw::bits(display) + 16
+    let n = rt_slen(display)
+    let mut colon = -1
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 58 { colon = i; break }
+        i += 1
+    }
+    if colon < 0 { return false }
+    if colon == 0 { return true }
+    if x11_span_equals(p, colon, "unix") || x11_span_equals(p, colon, "localhost") || x11_span_equals(p, colon, "127.0.0.1") {
+        return true
+    }
+    false
+}
+
+fn x11_display_number_text(display: any) -> any {
+    let p = std::raw::bits(display) + 16
+    let n = rt_slen(display)
+    let mut colon = -1
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 58 { colon = i; break }
+        i += 1
+    }
+    if colon < 0 { return "0" }
+    let start = colon + 1
+    let mut end = start
+    while end < n {
+        let c = std::raw::load8(p + end)
+        if c < 48 || c > 57 { break }
+        end += 1
+    }
+    if end == start { return "0" }
+    x11_slice(p + start, end - start)
+}
+
+fn x11_display_screen(display: any) -> int {
+    let p = std::raw::bits(display) + 16
+    let n = rt_slen(display)
+    let mut colon = -1
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 58 { colon = i; break }
+        i += 1
+    }
+    if colon < 0 { return -1 }
+    i = colon + 1
+    while i < n && std::raw::load8(p + i) >= 48 && std::raw::load8(p + i) <= 57 { i += 1 }
+    if i == n { return 0 }
+    if std::raw::load8(p + i) != 46 { return -1 }
+    i += 1
+    let mut screen = 0
+    let mut digits = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 { return -1 }
+        screen = screen * 10 + c - 48
+        if screen > 255 { return -1 }
+        digits += 1
+        i += 1
+    }
+    if digits == 0 { return -1 }
+    screen
+}
+
+fn x11_connect_unix(number: any) -> int {
+    let path = "/tmp/.X11-unix/X" + number
+    let path_length = rt_slen(path)
+    if path_length > 107 { return -1 }
+    let fd = std::raw::syscall(41, 1, 524289, 0, 0, 0, 0)
+    if fd < 0 { return -1 }
+    let address = rt_alloc_zero(110)
+    std::raw::store8(address, 1)
+    rt_copy(address + 2, std::raw::bits(path) + 16, path_length)
+    std::raw::store8(address + 2 + path_length, 0)
+    let connected = std::raw::syscall(42, fd, address, path_length + 3, 0, 0, 0)
+    rt_free_block(address)
+    if connected == 0 { return fd }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+
+    // Linux también ofrece el mismo socket con nombre abstracto.
+    let abstract_fd = std::raw::syscall(41, 1, 524289, 0, 0, 0, 0)
+    if abstract_fd < 0 { return -1 }
+    let abstract_address = rt_alloc_zero(110)
+    std::raw::store8(abstract_address, 1)
+    let abstract_name = "/tmp/.X11-unix/X" + number
+    let abstract_length = rt_slen(abstract_name)
+    rt_copy(abstract_address + 3, std::raw::bits(abstract_name) + 16, abstract_length)
+    let abstract_result = std::raw::syscall(42, abstract_fd, abstract_address, abstract_length + 3, 0, 0, 0)
+    rt_free_block(abstract_address)
+    if abstract_result == 0 { return abstract_fd }
+    std::raw::syscall(3, abstract_fd, 0, 0, 0, 0, 0)
+    -1
+}
+
+fn x11_connect_tcp(display_number: int) -> int {
+    if display_number > 59535 { return -1 }
+    let fd = std::raw::syscall(41, 2, 524289, 0, 0, 0, 0)
+    if fd < 0 { return -1 }
+    let address = rt_alloc_zero(16)
+    std::raw::store8(address, 2)
+    std::raw::store8(address + 2, std::raw::shr(6000 + display_number, 8) & 255)
+    std::raw::store8(address + 3, (6000 + display_number) & 255)
+    std::raw::store8(address + 4, 127)
+    std::raw::store8(address + 7, 1)
+    let result = std::raw::syscall(42, fd, address, 16, 0, 0, 0)
+    rt_free_block(address)
+    if result == 0 { return fd }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    -1
+}
+
+fn x11_connect(display: any, number: any, connection_info: int) -> int {
+    if !x11_display_host_is_supported(display) { return -1 }
+    let number_value = x11_display_number(display)
+    if number_value < 0 { return -1 }
+    let unix_fd = x11_connect_unix(number)
+    if unix_fd >= 0 {
+        std::raw::store(connection_info, 1)
+        return unix_fd
+    }
+    let tcp_fd = x11_connect_tcp(number_value)
+    if tcp_fd >= 0 { std::raw::store(connection_info, 2) }
+    tcp_fd
+}
+
+fn x11_get_cookie(number: any, connection_kind: int) -> any {
+    let auth_pointer = rt_getenv("XAUTHORITY")
+    let path = if auth_pointer != 0 {
+        rt_from_cstr(auth_pointer)
+    } else {
+        let home_pointer = rt_getenv("HOME")
+        if home_pointer == 0 { return nil }
+        rt_concat(rt_from_cstr(home_pointer), "/.Xauthority")
+    }
+    let file = match std::try::catch(|| std__fs__read_bytes(path)) {
+        Result::Ok(bytes) => bytes,
+        Result::Err(_) => nil,
+    }
+    if std::raw::tag(file) != 6 { return nil }
+    let p = std::raw::bits(file) + 16
+    let length = rt_slen(file)
+    let wanted_name = "MIT-MAGIC-COOKIE-1"
+    let mut wildcard_cookie: any = nil
+    let mut at = 0
+    while at + 2 <= length {
+        let family = x11_u16_be(p + at)
+        at += 2
+        if at + 2 > length { break }
+        let address_length = x11_u16_be(p + at)
+        at += 2
+        if at + address_length + 2 > length { break }
+        let address_bytes = p + at
+        at += address_length
+        let display_length = x11_u16_be(p + at)
+        at += 2
+        if at + display_length + 2 > length { break }
+        let display_bytes = p + at
+        at += display_length
+        let name_length = x11_u16_be(p + at)
+        at += 2
+        if at + name_length + 2 > length { break }
+        let name_bytes = p + at
+        at += name_length
+        let data_length = x11_u16_be(p + at)
+        at += 2
+        if at + data_length > length { break }
+        let data = p + at
+        at += data_length
+        let display_matches = x11_span_equals(display_bytes, display_length, number)
+        let name_matches = x11_span_equals(name_bytes, name_length, wanted_name)
+        let tcp_loopback = connection_kind == 2 && family == 0 && address_length == 4 && std::raw::load8(address_bytes) == 127 && std::raw::load8(address_bytes + 1) == 0 && std::raw::load8(address_bytes + 2) == 0 && std::raw::load8(address_bytes + 3) == 1
+        let exact_family = (connection_kind == 1 && family == 256) || tcp_loopback
+        let matches = display_matches && name_matches && data_length > 0
+        if matches && exact_family {
+            // El contenido del cookie es binario: se copia antes de que file
+            // deje de ser dueño del buffer de Xauthority.
+            return rt_bytes_from(data, data_length)
+        }
+        if matches && family == 65535 && wildcard_cookie == nil {
+            wildcard_cookie = rt_bytes_from(data, data_length)
+        }
+    }
+    wildcard_cookie
+}
+
+fn x11_write_all(fd: int, bytes: int, length: int) -> bool {
+    let wait = rt_alloc_zero(8)
+    std::raw::store(wait, fd)
+    std::raw::store8(wait + 4, 4) // POLLOUT
+    let mut done = 0
+    while done < length {
+        let wrote = std::raw::syscall(44, fd, bytes + done, length - done, 16384, 0, 0)
+        if wrote == -4 { continue }
+        if wrote == -11 {
+            let ready = std::raw::syscall(7, wait, 1, -1, 0, 0, 0)
+            if ready < 0 && ready != -4 {
+                rt_free_block(wait)
+                return false
+            }
+            continue
+        }
+        if wrote <= 0 {
+            rt_free_block(wait)
+            return false
+        }
+        done += wrote
+    }
+    rt_free_block(wait)
+    true
+}
+
+fn x11_read_exact(fd: int, bytes: int, length: int) -> bool {
+    let mut done = 0
+    while done < length {
+        let got = std::raw::syscall(0, fd, bytes + done, length - done, 0, 0, 0)
+        if got == -4 { continue }
+        if got <= 0 { return false }
+        done += got
+    }
+    true
+}
+
+fn x11_set_timeouts(fd: int) {
+    let timeout = rt_alloc_zero(16)
+    std::raw::store(timeout, 5)
+    std::raw::store(timeout + 8, 0)
+    std::raw::syscall(54, fd, 1, 20, timeout, 16, 0)
+    std::raw::syscall(54, fd, 1, 21, timeout, 16, 0)
+    rt_free_block(timeout)
+}
+
+fn x11_setup(fd: int, entry: int, cookie: any, screen_number: int) -> bool {
+    let cookie_length = if std::raw::tag(cookie) == 6 { rt_slen(cookie) } else { 0 }
+    let auth_name = if cookie_length > 0 { "MIT-MAGIC-COOKIE-1" } else { "" }
+    let auth_length = rt_slen(auth_name)
+    let request_length = 12 + x11_padded(auth_length) + x11_padded(cookie_length)
+    let request = rt_alloc_zero(request_length)
+    std::raw::store8(request, 108) // byte order 'l'
+    x11_put16(request + 2, 11)
+    x11_put16(request + 4, 0)
+    x11_put16(request + 6, auth_length)
+    x11_put16(request + 8, cookie_length)
+    if auth_length > 0 { rt_copy(request + 12, std::raw::bits(auth_name) + 16, auth_length) }
+    if cookie_length > 0 { rt_copy(request + 12 + x11_padded(auth_length), std::raw::bits(cookie) + 16, cookie_length) }
+    let sent = x11_write_all(fd, request, request_length)
+    rt_free_block(request)
+    if !sent { return false }
+
+    let setup = rt_alloc_zero(8)
+    if !x11_read_exact(fd, setup, 8) {
+        rt_free_block(setup)
+        return false
+    }
+    if std::raw::load8(setup) != 1 {
+        rt_free_block(setup)
+        return false
+    }
+    let extra_length = 4 * x11_u16(setup + 6)
+    if extra_length < 40 || extra_length > 1048576 {
+        rt_free_block(setup)
+        return false
+    }
+    let full = rt_alloc_zero(8 + extra_length)
+    rt_copy(full, setup, 8)
+    rt_free_block(setup)
+    if !x11_read_exact(fd, full + 8, extra_length) {
+        rt_free_block(full)
+        return false
+    }
+
+    let vendor_length = x11_u16(full + 24)
+    let format_count = std::raw::load8(full + 29)
+    let root_count = std::raw::load8(full + 28)
+    let mut screen = 40 + x11_padded(vendor_length) + 8 * format_count
+    let setup_end = 8 + extra_length
+    if root_count == 0 || screen_number < 0 || screen_number >= root_count {
+        rt_free_block(full)
+        return false
+    }
+    let mut skipped_screens = 0
+    let mut screen_ok = true
+    while skipped_screens < screen_number {
+        if screen + 40 > setup_end {
+            screen_ok = false
+            break
+        }
+        let skipped_depths = std::raw::load8(full + screen + 39)
+        screen += 40
+        let mut skipped_depth = 0
+        while skipped_depth < skipped_depths {
+            if screen + 8 > setup_end {
+                screen_ok = false
+                break
+            }
+            let skipped_visuals = x11_u16(full + screen + 2)
+            screen += 8 + 24 * skipped_visuals
+            if screen > setup_end {
+                screen_ok = false
+                break
+            }
+            skipped_depth += 1
+        }
+        if !screen_ok { break }
+        skipped_screens += 1
+    }
+    if !screen_ok || screen + 40 > setup_end {
+        rt_free_block(full)
+        return false
+    }
+    let max_request = x11_u16(full + 26)
+    let resource_base = x11_u32(full + 12)
+    let resource_mask = x11_u32(full + 16)
+    let root = x11_u32(full + screen)
+    let visual = x11_u32(full + screen + 32)
+    let depth = std::raw::load8(full + screen + 38)
+    let black_pixel = x11_u32(full + screen + 12)
+    let image_order = std::raw::load8(full + 30)
+    if root == 0 || visual == 0 || depth == 0 || max_request < 1024 || image_order > 1 {
+        rt_free_block(full)
+        return false
+    }
+
+    let format_start = 40 + x11_padded(vendor_length)
+    let mut bits_per_pixel = 0
+    let mut scanline_pad = 0
+    let mut format_index = 0
+    while format_index < format_count {
+        let format = full + format_start + 8 * format_index
+        if std::raw::load8(format) == depth {
+            bits_per_pixel = std::raw::load8(format + 1)
+            scanline_pad = std::raw::load8(format + 2)
+            break
+        }
+        format_index += 1
+    }
+    if (bits_per_pixel != 8 && bits_per_pixel != 16 && bits_per_pixel != 24 && bits_per_pixel != 32) || scanline_pad < 8 || scanline_pad % 8 != 0 {
+        rt_free_block(full)
+        return false
+    }
+
+    let depth_count = std::raw::load8(full + screen + 39)
+    let mut cursor = full + screen + 40
+    let mut visual_class = -1
+    let mut red_mask = 0
+    let mut green_mask = 0
+    let mut blue_mask = 0
+    let mut depth_index = 0
+    while depth_index < depth_count {
+        if cursor + 8 > full + 8 + extra_length { break }
+        let visual_count = x11_u16(cursor + 2)
+        let visual_at = cursor + 8
+        if visual_at + 24 * visual_count > full + 8 + extra_length { break }
+        let mut visual_index = 0
+        while visual_index < visual_count {
+            let record = visual_at + 24 * visual_index
+            if x11_u32(record) == visual {
+                visual_class = std::raw::load8(record + 4)
+                red_mask = x11_u32(record + 8)
+                green_mask = x11_u32(record + 12)
+                blue_mask = x11_u32(record + 16)
+            }
+            visual_index += 1
+        }
+        cursor = visual_at + 24 * visual_count
+        depth_index += 1
+    }
+    // TrueColor has directly writable component masks; indexed visuals need
+    // colormap allocation and are rejected rather than shown with wrong colors.
+    if visual_class != 4 || red_mask == 0 || green_mask == 0 || blue_mask == 0 {
+        rt_free_block(full)
+        return false
+    }
+
+    std::raw::store(entry + WN_ROOT, root)
+    std::raw::store(entry + WN_VISUAL, visual)
+    std::raw::store(entry + WN_DEPTH, depth)
+    std::raw::store(entry + WN_BLACK_PIXEL, black_pixel)
+    std::raw::store(entry + WN_MAX_REQUEST, max_request)
+    std::raw::store(entry + WN_RESOURCE_BASE, resource_base)
+    std::raw::store(entry + WN_RESOURCE_MASK, resource_mask)
+    std::raw::store(entry + WN_RESOURCE_NEXT, 1)
+    std::raw::store(entry + WN_MIN_KEYCODE, std::raw::load8(full + 34))
+    std::raw::store(entry + WN_MAX_KEYCODE, std::raw::load8(full + 35))
+    std::raw::store(entry + WN_BITS_PER_PIXEL, bits_per_pixel)
+    std::raw::store(entry + WN_SCANLINE_PAD, scanline_pad)
+    std::raw::store(entry + WN_IMAGE_ORDER, image_order)
+    std::raw::store(entry + WN_RED_MASK, red_mask)
+    std::raw::store(entry + WN_GREEN_MASK, green_mask)
+    std::raw::store(entry + WN_BLUE_MASK, blue_mask)
+    std::raw::store(entry + WN_VISUAL_CLASS, visual_class)
+    rt_free_block(full)
+    true
+}
+
+fn x11_read_reply(fd: int, reply: int) -> bool {
+    let mut skipped = 0
+    loop {
+        if !x11_read_exact(fd, reply, 32) { return false }
+        let kind = std::raw::load8(reply) & 127
+        if kind == 1 { return true }
+        if kind == 0 || skipped >= 64 { return false }
+        skipped += 1
+    }
+    false
+}
+
+fn x11_query_keyboard(entry: int) -> bool {
+    let minimum = std::raw::load(entry + WN_MIN_KEYCODE)
+    let maximum = std::raw::load(entry + WN_MAX_KEYCODE)
+    if minimum < 8 || maximum < minimum || maximum > 255 { return false }
+    let fd = std::raw::load(entry + WN_FD)
+    let request = rt_alloc_zero(8)
+    std::raw::store8(request, 101) // GetKeyboardMapping
+    std::raw::store8(request + 1, minimum)
+    x11_put16(request + 2, 2)
+    std::raw::store8(request + 4, maximum - minimum + 1)
+    let sent = x11_write_all(fd, request, 8)
+    rt_free_block(request)
+    if !sent { return false }
+
+    let header = rt_alloc_zero(32)
+    if !x11_read_reply(fd, header) {
+        rt_free_block(header)
+        return false
+    }
+    let words = x11_u32(header + 4)
+    let tail_length = words * 4
+    let per_keycode = std::raw::load8(header + 1)
+    let needed = (maximum - minimum + 1) * per_keycode * 4
+    if per_keycode == 0 || tail_length < needed || tail_length > 1048576 {
+        rt_free_block(header)
+        return false
+    }
+    let reply = rt_alloc_zero(32 + tail_length)
+    rt_copy(reply, header, 32)
+    rt_free_block(header)
+    if !x11_read_exact(fd, reply + 32, tail_length) {
+        rt_free_block(reply)
+        return false
+    }
+    let keymap = rt_alloc_zero(2048)
+    let data = reply + 32
+    let mut code = minimum
+    while code <= maximum {
+        // Keep the first mapped key name from the server's ordered columns.
+        // Some layouts leave column zero unmapped, so scan forward rather than
+        // dropping a physical key whose later column is recognized.
+        let mut selected_symbol = 0
+        let mut column = 0
+        while column < per_keycode {
+            let symbol = x11_u32(data + 4 * ((code - minimum) * per_keycode + column))
+            if std::raw::tag(x11_keysym_name(symbol)) == 5 {
+                selected_symbol = symbol
+                break
+            }
+            column += 1
+        }
+        std::raw::store(keymap + 4 * code, selected_symbol)
+        code += 1
+    }
+    rt_free_block(reply)
+    std::raw::store(entry + WN_KEYMAP, keymap)
+    true
+}
+
+fn x11_initialize_runtime_buffers(entry: int) {
+    std::raw::store(entry + WN_KEY_DOWN, rt_alloc_zero(256))
+    std::raw::store(entry + WN_EVENT_BUFFER, rt_alloc_zero(WN_EVENT_BUFFER_BYTES))
+    std::raw::store(entry + WN_EVENT_QUEUE, rt_alloc_zero(16 * WN_EVENT_LIMIT))
+    std::raw::store(entry + WN_EVENT_LENGTH, 0)
+    std::raw::store(entry + WN_EVENT_COUNT, 0)
+}
+
+fn x11_char(code: int) -> any {
+    let text = rt_str_alloc(1)
+    std::raw::store8(text + 16, code)
+    rt_sval(text)
+}
+
+fn x11_keysym_name(symbol: int) -> any {
+    let code = if symbol >= 65 && symbol <= 90 { symbol + 32 } else { symbol }
+    if (code >= 97 && code <= 122) || (code >= 48 && code <= 57) {
+        return x11_char(code)
+    }
+    if code == 32 { return "space" }
+    if code == 39 { return "'" }
+    if code == 96 { return "`" }
+    if code == 92 { return "\\" }
+    if code == 44 { return "," }
+    if code == 61 { return "=" }
+    if code == 91 { return "[" }
+    if code == 45 { return "-" }
+    if code == 46 { return "." }
+    if code == 93 { return "]" }
+    if code == 59 { return ";" }
+    if code == 47 { return "/" }
+    if symbol >= 65470 && symbol <= 65484 { return rt_concat("f", rt_int_to_str(symbol - 65469)) }
+    if symbol >= 65456 && symbol <= 65465 { return rt_concat("numpad", rt_int_to_str(symbol - 65456)) }
+    // Keypad navigation symbols are emitted while NumLock is off. Expose the
+    // same logical navigation keys as the desktop backend; KP_Begin is the
+    // center key on the numeric keypad.
+    if symbol == 65429 { return "home" }
+    if symbol == 65430 { return "left" }
+    if symbol == 65431 { return "up" }
+    if symbol == 65432 { return "right" }
+    if symbol == 65433 { return "down" }
+    if symbol == 65434 { return "pageup" }
+    if symbol == 65435 { return "pagedown" }
+    if symbol == 65436 { return "end" }
+    if symbol == 65437 { return "numpad5" }
+    if symbol == 65438 { return "insert" }
+    if symbol == 65439 { return "delete" }
+    if symbol == 65454 { return "numpad_dot" }
+    if symbol == 65455 { return "numpad_slash" }
+    if symbol == 65450 { return "numpad_asterisk" }
+    if symbol == 65453 { return "numpad_minus" }
+    if symbol == 65451 { return "numpad_plus" }
+    if symbol == 65421 { return "numpad_enter" }
+    if symbol == 65360 { return "home" }
+    if symbol == 65361 { return "left" }
+    if symbol == 65362 { return "up" }
+    if symbol == 65363 { return "right" }
+    if symbol == 65364 { return "down" }
+    if symbol == 65365 { return "pageup" }
+    if symbol == 65366 { return "pagedown" }
+    if symbol == 65367 { return "end" }
+    if symbol == 65288 { return "backspace" }
+    if symbol == 65289 { return "tab" }
+    if symbol == 65293 { return "enter" }
+    if symbol == 65307 { return "escape" }
+    if symbol == 65535 { return "delete" }
+    if symbol == 65379 { return "insert" }
+    if symbol == 65299 { return "pause" }
+    if symbol == 65383 { return "menu" }
+    if symbol == 65509 { return "capslock" }
+    if symbol == 65407 { return "numlock" }
+    if symbol == 65300 { return "scrolllock" }
+    if symbol == 65505 || symbol == 65506 { return "shift" }
+    if symbol == 65507 || symbol == 65508 { return "ctrl" }
+    if symbol == 65513 || symbol == 65514 { return "alt" }
+    if symbol == 65515 || symbol == 65516 { return "super" }
+    nil
+}
+
+fn wn_event_one(name: any, number: int) -> any {
+    rt_concat(rt_concat(rt_concat(name, "("), rt_int_to_str(number)), ")")
+}
+
+fn wn_event_two(name: any, first: int, second: int) -> any {
+    let prefix = rt_concat(rt_concat(name, "("), rt_int_to_str(first))
+    let middle = rt_concat(prefix, ", ")
+    let suffix = rt_concat(rt_concat(middle, rt_int_to_str(second)), ")")
+    suffix
+}
+
+fn wn_event_key(name: any, key: any) -> any {
+    rt_concat(rt_concat(rt_concat(name, "("), key), ")")
+}
+
+fn wn_queue_event(entry: int, event: any) {
+    let count = std::raw::load(entry + WN_EVENT_COUNT)
+    if count >= WN_EVENT_LIMIT { return nil }
+    let slot = std::raw::load(entry + WN_EVENT_QUEUE) + 16 * count
+    std::raw::store(slot, 5)
+    std::raw::store(slot + 8, std::raw::keep(event))
+    std::raw::store(entry + WN_EVENT_COUNT, count + 1)
+}
+
+fn wn_queue_priority_event(entry: int, event: any) {
+    let count = std::raw::load(entry + WN_EVENT_COUNT)
+    if count >= WN_EVENT_LIMIT {
+        let queue = std::raw::load(entry + WN_EVENT_QUEUE)
+        std::raw::release(5, std::raw::load(queue + 8))
+        let mut i = 0
+        while i + 1 < count {
+            std::raw::store(queue + 16 * i, std::raw::load(queue + 16 * (i + 1)))
+            std::raw::store(queue + 16 * i + 8, std::raw::load(queue + 16 * (i + 1) + 8))
+            i += 1
+        }
+        std::raw::store(queue + 16 * (count - 1), 0)
+        std::raw::store(queue + 16 * (count - 1) + 8, 0)
+        std::raw::store(entry + WN_EVENT_COUNT, count - 1)
+    }
+    wn_queue_event(entry, event)
+}
+
+fn wn_key_is_down(entry: int, key: any) -> bool {
+    let keymap = std::raw::load(entry + WN_KEYMAP)
+    let down = std::raw::load(entry + WN_KEY_DOWN)
+    let mut code = std::raw::load(entry + WN_MIN_KEYCODE)
+    let maximum = std::raw::load(entry + WN_MAX_KEYCODE)
+    while code <= maximum {
+        if std::raw::load8(down + code) != 0 {
+            let name = x11_keysym_name(x11_u32(keymap + 4 * code))
+            if std::raw::tag(name) == 5 && rt_str_eq(name, key) { return true }
+        }
+        code += 1
+    }
+    false
+}
+
+fn wn_key_transition(entry: int, code: int, pressed: bool) {
+    if code < 0 || code > 255 { return nil }
+    let down = std::raw::load(entry + WN_KEY_DOWN)
+    let old = std::raw::load8(down + code) != 0
+    if old == pressed { return nil }
+    let keymap = std::raw::load(entry + WN_KEYMAP)
+    let key = x11_keysym_name(x11_u32(keymap + 4 * code))
+    if std::raw::tag(key) != 5 { return nil }
+    let was_down = wn_key_is_down(entry, key)
+    std::raw::store8(down + code, if pressed { 1 } else { 0 })
+    let is_down = wn_key_is_down(entry, key)
+    if !was_down && is_down {
+        std__input__set_key_state(key, true)
+        wn_queue_event(entry, wn_event_key("KeyDown", key))
+    } else if was_down && !is_down {
+        std__input__set_key_state(key, false)
+        wn_queue_event(entry, wn_event_key("KeyUp", key))
+    }
+}
+
+fn wn_release_all_keys(entry: int) {
+    let down = std::raw::load(entry + WN_KEY_DOWN)
+    let mut code = std::raw::load(entry + WN_MIN_KEYCODE)
+    let maximum = std::raw::load(entry + WN_MAX_KEYCODE)
+    while code <= maximum {
+        if std::raw::load8(down + code) != 0 { wn_key_transition(entry, code, false) }
+        code += 1
+    }
+}
+
+fn wn_update_mouse(entry: int, x: int, y: int) {
+    std::raw::store(entry + WN_MOUSE_X, x)
+    std::raw::store(entry + WN_MOUSE_Y, y)
+    let inside = x >= 0 && y >= 0 && x < std::raw::load(entry + WN_SERVER_WIDTH) && y < std::raw::load(entry + WN_SERVER_HEIGHT)
+    if !inside {
+        if (std::raw::load(entry + WN_BUTTON_BITS) & 2) != 0 {
+            let root = std::raw::load(entry + WN_GUI_ROOT)
+            if root != 0 { gui_pointer_move(root, -1, -1) }
+        }
+        return nil
+    }
+    let old_x = std::raw::load(entry + WN_LAST_MOUSE_X)
+    let old_y = std::raw::load(entry + WN_LAST_MOUSE_Y)
+    if old_x == x && old_y == y { return nil }
+    std::raw::store(entry + WN_LAST_MOUSE_X, x)
+    std::raw::store(entry + WN_LAST_MOUSE_Y, y)
+    std__input__set_mouse_pos(x, y)
+    wn_queue_event(entry, wn_event_two("MouseMove", x, y))
+    if (std::raw::load(entry + WN_BUTTON_BITS) & 2) != 0 {
+        let root = std::raw::load(entry + WN_GUI_ROOT)
+        if root != 0 { gui_pointer_move(root, x, y) }
+    }
+}
+
+fn wn_button_transition(entry: int, button: int, pressed: bool) {
+    if button < 1 || button > 3 { return nil }
+    let mask = std::raw::shl(1, button)
+    let old = std::raw::load(entry + WN_BUTTON_BITS)
+    if ((old & mask) != 0) == pressed { return nil }
+    if pressed { std::raw::store(entry + WN_BUTTON_BITS, old | mask) }
+    else { std::raw::store(entry + WN_BUTTON_BITS, old & (15 - mask)) }
+    std__input__set_mouse_button(button, pressed)
+    wn_queue_event(entry, wn_event_one(if pressed { "MouseButtonDown" } else { "MouseButtonUp" }, button))
+    let root = std::raw::load(entry + WN_GUI_ROOT)
+    if button == 1 && root != 0 {
+        let x = std::raw::load(entry + WN_MOUSE_X)
+        let y = std::raw::load(entry + WN_MOUSE_Y)
+        if pressed { gui_pointer_down(root, x, y) }
+        else { gui_pointer_up(root, x, y) }
+    }
+}
+
+fn wn_release_all_buttons(entry: int) {
+    let mut button = 1
+    while button <= 3 {
+        wn_button_transition(entry, button, false)
+        button += 1
+    }
+}
+
+fn x11_handle_event(entry: int, event: int) {
+    let kind = std::raw::load8(event) & 127
+    let window = std::raw::load(entry + WN_XID)
+    if kind == 2 || kind == 3 {
+        let event_window = x11_u32(event + 12)
+        if event_window == window { wn_key_transition(entry, std::raw::load8(event + 1), kind == 2) }
+        return nil
+    }
+    if kind == 4 || kind == 5 {
+        let event_window = x11_u32(event + 12)
+        if event_window != window { return nil }
+        wn_update_mouse(entry, x11_i16(event + 24), x11_i16(event + 26))
+        let detail = std::raw::load8(event + 1)
+        let button = if detail == 1 { 1 } else if detail == 2 { 3 } else if detail == 3 { 2 } else { 0 }
+        if button != 0 { wn_button_transition(entry, button, kind == 4) }
+        return nil
+    }
+    if kind == 6 || kind == 7 {
+        if x11_u32(event + 12) == window {
+            wn_update_mouse(entry, x11_i16(event + 24), x11_i16(event + 26))
+        }
+        return nil
+    }
+    if kind == 9 {
+        if x11_u32(event + 4) == window { wn_queue_event(entry, "FocusGained") }
+        return nil
+    }
+    if kind == 11 {
+        let minimum = std::raw::load(entry + WN_MIN_KEYCODE)
+        let maximum = std::raw::load(entry + WN_MAX_KEYCODE)
+        let mut code = minimum
+        while code <= maximum {
+            let key_index = code - 8
+            let pressed = (std::raw::load8(event + 1 + key_index / 8) & std::raw::shl(1, key_index & 7)) != 0
+            wn_key_transition(entry, code, pressed)
+            code += 1
+        }
+        return nil
+    }
+    if kind == 10 {
+        if x11_u32(event + 4) == window {
+            wn_queue_event(entry, "FocusLost")
+            let root = std::raw::load(entry + WN_GUI_ROOT)
+            if root != 0 { gui_pointer_cancel(root) }
+            wn_release_all_keys(entry)
+            wn_release_all_buttons(entry)
+        }
+        return nil
+    }
+    if kind == 22 {
+        if x11_u32(event + 8) == window {
+            let width = x11_u16(event + 20)
+            let height = x11_u16(event + 22)
+            if width > 0 && height > 0 && (width != std::raw::load(entry + WN_SERVER_WIDTH) || height != std::raw::load(entry + WN_SERVER_HEIGHT)) {
+                std::raw::store(entry + WN_SERVER_WIDTH, width)
+                std::raw::store(entry + WN_SERVER_HEIGHT, height)
+                wn_queue_event(entry, wn_event_two("Resized", width, height))
+            }
+        }
+        return nil
+    }
+    if kind == 33 {
+        if x11_u32(event + 4) == window && std::raw::load8(event + 1) == 32 && x11_u32(event + 8) == std::raw::load(entry + WN_ATOM_WM_PROTOCOLS) && x11_u32(event + 12) == std::raw::load(entry + WN_ATOM_DELETE_WINDOW) {
+            std::raw::store(entry + WN_OPEN, 0)
+            let root = std::raw::load(entry + WN_GUI_ROOT)
+            if root != 0 { gui_pointer_cancel(root) }
+            wn_release_all_keys(entry)
+            wn_release_all_buttons(entry)
+            if std::raw::load(entry + WN_CLOSE_REPORTED) == 0 {
+                std::raw::store(entry + WN_CLOSE_REPORTED, 1)
+                wn_queue_priority_event(entry, "CloseRequested")
+            }
+        }
+        return nil
+    }
+    if kind == 17 {
+        if x11_u32(event + 4) == window {
+            std::raw::store(entry + WN_OPEN, 0)
+            let root = std::raw::load(entry + WN_GUI_ROOT)
+            if root != 0 { gui_pointer_cancel(root) }
+            wn_release_all_keys(entry)
+            wn_release_all_buttons(entry)
+            if std::raw::load(entry + WN_CLOSE_REPORTED) == 0 {
+                std::raw::store(entry + WN_CLOSE_REPORTED, 1)
+                wn_queue_priority_event(entry, "CloseRequested")
+            }
+        }
+    }
+}
+
+// Returns 1 when the connection is healthy, -1 when the server reported an
+// X11 protocol error, and 0 when the socket/event stream is no longer usable.
+fn x11_pump_events(entry: int) -> int {
+    let fd = std::raw::load(entry + WN_FD)
+    let buffer = std::raw::load(entry + WN_EVENT_BUFFER)
+    let mut used = std::raw::load(entry + WN_EVENT_LENGTH)
+    if used < 0 || used > WN_EVENT_BUFFER_BYTES { return 0 }
+    let mut protocol_error = false
+    let wait = rt_alloc_zero(8)
+    loop {
+        let mut consumed = 0
+        while used - consumed >= 32 {
+            let event = buffer + consumed
+            let kind = std::raw::load8(event) & 127
+            // X errors are fixed 32-byte packets: report them as -5 without
+            // treating the still-usable connection as a user-requested close.
+            // Replies and GenericEvents carry a length word.
+            let event_size = if kind == 1 || kind == 35 { 32 + 4 * x11_u32(event + 4) } else { 32 }
+            if event_size < 32 || event_size > WN_EVENT_BUFFER_BYTES {
+                rt_free_block(wait)
+                return 0
+            }
+            if used - consumed < event_size { break }
+            let repeated_key = kind == 3 && used - consumed >= 64 && (std::raw::load8(event + 32) & 127) == 2 && std::raw::load8(event + 1) == std::raw::load8(event + 33) && x11_u32(event + 4) == x11_u32(event + 36)
+            if kind == 0 {
+                protocol_error = true
+            } else if kind != 35 && kind != 1 && !repeated_key {
+                x11_handle_event(entry, event)
+            }
+            consumed += event_size
+        }
+        if consumed > 0 {
+            let remaining = used - consumed
+            rt_copy(buffer, buffer + consumed, remaining)
+            used = remaining
+        }
+        if used >= WN_EVENT_BUFFER_BYTES {
+            rt_free_block(wait)
+            return 0
+        }
+        std::raw::store(wait, fd)
+        std::raw::store8(wait + 4, 1) // POLLIN
+        let ready = std::raw::syscall(7, wait, 1, 0, 0, 0, 0)
+        if ready == -4 { continue }
+        if ready < 0 {
+            rt_free_block(wait)
+            return 0
+        }
+        if ready == 0 { break }
+        let flags = x11_u16(wait + 6)
+        if (flags & 1) == 0 {
+            if (flags & (8 | 16 | 32)) != 0 {
+                rt_free_block(wait)
+                return 0
+            }
+            break
+        }
+        let got = std::raw::syscall(0, fd, buffer + used, WN_EVENT_BUFFER_BYTES - used, 0, 0, 0)
+        if got == -4 { continue }
+        if got == -11 { break }
+        if got <= 0 {
+            rt_free_block(wait)
+            return 0
+        }
+        used += got
+    }
+    std::raw::store(entry + WN_EVENT_LENGTH, used)
+    rt_free_block(wait)
+    if protocol_error { -1 } else { 1 }
+}
+
+fn x11_intern_atom(fd: int, name: any) -> int {
+    let n = rt_slen(name)
+    if n == 0 || n > 255 { return 0 }
+    let padded = x11_padded(n)
+    let request = rt_alloc_zero(8 + padded)
+    std::raw::store8(request, 16)
+    x11_put16(request + 2, (8 + padded) / 4)
+    x11_put16(request + 4, n)
+    rt_copy(request + 8, std::raw::bits(name) + 16, n)
+    let sent = x11_write_all(fd, request, 8 + padded)
+    rt_free_block(request)
+    if !sent { return 0 }
+    let reply = rt_alloc_zero(32)
+    let ok = x11_read_reply(fd, reply)
+    let atom = if ok { x11_u32(reply + 8) } else { 0 }
+    rt_free_block(reply)
+    atom
+}
+
+fn x11_send_create_window(entry: int, width: int, height: int) -> bool {
+    let fd = std::raw::load(entry + WN_FD)
+    let window = std::raw::load(entry + WN_XID)
+    let request = rt_alloc_zero(36)
+    std::raw::store8(request, 1)
+    std::raw::store8(request + 1, std::raw::load(entry + WN_DEPTH))
+    x11_put16(request + 2, 9)
+    x11_put32(request + 4, window)
+    x11_put32(request + 8, std::raw::load(entry + WN_ROOT))
+    x11_put16(request + 12, 0)
+    x11_put16(request + 14, 0)
+    x11_put16(request + 16, width)
+    x11_put16(request + 18, height)
+    x11_put16(request + 20, 0)
+    x11_put16(request + 22, 1) // InputOutput
+    x11_put32(request + 24, std::raw::load(entry + WN_VISUAL))
+    x11_put32(request + 28, 2) // CWBackPixel
+    x11_put32(request + 32, std::raw::load(entry + WN_BLACK_PIXEL))
+    let ok = x11_write_all(fd, request, 36)
+    rt_free_block(request)
+    if !ok { return false }
+
+    let attributes = rt_alloc_zero(16)
+    std::raw::store8(attributes, 2) // ChangeWindowAttributes
+    x11_put16(attributes + 2, 4)
+    x11_put32(attributes + 4, window)
+    x11_put32(attributes + 8, 2048) // CWEventMask
+    let event_mask = 1 + 2 + 4 + 8 + 16 + 32 + 64 + 16384 + 32768 + 131072 + 2097152
+    x11_put32(attributes + 12, event_mask)
+    let attr_ok = x11_write_all(fd, attributes, 16)
+    rt_free_block(attributes)
+    if !attr_ok { return false }
+
+    let gc = rt_alloc_zero(16)
+    std::raw::store8(gc, 55) // CreateGC
+    x11_put16(gc + 2, 4)
+    x11_put32(gc + 4, std::raw::load(entry + WN_GC))
+    x11_put32(gc + 8, window)
+    x11_put32(gc + 12, 0)
+    let gc_ok = x11_write_all(fd, gc, 16)
+    rt_free_block(gc)
+    gc_ok
+}
+
+fn x11_change_property8(fd: int, window: int, property: int, type_atom: int, bytes: int, length: int) -> bool {
+    let padded = x11_padded(length)
+    let total = 24 + padded
+    let request = rt_alloc_zero(total)
+    std::raw::store8(request, 18) // ChangeProperty
+    std::raw::store8(request + 1, 0) // Replace
+    x11_put16(request + 2, total / 4)
+    x11_put32(request + 4, window)
+    x11_put32(request + 8, property)
+    x11_put32(request + 12, type_atom)
+    std::raw::store8(request + 16, 8)
+    x11_put32(request + 20, length)
+    if length > 0 { rt_copy(request + 24, bytes, length) }
+    let ok = x11_write_all(fd, request, total)
+    rt_free_block(request)
+    ok
+}
+
+fn x11_change_delete_protocol(entry: int) -> bool {
+    let request = rt_alloc_zero(28)
+    std::raw::store8(request, 18)
+    std::raw::store8(request + 1, 0)
+    x11_put16(request + 2, 7)
+    x11_put32(request + 4, std::raw::load(entry + WN_XID))
+    x11_put32(request + 8, std::raw::load(entry + WN_ATOM_WM_PROTOCOLS))
+    x11_put32(request + 12, 4) // ATOM
+    std::raw::store8(request + 16, 32)
+    x11_put32(request + 20, 1)
+    x11_put32(request + 24, std::raw::load(entry + WN_ATOM_DELETE_WINDOW))
+    let ok = x11_write_all(std::raw::load(entry + WN_FD), request, 28)
+    rt_free_block(request)
+    ok
+}
+
+fn x11_set_title(entry: int, title: any) -> bool {
+    let title_length = rt_slen(title)
+    let data = std::raw::bits(title) + 16
+    let fd = std::raw::load(entry + WN_FD)
+    let window = std::raw::load(entry + WN_XID)
+    let modern = x11_change_property8(fd, window, std::raw::load(entry + WN_ATOM_NET_WM_NAME), std::raw::load(entry + WN_ATOM_UTF8_STRING), data, title_length)
+    let legacy = x11_change_property8(fd, window, std::raw::load(entry + WN_ATOM_WM_NAME), std::raw::load(entry + WN_ATOM_STRING), data, title_length)
+    modern && legacy
+}
+
+fn x11_sync(fd: int) -> bool {
+    let request = rt_alloc_zero(4)
+    std::raw::store8(request, 43) // GetInputFocus
+    x11_put16(request + 2, 1)
+    let sent = x11_write_all(fd, request, 4)
+    rt_free_block(request)
+    if !sent { return false }
+    let reply = rt_alloc_zero(32)
+    let ok = x11_read_reply(fd, reply)
+    rt_free_block(reply)
+    ok
+}
+
+fn x11_set_nonblocking(fd: int) -> bool {
+    let flags = std::raw::syscall(72, fd, 3, 0, 0, 0, 0) // F_GETFL
+    if flags < 0 { return false }
+    std::raw::syscall(72, fd, 4, flags | 2048, 0, 0, 0) >= 0 // F_SETFL | O_NONBLOCK
+}
+
+fn x11_alloc_id(entry: int) -> int {
+    let base = std::raw::load(entry + WN_RESOURCE_BASE)
+    let mask = std::raw::load(entry + WN_RESOURCE_MASK)
+    let next = std::raw::load(entry + WN_RESOURCE_NEXT)
+    if next <= 0 || (next & mask) == 0 { return 0 }
+    std::raw::store(entry + WN_RESOURCE_NEXT, next + 1)
+    base | (next & mask)
+}
+
+fn x11_initialize_atoms(entry: int) -> bool {
+    let fd = std::raw::load(entry + WN_FD)
+    let a_wm_name = x11_intern_atom(fd, "WM_NAME")
+    let a_string = x11_intern_atom(fd, "STRING")
+    let a_net_name = x11_intern_atom(fd, "_NET_WM_NAME")
+    let a_utf8 = x11_intern_atom(fd, "UTF8_STRING")
+    let a_protocols = x11_intern_atom(fd, "WM_PROTOCOLS")
+    let a_delete = x11_intern_atom(fd, "WM_DELETE_WINDOW")
+    if a_wm_name == 0 || a_string == 0 || a_net_name == 0 || a_utf8 == 0 || a_protocols == 0 || a_delete == 0 {
+        return false
+    }
+    std::raw::store(entry + WN_ATOM_WM_NAME, a_wm_name)
+    std::raw::store(entry + WN_ATOM_STRING, a_string)
+    std::raw::store(entry + WN_ATOM_NET_WM_NAME, a_net_name)
+    std::raw::store(entry + WN_ATOM_UTF8_STRING, a_utf8)
+    std::raw::store(entry + WN_ATOM_WM_PROTOCOLS, a_protocols)
+    std::raw::store(entry + WN_ATOM_DELETE_WINDOW, a_delete)
+    true
+}
+
+fn x11_component(value: int, mask: int) -> int {
+    let mut shift = 0
+    let mut normalized = mask
+    while (normalized & 1) == 0 {
+        normalized = std::raw::shr(normalized, 1)
+        shift += 1
+    }
+    std::raw::shl((value * normalized + 127) / 255, shift)
+}
+
+fn x11_pack_pixel(entry: int, rgba: int) -> int {
+    let red = std::raw::load8(rgba)
+    let green = std::raw::load8(rgba + 1)
+    let blue = std::raw::load8(rgba + 2)
+    x11_component(red, std::raw::load(entry + WN_RED_MASK)) | x11_component(green, std::raw::load(entry + WN_GREEN_MASK)) | x11_component(blue, std::raw::load(entry + WN_BLUE_MASK))
+}
+
+fn x11_put_image(entry: int, source: int, source_length: int) -> bool {
+    let width = std::raw::load(entry + WN_WIDTH)
+    let height = std::raw::load(entry + WN_HEIGHT)
+    if source_length != width * height * 4 { return false }
+    let bits_per_pixel = std::raw::load(entry + WN_BITS_PER_PIXEL)
+    let scanline_pad = std::raw::load(entry + WN_SCANLINE_PAD)
+    let bytes_per_pixel = bits_per_pixel / 8
+    let stride = ((width * bits_per_pixel + scanline_pad - 1) / scanline_pad) * (scanline_pad / 8)
+    if bytes_per_pixel < 1 || stride <= 0 { return false }
+    let max_bytes = std::raw::load(entry + WN_MAX_REQUEST) * 4
+    let mut max_rows = (max_bytes - 24) / stride
+    while max_rows > 0 && 24 + x11_padded(max_rows * stride) > max_bytes { max_rows -= 1 }
+    if max_rows < 1 { return false }
+    let fd = std::raw::load(entry + WN_FD)
+    let window = std::raw::load(entry + WN_XID)
+    let gc = std::raw::load(entry + WN_GC)
+    let depth = std::raw::load(entry + WN_DEPTH)
+    let byte_order = std::raw::load(entry + WN_IMAGE_ORDER)
+    let mut first_row = 0
+    while first_row < height {
+        let remaining = height - first_row
+        let rows = if remaining < max_rows { remaining } else { max_rows }
+        let raw_data_length = rows * stride
+        let padded_data_length = x11_padded(raw_data_length)
+        let request_length = 24 + padded_data_length
+        if request_length / 4 > 65535 || request_length > max_bytes { return false }
+        let request = rt_alloc_zero(request_length)
+        std::raw::store8(request, 72) // PutImage
+        std::raw::store8(request + 1, 2) // ZPixmap
+        x11_put16(request + 2, request_length / 4)
+        x11_put32(request + 4, window)
+        x11_put32(request + 8, gc)
+        x11_put16(request + 12, width)
+        x11_put16(request + 14, rows)
+        x11_put16(request + 16, 0)
+        x11_put16(request + 18, first_row)
+        std::raw::store8(request + 21, depth)
+        let mut row = 0
+        while row < rows {
+            let mut column = 0
+            while column < width {
+                let pixel_index = ((first_row + row) * width + column) * 4
+                let packed = x11_pack_pixel(entry, source + pixel_index)
+                let output = request + 24 + row * stride + column * bytes_per_pixel
+                let mut byte = 0
+                while byte < bytes_per_pixel {
+                    let shift = if byte_order == 0 { byte * 8 } else { (bytes_per_pixel - 1 - byte) * 8 }
+                    std::raw::store8(output + byte, std::raw::shr(packed, shift) & 255)
+                    byte += 1
+                }
+                column += 1
+            }
+            row += 1
+        }
+        let sent = x11_write_all(fd, request, request_length)
+        rt_free_block(request)
+        if !sent { return false }
+        first_row += rows
+    }
+    true
+}
+
+fn x11_close_entry(entry: int) {
+    let fd = std::raw::load(entry + WN_FD)
+    let window = std::raw::load(entry + WN_XID)
+    let gc_id = std::raw::load(entry + WN_GC)
+    if fd >= 0 {
+        if window != 0 {
+            let destroy = rt_alloc_zero(8)
+            std::raw::store8(destroy, 4) // DestroyWindow
+            x11_put16(destroy + 2, 2)
+            x11_put32(destroy + 4, window)
+            x11_write_all(fd, destroy, 8)
+            rt_free_block(destroy)
+        }
+        if gc_id != 0 {
+            let free_gc = rt_alloc_zero(8)
+            std::raw::store8(free_gc, 60) // FreeGC
+            x11_put16(free_gc + 2, 2)
+            x11_put32(free_gc + 4, gc_id)
+            x11_write_all(fd, free_gc, 8)
+            rt_free_block(free_gc)
+        }
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    }
+    let title = std::raw::load(entry + WN_TITLE)
+    if title != 0 { std::raw::release(5, title) }
+    let keymap = std::raw::load(entry + WN_KEYMAP)
+    if keymap != 0 { rt_free_block(keymap) }
+    let key_down = std::raw::load(entry + WN_KEY_DOWN)
+    if key_down != 0 { rt_free_block(key_down) }
+    let event_buffer = std::raw::load(entry + WN_EVENT_BUFFER)
+    if event_buffer != 0 { rt_free_block(event_buffer) }
+    let queue = std::raw::load(entry + WN_EVENT_QUEUE)
+    if queue != 0 {
+        let count = std::raw::load(entry + WN_EVENT_COUNT)
+        let mut i = 0
+        while i < count {
+            std::raw::release(5, std::raw::load(queue + 16 * i + 8))
+            i += 1
+        }
+        rt_free_block(queue)
+    }
+    rt_free_block(entry)
+}
+
+fn wl_state() -> int {
+    let slot = std::raw::globals() + WL_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(24)
+    let table = rt_alloc_zero(8 * WL_MAX_HANDLES)
+    std::raw::store(created, 1)
+    std::raw::store(created + 16, table)
+    std::raw::store(slot, created)
+    created
+}
+
+fn wl_find_index(state: int, handle: int) -> int {
+    if handle <= 0 { return 0 }
+    let table = std::raw::load(state + 16)
+    let count = std::raw::load(state + 8)
+    let mut i = 0
+    while i < count {
+        let entry = std::raw::load(table + 8 * i)
+        if std::raw::load(entry) == handle { return i + 1 }
+        i += 1
+    }
+    0
+}
+
+fn wl_entry(state: int, index: int) -> int {
+    if index <= 0 || index > std::raw::load(state + 8) { return 0 }
+    std::raw::load(std::raw::load(state + 16) + 8 * (index - 1))
+}
+
+fn wl_check_u32(value: int, function: string, label: string) -> int {
+    if value < 0 || value > 4294967295 {
+        rt_native_fail(function, rt_concat(label, " out of range"))
+    }
+    value
+}
+
+fn wl_release_entry(entry: int) {
+    let title_tag = std::raw::load(entry + 40)
+    let title_bits = std::raw::load(entry + 48)
+    if title_tag != 0 { std::raw::release(title_tag, title_bits) }
+    let events = std::raw::load(entry + 32)
+    if events != 0 { rt_free_block(events) }
+    rt_free_block(entry)
+}
+
+fn std__window__create(title_value: any, width_value: any, height_value: any) -> any {
+    let function = "std::window::create"
+    rt_expect_str(title_value, function)
+    rt_expect_int(width_value, function)
+    rt_expect_int(height_value, function)
+    let width = wl_check_u32(std::raw::bits(width_value), function, "window width")
+    let height = wl_check_u32(std::raw::bits(height_value), function, "window height")
+    if rt_slen(title_value) > WL_MAX_TITLE_BYTES {
+        rt_native_fail(function, "window title exceeds byte limit 65536")
+    }
+    if width == 0 || height == 0 || width > WL_MAX_DIMENSION || height > WL_MAX_DIMENSION {
+        rt_native_fail(function, "window dimensions must be between 1 and 16384")
+    }
+    let state = wl_state()
+    let count = std::raw::load(state + 8)
+    if count >= WL_MAX_HANDLES {
+        rt_native_fail(function, "window handle quota exceeded (limit 64)")
+    }
+    let id = std::raw::load(state)
+    if id <= 0 {
+        rt_native_fail(function, "window handle space exhausted")
+    }
+    let entry = rt_alloc_zero(WL_ENTRY_BYTES)
+    std::raw::store(entry, id)
+    std::raw::store(entry + 8, width)
+    std::raw::store(entry + 16, height)
+    std::raw::store(entry + 40, 5)
+    std::raw::store(entry + 48, std::raw::keep(title_value))
+    let table = std::raw::load(state + 16)
+    std::raw::store(table + 8 * count, entry)
+    std::raw::store(state + 8, count + 1)
+    if id == 9223372036854775807 {
+        // The Rust AtomicU64 then holds i64::MAX + 1 and rejects the next ID.
+        std::raw::store(state, -1)
+    } else {
+        std::raw::store(state, id + 1)
+    }
+    id
+}
+
+fn std__window__is_open(handle_value: any) -> any {
+    let function = "std::window::is_open"
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    if handle < 0 { rt_native_fail(function, "window handle must be nonnegative") }
+    wl_find_index(wl_state(), handle) != 0
+}
+
+fn std__window__close(handle_value: any) -> any {
+    let function = "std::window::close"
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    if handle < 0 { rt_native_fail(function, "window handle must be nonnegative") }
+    let state = wl_state()
+    let index = wl_find_index(state, handle)
+    if index == 0 { return false }
+    let table = std::raw::load(state + 16)
+    let count = std::raw::load(state + 8)
+    let entry = std::raw::load(table + 8 * (index - 1))
+    wl_release_entry(entry)
+    let mut i = index - 1
+    while i + 1 < count {
+        std::raw::store(table + 8 * i, std::raw::load(table + 8 * (i + 1)))
+        i += 1
+    }
+    std::raw::store(table + 8 * (count - 1), 0)
+    std::raw::store(state + 8, count - 1)
+    true
+}
+
+fn std__window__set_title(handle_value: any, title_value: any) -> any {
+    let function = "std::window::set_title"
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    if handle < 0 { rt_native_fail(function, "window handle must be nonnegative") }
+    rt_expect_str(title_value, function)
+    if rt_slen(title_value) > WL_MAX_TITLE_BYTES { return false }
+    let state = wl_state()
+    let index = wl_find_index(state, handle)
+    if index == 0 { return false }
+    let entry = wl_entry(state, index)
+    std::raw::release(std::raw::load(entry + 40), std::raw::load(entry + 48))
+    std::raw::store(entry + 40, 5)
+    std::raw::store(entry + 48, std::raw::keep(title_value))
+    true
+}
+
+fn std__window__resize(handle_value: any, width_value: any, height_value: any) -> any {
+    let function = "std::window::resize"
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    if handle < 0 { rt_native_fail(function, "window handle must be nonnegative") }
+    rt_expect_int(width_value, function)
+    rt_expect_int(height_value, function)
+    let width = wl_check_u32(std::raw::bits(width_value), function, "window width")
+    let height = wl_check_u32(std::raw::bits(height_value), function, "window height")
+    if width == 0 || height == 0 || width > WL_MAX_DIMENSION || height > WL_MAX_DIMENSION { return false }
+    let state = wl_state()
+    let index = wl_find_index(state, handle)
+    if index == 0 { return false }
+    let entry = wl_entry(state, index)
+    let count = std::raw::load(entry + 24)
+    if count >= WL_MAX_EVENTS { return false }
+    let mut events = std::raw::load(entry + 32)
+    if events == 0 {
+        events = rt_alloc_zero(16 * WL_MAX_EVENTS)
+        std::raw::store(entry + 32, events)
+    }
+    std::raw::store(events + 16 * count, width)
+    std::raw::store(events + 16 * count + 8, height)
+    std::raw::store(entry + 24, count + 1)
+    std::raw::store(entry + 8, width)
+    std::raw::store(entry + 16, height)
+    true
+}
+
+fn std__window__poll_events(handle_value: any) -> any {
+    let function = "std::window::poll_events"
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    if handle < 0 { rt_native_fail(function, "window handle must be nonnegative") }
+    let state = wl_state()
+    let index = wl_find_index(state, handle)
+    if index == 0 { return rt_array_new(0) }
+    let entry = wl_entry(state, index)
+    let count = std::raw::load(entry + 24)
+    let output = rt_array_new(count)
+    let data = rt_seq_data(output)
+    let events = std::raw::load(entry + 32)
+    let mut i = 0
+    while i < count {
+        let width = std::raw::load(events + 16 * i)
+        let height = std::raw::load(events + 16 * i + 8)
+        let text = rt_concat(rt_concat(rt_concat(rt_concat("Resized(", rt_int_to_str(width)), ", "), rt_int_to_str(height)), ")")
+        rt_seq_put(data, i, text)
+        i += 1
+    }
+    std::raw::store(entry + 24, 0)
+    output
+}
+
+fn std__window__live_open(title_value: any, width_value: any, height_value: any) -> any {
+    let function = "std::window::live_open"
+    rt_expect_str(title_value, function)
+    rt_expect_int(width_value, function)
+    rt_expect_int(height_value, function)
+    let width = std::raw::bits(width_value)
+    let height = std::raw::bits(height_value)
+    if rt_slen(title_value) > WN_MAX_TITLE_BYTES || width <= 0 || height <= 0 || width > WN_MAX_DIMENSION || height > WN_MAX_DIMENSION {
+        return -1
+    }
+    let state = wn_state()
+    let count = std::raw::load(state + 8)
+    if count >= WN_MAX_HANDLES || std::raw::load(state + 16) + width * height > WN_MAX_PIXELS {
+        return -1
+    }
+    let display_pointer = rt_getenv("DISPLAY")
+    if display_pointer == 0 { return -1 }
+    let display = rt_from_cstr(display_pointer)
+    let number = x11_display_number_text(display)
+    let screen_number = x11_display_screen(display)
+    if screen_number < 0 { return -1 }
+    let connection_info = rt_alloc_zero(8)
+    let fd = x11_connect(display, number, connection_info)
+    let connection_kind = std::raw::load(connection_info)
+    rt_free_block(connection_info)
+    if fd < 0 { return -1 }
+    x11_set_timeouts(fd)
+    let cookie = x11_get_cookie(number, connection_kind)
+    let entry = rt_alloc_zero(WN_ENTRY_BYTES)
+    std::raw::store(entry + WN_FD, fd)
+    std::raw::store(entry + WN_WIDTH, width)
+    std::raw::store(entry + WN_HEIGHT, height)
+    std::raw::store(entry + WN_SERVER_WIDTH, width)
+    std::raw::store(entry + WN_SERVER_HEIGHT, height)
+    if !x11_setup(fd, entry, cookie, screen_number) || !x11_query_keyboard(entry) {
+        x11_close_entry(entry)
+        return -1
+    }
+    x11_initialize_runtime_buffers(entry)
+    if !x11_initialize_atoms(entry) {
+        x11_close_entry(entry)
+        return -1
+    }
+    let window = x11_alloc_id(entry)
+    let gc_id = x11_alloc_id(entry)
+    if window == 0 || gc_id == 0 {
+        x11_close_entry(entry)
+        return -1
+    }
+    std::raw::store(entry + WN_XID, window)
+    std::raw::store(entry + WN_GC, gc_id)
+    if !x11_send_create_window(entry, width, height) || !x11_set_title(entry, title_value) || !x11_change_delete_protocol(entry) {
+        x11_close_entry(entry)
+        return -1
+    }
+    let map = rt_alloc_zero(8)
+    std::raw::store8(map, 8)
+    x11_put16(map + 2, 2)
+    x11_put32(map + 4, window)
+    let mapped = x11_write_all(fd, map, 8)
+    rt_free_block(map)
+    if !mapped || !x11_sync(fd) {
+        x11_close_entry(entry)
+        return -1
+    }
+    if !x11_set_nonblocking(fd) {
+        x11_close_entry(entry)
+        return -1
+    }
+    let handle = std::raw::load(state)
+    if handle <= 0 || handle == 9223372036854775807 {
+        x11_close_entry(entry)
+        return -1
+    }
+    std::raw::store(entry + WN_HANDLE, handle)
+    std::raw::store(entry + WN_OPEN, 1)
+    std::raw::store(entry + WN_TITLE, std::raw::keep(title_value))
+    std::raw::store(state + WN_TABLE_OFFSET + 8 * count, entry)
+    std::raw::store(state + 8, count + 1)
+    std::raw::store(state + 16, std::raw::load(state + 16) + width * height)
+    std::raw::store(state, handle + 1)
+    handle
+}
+
+fn std__window__live_is_open(handle_value: any) -> any {
+    let function = "std::window::live_is_open"
+    rt_expect_int(handle_value, function)
+    let state = wn_state()
+    let index = wn_find_index(state, std::raw::bits(handle_value))
+    if index == 0 { return false }
+    std::raw::load(wn_entry(state, index) + WN_OPEN) != 0
+}
+
+fn std__window__live_close(handle_value: any) -> any {
+    let function = "std::window::live_close"
+    rt_expect_int(handle_value, function)
+    let state = wn_state()
+    let index = wn_find_index(state, std::raw::bits(handle_value))
+    if index == 0 { return false }
+    let slot = state + WN_TABLE_OFFSET + 8 * (index - 1)
+    let entry = std::raw::load(slot)
+    let pixels = std::raw::load(entry + WN_WIDTH) * std::raw::load(entry + WN_HEIGHT)
+    let root = std::raw::load(entry + WN_GUI_ROOT)
+    if root != 0 { gui_pointer_cancel(root) }
+    wn_release_all_keys(entry)
+    wn_release_all_buttons(entry)
+    x11_close_entry(entry)
+    let count = std::raw::load(state + 8)
+    let mut i = index - 1
+    while i + 1 < count {
+        std::raw::store(state + WN_TABLE_OFFSET + 8 * i, std::raw::load(state + WN_TABLE_OFFSET + 8 * (i + 1)))
+        i += 1
+    }
+    std::raw::store(state + WN_TABLE_OFFSET + 8 * (count - 1), 0)
+    std::raw::store(state + 8, count - 1)
+    let total = std::raw::load(state + 16)
+    if pixels <= total { std::raw::store(state + 16, total - pixels) }
+    true
+}
+
+fn std__window__live_set_title(handle_value: any, title: any) -> any {
+    let function = "std::window::live_set_title"
+    rt_expect_int(handle_value, function)
+    rt_expect_str(title, function)
+    if rt_slen(title) > WN_MAX_TITLE_BYTES { return false }
+    let state = wn_state()
+    let index = wn_find_index(state, std::raw::bits(handle_value))
+    if index == 0 { return false }
+    let entry = wn_entry(state, index)
+    if std::raw::load(entry + WN_OPEN) == 0 || !x11_set_title(entry, title) { return false }
+    let previous = std::raw::load(entry + WN_TITLE)
+    if previous != 0 { std::raw::release(5, previous) }
+    std::raw::store(entry + WN_TITLE, std::raw::keep(title))
+    true
+}
+
+fn std__window__live_pump(handle_value: any, gui_root_value: any) -> any {
+    let function = "std::window::live_pump"
+    rt_expect_int(handle_value, function)
+    rt_expect_int(gui_root_value, function)
+    let state = wn_state()
+    let index = wn_find_index(state, std::raw::bits(handle_value))
+    if index == 0 { return -2 }
+    let entry = wn_entry(state, index)
+    if std::raw::load(entry + WN_OPEN) == 0 { return 0 }
+    let gui_root = std::raw::bits(gui_root_value)
+    let pixels = std__gui__render(gui_root_value)
+    if std::raw::tag(pixels) != 6 { return -3 }
+    let gui_nodes = gui_state()
+    let gui_index = gui_find_index(gui_nodes, gui_root)
+    if gui_index == 0 { return -3 }
+    let root = gui_widget_ptr(gui_nodes, gui_index)
+    let width = std::raw::load(root + GUI_WIDTH)
+    let height = std::raw::load(root + GUI_HEIGHT)
+    if width != std::raw::load(entry + WN_WIDTH) || height != std::raw::load(entry + WN_HEIGHT) { return -4 }
+    if gui_root != std::raw::load(entry + WN_GUI_ROOT) {
+        let old_root = std::raw::load(entry + WN_GUI_ROOT)
+        if old_root != 0 { gui_pointer_cancel(old_root) }
+        std::raw::store(entry + WN_GUI_ROOT, gui_root)
+    }
+    let pixel_object = std::raw::bits(pixels)
+    let pixel_length = std::raw::load(pixel_object + 8)
+    if pixel_length != width * height * 4 { return -3 }
+    if !x11_put_image(entry, pixel_object + 16, pixel_length) { return -5 }
+    let event_status = x11_pump_events(entry)
+    if event_status == -1 { return -5 }
+    if event_status == 0 {
+        std::raw::store(entry + WN_OPEN, 0)
+        let pointer_root = std::raw::load(entry + WN_GUI_ROOT)
+        if pointer_root != 0 { gui_pointer_cancel(pointer_root) }
+        wn_release_all_keys(entry)
+        wn_release_all_buttons(entry)
+        if std::raw::load(entry + WN_CLOSE_REPORTED) == 0 {
+            std::raw::store(entry + WN_CLOSE_REPORTED, 1)
+            wn_queue_priority_event(entry, "CloseRequested")
+        }
+        return 0
+    }
+    if std::raw::load(entry + WN_OPEN) == 0 { return 0 }
+    if (std::raw::load(entry + WN_BUTTON_BITS) & 2) != 0 {
+        let root = std::raw::load(entry + WN_GUI_ROOT)
+        if root != 0 { gui_pointer_move(root, std::raw::load(entry + WN_MOUSE_X), std::raw::load(entry + WN_MOUSE_Y)) }
+    }
+    1
+}
+
+fn std__window__live_poll_events(handle_value: any) -> any {
+    let function = "std::window::live_poll_events"
+    rt_expect_int(handle_value, function)
+    let state = wn_state()
+    let index = wn_find_index(state, std::raw::bits(handle_value))
+    if index == 0 { return rt_array_new(0) }
+    let entry = wn_entry(state, index)
+    let count = std::raw::load(entry + WN_EVENT_COUNT)
+    let output = rt_array_new(count)
+    let data = rt_seq_data(output)
+    let queue = std::raw::load(entry + WN_EVENT_QUEUE)
+    let mut i = 0
+    while i < count {
+        let slot = queue + 16 * i
+        let value = std::raw::value(5, std::raw::load(slot + 8))
+        rt_seq_put(data, i, value)
+        std::raw::release(5, std::raw::load(slot + 8))
+        std::raw::store(slot, 0)
+        std::raw::store(slot + 8, 0)
+        i += 1
+    }
+    std::raw::store(entry + WN_EVENT_COUNT, 0)
+    output
+}

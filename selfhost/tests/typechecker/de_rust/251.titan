@@ -1,0 +1,1 @@
+enum Inner { Yes } enum Outer { Wrap(Inner) } fn read(value: Outer) -> int { match value { Outer::Wrap(Inner::Yes) => 1, _ => 0 } } fn main() {}

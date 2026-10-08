@@ -1,0 +1,160 @@
+// std::clipboard y std::notify: integración con el portapapeles y las
+// notificaciones reales del sistema. Si el servicio/CLI no está disponible,
+// se devuelve "" o false; nunca se sustituye por estado en memoria.
+
+const CB_MAX_TEXT_BYTES: int = 1048576
+const CB_MAX_TITLE_BYTES: int = 4096
+const CB_MAX_BODY_BYTES: int = 65536
+
+// Ejecuta un programa con argv explícito: no analiza texto como shell ni
+// ejecuta Zett. ps_execute es el núcleo Titan compartido por std::process.
+fn cb_argv(program: string, args: any) -> any {
+    let count = rt_seq_len(args)
+    let argv = rt_array_new(count + 1)
+    let data = rt_seq_data(argv)
+    rt_seq_put(data, 0, program)
+    let mut i = 0
+    while i < count {
+        rt_seq_put(data, i + 1, args[i])
+        i += 1
+    }
+    argv
+}
+
+fn cb_execute(program: string, args: any, input: any) -> any {
+    ps_execute("std::process::run", cb_argv(program, args), input)
+}
+
+fn cb_execute_silent(fname: string, program: string, args: any, input: any) -> bool {
+    ps_execute_silent(fname, cb_argv(program, args), input)
+}
+
+// Solo se llama con nombres de ejecutables constantes definidos abajo.
+fn cb_command_exists(program: string) -> bool {
+    let probe = cb_execute("sh", ["-c", "command -v " + program + " >/dev/null 2>&1"], nil)
+    std::map::get(probe, "exit_code") == 0
+}
+
+fn cb_env_nonempty(name: string) -> bool {
+    let value = std::process::env_get(name)
+    if !rt_enum_is(value, "Option", "Some") { return false }
+    rt_slen(rt_enum_payload(value)) > 0
+}
+
+fn cb_is_android() -> bool {
+    cb_env_nonempty("ANDROID_ROOT") || cb_env_nonempty("ANDROID_DATA")
+}
+
+fn cb_is_termux() -> bool {
+    cb_env_nonempty("TERMUX_VERSION") || (cb_env_nonempty("ANDROID_ROOT") && cb_env_nonempty("PREFIX"))
+}
+
+fn cb_read_command(program: string, args: any) -> any {
+    let result = cb_execute(program, args, nil)
+    if std::map::get(result, "exit_code") != 0 { return Option::Some("") }
+    let text = std::map::get(result, "stdout")
+    if rt_slen(text) > CB_MAX_TEXT_BYTES { return Option::Some("") }
+    Option::Some(text)
+}
+
+fn cb_write_command(program: string, args: any, text: any) -> bool {
+    let data = std::encoding::utf8_encode(text)
+    cb_execute_silent("std::clipboard::set_text", program, args, data)
+}
+
+fn std__clipboard__get_text() -> any {
+    if cb_is_termux() {
+        if !cb_command_exists("termux-clipboard-get") { return "" }
+        let result = cb_read_command("termux-clipboard-get", [])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+        return ""
+    }
+    if cb_is_android() { return "" }
+    if cb_command_exists("pbpaste") {
+        let result = cb_read_command("pbpaste", [])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+    }
+    if cb_env_nonempty("WAYLAND_DISPLAY") && cb_command_exists("wl-paste") {
+        let result = cb_read_command("wl-paste", ["--no-newline"])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+    }
+    if cb_command_exists("xclip") {
+        let result = cb_read_command("xclip", ["-selection", "clipboard", "-out"])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+    }
+    if cb_command_exists("xsel") {
+        let result = cb_read_command("xsel", ["--clipboard", "--output"])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+    }
+    // Algunos lanzadores Wayland no exportan WAYLAND_DISPLAY a sus procesos.
+    if cb_command_exists("wl-paste") {
+        let result = cb_read_command("wl-paste", ["--no-newline"])
+        if rt_enum_is(result, "Option", "Some") { return rt_enum_payload(result) }
+    }
+    ""
+}
+
+fn std__clipboard__set_text(text: any) -> any {
+    rt_expect_str(text, "std::clipboard::set_text")
+    if rt_slen(text) > CB_MAX_TEXT_BYTES { return false }
+    if cb_is_termux() {
+        return cb_command_exists("termux-clipboard-set") && cb_write_command("termux-clipboard-set", [], text)
+    }
+    if cb_is_android() { return false }
+    if cb_command_exists("pbcopy") {
+        if cb_write_command("pbcopy", [], text) { return true }
+    }
+    if cb_env_nonempty("WAYLAND_DISPLAY") && cb_command_exists("wl-copy") {
+        if cb_write_command("wl-copy", [], text) { return true }
+    }
+    if cb_command_exists("xclip") {
+        if cb_write_command("xclip", ["-selection", "clipboard", "-in"], text) { return true }
+    }
+    if cb_command_exists("xsel") {
+        if cb_write_command("xsel", ["--clipboard", "--input"], text) { return true }
+    }
+    if cb_command_exists("wl-copy") {
+        if cb_write_command("wl-copy", [], text) { return true }
+    }
+    false
+}
+
+// AppleScript string-literal escaping, used only as an argument to osascript.
+fn cb_applescript_quote(text: any) -> any {
+    let escaped = std::text::replace(text, "\\", "\\\\")
+    let escaped = std::text::replace(escaped, "\"", "\\\"")
+    let escaped = std::text::replace(escaped, "\n", "\\n")
+    let escaped = std::text::replace(escaped, "\r", "\\r")
+    "\"" + escaped + "\""
+}
+
+fn cb_run_notification(program: string, args: any) -> bool {
+    cb_execute_silent("std::notify::send", program, args, nil)
+}
+
+fn std__notify__send(title: any, body: any) -> any {
+    rt_expect_str(title, "std::notify::send")
+    rt_expect_str(body, "std::notify::send")
+    if rt_slen(title) > CB_MAX_TITLE_BYTES || rt_slen(body) > CB_MAX_BODY_BYTES {
+        return false
+    }
+    if std::text::contains(title, "\0") || std::text::contains(body, "\0") {
+        return false
+    }
+    if cb_is_termux() {
+        if !cb_command_exists("termux-notification") { return false }
+        return cb_run_notification("termux-notification", ["--title", title, "--content", body])
+    }
+    if cb_is_android() { return false }
+    if cb_command_exists("osascript") {
+        let script = "display notification " + cb_applescript_quote(body) + " with title " + cb_applescript_quote(title)
+        return cb_run_notification("osascript", ["-e", script])
+    }
+    if cb_command_exists("notify-send") {
+        return cb_run_notification("notify-send", ["--", title, body])
+    }
+    if cb_command_exists("dunstify") {
+        return cb_run_notification("dunstify", ["--", title, body])
+    }
+    false
+}

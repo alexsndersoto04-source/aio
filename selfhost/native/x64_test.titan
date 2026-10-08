@@ -1,0 +1,149 @@
+// Emite cada forma de instrucción del ensamblador con varias combinaciones
+// de registros y escribe (1) los bytes en ARGS[3] y (2) el texto esperado,
+// en sintaxis Intel de objdump, en ARGS[4]. verify_x64.sh los compara.
+import x64
+
+fn rn(r: int) -> string {
+    ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"][r]
+}
+
+fn rn8(r: int) -> string {
+    ["al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b"][r]
+}
+
+fn hex(v: int) -> string {
+    let digits = "0123456789abcdef"
+    if v == 0 {
+        return "0x0"
+    }
+    let mut out = ""
+    let mut x = v
+    while x > 0 {
+        out = std::text::substring(digits, x % 16, x % 16 + 1) + out
+        x = x / 16
+    }
+    "0x" + out
+}
+
+fn mem(base: int, disp: int) -> string {
+    if disp < 0 {
+        return "[" + rn(base) + "-" + hex(0 - disp) + "]"
+    }
+    "[" + rn(base) + "+" + hex(disp) + "]"
+}
+
+fn main() {
+    let args = std::env::args()
+    let mut code = []
+    let mut want = []
+    let regs = [0, 1, 3, 4, 5, 7, 8, 12, 13, 15]
+    for a in regs {
+        for b in regs {
+            code = std::array::concat(code, x_mov_rr(a, b))
+            want = std::array::push(want, "mov " + rn(a) + "," + rn(b))
+            code = std::array::concat(code, x_add_rr(a, b))
+            want = std::array::push(want, "add " + rn(a) + "," + rn(b))
+            code = std::array::concat(code, x_sub_rr(a, b))
+            want = std::array::push(want, "sub " + rn(a) + "," + rn(b))
+            code = std::array::concat(code, x_cmp_rr(a, b))
+            want = std::array::push(want, "cmp " + rn(a) + "," + rn(b))
+            code = std::array::concat(code, x_imul_rr(a, b))
+            want = std::array::push(want, "imul " + rn(a) + "," + rn(b))
+            code = std::array::concat(code, x_load(a, b, 24))
+            want = std::array::push(want, "mov " + rn(a) + ",QWORD PTR " + mem(b, 24))
+            code = std::array::concat(code, x_store(b, -40, a))
+            want = std::array::push(want, "mov QWORD PTR " + mem(b, -40) + "," + rn(a))
+            code = std::array::concat(code, x_lea(a, b, 8))
+            want = std::array::push(want, "lea " + rn(a) + "," + mem(b, 8))
+            code = std::array::concat(code, x_load8(a, b, 3))
+            want = std::array::push(want, "movzx " + rn(a) + ",BYTE PTR " + mem(b, 3))
+            code = std::array::concat(code, x_store8(b, 5, a))
+            want = std::array::push(want, "mov BYTE PTR " + mem(b, 5) + "," + rn8(a))
+            code = std::array::concat(code, x_add_rm(a, b, 16))
+            want = std::array::push(want, "add " + rn(a) + ",QWORD PTR " + mem(b, 16))
+            code = std::array::concat(code, x_imul_rm(a, b, 16))
+            want = std::array::push(want, "imul " + rn(a) + ",QWORD PTR " + mem(b, 16))
+        }
+        code = std::array::concat(code, x_push(a))
+        want = std::array::push(want, "push " + rn(a))
+        code = std::array::concat(code, x_pop(a))
+        want = std::array::push(want, "pop " + rn(a))
+        code = std::array::concat(code, x_mov_ri(a, 7))
+        want = std::array::push(want, "mov " + rn(a) + ",0x7")
+        code = std::array::concat(code, x_mov_ri(a, 1311768467463790320))
+        want = std::array::push(want, "movabs " + rn(a) + ",0x123456789abcdef0")
+        code = std::array::concat(code, x_cmp_ri(a, 5))
+        want = std::array::push(want, "cmp " + rn(a) + ",0x5")
+        code = std::array::concat(code, x_add_ri(a, 4096))
+        want = std::array::push(want, "add " + rn(a) + ",0x1000")
+        code = std::array::concat(code, x_sub_ri(a, 32))
+        want = std::array::push(want, "sub " + rn(a) + ",0x20")
+        code = std::array::concat(code, x_neg(a))
+        want = std::array::push(want, "neg " + rn(a))
+        code = std::array::concat(code, x_shl_cl(a))
+        want = std::array::push(want, "shl " + rn(a) + ",cl")
+        code = std::array::concat(code, x_shr_cl(a))
+        want = std::array::push(want, "shr " + rn(a) + ",cl")
+        code = std::array::concat(code, x_sar_cl(a))
+        want = std::array::push(want, "sar " + rn(a) + ",cl")
+        code = std::array::concat(code, x_not(a))
+        want = std::array::push(want, "not " + rn(a))
+        code = std::array::concat(code, x_idiv(a))
+        want = std::array::push(want, "idiv " + rn(a))
+        code = std::array::concat(code, x_push_m(a, 8))
+        want = std::array::push(want, "push QWORD PTR " + mem(a, 8))
+        code = std::array::concat(code, x_pop_m(a, -16))
+        want = std::array::push(want, "pop QWORD PTR " + mem(a, -16))
+        code = std::array::concat(code, x_store_i(a, 8, 3))
+        want = std::array::push(want, "mov QWORD PTR " + mem(a, 8) + ",0x3")
+        code = std::array::concat(code, x_cmp_mi(a, 0, 1))
+        want = std::array::push(want, "cmp QWORD PTR " + mem(a, 0) + ",0x1")
+        code = std::array::concat(code, x_call_r(a))
+        want = std::array::push(want, "call " + rn(a))
+        code = std::array::concat(code, x_jmp_r(a))
+        want = std::array::push(want, "jmp " + rn(a))
+        code = std::array::concat(code, x_movq_xr(a, a))
+        want = std::array::push(want, "movq xmm" + "{a}," + rn(a))
+        code = std::array::concat(code, x_movq_rx(a, 1))
+        want = std::array::push(want, "movq " + rn(a) + ",xmm1")
+        code = std::array::concat(code, x_cvtsi2sd(2, a))
+        want = std::array::push(want, "cvtsi2sd xmm2," + rn(a))
+        code = std::array::concat(code, x_cvttsd2si(a, 3))
+        want = std::array::push(want, "cvttsd2si " + rn(a) + ",xmm3")
+    }
+    code = std::array::concat(code, x_push_i(-1))
+    want = std::array::push(want, "push 0xffffffffffffffff")
+    code = std::array::concat(code, x_mov_ri(0, -5))
+    want = std::array::push(want, "mov rax,0xfffffffffffffffb")
+    code = std::array::concat(code, x_cqo())
+    want = std::array::push(want, "cqo")
+    code = std::array::concat(code, x_setcc_rax(x_cc_l()))
+    want = std::array::push(want, "setl al")
+    want = std::array::push(want, "movzx rax,al")
+    code = std::array::concat(code, x_addsd(0, 1))
+    want = std::array::push(want, "addsd xmm0,xmm1")
+    code = std::array::concat(code, x_subsd(2, 3))
+    want = std::array::push(want, "subsd xmm2,xmm3")
+    code = std::array::concat(code, x_mulsd(4, 5))
+    want = std::array::push(want, "mulsd xmm4,xmm5")
+    code = std::array::concat(code, x_divsd(6, 7))
+    want = std::array::push(want, "divsd xmm6,xmm7")
+    code = std::array::concat(code, x_ucomisd(0, 1))
+    want = std::array::push(want, "ucomisd xmm0,xmm1")
+    code = std::array::concat(code, x_vfmadd231sd_012())
+    want = std::array::push(want, "vfmadd231sd xmm0,xmm1,xmm2")
+    code = std::array::concat(code, x_cpuid())
+    want = std::array::push(want, "cpuid")
+    code = std::array::concat(code, x_xgetbv())
+    want = std::array::push(want, "xgetbv")
+    code = std::array::concat(code, x_syscall())
+    want = std::array::push(want, "syscall")
+    code = std::array::concat(code, x_ret())
+    want = std::array::push(want, "ret")
+    std::fs::write_bytes(args[3], std::bytes::from_array(code))
+    let mut text = ""
+    for w in want {
+        text += w + "\n"
+    }
+    std::fs::write_text(args[4], text)
+}

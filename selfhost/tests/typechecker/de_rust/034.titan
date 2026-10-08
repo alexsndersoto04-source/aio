@@ -1,0 +1,1 @@
+type LocalDb = Sqlite fn use_all(local: LocalDb, postgres: Postgres, mysql: Mysql) { std::db::ping(local) std::db::begin(postgres) std::db::close(mysql) std::db::execute(local, "SELECT 1", []) std::db::query(postgres, "SELECT 1", (1, "two")) std::db::migrate(mysql, []) } fn main() {}

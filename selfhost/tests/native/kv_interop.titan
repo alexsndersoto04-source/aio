@@ -1,0 +1,64 @@
+// Cross-backend fixture used by verify_native.sh in three ordered phases:
+// Rust/Sled writes, native Titan reads+writes, then Rust/Sled reads again.
+// It also checks that Sled's reserved default-tree name is a shared alias.
+fn main() {
+    let mode = std::env::get("TITAN_KV_INTEROP_MODE")
+    let path = std::env::get("TITAN_KV_INTEROP_PATH")
+    std::testing::assert(mode != nil && path != nil, "interop harness supplies mode and database path")
+
+    let vm_key = std::encoding::utf8_encode("written-by-vm")
+    let vm_value = std::bytes::from_array([0, 254, 10])
+    let vm_tree_key = std::encoding::utf8_encode("seed")
+    let vm_tree_value = std::bytes::from_array([1, 2, 3])
+    let vm_alias_key = std::encoding::utf8_encode("default-alias-vm")
+    let vm_alias_value = std::bytes::from_array([4, 5, 6])
+    let native_key = std::encoding::utf8_encode("written-by-native")
+    let native_value = std::bytes::from_array([7, 0, 255])
+    let native_tree_key = std::encoding::utf8_encode("native")
+    let native_tree_value = std::bytes::from_array([9, 8, 7])
+    let native_alias_key = std::encoding::utf8_encode("default-alias-native")
+    let native_alias_value = std::bytes::from_array([6, 5, 4])
+
+    if mode == "seed" {
+        let db = std::kv::open(path)
+        std::kv::insert(db, vm_key, vm_value)
+        let tree = std::kv::open_tree(db, "cache")
+        std::kv::tree_insert(tree, vm_tree_key, vm_tree_value)
+        let default_alias = std::kv::open_tree(db, "__sled__default")
+        std::kv::tree_insert(default_alias, vm_alias_key, vm_alias_value)
+        std::testing::assert(std::kv::len(db) == 2, "VM tree alias updates default-tree length")
+        std::testing::assert(std::kv::tree_len(default_alias) == 2, "VM default-tree alias shares its length")
+        std::kv::flush(db)
+        std::kv::close(db)
+    } else if mode == "native" {
+        let db = std::kv::open(path)
+        std::testing::assert_eq(std::kv::get(db, vm_key), vm_value, "native reads VM/Sled default-tree bytes")
+        let tree = std::kv::open_tree(db, "cache")
+        std::testing::assert_eq(std::kv::tree_get(tree, vm_tree_key), vm_tree_value, "native reads VM/Sled named-tree bytes")
+        let default_alias = std::kv::open_tree(db, "__sled__default")
+        std::testing::assert_eq(std::kv::tree_get(default_alias, vm_alias_key), vm_alias_value, "native reads default-tree alias bytes")
+        std::kv::insert(db, native_key, native_value)
+        std::kv::tree_insert(tree, native_tree_key, native_tree_value)
+        std::kv::tree_insert(default_alias, native_alias_key, native_alias_value)
+        std::testing::assert(std::kv::len(db) == 4, "native alias writes count in default-tree length")
+        std::testing::assert(std::kv::tree_len(default_alias) == 4, "native default-tree alias shares its length")
+        std::testing::assert_eq(std::kv::get(db, native_alias_key), native_alias_value, "default tree reads native alias writes")
+        std::kv::flush(db)
+        std::kv::close(db)
+    } else if mode == "verify" {
+        let db = std::kv::open(path)
+        std::testing::assert_eq(std::kv::get(db, vm_key), vm_value, "Sled retains VM default-tree bytes")
+        std::testing::assert_eq(std::kv::get(db, native_key), native_value, "Sled imports native default-tree bytes")
+        let tree = std::kv::open_tree(db, "cache")
+        std::testing::assert_eq(std::kv::tree_get(tree, vm_tree_key), vm_tree_value, "Sled retains VM named-tree bytes")
+        std::testing::assert_eq(std::kv::tree_get(tree, native_tree_key), native_tree_value, "Sled imports native named-tree bytes")
+        let default_alias = std::kv::open_tree(db, "__sled__default")
+        std::testing::assert_eq(std::kv::tree_get(default_alias, vm_alias_key), vm_alias_value, "Sled retains VM default-tree alias bytes")
+        std::testing::assert_eq(std::kv::tree_get(default_alias, native_alias_key), native_alias_value, "Sled imports native default-tree alias bytes")
+        std::testing::assert(std::kv::len(db) == 4, "Sled default-tree length includes alias writes")
+        std::testing::assert(std::kv::tree_len(default_alias) == 4, "Sled default-tree alias shares its length")
+        std::kv::close(db)
+    } else {
+        std::testing::assert(false, "unknown KV interop test mode")
+    }
+}

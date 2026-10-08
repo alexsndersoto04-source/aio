@@ -1,0 +1,5 @@
+// Color desconocido: el mensaje lleva el nombre tal como vino.
+fn main() {
+    std::term::print_colored("Rgb:1,2", "x")
+    print("no llega")
+}

@@ -1,0 +1,1 @@
+fn pick(flag: bool) -> map { if flag { std::map::new() } else { std::process::exit(1) } }

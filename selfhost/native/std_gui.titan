@@ -1,0 +1,584 @@
+// Estado de widgets y rasterizador RGBA de std::gui, sin backend externo.
+// Dibuja pixeles reales en un buffer Bytes y no inventa entradas físicas:
+// los clics solo aparecen cuando un backend de ventana llama a gui_pointer_*.
+// Una tabla acotada mantiene los mismos IDs, límites, árbol y fuente bitmap
+// que crates/titan_stdlib/src/gui.rs y gui_raster.rs.
+
+const GUI_STATE_SLOT: int = 3520
+const GUI_STATE_HEADER: int = 64
+const GUI_MAX_WIDGETS: int = 1024
+const GUI_MAX_TEXT_BYTES: int = 65536
+const GUI_WIDGET_BYTES: int = 112
+
+const GUI_KIND_CONTAINER: int = 0
+const GUI_KIND_BUTTON: int = 1
+const GUI_KIND_LABEL: int = 2
+
+const GUI_ID: int = 0
+const GUI_KIND: int = 8
+const GUI_PARENT: int = 16
+const GUI_TEXT: int = 24
+const GUI_X: int = 32
+const GUI_Y: int = 40
+const GUI_WIDTH: int = 48
+const GUI_HEIGHT: int = 56
+const GUI_CLICKED: int = 64
+const GUI_PRESSED: int = 72
+const GUI_FIRST_CHILD: int = 80
+const GUI_LAST_CHILD: int = 88
+const GUI_NEXT_SIBLING: int = 96
+const GUI_ACTIVE_PRESS: int = 104
+
+const GUI_COLOR_BG: int = 4280293912
+const GUI_COLOR_EDGE: int = 4285554778
+const GUI_COLOR_TITLE_BG: int = 4282134315
+const GUI_COLOR_TITLE_TEXT: int = 4294504171
+const GUI_COLOR_BUTTON_BG: int = 4290675270
+const GUI_COLOR_BUTTON_DOWN: int = 4285942822
+const GUI_COLOR_BUTTON_EDGE: int = 4293641115
+const GUI_COLOR_BUTTON_TEXT: int = 4294967295
+const GUI_COLOR_LABEL_TEXT: int = 4293451996
+const GUI_GLYPH_SIZE: int = 8
+const GUI_TITLE_BAR: int = 22
+
+fn gui_state() -> int {
+    let slot = std::raw::globals() + GUI_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(GUI_STATE_HEADER + 8 * GUI_MAX_WIDGETS)
+    std::raw::store(created + 8, 1)
+    std::raw::store(slot, created)
+    created
+}
+
+// Widget table entries are one-based indices; zero is the null link.
+fn gui_widget_ptr(state: int, index: int) -> int {
+    if index <= 0 || index > std::raw::load(state + 16) { return 0 }
+    std::raw::load(state + GUI_STATE_HEADER + 8 * (index - 1))
+}
+
+fn gui_find_index(state: int, id: int) -> int {
+    if id <= 0 { return 0 }
+    let count = std::raw::load(state + 16)
+    let mut i = 0
+    while i < count {
+        let widget = std::raw::load(state + GUI_STATE_HEADER + 8 * i)
+        if std::raw::load(widget + GUI_ID) == id { return i + 1 }
+        i += 1
+    }
+    0
+}
+
+fn gui_create_widget(state: int, kind: int, parent_index: int, text: any, x: int, y: int, width: int, height: int) -> int {
+    let text_bytes = rt_slen(text)
+    let count = std::raw::load(state + 16)
+    if std::raw::load(state) == 0 || count >= GUI_MAX_WIDGETS || text_bytes > GUI_MAX_TEXT_BYTES {
+        return -1
+    }
+    if parent_index != 0 && gui_widget_ptr(state, parent_index) == 0 {
+        return -1
+    }
+
+    let id = std::raw::load(state + 8)
+    let next_id = id + 1
+    if id <= 0 || next_id <= id { return -1 }
+
+    let widget = rt_alloc_zero(GUI_WIDGET_BYTES)
+    std::raw::store(widget + GUI_ID, id)
+    std::raw::store(widget + GUI_KIND, kind)
+    std::raw::store(widget + GUI_PARENT, parent_index)
+    std::raw::store(widget + GUI_TEXT, std::raw::keep(text))
+    std::raw::store(widget + GUI_X, x)
+    std::raw::store(widget + GUI_Y, y)
+    std::raw::store(widget + GUI_WIDTH, width)
+    std::raw::store(widget + GUI_HEIGHT, height)
+    std::raw::store(state + GUI_STATE_HEADER + 8 * count, widget)
+    std::raw::store(state + 16, count + 1)
+    std::raw::store(state + 8, next_id)
+
+    if parent_index != 0 {
+        let parent = gui_widget_ptr(state, parent_index)
+        let last_index = std::raw::load(parent + GUI_LAST_CHILD)
+        if last_index == 0 {
+            std::raw::store(parent + GUI_FIRST_CHILD, count + 1)
+        } else {
+            let last = gui_widget_ptr(state, last_index)
+            std::raw::store(last + GUI_NEXT_SIBLING, count + 1)
+        }
+        std::raw::store(parent + GUI_LAST_CHILD, count + 1)
+    }
+    id
+}
+
+fn std__gui__init() -> any {
+    let state = gui_state()
+    std::raw::store(state, 1)
+    true
+}
+
+fn std__gui__create_container(title: any, width_value: any, height_value: any) -> any {
+    let function = "std::gui::create_container"
+    rt_expect_str(title, function)
+    rt_expect_int(width_value, function)
+    rt_expect_int(height_value, function)
+    let state = gui_state()
+    gui_create_widget(state, GUI_KIND_CONTAINER, 0, title, 0, 0, std::raw::bits(width_value), std::raw::bits(height_value))
+}
+
+fn std__gui__add_button(parent_value: any, label: any, x_value: any, y_value: any, width_value: any, height_value: any) -> any {
+    let function = "std::gui::add_button"
+    rt_expect_int(parent_value, function)
+    rt_expect_str(label, function)
+    rt_expect_int(x_value, function)
+    rt_expect_int(y_value, function)
+    rt_expect_int(width_value, function)
+    rt_expect_int(height_value, function)
+    let state = gui_state()
+    let parent_index = gui_find_index(state, std::raw::bits(parent_value))
+    if parent_index == 0 { return -1 }
+    gui_create_widget(state, GUI_KIND_BUTTON, parent_index, label, std::raw::bits(x_value), std::raw::bits(y_value), std::raw::bits(width_value), std::raw::bits(height_value))
+}
+
+fn std__gui__add_label(parent_value: any, text: any, x_value: any, y_value: any) -> any {
+    let function = "std::gui::add_label"
+    rt_expect_int(parent_value, function)
+    rt_expect_str(text, function)
+    rt_expect_int(x_value, function)
+    rt_expect_int(y_value, function)
+    let state = gui_state()
+    let parent_index = gui_find_index(state, std::raw::bits(parent_value))
+    if parent_index == 0 { return -1 }
+    gui_create_widget(state, GUI_KIND_LABEL, parent_index, text, std::raw::bits(x_value), std::raw::bits(y_value), 100, 24)
+}
+
+fn std__gui__set_text(id_value: any, text: any) -> any {
+    let function = "std::gui::set_text"
+    rt_expect_int(id_value, function)
+    rt_expect_str(text, function)
+    if rt_slen(text) > GUI_MAX_TEXT_BYTES { return false }
+    let state = gui_state()
+    let index = gui_find_index(state, std::raw::bits(id_value))
+    if index == 0 { return false }
+    let widget = gui_widget_ptr(state, index)
+    std::raw::release(5, std::raw::load(widget + GUI_TEXT))
+    std::raw::store(widget + GUI_TEXT, std::raw::keep(text))
+    true
+}
+
+fn std__gui__get_text(id_value: any) -> any {
+    let function = "std::gui::get_text"
+    rt_expect_int(id_value, function)
+    let state = gui_state()
+    let index = gui_find_index(state, std::raw::bits(id_value))
+    if index == 0 { return "" }
+    let text = std::raw::load(gui_widget_ptr(state, index) + GUI_TEXT)
+    std::raw::value(5, text)
+}
+
+fn gui_widget_root(state: int, index: int) -> int {
+    let mut current = index
+    let mut depth = 0
+    while depth <= 8 {
+        if current == 0 { return 0 }
+        let widget = gui_widget_ptr(state, current)
+        if widget == 0 { return 0 }
+        if std::raw::load(widget + GUI_KIND) == GUI_KIND_CONTAINER { return current }
+        current = std::raw::load(widget + GUI_PARENT)
+        depth += 1
+    }
+    0
+}
+
+fn std__gui__trigger_click(id_value: any) -> any {
+    let function = "std::gui::trigger_click"
+    rt_expect_int(id_value, function)
+    let state = gui_state()
+    let id = std::raw::bits(id_value)
+    let index = gui_find_index(state, id)
+    if index == 0 { return false }
+    let root_index = gui_widget_root(state, index)
+    if root_index == 0 { return false }
+    let root = gui_widget_ptr(state, root_index)
+    let widget = gui_widget_ptr(state, index)
+    std::raw::load(root + GUI_ACTIVE_PRESS) == id && std::raw::load(widget + GUI_PRESSED) != 0
+}
+
+fn std__gui__is_clicked(id_value: any) -> any {
+    let function = "std::gui::is_clicked"
+    rt_expect_int(id_value, function)
+    let state = gui_state()
+    let index = gui_find_index(state, std::raw::bits(id_value))
+    if index == 0 { return false }
+    let widget = gui_widget_ptr(state, index)
+    if std::raw::load(widget + GUI_KIND) != GUI_KIND_BUTTON { return false }
+    let clicked = std::raw::load(widget + GUI_CLICKED) != 0
+    std::raw::store(widget + GUI_CLICKED, 0)
+    clicked
+}
+
+fn gui_hit_test_widget(state: int, index: int, pointer_x: int, pointer_y: int, parent_x: int, parent_y: int, depth: int) -> int {
+    if depth > 8 { return 0 }
+    let widget = gui_widget_ptr(state, index)
+    if widget == 0 { return 0 }
+    let x = parent_x + std::raw::load(widget + GUI_X)
+    let y = parent_y + std::raw::load(widget + GUI_Y)
+
+    // Walk forward and keep the last hit: later children are painted on top.
+    let mut child_index = std::raw::load(widget + GUI_FIRST_CHILD)
+    let mut child_hit = 0
+    while child_index != 0 {
+        let child = gui_widget_ptr(state, child_index)
+        if child == 0 { break }
+        let hit = gui_hit_test_widget(state, child_index, pointer_x, pointer_y, x, y, depth + 1)
+        if hit != 0 { child_hit = hit }
+        child_index = std::raw::load(child + GUI_NEXT_SIBLING)
+    }
+    if child_hit != 0 { return child_hit }
+
+    if std::raw::load(widget + GUI_KIND) != GUI_KIND_BUTTON { return 0 }
+    let width = std::raw::load(widget + GUI_WIDTH)
+    let height = std::raw::load(widget + GUI_HEIGHT)
+    if width <= 0 || height <= 0 { return 0 }
+    let right = x + width
+    let bottom = y + height
+    if right < x || bottom < y { return 0 }
+    if pointer_x >= x && pointer_x < right && pointer_y >= y && pointer_y < bottom {
+        return std::raw::load(widget + GUI_ID)
+    }
+    0
+}
+
+fn gui_hit_test(state: int, root_id: int, x: int, y: int) -> int {
+    let root_index = gui_find_index(state, root_id)
+    if root_index == 0 { return 0 }
+    let root = gui_widget_ptr(state, root_index)
+    let width = std::raw::load(root + GUI_WIDTH)
+    let height = std::raw::load(root + GUI_HEIGHT)
+    if std::raw::load(root + GUI_KIND) != GUI_KIND_CONTAINER || width <= 0 || height <= 0 {
+        return 0
+    }
+    if x < 0 || y < 0 || x >= width || y >= height { return 0 }
+    gui_hit_test_widget(state, root_index, x, y, 0, 0, 0)
+}
+
+// Puente interno para el pump Titan de ventanas: solo debe llamarse después
+// de observar eventos físicos. No genera eventos ni está en la API pública.
+fn gui_pointer_down(root_id: int, x: int, y: int) {
+    let state = gui_state()
+    let root_index = gui_find_index(state, root_id)
+    if root_index == 0 { return nil }
+    let root = gui_widget_ptr(state, root_index)
+    if std::raw::load(root + GUI_KIND) != GUI_KIND_CONTAINER { return nil }
+    let previous_id = std::raw::load(root + GUI_ACTIVE_PRESS)
+    if previous_id != 0 {
+        let previous_index = gui_find_index(state, previous_id)
+        if previous_index != 0 {
+            std::raw::store(gui_widget_ptr(state, previous_index) + GUI_PRESSED, 0)
+        }
+    }
+    let target_id = gui_hit_test(state, root_id, x, y)
+    std::raw::store(root + GUI_ACTIVE_PRESS, target_id)
+    if target_id != 0 {
+        let target_index = gui_find_index(state, target_id)
+        if target_index != 0 {
+            std::raw::store(gui_widget_ptr(state, target_index) + GUI_PRESSED, 1)
+        }
+    }
+    nil
+}
+
+fn gui_pointer_move(root_id: int, x: int, y: int) {
+    let state = gui_state()
+    let root_index = gui_find_index(state, root_id)
+    if root_index == 0 { return nil }
+    let root = gui_widget_ptr(state, root_index)
+    let pressed_id = std::raw::load(root + GUI_ACTIVE_PRESS)
+    if pressed_id == 0 { return nil }
+    let pressed_index = gui_find_index(state, pressed_id)
+    if pressed_index == 0 { return nil }
+    let still_over_pressed = gui_hit_test(state, root_id, x, y) == pressed_id
+    std::raw::store(gui_widget_ptr(state, pressed_index) + GUI_PRESSED, if still_over_pressed { 1 } else { 0 })
+    nil
+}
+
+fn gui_pointer_up(root_id: int, x: int, y: int) {
+    let state = gui_state()
+    let root_index = gui_find_index(state, root_id)
+    if root_index == 0 { return nil }
+    let root = gui_widget_ptr(state, root_index)
+    let pressed_id = std::raw::load(root + GUI_ACTIVE_PRESS)
+    std::raw::store(root + GUI_ACTIVE_PRESS, 0)
+    if pressed_id == 0 { return nil }
+    let pressed_index = gui_find_index(state, pressed_id)
+    if pressed_index == 0 { return nil }
+    let pressed = gui_widget_ptr(state, pressed_index)
+    std::raw::store(pressed + GUI_PRESSED, 0)
+    if gui_hit_test(state, root_id, x, y) == pressed_id {
+        std::raw::store(pressed + GUI_CLICKED, 1)
+    }
+    nil
+}
+
+fn gui_pointer_cancel(root_id: int) {
+    let state = gui_state()
+    let root_index = gui_find_index(state, root_id)
+    if root_index == 0 { return nil }
+    let root = gui_widget_ptr(state, root_index)
+    let pressed_id = std::raw::load(root + GUI_ACTIVE_PRESS)
+    std::raw::store(root + GUI_ACTIVE_PRESS, 0)
+    if pressed_id != 0 {
+        let pressed_index = gui_find_index(state, pressed_id)
+        if pressed_index != 0 {
+            std::raw::store(gui_widget_ptr(state, pressed_index) + GUI_PRESSED, 0)
+        }
+    }
+    nil
+}
+
+fn std__gui__child_count(id_value: any) -> any {
+    let function = "std::gui::child_count"
+    rt_expect_int(id_value, function)
+    let state = gui_state()
+    let index = gui_find_index(state, std::raw::bits(id_value))
+    if index == 0 { return 0 }
+    let widget = gui_widget_ptr(state, index)
+    let mut child = std::raw::load(widget + GUI_FIRST_CHILD)
+    let mut count = 0
+    while child != 0 {
+        let child_widget = gui_widget_ptr(state, child)
+        if child_widget == 0 { break }
+        count += 1
+        child = std::raw::load(child_widget + GUI_NEXT_SIBLING)
+    }
+    count
+}
+
+fn std__gui__shutdown() -> any {
+    let state = gui_state()
+    let count = std::raw::load(state + 16)
+    let mut i = 0
+    while i < count {
+        let slot = state + GUI_STATE_HEADER + 8 * i
+        let widget = std::raw::load(slot)
+        std::raw::release(5, std::raw::load(widget + GUI_TEXT))
+        rt_free_block(widget)
+        std::raw::store(slot, 0)
+        i += 1
+    }
+    std::raw::store(state + 16, 0)
+    std::raw::store(state, 0)
+    true
+}
+
+fn gui_put_pixel(data: int, width: int, height: int, x: int, y: int, color: int) {
+    if x < 0 || y < 0 || x >= width || y >= height { return }
+    let pixel = data + 4 * (y * width + x)
+    std::raw::store8(pixel, color & 255)
+    std::raw::store8(pixel + 1, std::raw::shr(color, 8) & 255)
+    std::raw::store8(pixel + 2, std::raw::shr(color, 16) & 255)
+    std::raw::store8(pixel + 3, std::raw::shr(color, 24) & 255)
+}
+
+// Clip fills to the canvas before iterating. This preserves every visible
+// pixel while preventing a large off-screen child rectangle from doing work
+// proportional to its unbounded requested size.
+fn gui_fill_rect(data: int, width: int, height: int, x: int, y: int, rect_width: int, rect_height: int, color: int) {
+    if rect_width <= 0 || rect_height <= 0 || x >= width || y >= height { return }
+    let right = x + rect_width
+    let bottom = y + rect_height
+    let x0 = if x < 0 { 0 } else { x }
+    let y0 = if y < 0 { 0 } else { y }
+    let x1 = if right > width { width } else { right }
+    let y1 = if bottom > height { height } else { bottom }
+    if x1 <= x0 || y1 <= y0 { return }
+    let mut py = y0
+    while py < y1 {
+        let mut px = x0
+        while px < x1 {
+            gui_put_pixel(data, width, height, px, py, color)
+            px += 1
+        }
+        py += 1
+    }
+}
+
+fn gui_stroke_rect(data: int, width: int, height: int, x: int, y: int, rect_width: int, rect_height: int, color: int) {
+    if rect_width <= 0 || rect_height <= 0 { return }
+    gui_fill_rect(data, width, height, x, y, rect_width, 1, color)
+    gui_fill_rect(data, width, height, x, y + rect_height - 1, rect_width, 1, color)
+    gui_fill_rect(data, width, height, x, y, 1, rect_height, color)
+    gui_fill_rect(data, width, height, x + rect_width - 1, y, 1, rect_height, color)
+}
+
+fn gui_draw_glyph(data: int, width: int, height: int, ch: int, x: int, y: int, color: int) {
+    let mut row = 0
+    while row < 8 {
+        let bits = gui_glyph_row(ch, row)
+        let mut col = 0
+        while col < 8 {
+            if (bits & std::raw::shr(128, col)) != 0 {
+                gui_put_pixel(data, width, height, x + col, y + row, color)
+            }
+            col += 1
+        }
+        row += 1
+    }
+}
+
+fn gui_draw_text(data: int, width: int, height: int, text: int, x: int, y: int, color: int) {
+    let length = std::raw::load(text + 8)
+    let bytes = text + 16
+    let mut i = 0
+    while i < length {
+        let mut ch = std::raw::load8(bytes + i)
+        if ch >= 97 && ch <= 122 { ch -= 32 }
+        gui_draw_glyph(data, width, height, ch, x + i * GUI_GLYPH_SIZE, y, color)
+        i += 1
+    }
+}
+
+fn gui_draw_widget(state: int, data: int, width: int, height: int, index: int, ox: int, oy: int, depth: int) {
+    if depth > 8 { return }
+    let widget = gui_widget_ptr(state, index)
+    if widget == 0 { return }
+    let x = ox + std::raw::load(widget + GUI_X)
+    let y = oy + std::raw::load(widget + GUI_Y)
+    let rect_width = std::raw::load(widget + GUI_WIDTH)
+    let rect_height = std::raw::load(widget + GUI_HEIGHT)
+    let kind = std::raw::load(widget + GUI_KIND)
+    let text = std::raw::load(widget + GUI_TEXT)
+
+    if kind == GUI_KIND_CONTAINER {
+        gui_fill_rect(data, width, height, x, y, rect_width, rect_height, GUI_COLOR_BG)
+        gui_stroke_rect(data, width, height, x, y, rect_width, rect_height, GUI_COLOR_EDGE)
+        let mut bar = 0
+        if rect_height > 2 {
+            bar = rect_height - 2
+            if bar > GUI_TITLE_BAR { bar = GUI_TITLE_BAR }
+        }
+        if bar > 0 {
+            gui_fill_rect(data, width, height, x + 1, y + 1, rect_width - 2, bar, GUI_COLOR_TITLE_BG)
+            gui_fill_rect(data, width, height, x + 1, y + 1 + bar, rect_width - 2, 1, GUI_COLOR_EDGE)
+            gui_draw_text(data, width, height, text, x + 6, y + 7, GUI_COLOR_TITLE_TEXT)
+        }
+    } else if kind == GUI_KIND_BUTTON {
+        let fill = if std::raw::load(widget + GUI_PRESSED) != 0 { GUI_COLOR_BUTTON_DOWN } else { GUI_COLOR_BUTTON_BG }
+        gui_fill_rect(data, width, height, x, y, rect_width, rect_height, fill)
+        gui_stroke_rect(data, width, height, x, y, rect_width, rect_height, GUI_COLOR_BUTTON_EDGE)
+        let text_width = GUI_GLYPH_SIZE * std::raw::load(text + 8)
+        let text_x = x + (if rect_width - text_width > 0 { rect_width - text_width } else { 0 }) / 2
+        let text_y = y + (if rect_height - GUI_GLYPH_SIZE > 0 { rect_height - GUI_GLYPH_SIZE } else { 0 }) / 2
+        gui_draw_text(data, width, height, text, text_x, text_y, GUI_COLOR_BUTTON_TEXT)
+    } else if kind == GUI_KIND_LABEL {
+        gui_draw_text(data, width, height, text, x, y + 1, GUI_COLOR_LABEL_TEXT)
+    }
+
+    let mut child_index = std::raw::load(widget + GUI_FIRST_CHILD)
+    while child_index != 0 {
+        let child = gui_widget_ptr(state, child_index)
+        if child == 0 { break }
+        gui_draw_widget(state, data, width, height, child_index, x, y, depth + 1)
+        child_index = std::raw::load(child + GUI_NEXT_SIBLING)
+    }
+}
+
+fn std__gui__render(id_value: any) -> any {
+    let function = "std::gui::render"
+    rt_expect_int(id_value, function)
+    let state = gui_state()
+    let index = gui_find_index(state, std::raw::bits(id_value))
+    if index == 0 { return nil }
+    let root = gui_widget_ptr(state, index)
+    if std::raw::load(root + GUI_KIND) != GUI_KIND_CONTAINER { return nil }
+    let width = std::raw::load(root + GUI_WIDTH)
+    let height = std::raw::load(root + GUI_HEIGHT)
+    if width <= 0 || height <= 0 || width > 4096 || height > 4096 { return nil }
+
+    let output = rt_str_alloc(width * height * 4)
+    let pixels = output + 16
+    gui_fill_rect(pixels, width, height, 0, 0, width, height, GUI_COLOR_BG)
+    gui_draw_widget(state, pixels, width, height, index, 0, 0, 0)
+    std::raw::adopt(6, output)
+}
+
+
+fn gui_glyph_data(ch: int) -> int {
+    match ch {
+        32 => 0,
+        33 => 6755502926871576,
+        34 => 2368548,
+        35 => 10271792851877412,
+        37 => 37794750401111138,
+        38 => 33439294500129848,
+        40 => 3404294966482956,
+        41 => 13537238902904880,
+        42 => 39687613326336,
+        43 => 26493473789952,
+        44 => 6781787720122368,
+        45 => 2113929216,
+        46 => 6781787720122368,
+        47 => 27127357442360838,
+        48 => 17001088862283324,
+        49 => 35492338828064792,
+        50 => 35571606541985340,
+        51 => 17000675028657724,
+        52 => 8457986422610956,
+        53 => 17000674667290750,
+        54 => 17001088962027580,
+        55 => 13563782002116222,
+        56 => 17001087888680508,
+        57 => 16895122489108028,
+        58 => 6781788124348416,
+        59 => 6781788124348416,
+        60 => 3404295771789324,
+        61 => 541174136832,
+        62 => 13537238802241584,
+        63 => 6755502722016828,
+        64 => 17557475904349756,
+        65 => 28823140694375448,
+        66 => 35015487471904380,
+        67 => 17001062722463292,
+        68 => 33896184265731192,
+        69 => 35571814518251646,
+        70 => 27127565216931966,
+        71 => 17564038680569404,
+        72 => 28823038017824358,
+        73 => 16914990365153340,
+        74 => 15881397693320222,
+        75 => 28829712163302502,
+        76 => 35571814115598432,
+        77 => 27975301350782819,
+        78 => 28823072379139686,
+        79 => 17001088593323580,
+        80 => 27127565284435580,
+        81 => 15318870162564668,
+        82 => 28829712363447932,
+        83 => 17000675571426876,
+        84 => 6781891203569790,
+        85 => 17001088593323622,
+        86 => 6821809943373414,
+        87 => 27997411841106787,
+        88 => 28822855915169382,
+        89 => 6781891205949030,
+        90 => 35571606743680638,
+        91 => 16941482127667260,
+        93 => 16901744483896380,
+        95 => 0,
+        _ => 6755502722016828,
+    }
+}
+
+fn gui_glyph_last_row(ch: int) -> int {
+    match ch {
+        44 => 48,
+        59 => 48,
+        95 => 255,
+        _ => 0,
+    }
+}
+
+fn gui_glyph_row(ch: int, row: int) -> int {
+    if row == 7 { return gui_glyph_last_row(ch) }
+    let packed = gui_glyph_data(ch)
+    std::raw::shr(packed, 8 * row) & 255
+}

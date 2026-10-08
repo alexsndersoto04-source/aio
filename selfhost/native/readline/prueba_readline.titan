@@ -1,0 +1,36 @@
+fn main() {
+    let args = std::env::args()
+    let mode = args[len(args) - 2]
+    let path = args[len(args) - 1]
+    let mut line = ""
+
+    if mode == "plain" {
+        line = std::readline::prompt("LINE> ")
+    } else if mode == "with-history" {
+        line = std::readline::prompt_with_history("LINE> ")
+    } else if mode == "with-history-twice" {
+        let first = std::readline::prompt_with_history("FIRST> ")
+        let second = std::readline::prompt_with_history("SECOND> ")
+        line = first + "|" + second
+    } else if mode == "persistent" {
+        line = std::readline::prompt_persistent("HISTORY> ", path)
+    } else if mode == "persistent-check" {
+        let entered = std::readline::prompt_persistent("HISTORY> ", path)
+        line = if entered == "same-entry" { "history-ok" } else { "wrong" }
+    } else if mode == "persistent-v2-backslash" {
+        let entered = std::readline::prompt_persistent("HISTORY> ", path)
+        line = if entered == "slash\\entryX" { "decoded" } else { "wrong" }
+    } else if mode == "persistent-v2-newline" {
+        let entered = std::readline::prompt_persistent("HISTORY> ", path)
+        line = if entered == "first\nsecondX" { "decoded" } else { "wrong" }
+    } else if mode == "persistent-v2-invalid" {
+        let entered = std::readline::prompt_persistent("HISTORY> ", path)
+        line = if entered == "bad\\qentryX" { "decoded" } else { "wrong" }
+    } else if mode == "secret" {
+        line = std::readline::prompt_secret("SECRET> ")
+    } else if mode == "reverse-search" {
+        line = std::readline::prompt_persistent("SEARCH> ", path)
+    }
+
+    println("RESULT:" + line)
+}

@@ -1,0 +1,647 @@
+// Lectura JPEG baseline, secuencial extendida y progresiva.
+// Conserva los coeficientes hasta completar todos los recorridos del archivo.
+fn im_jpeg_progressive_find_component(comps: int, count: int, id: int) -> int {
+    let mut i = 0
+    while i < count {
+        if std::raw::load(comps + i * 128) == id { return i }
+        i += 1
+    }
+    -1
+}
+
+fn im_jpeg_blinn8(a: int, b: int) -> int {
+    let value = a * b + 128
+    std::raw::sar(value + std::raw::sar(value, 8), 8)
+}
+
+fn im_jpeg_coef_get(block: int, index: int) -> int {
+    let value = std::raw::load8(block + 2 * index) + 256 * std::raw::load8(block + 2 * index + 1)
+    if value >= 32768 { return value - 65536 }
+    value
+}
+
+fn im_jpeg_coef_put(block: int, index: int, value: int) {
+    let packed = value & 65535
+    std::raw::store8(block + 2 * index, packed & 255)
+    std::raw::store8(block + 2 * index + 1, std::raw::shr(packed, 8) & 255)
+}
+
+fn im_jpeg_sequential_coefficients(function: string, bs: int, dc_table: int, ac_table: int, block: int, predictor: int, zigzag: array) -> int {
+    let category = im_jpeg_huffman(function, bs, dc_table)
+    let dc = predictor + im_jpeg_receive(function, bs, category)
+    im_jpeg_coef_put(block, 0, dc)
+    let mut k = 1
+    while k < 64 {
+        let symbol = im_jpeg_huffman(function, bs, ac_table)
+        let run = std::raw::shr(symbol, 4)
+        let size = symbol & 15
+        if size == 0 {
+            if run == 0 { break }
+            if run != 15 || k + 16 > 64 { im_jpeg_error(function, "símbolo AC inválido") }
+            k += 16
+        } else {
+            k += run
+            if k >= 64 { im_jpeg_error(function, "corrida de coeficientes inválida") }
+            im_jpeg_coef_put(block, zigzag[k], im_jpeg_receive(function, bs, size))
+            k += 1
+        }
+    }
+    dc
+}
+
+fn im_jpeg_progressive_coefficients(function: string, bs: int, component: int, dc_table: int, ac_table: int, block: int, zigzag: array, spectral_start: int, spectral_end: int, successive_high: int, successive_low: int) {
+    let bit = std::raw::shl(1, successive_low)
+    if spectral_start == 0 {
+        if successive_high == 0 {
+            let category = im_jpeg_huffman(function, bs, dc_table)
+            let predictor = std::raw::load(component + 48) + im_jpeg_receive(function, bs, category)
+            std::raw::store(component + 48, predictor)
+            im_jpeg_coef_put(block, 0, predictor * bit)
+        } else {
+            if im_jpeg_read_bit(function, bs) != 0 {
+                im_jpeg_coef_put(block, 0, im_jpeg_coef_get(block, 0) + bit)
+            }
+        }
+        return
+    }
+
+    let mut eob_run = std::raw::load(bs + 40)
+    let mut k = spectral_start
+    if successive_high == 0 {
+        if eob_run > 0 {
+            std::raw::store(bs + 40, eob_run - 1)
+            return
+        }
+        while k <= spectral_end {
+            let symbol = im_jpeg_huffman(function, bs, ac_table)
+            let run = std::raw::shr(symbol, 4)
+            let size = symbol & 15
+            if size == 0 {
+                if run == 15 {
+                    k += 16
+                } else {
+                    eob_run = std::raw::shl(1, run) + im_jpeg_read_bits(function, bs, run) - 1
+                    std::raw::store(bs + 40, eob_run)
+                    break
+                }
+            } else {
+                k += run
+                if k > spectral_end { im_jpeg_error(function, "corrida progresiva inválida") }
+                let value = im_jpeg_receive(function, bs, size) * bit
+                im_jpeg_coef_put(block, zigzag[k], value)
+                k += 1
+            }
+        }
+        return
+    }
+
+    let mut new_value = 0
+    if eob_run == 0 {
+        let mut keep_scanning = true
+        while keep_scanning && k <= spectral_end {
+            let symbol = im_jpeg_huffman(function, bs, ac_table)
+            let mut run = std::raw::shr(symbol, 4)
+            let size = symbol & 15
+            if size == 0 {
+                if run != 15 {
+                    eob_run = std::raw::shl(1, run) + im_jpeg_read_bits(function, bs, run)
+                    std::raw::store(bs + 40, eob_run)
+                    keep_scanning = false
+                }
+            } else {
+                if size != 1 { im_jpeg_error(function, "refinamiento progresivo inválido") }
+                if im_jpeg_read_bit(function, bs) == 1 { new_value = bit } else { new_value = 0 - bit }
+            }
+            if keep_scanning {
+                let seek_zero = size == 0 && run == 15
+                let mut found_new = false
+                while k <= spectral_end && !found_new {
+                    let position = zigzag[k]
+                    let old = im_jpeg_coef_get(block, position)
+                    if old != 0 {
+                        if im_jpeg_read_bit(function, bs) == 1 && (old & bit) == 0 {
+                            if old > 0 {
+                                im_jpeg_coef_put(block, position, old + bit)
+                            } else {
+                                im_jpeg_coef_put(block, position, old - bit)
+                            }
+                        }
+                    } else if run > 0 {
+                        run -= 1
+                    } else if !seek_zero && new_value != 0 {
+                        im_jpeg_coef_put(block, position, new_value)
+                        found_new = true
+                    } else {
+                        found_new = true
+                    }
+                    if !found_new { k += 1 }
+                }
+                if !found_new && k > spectral_end { keep_scanning = false }
+                else { k += 1 }
+                if seek_zero && run >= 0 {
+                    // The sixteen-zero run was consumed; continue with the next symbol.
+                    if run > 0 { im_jpeg_error(function, "corrida de refinamiento inválida") }
+                }
+            }
+        }
+    }
+
+    if eob_run > 0 {
+        while k <= spectral_end {
+            let position = zigzag[k]
+            let old = im_jpeg_coef_get(block, position)
+            if old != 0 && im_jpeg_read_bit(function, bs) == 1 && (old & bit) == 0 {
+                if old >= 0 {
+                    im_jpeg_coef_put(block, position, old + bit)
+                } else {
+                    im_jpeg_coef_put(block, position, old - bit)
+                }
+            }
+            k += 1
+        }
+        std::raw::store(bs + 40, eob_run - 1)
+    }
+}
+
+fn im_jpeg_progressive_scan(function: string, p: int, n: int, entropy_pos: int, comps: int, scan: int, scan_count: int, width: int, height: int, max_h: int, max_v: int, huff: int, restart_interval: int, progressive: bool, spectral_start: int, spectral_end: int, successive_high: int, successive_low: int, zigzag: array) -> int {
+    let bs = rt_alloc_zero(48)
+    std::raw::store(bs, p)
+    std::raw::store(bs + 8, n)
+    std::raw::store(bs + 16, entropy_pos)
+    let mut reset_index = 0
+    while reset_index < scan_count {
+        let component_index = std::raw::load(scan + 8 * reset_index)
+        std::raw::store(comps + component_index * 128 + 48, 0)
+        reset_index += 1
+    }
+    let mcu_columns = (width + max_h * 8 - 1) / (max_h * 8)
+    let mcu_rows = (height + max_v * 8 - 1) / (max_v * 8)
+    let interleaved = scan_count > 1
+    if interleaved && spectral_start != 0 { im_jpeg_error(function, "una lectura AC no puede mezclar componentes") }
+    let mut total_units = 0
+    if interleaved {
+        total_units = mcu_columns * mcu_rows
+    } else {
+        let ci = std::raw::load(scan)
+        let c = comps + ci * 128
+        let hs = std::raw::load(c + 8)
+        let vs = std::raw::load(c + 16)
+        let blocks_x = (width * hs + max_h * 8 - 1) / (max_h * 8)
+        let blocks_y = (height * vs + max_v * 8 - 1) / (max_v * 8)
+        total_units = blocks_x * blocks_y
+    }
+    let mut done_units = 0
+    let mut rst = 0
+    if interleaved {
+        let mut my = 0
+        while my < mcu_rows {
+            let mut mx = 0
+            while mx < mcu_columns {
+                let mut si = 0
+                while si < scan_count {
+                    let ci = std::raw::load(scan + 8 * si)
+                    let c = comps + ci * 128
+                    let dc_id = std::raw::load(c + 32)
+                    let ac_id = std::raw::load(c + 40)
+                    let dc_table = huff + dc_id * 2184
+                    let ac_table = huff + ac_id * 2184
+                    let hs = std::raw::load(c + 8)
+                    let vs = std::raw::load(c + 16)
+                    let mut by = 0
+                    while by < vs {
+                        let mut bx = 0
+                        while bx < hs {
+                            let block_index = (my * vs + by) * std::raw::load(c + 96) + mx * hs + bx
+                            let block = std::raw::load(c + 88) + block_index * 128
+                            if progressive {
+                                im_jpeg_progressive_coefficients(function, bs, c, dc_table, ac_table, block, zigzag, spectral_start, spectral_end, successive_high, successive_low)
+                            } else {
+                                let predictor = std::raw::load(c + 48)
+                                let next_predictor = im_jpeg_sequential_coefficients(function, bs, dc_table, ac_table, block, predictor, zigzag)
+                                std::raw::store(c + 48, next_predictor)
+                            }
+                            bx += 1
+                        }
+                        by += 1
+                    }
+                    si += 1
+                }
+                done_units += 1
+                if restart_interval > 0 && done_units < total_units && (done_units % restart_interval) == 0 {
+                    im_jpeg_restart(function, bs, rst)
+                    rst = (rst + 1) & 7
+                    std::raw::store(bs + 40, 0)
+                    let mut i = 0
+                    while i < scan_count {
+                        std::raw::store(comps + std::raw::load(scan + 8 * i) * 128 + 48, 0)
+                        i += 1
+                    }
+                }
+                mx += 1
+            }
+            my += 1
+        }
+    } else {
+        let ci = std::raw::load(scan)
+        let c = comps + ci * 128
+        let storage_blocks_x = std::raw::load(c + 96)
+        let hs = std::raw::load(c + 8)
+        let vs = std::raw::load(c + 16)
+        let blocks_x = (width * hs + max_h * 8 - 1) / (max_h * 8)
+        let blocks_y = (height * vs + max_v * 8 - 1) / (max_v * 8)
+        let dc_id = std::raw::load(c + 32)
+        let ac_id = std::raw::load(c + 40)
+        let dc_table = huff + dc_id * 2184
+        let ac_table = huff + ac_id * 2184
+        let mut by = 0
+        while by < blocks_y {
+            let mut bx = 0
+            while bx < blocks_x {
+                let block_index = by * storage_blocks_x + bx
+                let block = std::raw::load(c + 88) + block_index * 128
+                if progressive {
+                    im_jpeg_progressive_coefficients(function, bs, c, dc_table, ac_table, block, zigzag, spectral_start, spectral_end, successive_high, successive_low)
+                } else {
+                    let predictor = std::raw::load(c + 48)
+                    let next_predictor = im_jpeg_sequential_coefficients(function, bs, dc_table, ac_table, block, predictor, zigzag)
+                    std::raw::store(c + 48, next_predictor)
+                }
+                done_units += 1
+                if restart_interval > 0 && done_units < total_units && (done_units % restart_interval) == 0 {
+                    im_jpeg_restart(function, bs, rst)
+                    rst = (rst + 1) & 7
+                    std::raw::store(bs + 40, 0)
+                    std::raw::store(c + 48, 0)
+                }
+                bx += 1
+            }
+            by += 1
+        }
+    }
+    let next_pos = std::raw::load(bs + 16)
+    rt_free_block(bs)
+    next_pos
+}
+
+fn im_jpeg_decode_progressive(function: string, p: int, n: int) -> int {
+    if n < 4 || std::raw::load8(p) != 255 || std::raw::load8(p + 1) != 216 { im_jpeg_error(function, "firma SOI no encontrada") }
+    let zigzag = [0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63]
+    let quant = rt_alloc_zero(4 * 64 * 8)
+    let quant_valid = rt_alloc_zero(4 * 8)
+    let huff = rt_alloc_zero(8 * 2184)
+    let comps = rt_alloc_zero(4 * 128)
+    let scan = rt_alloc_zero(4 * 8)
+    let mut width = 0
+    let mut height = 0
+    let mut component_count = 0
+    let mut max_h = 0
+    let mut max_v = 0
+    let mut restart_interval = 0
+    let mut adobe_transform = -1
+    let mut frame_found = false
+    let mut saw_scan = false
+    let mut finished = false
+    let mut progressive_mode = false
+    let seen_sequential = rt_alloc_zero(4 * 8)
+    let mut pos = 2
+
+    while pos + 1 < n && !finished {
+        if std::raw::load8(p + pos) != 255 { im_jpeg_error(function, "marcador JPEG inválido") }
+        while pos < n && std::raw::load8(p + pos) == 255 { pos += 1 }
+        if pos >= n { im_jpeg_error(function, "marcador JPEG incompleto") }
+        let marker = std::raw::load8(p + pos)
+        pos += 1
+        if marker == 217 { finished = true }
+        else if marker == 216 || (marker >= 208 && marker <= 215) || marker == 1 { }
+        else {
+            if pos + 1 >= n { im_jpeg_error(function, "segmento JPEG incompleto") }
+            let segment_length = im_jpeg_be16(function, p, n, pos)
+            if segment_length < 2 || pos + segment_length > n { im_jpeg_error(function, "longitud de segmento inválida") }
+            let body = pos + 2
+            let end = pos + segment_length
+            if marker == 219 {
+                let mut qpos = body
+                while qpos < end {
+                    let info = im_jpeg_byte(function, p, n, qpos)
+                    qpos += 1
+                    let precision = std::raw::shr(info, 4)
+                    let table_id = info & 15
+                    if table_id > 3 || precision > 1 { im_jpeg_error(function, "tabla de cuantización no admitida") }
+                    let qt = quant + table_id * 64 * 8
+                    let mut i = 0
+                    while i < 64 {
+                        let value = if precision == 0 { im_jpeg_byte(function, p, n, qpos) } else { im_jpeg_be16(function, p, n, qpos) }
+                        qpos += 1 + precision
+                        std::raw::store(qt + 8 * zigzag[i], value)
+                        i += 1
+                    }
+                    std::raw::store(quant_valid + 8 * table_id, 1)
+                }
+            } else if marker == 196 {
+                let mut hpos = body
+                while hpos < end {
+                    let info = im_jpeg_byte(function, p, n, hpos)
+                    hpos += 1
+                    let table_class = std::raw::shr(info, 4)
+                    let table_id = info & 15
+                    if table_class > 1 || table_id > 3 { im_jpeg_error(function, "tabla Huffman fuera de rango") }
+                    let ht = huff + (table_class * 4 + table_id) * 2184
+                    let mut total = 0
+                    let mut code_space = 1
+                    let mut length = 1
+                    while length <= 16 {
+                        let count = im_jpeg_byte(function, p, n, hpos)
+                        hpos += 1
+                        std::raw::store(ht + 8 * length, count)
+                        total += count
+                        code_space = code_space * 2 - count
+                        if code_space < 0 { im_jpeg_error(function, "tabla Huffman sobrecargada") }
+                        length += 1
+                    }
+                    if total > 256 || hpos + total > end { im_jpeg_error(function, "tabla Huffman incompleta") }
+                    let mut i = 0
+                    while i < total {
+                        std::raw::store(ht + 136 + 8 * i, std::raw::load8(p + hpos + i))
+                        i += 1
+                    }
+                    hpos += total
+                    std::raw::store(ht, 1)
+                }
+            } else if marker == 192 || marker == 193 || marker == 194 {
+                if frame_found { im_jpeg_error(function, "cabecera de imagen repetida") }
+                if im_jpeg_byte(function, p, n, body) != 8 { im_jpeg_error(function, "solo se admite precisión de 8 bits") }
+                progressive_mode = marker == 194
+                height = im_jpeg_be16(function, p, n, body + 1)
+                width = im_jpeg_be16(function, p, n, body + 3)
+                component_count = im_jpeg_byte(function, p, n, body + 5)
+                if component_count != 1 && component_count != 2 && component_count != 3 && component_count != 4 { im_jpeg_error(function, "cantidad de componentes no admitida") }
+                if segment_length != 8 + 3 * component_count { im_jpeg_error(function, "cabecera de imagen mal formada") }
+                im_dims(function, width, height)
+                let color = if component_count == 1 { 1 } else { 3 }
+                let image_size = width * height * im_bpp(color)
+                if image_size > 67108864 { im_lim(function, "decoded image bytes", 67108864) }
+                let mut i = 0
+                while i < component_count {
+                    let item = body + 6 + 3 * i
+                    let id = im_jpeg_byte(function, p, n, item)
+                    let sampling = im_jpeg_byte(function, p, n, item + 1)
+                    let hs = std::raw::shr(sampling, 4)
+                    let vs = sampling & 15
+                    let qid = im_jpeg_byte(function, p, n, item + 2)
+                    if hs < 1 || hs > 4 || vs < 1 || vs > 4 || qid > 3 { im_jpeg_error(function, "muestreo o tabla inválidos") }
+                    if hs != 1 && hs != 2 && hs != 4 {
+                        im_img_err(function, "UnsupportedError: JPEG horizontal sampling factor is not supported")
+                    }
+                    let c = comps + i * 128
+                    std::raw::store(c, id)
+                    std::raw::store(c + 8, hs)
+                    std::raw::store(c + 16, vs)
+                    std::raw::store(c + 24, qid)
+                    if hs > max_h { max_h = hs }
+                    if vs > max_v { max_v = vs }
+                    i += 1
+                }
+                let mcu_columns = (width + max_h * 8 - 1) / (max_h * 8)
+                let mcu_rows = (height + max_v * 8 - 1) / (max_v * 8)
+                let mut temporary_bytes = image_size
+                i = 0
+                while i < component_count {
+                    let c = comps + i * 128
+                    let pw = mcu_columns * std::raw::load(c + 8) * 8
+                    let ph = mcu_rows * std::raw::load(c + 16) * 8
+                    let blocks_x = pw / 8
+                    let blocks_y = ph / 8
+                    let ratio_h = max_h / std::raw::load(c + 8)
+                    let ratio_v = max_v / std::raw::load(c + 16)
+                    if ratio_h * std::raw::load(c + 8) != max_h || ratio_v * std::raw::load(c + 16) != max_v {
+                        im_img_err(function, "UnsupportedError: JPEG sampling ratio is not supported")
+                    }
+                    let coeff_bytes = blocks_x * blocks_y * 128
+                    temporary_bytes += pw * ph + coeff_bytes
+                    if temporary_bytes > 134217728 { im_lim(function, "temporary JPEG data", 134217728) }
+                    std::raw::store(c + 56, rt_alloc_zero(pw * ph))
+                    std::raw::store(c + 64, pw)
+                    std::raw::store(c + 72, pw)
+                    std::raw::store(c + 80, ph)
+                    std::raw::store(c + 96, blocks_x)
+                    std::raw::store(c + 104, blocks_y)
+                    std::raw::store(c + 88, rt_alloc_zero(coeff_bytes))
+                    i += 1
+                }
+                frame_found = true
+            } else if marker == 195 || marker == 197 || marker == 198 || marker == 199 || marker == 201 || marker == 202 || marker == 203 || marker == 205 || marker == 206 || marker == 207 {
+                im_img_err(function, "UnsupportedError: JPEG coding process is not supported")
+            } else if marker == 221 {
+                if segment_length != 4 { im_jpeg_error(function, "intervalo de reinicio mal formado") }
+                restart_interval = im_jpeg_be16(function, p, n, body)
+            } else if marker == 238 {
+                if end - body >= 12 && std::raw::load8(p + body) == 65 && std::raw::load8(p + body + 1) == 100 && std::raw::load8(p + body + 2) == 111 && std::raw::load8(p + body + 3) == 98 && std::raw::load8(p + body + 4) == 101 {
+                    adobe_transform = std::raw::load8(p + body + 11)
+                }
+            } else if marker == 218 {
+                if !frame_found { im_jpeg_error(function, "falta la cabecera de imagen") }
+                let scan_count = im_jpeg_byte(function, p, n, body)
+                if scan_count < 1 || scan_count > component_count || segment_length != 6 + 2 * scan_count { im_jpeg_error(function, "cabecera de lectura mal formada") }
+                let mut i = 0
+                while i < scan_count {
+                    let item = body + 1 + 2 * i
+                    let component = im_jpeg_progressive_find_component(comps, component_count, im_jpeg_byte(function, p, n, item))
+                    if component < 0 { im_jpeg_error(function, "componente desconocido") }
+                    let selectors = im_jpeg_byte(function, p, n, item + 1)
+                    let dc_id = std::raw::shr(selectors, 4)
+                    let ac_id = selectors & 15
+                    if dc_id > 3 || ac_id > 3 { im_jpeg_error(function, "selector Huffman fuera de rango") }
+                    if !progressive_mode {
+                        if std::raw::load(seen_sequential + 8 * component) != 0 { im_jpeg_error(function, "componente secuencial repetido") }
+                        std::raw::store(seen_sequential + 8 * component, 1)
+                    }
+                    let c = comps + component * 128
+                    std::raw::store(c + 32, dc_id)
+                    std::raw::store(c + 40, 4 + ac_id)
+                    std::raw::store(scan + 8 * i, component)
+                    i += 1
+                }
+                let spectral_start = im_jpeg_byte(function, p, n, body + 1 + 2 * scan_count)
+                let spectral_end = im_jpeg_byte(function, p, n, body + 2 + 2 * scan_count)
+                let successive = im_jpeg_byte(function, p, n, body + 3 + 2 * scan_count)
+                let ah = std::raw::shr(successive, 4)
+                let al = successive & 15
+                if spectral_start > spectral_end || spectral_end > 63 || ah > 13 || al > 13 { im_jpeg_error(function, "selección de coeficientes inválida") }
+                if progressive_mode {
+                    if spectral_start == 0 && spectral_end != 0 { im_jpeg_error(function, "una lectura DC no puede incluir coeficientes AC") }
+                    if spectral_start > 0 && scan_count != 1 { im_jpeg_error(function, "una lectura AC debe incluir un componente") }
+                    if spectral_start == 0 && scan_count > 1 && spectral_end != 0 { im_jpeg_error(function, "lectura progresiva entrelazada inválida") }
+                } else if spectral_start != 0 || spectral_end != 63 || ah != 0 || al != 0 {
+                    im_jpeg_error(function, "cabecera de lectura secuencial inválida")
+                }
+                pos = im_jpeg_progressive_scan(function, p, n, end, comps, scan, scan_count, width, height, max_h, max_v, huff, restart_interval, progressive_mode, spectral_start, spectral_end, ah, al, zigzag)
+                saw_scan = true
+                continue
+            }
+            pos = end
+        }
+    }
+
+    if !frame_found || !saw_scan || !finished { im_jpeg_error(function, "el JPEG está incompleto") }
+    if !progressive_mode {
+        let mut seen_index = 0
+        while seen_index < component_count {
+            if std::raw::load(seen_sequential + 8 * seen_index) == 0 { im_jpeg_error(function, "falta la lectura secuencial de un componente") }
+            seen_index += 1
+        }
+    }
+    rt_free_block(seen_sequential)
+    let color = if component_count == 1 { 1 } else { 3 }
+    let image_size = width * height * im_bpp(color)
+    let output = if component_count == 2 { rt_alloc_zero(image_size) } else { rt_alloc(image_size) }
+    let coeff = rt_alloc(64 * 8)
+    let mut i = 0
+    while i < component_count {
+        let c = comps + i * 128
+        let qid = std::raw::load(c + 24)
+        if std::raw::load(quant_valid + 8 * qid) == 0 { im_jpeg_error(function, "falta una tabla de cuantización") }
+        let qtable = quant + qid * 64 * 8
+        let storage = std::raw::load(c + 88)
+        let plane = std::raw::load(c + 56)
+        let stride = std::raw::load(c + 64)
+        let blocks_x = std::raw::load(c + 96)
+        let blocks_y = std::raw::load(c + 104)
+        let mut by = 0
+        while by < blocks_y {
+            let mut bx = 0
+            while bx < blocks_x {
+                let block_index = by * blocks_x + bx
+                let block = storage + block_index * 128
+                let mut k = 0
+                while k < 64 {
+                    std::raw::store(coeff + 8 * k, im_jpeg_mul32(im_jpeg_coef_get(block, k), std::raw::load(qtable + 8 * k)))
+                    k += 1
+                }
+                let out = plane + by * 8 * stride + bx * 8
+                im_jpeg_idct(function, coeff, out, stride)
+                bx += 1
+            }
+            by += 1
+        }
+        i += 1
+    }
+
+    let is_rgb = adobe_transform == 0 || (std::raw::load(comps) == 82 && std::raw::load(comps + 128) == 71 && std::raw::load(comps + 256) == 66)
+    let mut y = 0
+    while y < height {
+        let mut x = 0
+        while x < width {
+            let dst = output + (y * width + x) * im_bpp(color)
+            if component_count == 1 {
+                let c = comps
+                let plane = std::raw::load(c + 56)
+                let stride = std::raw::load(c + 64)
+                std::raw::store8(dst, std::raw::load8(plane + y * stride + x))
+            } else if component_count == 3 {
+                let c0 = comps
+                let c1 = comps + 128
+                let c2 = comps + 256
+                let p0 = std::raw::load(c0 + 56)
+                let p1 = std::raw::load(c1 + 56)
+                let p2 = std::raw::load(c2 + 56)
+                let s0 = std::raw::load(c0 + 64)
+                let s1 = std::raw::load(c1 + 64)
+                let s2 = std::raw::load(c2 + 64)
+                let r0 = max_h / std::raw::load(c0 + 8)
+                let v0 = max_v / std::raw::load(c0 + 16)
+                let r1 = max_h / std::raw::load(c1 + 8)
+                let v1 = max_v / std::raw::load(c1 + 16)
+                let r2 = max_h / std::raw::load(c2 + 8)
+                let v2 = max_v / std::raw::load(c2 + 16)
+                let a = im_jpeg_sample(p0, s0, s0, std::raw::load(c0 + 80), x, y, r0, v0)
+                let b = im_jpeg_sample(p1, s1, s1, std::raw::load(c1 + 80), x, y, r1, v1)
+                let c = im_jpeg_sample(p2, s2, s2, std::raw::load(c2 + 80), x, y, r2, v2)
+                if is_rgb {
+                    std::raw::store8(dst, a)
+                    std::raw::store8(dst + 1, b)
+                    std::raw::store8(dst + 2, c)
+                } else {
+                    let cb = b - 128
+                    let cr = c - 128
+                    let y0 = a * 16384 + 8191
+                    std::raw::store8(dst, im_jpeg_clamp(std::raw::sar(y0 + cr * 22970, 14)))
+                    std::raw::store8(dst + 1, im_jpeg_clamp(std::raw::sar(y0 - cr * 11700 - cb * 5638, 14)))
+                    std::raw::store8(dst + 2, im_jpeg_clamp(std::raw::sar(y0 + cb * 29032, 14)))
+                }
+            } else if component_count == 2 {
+                let c0 = comps
+                let c1 = comps + 128
+                let p0 = std::raw::load(c0 + 56)
+                let p1 = std::raw::load(c1 + 56)
+                let s0 = std::raw::load(c0 + 64)
+                let s1 = std::raw::load(c1 + 64)
+                let r0 = max_h / std::raw::load(c0 + 8)
+                let v0 = max_v / std::raw::load(c0 + 16)
+                let r1 = max_h / std::raw::load(c1 + 8)
+                let v1 = max_v / std::raw::load(c1 + 16)
+                let a = im_jpeg_sample(p0, s0, s0, std::raw::load(c0 + 80), x, y, r0, v0)
+                let b = im_jpeg_sample(p1, s1, s1, std::raw::load(c1 + 80), x, y, r1, v1)
+                let row = output + y * width * 3
+                std::raw::store8(row + 2 * x, a)
+                std::raw::store8(row + 2 * x + 1, b)
+            } else {
+                let c0 = comps
+                let c1 = comps + 128
+                let c2 = comps + 256
+                let c3 = comps + 384
+                let p0 = std::raw::load(c0 + 56)
+                let p1 = std::raw::load(c1 + 56)
+                let p2 = std::raw::load(c2 + 56)
+                let p3 = std::raw::load(c3 + 56)
+                let s0 = std::raw::load(c0 + 64)
+                let s1 = std::raw::load(c1 + 64)
+                let s2 = std::raw::load(c2 + 64)
+                let s3 = std::raw::load(c3 + 64)
+                let r0 = max_h / std::raw::load(c0 + 8)
+                let v0 = max_v / std::raw::load(c0 + 16)
+                let r1 = max_h / std::raw::load(c1 + 8)
+                let v1 = max_v / std::raw::load(c1 + 16)
+                let r2 = max_h / std::raw::load(c2 + 8)
+                let v2 = max_v / std::raw::load(c2 + 16)
+                let r3 = max_h / std::raw::load(c3 + 8)
+                let v3 = max_v / std::raw::load(c3 + 16)
+                let a = im_jpeg_sample(p0, s0, s0, std::raw::load(c0 + 80), x, y, r0, v0)
+                let b = im_jpeg_sample(p1, s1, s1, std::raw::load(c1 + 80), x, y, r1, v1)
+                let c = im_jpeg_sample(p2, s2, s2, std::raw::load(c2 + 80), x, y, r2, v2)
+                let k = im_jpeg_sample(p3, s3, s3, std::raw::load(c3 + 80), x, y, r3, v3)
+                if adobe_transform == 2 {
+                    let cb = b - 128
+                    let cr = c - 128
+                    let y0 = a * 16384 + 8191
+                    let red = im_jpeg_clamp(std::raw::sar(y0 + cr * 22970, 14))
+                    let green = im_jpeg_clamp(std::raw::sar(y0 - cr * 11700 - cb * 5638, 14))
+                    let blue = im_jpeg_clamp(std::raw::sar(y0 + cb * 29032, 14))
+                    std::raw::store8(dst, im_jpeg_blinn8(255 - red, k))
+                    std::raw::store8(dst + 1, im_jpeg_blinn8(255 - green, k))
+                    std::raw::store8(dst + 2, im_jpeg_blinn8(255 - blue, k))
+                } else {
+                    std::raw::store8(dst, im_jpeg_blinn8(a, k))
+                    std::raw::store8(dst + 1, im_jpeg_blinn8(b, k))
+                    std::raw::store8(dst + 2, im_jpeg_blinn8(c, k))
+                }
+            }
+            x += 1
+        }
+        y += 1
+    }
+
+    i = 0
+    while i < component_count {
+        let c = comps + i * 128
+        rt_free_block(std::raw::load(c + 56))
+        rt_free_block(std::raw::load(c + 88))
+        i += 1
+    }
+    rt_free_block(coeff)
+    rt_free_block(scan)
+    rt_free_block(comps)
+    rt_free_block(huff)
+    rt_free_block(quant_valid)
+    rt_free_block(quant)
+    im_insert(function, width, height, color, output, image_size)
+}

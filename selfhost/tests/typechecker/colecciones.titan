@@ -1,0 +1,24 @@
+// len y métodos de colección sobre cada tipo de receptor.
+fn main() {
+    let m = #{"a": 1}
+    let n: int = len(m)
+    let s: int = len("hola")
+    let t: int = len((1, "a"))
+    let b: int = len(true)
+    let x = [1, 2, 3]
+    let y: [int] = x.map(|v| v * 2)
+    let z: [string] = x.filter(|v| v > 1)
+    let w = x.fold(0, |acc, v| acc + v)
+    let q = x.sort_by(|a, b| "no")
+    let r = x.any(|v| v)
+    let u = x.find(|v| v == 2)
+    let k = m.len()
+    let j = m.keys()
+    let h = "abc".len(1)
+    let g = 5.len()
+    let f = map(x, |v| v + 1)
+    let d = filter(5, |v| true)
+    let c = fold(x, "", |acc, v| acc + v)
+    let a = sort_by(x, |p, q| p < q)
+    print(n + s + t + b + w + k)
+}

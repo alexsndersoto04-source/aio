@@ -1,0 +1,9 @@
+fn main() {
+    let mut a = []
+    let mut k = 0
+    while k < 4097 {
+        a = std::array::push(a, "x")
+        k += 1
+    }
+    print(std::collections::set_from(a))
+}

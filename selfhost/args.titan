@@ -1,0 +1,26 @@
+// Argumentos de las herramientas del self-hosting, igual si se ejecutan con
+// la VM (`zett run selfhost/X.titan a b`, donde std::env::args() da
+// [zett, run, selfhost/X.titan, a, b]) que como ejecutable nativo
+// (`./X a b`, donde da [./X, a, b]).
+
+fn ar_under_vm(args: array) -> bool {
+    len(args) >= 3 && args[1] == "run" && std::text::ends_with(args[2], ".titan")
+}
+
+// Solo los argumentos del usuario: [a, b].
+fn ar_user_args() -> array {
+    let args = std::env::args()
+    if ar_under_vm(args) {
+        return std::array::slice(args, 3, len(args))
+    }
+    std::array::slice(args, 1, len(args))
+}
+
+// Ruta del programa en ejecución: el .titan con la VM, el ejecutable si es nativo.
+fn ar_program() -> string {
+    let args = std::env::args()
+    if ar_under_vm(args) {
+        return args[2]
+    }
+    args[0]
+}

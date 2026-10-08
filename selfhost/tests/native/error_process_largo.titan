@@ -1,0 +1,7 @@
+fn main() {
+    let mut s = "echo "
+    while len(s) <= 65536 {
+        s = s + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+    }
+    std::process::run(s)
+}

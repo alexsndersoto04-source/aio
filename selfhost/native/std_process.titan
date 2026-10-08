@@ -1,0 +1,1977 @@
+// Biblioteca estándar nativa: std::process (fase 6 del self-hosting).
+// Reproduce crates/titan_stdlib/src/process_mod.rs (y run_timeout de
+// process.rs) tal como los llama crates/titan_vm/src/native.rs. Forma parte
+// del runtime (lo importa runtime.titan): puede usar std::raw.
+//
+// Notas de diseño en native/process/NOTAS.md. Resumen:
+// - Lanzar un programa es lo que hace posix_spawnp de glibc (que es lo que
+//   usa Rust): fork, las redirecciones, la máscara de señales vacía, SIGPIPE
+//   por defecto y la búsqueda en PATH de glibc; si exec falla, el hijo manda
+//   el errno al padre por un tubo y ese es el error.
+// - Rust lee la salida de los hijos con hilos. Para las funciones que esperan
+//   (run, shell, pipe, run_timeout) basta con un bucle con poll que lee todos
+//   los tubos (y escribe la entrada) a la vez. Para los procesos en segundo
+//   plano (spawn) el runtime no tiene hilos: un proceso ayudante (fork) lee
+//   los tubos mientras el hijo corre y entrega lo leído en spawn_wait.
+//
+// Estado (globals + 2576):
+//   +0  entorno propio (0 = el de la pila; ver rt_environ en runtime.titan)
+//   +8  variables en el entorno propio
+//   +16 capacidad del entorno propio
+//   +24 tabla de procesos en segundo plano (32 filas, ps_row)
+//   +32 último número de proceso dado (NEXT_HANDLE de Rust empieza en 1)
+//   +40 procesos reservados ahora (límite 32, como reserve_processes)
+
+fn ps_g() -> int {
+    std::raw::globals() + 2576
+}
+
+fn ps_some(v: any) -> any {
+    rt_enum_new(v, "Option", "Some")
+}
+
+fn ps_none() -> any {
+    let p = rt_alloc(48)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, std::raw::bits("Option"))
+    std::raw::store(p + 16, std::raw::bits("None"))
+    std::raw::store(p + 24, 0)
+    std::raw::store(p + 32, 0)
+    std::raw::store(p + 40, 0)
+    std::raw::adopt(11, p)
+}
+
+// ¿Hay un byte NUL en el string?
+fn ps_has_nul(s: any) -> bool {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 0 {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// ¿Contiene el byte b?
+fn ps_has_byte(s: any, b: int) -> bool {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == b {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// Un int que tiene que caber en i32 (i32::try_from de la VM).
+fn ps_i32(v: any, fname: string, what: string) -> int {
+    rt_expect_int(v, fname)
+    let x = std::raw::bits(v)
+    if x < -2147483648 || x > 2147483647 {
+        rt_native_fail(fname, what)
+    }
+    x
+}
+
+// ------------------------------------------------------------ entorno
+
+// Pasa al entorno propio (copia de la lista de punteros) si aún no lo es.
+fn ps_env_own() {
+    let g = ps_g()
+    if std::raw::load(g) != 0 {
+        return
+    }
+    let e = rt_environ()
+    let mut n = 0
+    while std::raw::load(e + 8 * n) != 0 {
+        n += 1
+    }
+    let cap = n + 16
+    let own = rt_alloc(8 * cap + 8)
+    rt_copy(own, e, 8 * n)
+    std::raw::store(own + 8 * n, 0)
+    std::raw::store(g, own)
+    std::raw::store(g + 8, n)
+    std::raw::store(g + 16, cap)
+}
+
+// ¿La entrada (string C) es "NOMBRE=..."? (la comparación de glibc)
+fn ps_env_match(entry: int, pn: int, n: int) -> bool {
+    let mut i = 0
+    while i < n && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
+        i += 1
+    }
+    i == n && std::raw::load8(entry + n) == 61
+}
+
+// `std::env::set_var` y `remove_var` hacen panic con estos nombres; Rust
+// corregido (bug 17) da este error.
+fn ps_env_name_ok(fname: string, name: any) {
+    if rt_slen(name) == 0 || ps_has_byte(name, 61) || ps_has_nul(name) {
+        rt_native_fail(fname, "invalid environment variable: name must be non-empty and must not contain '=' or NUL")
+    }
+}
+
+fn std__process__env_get(name: any) -> any {
+    rt_expect_str(name, "std::process::env_get")
+    let v = std__env__get(name)
+    if std::raw::tag(v) == 0 {
+        return ps_none()
+    }
+    ps_some(v)
+}
+
+// setenv(nombre, valor, 1) de glibc: cambia la primera entrada con ese
+// nombre o añade una al final.
+fn std__process__env_set(name: any, value: any) -> any {
+    rt_expect_str(name, "std::process::env_set")
+    rt_expect_str(value, "std::process::env_set")
+    ps_env_name_ok("std::process::env_set", name)
+    if ps_has_nul(value) {
+        rt_native_fail("std::process::env_set", "invalid environment variable: value must not contain NUL")
+    }
+    ps_env_own()
+    let g = ps_g()
+    let n = rt_slen(name)
+    let m = rt_slen(value)
+    let entry = rt_alloc(n + m + 2)
+    rt_copy(entry, std::raw::bits(name) + 16, n)
+    std::raw::store8(entry + n, 61)
+    rt_copy(entry + n + 1, std::raw::bits(value) + 16, m)
+    std::raw::store8(entry + n + 1 + m, 0)
+    let own = std::raw::load(g)
+    let count = std::raw::load(g + 8)
+    let pn = std::raw::bits(name) + 16
+    let mut i = 0
+    while i < count {
+        if ps_env_match(std::raw::load(own + 8 * i), pn, n) {
+            std::raw::store(own + 8 * i, entry)
+            return nil
+        }
+        i += 1
+    }
+    let cap = std::raw::load(g + 16)
+    let mut arr = own
+    if count == cap {
+        arr = rt_alloc(16 * cap + 8)
+        rt_copy(arr, own, 8 * count)
+        rt_free_block(own)
+        std::raw::store(g, arr)
+        std::raw::store(g + 16, 2 * cap)
+    }
+    std::raw::store(arr + 8 * count, entry)
+    std::raw::store(arr + 8 * count + 8, 0)
+    std::raw::store(g + 8, count + 1)
+    nil
+}
+
+// unsetenv de glibc: quita todas las entradas con ese nombre.
+fn std__process__env_unset(name: any) -> any {
+    rt_expect_str(name, "std::process::env_unset")
+    ps_env_name_ok("std::process::env_unset", name)
+    ps_env_own()
+    let g = ps_g()
+    let own = std::raw::load(g)
+    let count = std::raw::load(g + 8)
+    let pn = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    let mut kept = 0
+    let mut i = 0
+    while i < count {
+        let entry = std::raw::load(own + 8 * i)
+        if !ps_env_match(entry, pn, n) {
+            std::raw::store(own + 8 * kept, entry)
+            kept += 1
+        }
+        i += 1
+    }
+    std::raw::store(own + 8 * kept, 0)
+    std::raw::store(g + 8, kept)
+    nil
+}
+
+// std::env::vars_os() de Rust: cada entrada se parte en el primer '=' que no
+// sea el primer carácter; las que no tienen se saltan, y (Rust corregido,
+// bug 18) también las que no son UTF-8 válido. En el orden del entorno.
+fn std__process__env_vars() -> any {
+    let e = rt_environ()
+    let mut total = 0
+    let mut k = 0
+    while std::raw::load(e + 8 * k) != 0 {
+        k += 1
+    }
+    let out = rt_array_new(k)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < k {
+        let entry = std::raw::load(e + 8 * i)
+        let mut len = 0
+        while std::raw::load8(entry + len) != 0 {
+            len += 1
+        }
+        let mut eq = 1
+        while eq < len && std::raw::load8(entry + eq) != 61 {
+            eq += 1
+        }
+        let vlen = len - eq - 1
+        if len > 0 && eq < len && rt_valid_utf8(entry, eq) && rt_valid_utf8(entry + eq + 1, vlen) {
+            let key = rt_str_alloc(eq)
+            rt_copy(key + 16, entry, eq)
+            let value = rt_str_alloc(vlen)
+            rt_copy(value + 16, entry + eq + 1, vlen)
+            let t = rt_tuple_new(2)
+            let td = rt_seq_data(t)
+            rt_seq_put(td, 0, rt_sval(key))
+            rt_seq_put(td, 1, rt_sval(value))
+            rt_seq_put(data, total, t)
+            total += 1
+        }
+        i += 1
+    }
+    std::raw::store(std::raw::bits(out) + 8, total)
+    out
+}
+
+// ------------------------------------------------------------ datos del proceso
+
+// current_dir().to_string_lossy(); el error va como ProcessError::Io.
+fn std__process__working_dir() -> any {
+    let mut size = 512
+    loop {
+        let buf = rt_alloc(size)
+        let r = std::raw::syscall(79, buf, size, 0, 0, 0, 0)
+        if r >= 0 {
+            let cwd = rt_from_cstr(buf)
+            rt_free_block(buf)
+            return dr_lossy(cwd)
+        }
+        rt_free_block(buf)
+        if r != -34 {
+            rt_native_fail("std::process::working_dir", rt_concat("process io error: ", rt_os_error(0 - r)))
+        }
+        size = size * 2
+    }
+    nil
+}
+
+fn std__process__set_working_dir(path: any) -> any {
+    rt_expect_str(path, "std::process::set_working_dir")
+    if ps_has_nul(path) {
+        rt_native_fail("std::process::set_working_dir", "process io error: file name contained an unexpected NUL byte")
+    }
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(80, c, 0, 0, 0, 0, 0)
+    rt_free_block(c)
+    if r < 0 {
+        rt_native_fail("std::process::set_working_dir", rt_concat("process io error: ", rt_os_error(0 - r)))
+    }
+    nil
+}
+
+fn std__process__self_pid() -> any {
+    std::raw::syscall(39, 0, 0, 0, 0, 0, 0)
+}
+
+// Contenido de un archivo pequeño como string UTF-8 válido, o nil
+// (read_to_string de Rust falla si no es UTF-8).
+fn ps_read_text(path: string) -> any {
+    let c = rt_cstr(path)
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        return nil
+    }
+    let b = sb_new(256)
+    let buf = rt_alloc(4096)
+    let mut ok = true
+    loop {
+        let r = std::raw::syscall(0, fd, buf, 4096, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            ok = false
+            break
+        }
+        if r == 0 {
+            break
+        }
+        sb_raw(b, buf, r)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let s = sb_finish(b)
+    if !ok {
+        return nil
+    }
+    let p = std::raw::bits(s)
+    if !rt_valid_utf8(p + 16, std::raw::load(p + 8)) {
+        return nil
+    }
+    s
+}
+
+// /proc/sys/kernel/hostname sin espacios a los lados; si no se puede leer,
+// $HOSTNAME; si no, "unknown".
+fn std__process__hostname() -> any {
+    let s = ps_read_text("/proc/sys/kernel/hostname")
+    if std::raw::tag(s) != 0 {
+        return rt_trim(s)
+    }
+    let h = std__env__get("HOSTNAME")
+    if std::raw::tag(h) != 0 {
+        return h
+    }
+    "unknown"
+}
+
+fn std__process__username() -> any {
+    let u = std__env__get("USER")
+    if std::raw::tag(u) != 0 {
+        return u
+    }
+    let u2 = std__env__get("USERNAME")
+    if std::raw::tag(u2) != 0 {
+        return u2
+    }
+    "unknown"
+}
+
+fn std__process__args() -> any {
+    std__env__args()
+}
+
+// nix: Signal::try_from acepta 1..=31 en Linux (si no, EINVAL) y los errores
+// de kill salen con el formato de nix ("ESRCH: No such process").
+fn ps_nix_errno(e: int) -> string {
+    if e == 1 {
+        return "EPERM: Operation not permitted"
+    }
+    if e == 3 {
+        return "ESRCH: No such process"
+    }
+    if e == 22 {
+        return "EINVAL: Invalid argument"
+    }
+    rt_concat(rt_concat("errno ", rt_int_to_str(e)), "")
+}
+
+fn std__process__send_signal(pid: any, signal: any) -> any {
+    let p = ps_i32(pid, "std::process::send_signal", "process id out of i32 range")
+    let s = ps_i32(signal, "std::process::send_signal", "signal number out of i32 range")
+    if s < 1 || s > 31 {
+        rt_native_fail("std::process::send_signal", rt_concat("signal error: ", ps_nix_errno(22)))
+    }
+    let r = std::raw::syscall(62, p, s, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail("std::process::send_signal", rt_concat("signal error: ", ps_nix_errno(0 - r)))
+    }
+    nil
+}
+
+// std::process::exit de Rust: termina ya, sin los destructores (los procesos
+// en segundo plano siguen vivos y las barras de progreso no se cierran).
+fn std__process__exit(code: any) -> any {
+    let c = ps_i32(code, "std::process::exit", "exit status out of i32 range")
+    std::raw::syscall(231, c, 0, 0, 0, 0, 0)
+    nil
+}
+
+// ------------------------------------------------------------ lanzar programas
+
+fn ps_now() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+// Tubo con O_CLOEXEC: bloque de 8 bytes (lectura, escritura) o -errno.
+fn ps_pipe() -> int {
+    let fds = rt_alloc(8)
+    let r = std::raw::syscall(293, fds, 524288, 0, 0, 0, 0)
+    if r < 0 {
+        rt_free_block(fds)
+        return r
+    }
+    fds
+}
+
+fn ps_close(fd: int) {
+    if fd >= 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    }
+}
+
+// /dev/null para leer (Stdio::null de Rust), o -errno.
+fn ps_devnull() -> int {
+    let c = rt_cstr("/dev/null")
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
+    fd
+}
+
+// Largo de un string C.
+fn ps_strlen(p: int) -> int {
+    let mut n = 0
+    while std::raw::load8(p + n) != 0 {
+        n += 1
+    }
+    n
+}
+
+// posix_spawn con dup2 de glibc: si el descriptor ya es el de destino, dup2
+// no haría nada y se le quita O_CLOEXEC a mano.
+fn ps_dup_to(src: int, dst: int) {
+    if src == dst {
+        std::raw::syscall(72, src, 2, 0, 0, 0, 0)
+        return
+    }
+    std::raw::syscall(33, src, dst, 0, 0, 0, 0)
+}
+
+// __execvpex de glibc (lo que usa posix_spawnp): con '/' en el nombre, exec
+// directo; si no, cada entrada de PATH (vacía = carpeta actual; sin PATH,
+// "/bin:/usr/bin"). ENOENT, ESTALE, ENOTDIR, ENODEV, ETIMEDOUT y EACCES pasan
+// a la siguiente; cualquier otro error para. Devuelve el errno final (EACCES
+// si alguna entrada lo dio).
+fn ps_execvp(cargv: int) -> int {
+    let file = std::raw::load(cargv)
+    let envp = rt_environ()
+    let flen = ps_strlen(file)
+    if flen == 0 {
+        return 2
+    }
+    let mut slash = false
+    let mut i = 0
+    while i < flen {
+        if std::raw::load8(file + i) == 47 {
+            slash = true
+        }
+        i += 1
+    }
+    if slash {
+        return 0 - std::raw::syscall(59, file, cargv, envp, 0, 0, 0)
+    }
+    let mut path = rt_getenv("PATH")
+    if path == 0 {
+        path = std::raw::bits("/bin:/usr/bin") + 16
+    }
+    let n = ps_strlen(path)
+    let full = rt_alloc(n + flen + 2)
+    let mut eacces = false
+    let mut last = 2
+    let mut start = 0
+    loop {
+        let mut end = start
+        while end < n && std::raw::load8(path + end) != 58 {
+            end += 1
+        }
+        let seg = end - start
+        rt_copy(full, path + start, seg)
+        let mut k = seg
+        if seg > 0 {
+            std::raw::store8(full + seg, 47)
+            k = seg + 1
+        }
+        rt_copy(full + k, file, flen)
+        std::raw::store8(full + k + flen, 0)
+        let e = 0 - std::raw::syscall(59, full, cargv, envp, 0, 0, 0)
+        last = e
+        if e == 13 {
+            eacces = true
+        }
+        let skip = e == 13 || e == 2 || e == 116 || e == 20 || e == 19 || e == 110
+        if !skip {
+            return e
+        }
+        if end >= n {
+            break
+        }
+        start = end + 1
+    }
+    if eacces {
+        return 13
+    }
+    last
+}
+
+// El hijo: redirecciones en el orden de Rust (0, 1, 2), máscara de señales
+// vacía (POSIX_SPAWN_SETSIGMASK), SIGPIPE por defecto (POSIX_SPAWN_SETSIGDEF)
+// y exec. Si falla, manda el errno por `rep` y termina.
+fn ps_child(cargv: int, fin: int, fout: int, ferr: int, rep: int) {
+    ps_dup_to(fin, 0)
+    ps_dup_to(fout, 1)
+    ps_dup_to(ferr, 2)
+    let set = rt_alloc(8)
+    std::raw::store(set, 0)
+    std::raw::syscall(14, 2, set, 0, 8, 0, 0)
+    let act = rt_alloc(32)
+    std::raw::store(act, 0)
+    std::raw::store(act + 8, 0)
+    std::raw::store(act + 16, 0)
+    std::raw::store(act + 24, 0)
+    std::raw::syscall(13, 13, act, 0, 8, 0, 0)
+    let e = ps_execvp(cargv)
+    let msg = rt_alloc(8)
+    std::raw::store(msg, e)
+    std::raw::syscall(1, rep, msg, 8, 0, 0, 0)
+    std::raw::syscall(231, 127, 0, 0, 0, 0, 0)
+}
+
+// waitpid (reintenta EINTR): el estado crudo, -1000000 si con WNOHANG aún
+// no terminó, o -errno.
+fn ps_waitpid(pid: int, flags: int) -> int {
+    let st = rt_alloc(8)
+    std::raw::store(st, 0)
+    loop {
+        let r = std::raw::syscall(61, pid, st, flags, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            rt_free_block(st)
+            return r
+        }
+        if r == 0 {
+            rt_free_block(st)
+            return -1000000
+        }
+        let s = std::raw::load(st) & 4294967295
+        rt_free_block(st)
+        return s
+    }
+    0
+}
+
+// ExitStatus::code() de Rust, con -1 si lo terminó una señal.
+fn ps_exit_code(status: int) -> int {
+    if (status & 127) == 0 {
+        return std::raw::shr(status, 8) & 255
+    }
+    -1
+}
+
+// Lanza argv (array de strings) con fin/fout/ferr como 0/1/2. Devuelve el pid
+// o -errno (el del exec que falló: posix_spawnp lo devuelve igual).
+fn ps_spawn(argv: any, fin: int, fout: int, ferr: int) -> int {
+    let n = rt_seq_len(argv)
+    let cargv = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store(cargv + 8 * i, rt_cstr(rt_seq_get(argv, i)))
+        i += 1
+    }
+    std::raw::store(cargv + 8 * n, 0)
+    let rep = ps_pipe()
+    let mut pid = rep
+    if rep >= 0 {
+        let r_r = tm_ld32(rep)
+        let r_w = tm_ld32(rep + 4)
+        rt_free_block(rep)
+        pid = std::raw::syscall(57, 0, 0, 0, 0, 0, 0)
+        if pid == 0 {
+            ps_child(cargv, fin, fout, ferr, r_w)
+        }
+        ps_close(r_w)
+        if pid > 0 {
+            let msg = rt_alloc(8)
+            let mut got = 0
+            loop {
+                let r = std::raw::syscall(0, r_r, msg + got, 8 - got, 0, 0, 0)
+                if r == -4 {
+                    continue
+                }
+                if r <= 0 {
+                    break
+                }
+                got += r
+                if got == 8 {
+                    break
+                }
+            }
+            if got == 8 {
+                ps_waitpid(pid, 0)
+                pid = 0 - std::raw::load(msg)
+            }
+            rt_free_block(msg)
+        }
+        ps_close(r_r)
+    }
+    i = 0
+    while i < n {
+        rt_free_block(std::raw::load(cargv + 8 * i))
+        i += 1
+    }
+    rt_free_block(cargv)
+    pid
+}
+
+// ¿Algún string de argv tiene un NUL? (Command de Rust lo rechaza al lanzar)
+fn ps_argv_nul(argv: any) -> bool {
+    let n = rt_seq_len(argv)
+    let mut i = 0
+    while i < n {
+        if ps_has_nul(rt_seq_get(argv, i)) {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// ------------------------------------------------------------ leer y escribir
+
+// Cupo compartido de salida capturada (CaptureBudget de Rust):
+// +0 usado, +8 excedido, +16 límite.
+fn ps_budget_for(limit: int) -> int {
+    let b = rt_alloc(24)
+    std::raw::store(b, 0)
+    std::raw::store(b + 8, 0)
+    std::raw::store(b + 16, limit)
+    b
+}
+
+fn ps_budget() -> int {
+    ps_budget_for(4194304)
+}
+
+fn ps_budget_add(budget: int, sb: int, p: int, n: int) {
+    let used = std::raw::load(budget)
+    let mut acc = std::raw::load(budget + 16) - used
+    if acc > n {
+        acc = n
+    }
+    if acc > 0 {
+        sb_raw(sb, p, acc)
+        std::raw::store(budget, used + acc)
+    }
+    if acc < n {
+        std::raw::store(budget + 8, 1)
+    }
+}
+
+// Filas de lectura: 32 bytes cada una: +0 descriptor (-1 = terminado),
+// +8 constructor sb con lo leído, +16 errno si la lectura falló.
+fn ps_streams(k: int) -> int {
+    let s = rt_alloc(32 * k + 8)
+    let mut i = 0
+    while i < k {
+        std::raw::store(s + 32 * i, -1)
+        std::raw::store(s + 32 * i + 8, sb_new(256))
+        std::raw::store(s + 32 * i + 16, 0)
+        i += 1
+    }
+    s
+}
+
+fn ps_read_one(row: int, buf: int, budget: int) {
+    let fd = std::raw::load(row)
+    let r = std::raw::syscall(0, fd, buf, 65536, 0, 0, 0)
+    if r == -4 || r == -11 {
+        return
+    }
+    if r <= 0 {
+        if r < 0 {
+            std::raw::store(row + 16, 0 - r)
+        }
+        ps_close(fd)
+        std::raw::store(row, -1)
+        return
+    }
+    ps_budget_add(budget, std::raw::load(row + 8), buf, r)
+}
+
+// Entrada: +0 descriptor (-1 = terminado), +8 datos, +16 largo, +24 escrito,
+// +32 errno si la escritura falló.
+fn ps_write_some(inp: int) {
+    let fd = std::raw::load(inp)
+    let len = std::raw::load(inp + 16)
+    let off = std::raw::load(inp + 24)
+    let mut chunk = len - off
+    if chunk > 65536 {
+        chunk = 65536
+    }
+    let r = std::raw::syscall(1, fd, std::raw::load(inp + 8) + off, chunk, 0, 0, 0)
+    if r == -4 || r == -11 {
+        return
+    }
+    if r < 0 {
+        std::raw::store(inp + 32, 0 - r)
+        ps_close(fd)
+        std::raw::store(inp, -1)
+        return
+    }
+    std::raw::store(inp + 24, off + r)
+    if off + r >= len {
+        ps_close(fd)
+        std::raw::store(inp, -1)
+    }
+}
+
+// Lee a la vez las k filas (y escribe la entrada si inp != 0) hasta que todo
+// termine; con until >= 0, también para al llegar a ese instante (reloj
+// monotónico en ns).
+fn ps_pump(s: int, k: int, inp: int, budget: int, until: int) {
+    let buf = rt_alloc(65536)
+    let pfd = rt_alloc(8 * k + 16)
+    let idx = rt_alloc(8 * k + 16)
+    loop {
+        let mut cnt = 0
+        let mut i = 0
+        while i < k {
+            let fd = std::raw::load(s + 32 * i)
+            if fd >= 0 {
+                std::raw::store(pfd + 8 * cnt, fd + 4294967296)
+                std::raw::store(idx + 8 * cnt, i)
+                cnt += 1
+            }
+            i += 1
+        }
+        if inp != 0 && std::raw::load(inp) >= 0 {
+            std::raw::store(pfd + 8 * cnt, std::raw::load(inp) + 17179869184)
+            std::raw::store(idx + 8 * cnt, -1)
+            cnt += 1
+        }
+        if cnt == 0 {
+            break
+        }
+        let mut wait = -1
+        if until >= 0 {
+            let now = ps_now()
+            if now >= until {
+                break
+            }
+            wait = (until - now + 999999) / 1000000
+        }
+        let r = std::raw::syscall(7, pfd, cnt, wait, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            break
+        }
+        let mut j = 0
+        while j < cnt {
+            let rev = std::raw::shr(std::raw::load(pfd + 8 * j), 48) & 65535
+            if rev != 0 {
+                let which = std::raw::load(idx + 8 * j)
+                if which >= 0 {
+                    ps_read_one(s + 32 * which, buf, budget)
+                } else {
+                    ps_write_some(inp)
+                }
+            }
+            j += 1
+        }
+    }
+    rt_free_block(buf)
+    rt_free_block(pfd)
+    rt_free_block(idx)
+}
+
+// SIGPIPE ignorada mientras se escribe la entrada de un hijo (Rust la tiene
+// ignorada siempre: escribir en un tubo cerrado da EPIPE y no mata). Devuelve
+// la acción anterior para ps_sigpipe_restore.
+fn ps_sigpipe_ignore() -> int {
+    let act = rt_alloc(32)
+    std::raw::store(act, 1)
+    std::raw::store(act + 8, 0)
+    std::raw::store(act + 16, 0)
+    std::raw::store(act + 24, 0)
+    let old = rt_alloc(32)
+    std::raw::syscall(13, 13, act, old, 8, 0, 0)
+    rt_free_block(act)
+    old
+}
+
+fn ps_sigpipe_restore(old: int) {
+    std::raw::syscall(13, 13, old, 0, 8, 0, 0)
+    rt_free_block(old)
+}
+
+// ------------------------------------------------------------ reservas
+
+// reserve_processes de Rust: como mucho 32 procesos a la vez.
+fn ps_reserve(fname: string, n: int, message: string) {
+    let g = ps_g()
+    let active = std::raw::load(g + 40)
+    let requested = active + n
+    if requested > 32 {
+        rt_native_fail(fname, message)
+    }
+    std::raw::store(g + 40, requested)
+}
+
+fn ps_unreserve(n: int) {
+    let g = ps_g()
+    std::raw::store(g + 40, std::raw::load(g + 40) - n)
+}
+
+fn ps_fail_unreserve(fname: string, n: int, message: any) {
+    ps_unreserve(n)
+    rt_native_fail(fname, message)
+}
+
+// ------------------------------------------------------------ comandos
+
+// parse_cmd de Rust: parte en espacios en blanco (Unicode) fuera de
+// comillas; '...' y "..." agrupan (sin escapes) y las comillas no quedan.
+// Primero cuenta, después llena el array.
+fn ps_parse(fname: string, cmd: any) -> any {
+    let n = rt_slen(cmd)
+    if n > 65536 {
+        rt_native_fail(fname, "command bytes exceeds limit 65536")
+    }
+    let count = ps_parse_pass(cmd, 0)
+    if count == -1 {
+        rt_native_fail(fname, "shell syntax error: unclosed quote")
+    }
+    if count == 0 {
+        rt_native_fail(fname, "shell syntax error: empty command")
+    }
+    let out = rt_array_new(count)
+    ps_parse_pass(cmd, rt_seq_data(out))
+    out
+}
+
+// Una pasada: con data = 0 solo cuenta (-1 si queda una comilla abierta).
+fn ps_parse_pass(cmd: any, data: int) -> int {
+    let p = std::raw::bits(cmd)
+    let n = rt_slen(cmd)
+    let mut parts = 0
+    let mut cur = sb_new(32)
+    let mut quote = 0
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + 16 + i)
+        let w = rt_utf8_width(b)
+        if quote != 0 {
+            if b == quote {
+                quote = 0
+            } else {
+                sb_raw(cur, p + 16 + i, w)
+            }
+        } else if b == 34 || b == 39 {
+            quote = b
+        } else if rt_space_width(p, i) > 0 {
+            if sb_len(cur) > 0 {
+                if data != 0 {
+                    rt_seq_put(data, parts, sb_finish(cur))
+                } else {
+                    sb_finish(cur)
+                }
+                cur = sb_new(32)
+                parts += 1
+            }
+        } else {
+            sb_raw(cur, p + 16 + i, w)
+        }
+        i += w
+    }
+    if quote != 0 {
+        sb_finish(cur)
+        return -1
+    }
+    if sb_len(cur) > 0 {
+        if data != 0 {
+            rt_seq_put(data, parts, sb_finish(cur))
+        } else {
+            sb_finish(cur)
+        }
+        parts += 1
+    } else {
+        sb_finish(cur)
+    }
+    parts
+}
+
+// Mapa de process_output_to_value (claves en orden, como BTreeMap).
+fn ps_output(out: any, err: any, code: int, ms: int) -> any {
+    let mut m: any = std__map__new()
+    m = std__map__insert(m, "duration_ms", ms)
+    m = std__map__insert(m, "exit_code", code)
+    m = std__map__insert(m, "stderr", err)
+    m = std__map__insert(m, "stdout", out)
+    m
+}
+
+fn ps_ms_since(started: int) -> int {
+    (ps_now() - started) / 1000000
+}
+
+// Ejecuta con stdin null/pipe y stdout/stderr en /dev/null, como Stdio::null
+// en Rust. Es necesario para clientes que se bifurcan (p. ej. xclip al tomar
+// la selección): capturar sus pipes impediría que termine la llamada.
+fn ps_execute_silent(fname: string, argv: any, input: any) -> bool {
+    let has_input = std::raw::tag(input) != 0
+    let mut ilen = 0
+    if has_input {
+        rt_expect_bytes(input, fname)
+        ilen = std::raw::load(std::raw::bits(input) + 8)
+        if ilen > 8388608 {
+            return false
+        }
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    if ps_argv_nul(argv) {
+        ps_unreserve(1)
+        return false
+    }
+
+    let mut in_r = -1
+    let mut in_w = -1
+    if has_input {
+        let pi = ps_pipe()
+        if pi < 0 {
+            ps_unreserve(1)
+            return false
+        }
+        in_r = tm_ld32(pi)
+        in_w = tm_ld32(pi + 4)
+        rt_free_block(pi)
+    } else {
+        in_r = ps_devnull()
+        if in_r < 0 {
+            ps_unreserve(1)
+            return false
+        }
+    }
+
+    let null_output = rt_open("/dev/null", 524289, 0) // O_WRONLY | O_CLOEXEC
+    if null_output < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        ps_unreserve(1)
+        return false
+    }
+    let pid = ps_spawn(argv, in_r, null_output, null_output)
+    ps_close(in_r)
+    ps_close(null_output)
+    if pid < 0 {
+        ps_close(in_w)
+        ps_unreserve(1)
+        return false
+    }
+
+    let mut input_state = 0
+    if has_input {
+        input_state = rt_alloc(40)
+        std::raw::store(input_state, in_w)
+        std::raw::store(input_state + 8, std::raw::bits(input) + 16)
+        std::raw::store(input_state + 16, ilen)
+        std::raw::store(input_state + 24, 0)
+        std::raw::store(input_state + 32, 0)
+        let old_sigpipe = ps_sigpipe_ignore()
+        let flags = std::raw::syscall(72, in_w, 3, 0, 0, 0, 0)
+        std::raw::syscall(72, in_w, 4, flags | 2048, 0, 0, 0)
+        if ilen == 0 {
+            ps_close(in_w)
+            std::raw::store(input_state, -1)
+        }
+        ps_pump(0, 0, input_state, 0, -1)
+        ps_sigpipe_restore(old_sigpipe)
+    }
+
+    let mut input_error = 0
+    let mut input_incomplete = false
+    if input_state != 0 {
+        input_error = std::raw::load(input_state + 32)
+        input_incomplete = std::raw::load(input_state + 24) < ilen
+        if std::raw::load(input_state) >= 0 {
+            ps_close(std::raw::load(input_state))
+        }
+        rt_free_block(input_state)
+    }
+    let status = ps_waitpid(pid, 0)
+    ps_unreserve(1)
+    if status < 0 || input_error != 0 || input_incomplete {
+        return false
+    }
+    ps_exit_code(status) == 0
+}
+
+// execute_command de Rust (run, run_with_input, shell). input: nil o bytes.
+fn ps_execute(fname: string, argv: any, input: any) -> any {
+    let has_input = std::raw::tag(input) != 0
+    let mut ilen = 0
+    if has_input {
+        ilen = std::raw::load(std::raw::bits(input) + 8)
+        if ilen > 8388608 {
+            rt_native_fail(fname, "process input bytes exceeds limit 8388608")
+        }
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    let started = ps_now()
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "spawn error: nul byte found in provided data")
+    }
+    let mut in_r = -1
+    let mut in_w = -1
+    if has_input {
+        let pi = ps_pipe()
+        if pi < 0 {
+            ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pi)))
+        }
+        in_r = tm_ld32(pi)
+        in_w = tm_ld32(pi + 4)
+        rt_free_block(pi)
+    } else {
+        in_r = ps_devnull()
+        if in_r < 0 {
+            ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - in_r)))
+        }
+    }
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - po)))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        tm_close_pair(po)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pe)))
+    }
+    let s = ps_streams(2)
+    std::raw::store(s, tm_ld32(po))
+    std::raw::store(s + 32, tm_ld32(pe))
+    let out_w = tm_ld32(po + 4)
+    let err_w = tm_ld32(pe + 4)
+    rt_free_block(po)
+    rt_free_block(pe)
+    let pid = ps_spawn(argv, in_r, out_w, err_w)
+    ps_close(in_r)
+    ps_close(out_w)
+    ps_close(err_w)
+    if pid < 0 {
+        ps_close(in_w)
+        ps_close(std::raw::load(s))
+        ps_close(std::raw::load(s + 32))
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pid)))
+    }
+    let budget = ps_budget()
+    let mut inp = 0
+    let mut old = 0
+    if has_input {
+        inp = rt_alloc(40)
+        std::raw::store(inp, in_w)
+        std::raw::store(inp + 8, std::raw::bits(input) + 16)
+        std::raw::store(inp + 16, ilen)
+        std::raw::store(inp + 24, 0)
+        std::raw::store(inp + 32, 0)
+        old = ps_sigpipe_ignore()
+        let fl = std::raw::syscall(72, in_w, 3, 0, 0, 0, 0)
+        std::raw::syscall(72, in_w, 4, fl | 2048, 0, 0, 0)
+        if ilen == 0 {
+            ps_close(in_w)
+            std::raw::store(inp, -1)
+        }
+    }
+    ps_pump(s, 2, inp, budget, -1)
+    if has_input {
+        ps_sigpipe_restore(old)
+    }
+    let status = ps_waitpid(pid, 0)
+    ps_unreserve(1)
+    let out = sb_finish(std::raw::load(s + 8))
+    let err = sb_finish(std::raw::load(s + 40))
+    let out_e = std::raw::load(s + 16)
+    let err_e = std::raw::load(s + 48)
+    rt_free_block(s)
+    let exceeded = std::raw::load(budget + 8)
+    rt_free_block(budget)
+    if status < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - status)))
+    }
+    if inp != 0 {
+        let we = std::raw::load(inp + 32)
+        rt_free_block(inp)
+        if we != 0 {
+            rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(we)))
+        }
+    }
+    if out_e != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(out_e)))
+    }
+    if err_e != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(err_e)))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceeds limit 4194304")
+    }
+    ps_output(dr_lossy(out), dr_lossy(err), ps_exit_code(status), ps_ms_since(started))
+}
+
+// Ejecuta un proceso con entrada binaria, salida binaria y plazo total. Es un
+// apoyo interno para clientes de red nativos; no cambia las funciones públicas
+// de std::process. El plazo mata al hijo real con SIGKILL, igual que run_timeout.
+fn ps_run_raw_timeout(fname: string, argv: any, input: any, timeout_ms: int, max_output: int) -> any {
+    rt_expect_array(argv, fname)
+    rt_expect_bytes(input, fname)
+    if timeout_ms < 0 || max_output < 0 {
+        rt_native_fail(fname, "timeout and output limit must be nonnegative")
+    }
+    let ilen = rt_slen(input)
+    if ilen > 67108864 {
+        rt_native_fail(fname, "process input bytes exceeds limit 67108864")
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    let started = ps_now()
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "spawn error: nul byte found in provided data")
+    }
+
+    let pi = ps_pipe()
+    if pi < 0 {
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pi)))
+    }
+    let in_r = tm_ld32(pi)
+    let in_w = tm_ld32(pi + 4)
+    rt_free_block(pi)
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - po)))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(in_r)
+        ps_close(in_w)
+        tm_close_pair(po)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pe)))
+    }
+    let streams = ps_streams(2)
+    std::raw::store(streams, tm_ld32(po))
+    std::raw::store(streams + 32, tm_ld32(pe))
+    let out_w = tm_ld32(po + 4)
+    let err_w = tm_ld32(pe + 4)
+    rt_free_block(po)
+    rt_free_block(pe)
+    let pid = ps_spawn(argv, in_r, out_w, err_w)
+    ps_close(in_r)
+    ps_close(out_w)
+    ps_close(err_w)
+    if pid < 0 {
+        ps_close(in_w)
+        ps_close(std::raw::load(streams))
+        ps_close(std::raw::load(streams + 32))
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pid)))
+    }
+
+    let budget = ps_budget_for(max_output)
+    let input_state = rt_alloc(40)
+    std::raw::store(input_state, in_w)
+    std::raw::store(input_state + 8, std::raw::bits(input) + 16)
+    std::raw::store(input_state + 16, ilen)
+    std::raw::store(input_state + 24, 0)
+    std::raw::store(input_state + 32, 0)
+    let old_sigpipe = ps_sigpipe_ignore()
+    let flags = std::raw::syscall(72, in_w, 3, 0, 0, 0, 0)
+    std::raw::syscall(72, in_w, 4, flags | 2048, 0, 0, 0)
+    if ilen == 0 {
+        ps_close(in_w)
+        std::raw::store(input_state, -1)
+    }
+
+    let mut timeout_ns = 9223372036854775807
+    if timeout_ms <= 9223372036854 {
+        timeout_ns = timeout_ms * 1000000
+    }
+    let mut status = -1000000
+    let mut timed_out = false
+    loop {
+        let waited = ps_waitpid(pid, 1)
+        if waited != -1000000 {
+            status = waited
+            break
+        }
+        let now = ps_now()
+        let elapsed = now - started
+        if elapsed >= timeout_ns {
+            std::raw::syscall(62, pid, 9, 0, 0, 0, 0)
+            status = ps_waitpid(pid, 0)
+            timed_out = true
+            break
+        }
+        let remaining = timeout_ns - elapsed
+        let mut until = now + 5000000
+        if remaining < 5000000 {
+            until = now + remaining
+        }
+        ps_pump(streams, 2, input_state, budget, until)
+    }
+    ps_sigpipe_restore(old_sigpipe)
+    if std::raw::load(input_state) >= 0 {
+        ps_close(std::raw::load(input_state))
+        std::raw::store(input_state, -1)
+    }
+    let input_error = std::raw::load(input_state + 32)
+    rt_free_block(input_state)
+    ps_pump(streams, 2, 0, budget, -1)
+    ps_unreserve(1)
+
+    let out = sb_finish_bytes(std::raw::load(streams + 8))
+    let err = sb_finish_bytes(std::raw::load(streams + 40))
+    let out_error = std::raw::load(streams + 16)
+    let err_error = std::raw::load(streams + 48)
+    rt_free_block(streams)
+    let exceeded = std::raw::load(budget + 8)
+    rt_free_block(budget)
+    if status < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - status)))
+    }
+    if out_error != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(out_error)))
+    }
+    if err_error != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(err_error)))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceed configured limit")
+    }
+
+    let mut result: any = std__map__new()
+    result = std__map__insert(result, "duration_ms", ps_ms_since(started))
+    result = std__map__insert(result, "exit_code", ps_exit_code(status))
+    result = std__map__insert(result, "input_error", input_error)
+    result = std__map__insert(result, "stderr", err)
+    result = std__map__insert(result, "stdout", out)
+    result = std__map__insert(result, "timed_out", timed_out)
+    result
+}
+
+fn std__process__run(cmd: any) -> any {
+    rt_expect_str(cmd, "std::process::run")
+    let argv = ps_parse("std::process::run", cmd)
+    ps_execute("std::process::run", argv, nil)
+}
+
+fn std__process__run_with_input(cmd: any, input: any) -> any {
+    rt_expect_str(cmd, "std::process::run_with_input")
+    rt_expect_bytes(input, "std::process::run_with_input")
+    let argv = ps_parse("std::process::run_with_input", cmd)
+    ps_execute("std::process::run_with_input", argv, input)
+}
+
+// Internal argv-based entry points for standard-library adapters that must
+// preserve arbitrary argument bytes (including spaces and quote characters).
+// Unlike `run(String)`, these do not pass arguments through the shell parser.
+fn std__process__run_argv(argv: any) -> any {
+    rt_expect_array(argv, "std::process::run")
+    let n = rt_seq_len(argv)
+    if n == 0 {
+        rt_native_fail("std::process::run", "shell syntax error: empty command")
+    }
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(argv, i), "std::process::run")
+        i += 1
+    }
+    ps_execute("std::process::run", argv, nil)
+}
+
+fn std__process__run_argv_with_input(argv: any, input: any) -> any {
+    rt_expect_array(argv, "std::process::run_with_input")
+    rt_expect_bytes(input, "std::process::run_with_input")
+    let n = rt_seq_len(argv)
+    if n == 0 {
+        rt_native_fail("std::process::run_with_input", "shell syntax error: empty command")
+    }
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(argv, i), "std::process::run_with_input")
+        i += 1
+    }
+    ps_execute("std::process::run_with_input", argv, input)
+}
+
+fn std__process__shell(cmd: any) -> any {
+    rt_expect_str(cmd, "std::process::shell")
+    if rt_slen(cmd) > 65536 {
+        rt_native_fail("std::process::shell", "command bytes exceeds limit 65536")
+    }
+    let argv = rt_array_new(3)
+    let data = rt_seq_data(argv)
+    rt_seq_put(data, 0, "sh")
+    rt_seq_put(data, 1, "-c")
+    rt_seq_put(data, 2, cmd)
+    ps_execute("std::process::shell", argv, nil)
+}
+
+// terminate_pipeline de Rust: SIGKILL a todos y después esperarlos.
+fn ps_kill_all(pids: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::syscall(62, std::raw::load(pids + 8 * i), 9, 0, 0, 0, 0)
+        i += 1
+    }
+    i = 0
+    while i < n {
+        ps_waitpid(std::raw::load(pids + 8 * i), 0)
+        i += 1
+    }
+}
+
+// Lanza la etapa `i` de pipe; devuelve el pid o -errno. Las filas de lectura
+// de s son: 0..k-1 los stderr de cada etapa, k la salida de la última.
+fn ps_pipe_stage(argv: any, fin: int, s: int, i: int, k: int) -> int {
+    let po = ps_pipe()
+    if po < 0 {
+        return po
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        tm_close_pair(po)
+        return pe
+    }
+    let pid = ps_spawn(argv, fin, tm_ld32(po + 4), tm_ld32(pe + 4))
+    ps_close(tm_ld32(po + 4))
+    ps_close(tm_ld32(pe + 4))
+    if pid < 0 {
+        ps_close(tm_ld32(po))
+        ps_close(tm_ld32(pe))
+    } else {
+        std::raw::store(s + 32 * i, tm_ld32(pe))
+        std::raw::store(s + 32 * k + 24, tm_ld32(po))
+    }
+    rt_free_block(po)
+    rt_free_block(pe)
+    pid
+}
+
+// pipe de Rust: encadena los comandos; lee a la vez todos los stderr y la
+// salida de la última etapa; el código es el de la última.
+fn std__process__pipe(cmds: any) -> any {
+    let fname = "std::process::pipe"
+    rt_expect_array(cmds, fname)
+    let k = rt_seq_len(cmds)
+    let mut i = 0
+    while i < k {
+        rt_expect_str(rt_seq_get(cmds, i), fname)
+        i += 1
+    }
+    if k == 0 {
+        rt_native_fail(fname, "shell syntax error: empty pipe")
+    }
+    if k > 8 {
+        rt_native_fail(fname, "pipeline commands exceeds limit 8")
+    }
+    let parsed = rt_array_new(k)
+    let pdata = rt_seq_data(parsed)
+    i = 0
+    while i < k {
+        rt_seq_put(pdata, i, ps_parse(fname, rt_seq_get(cmds, i)))
+        i += 1
+    }
+    ps_reserve(fname, k, "process count exceeds limit 32")
+    let started = ps_now()
+    let budget = ps_budget()
+    let s = ps_streams(k + 1)
+    let pids = rt_alloc(8 * k + 8)
+    let mut prev = -1
+    i = 0
+    while i < k {
+        let argv = rt_seq_get(parsed, i)
+        let mut fin = prev
+        if prev < 0 {
+            fin = ps_devnull()
+        }
+        let mut pid = -1000001
+        if ps_argv_nul(argv) {
+            pid = -1000001
+        } else if fin < 0 {
+            pid = fin
+        } else {
+            pid = ps_pipe_stage(argv, fin, s, i, k)
+        }
+        ps_close(fin)
+        prev = -1
+        if pid < 0 {
+            ps_kill_all(pids, i)
+            let mut j = 0
+            while j < i {
+                std::raw::store(s + 32 * j + 24, 0)
+                j += 1
+            }
+            ps_pump(s, i, 0, budget, -1)
+            let mut msg: any = "spawn error: nul byte found in provided data"
+            if pid != -1000001 {
+                msg = rt_concat("spawn error: ", rt_os_error(0 - pid))
+            }
+            ps_fail_unreserve(fname, k, msg)
+        }
+        std::raw::store(pids + 8 * i, pid)
+        prev = std::raw::load(s + 32 * k + 24)
+        i += 1
+    }
+    std::raw::store(s + 32 * k, prev)
+    ps_pump(s, k + 1, 0, budget, -1)
+    let last = ps_waitpid(std::raw::load(pids + 8 * (k - 1)), 0)
+    let mut wait_err = 0
+    i = 0
+    while i < k - 1 {
+        let w = ps_waitpid(std::raw::load(pids + 8 * i), 0)
+        if w < 0 && wait_err == 0 {
+            wait_err = 0 - w
+        }
+        i += 1
+    }
+    ps_unreserve(k)
+    rt_free_block(pids)
+    let out = sb_finish(std::raw::load(s + 32 * k + 8))
+    let out_e = std::raw::load(s + 32 * k + 16)
+    let eb = sb_new(256)
+    let mut read_err = 0
+    i = 0
+    while i < k {
+        let part = sb_finish(std::raw::load(s + 32 * i + 8))
+        let e = std::raw::load(s + 32 * i + 16)
+        if e != 0 {
+            if read_err == 0 {
+                read_err = e
+            }
+        } else {
+            sb_str(eb, part)
+        }
+        i += 1
+    }
+    let err = sb_finish(eb)
+    rt_free_block(s)
+    let exceeded = std::raw::load(budget + 8)
+    rt_free_block(budget)
+    if last < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - last)))
+    }
+    if wait_err != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(wait_err)))
+    }
+    if out_e != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(out_e)))
+    }
+    if read_err != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(read_err)))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceeds limit 4194304")
+    }
+    ps_output(dr_lossy(out), dr_lossy(err), ps_exit_code(last), ps_ms_since(started))
+}
+
+// run_timeout (CommandSpec::output_timeout de process.rs): programa y
+// argumentos sin pasar por parse_cmd; errores de E/S sin prefijo; stdout y
+// stderr como bytes; si pasa el plazo, SIGKILL y timed_out.
+fn std__process__run_timeout(program: any, args: any, timeout: any) -> any {
+    let fname = "std::process::run_timeout"
+    rt_expect_str(program, fname)
+    rt_expect_array(args, fname)
+    let na = rt_seq_len(args)
+    let mut total = rt_slen(program)
+    let mut i = 0
+    while i < na {
+        let a = rt_seq_get(args, i)
+        rt_expect_str(a, fname)
+        total += rt_slen(a)
+        i += 1
+    }
+    rt_expect_int(timeout, fname)
+    let t = std::raw::bits(timeout)
+    if t < 0 {
+        rt_native_fail(fname, "timeout must be nonnegative")
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    if total > 65536 {
+        ps_fail_unreserve(fname, 1, "command bytes exceed limit 65536")
+    }
+    let argv = rt_array_new(na + 1)
+    let data = rt_seq_data(argv)
+    rt_seq_put(data, 0, program)
+    i = 0
+    while i < na {
+        rt_seq_put(data, i + 1, rt_seq_get(args, i))
+        i += 1
+    }
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "nul byte found in provided data")
+    }
+    let nul = ps_devnull()
+    if nul < 0 {
+        ps_fail_unreserve(fname, 1, rt_os_error(0 - nul))
+    }
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(nul)
+        ps_fail_unreserve(fname, 1, rt_os_error(0 - po))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(nul)
+        tm_close_pair(po)
+        ps_fail_unreserve(fname, 1, rt_os_error(0 - pe))
+    }
+    let s = ps_streams(2)
+    std::raw::store(s, tm_ld32(po))
+    std::raw::store(s + 32, tm_ld32(pe))
+    let pid = ps_spawn(argv, nul, tm_ld32(po + 4), tm_ld32(pe + 4))
+    ps_close(nul)
+    ps_close(tm_ld32(po + 4))
+    ps_close(tm_ld32(pe + 4))
+    rt_free_block(po)
+    rt_free_block(pe)
+    if pid < 0 {
+        ps_close(std::raw::load(s))
+        ps_close(std::raw::load(s + 32))
+        ps_fail_unreserve(fname, 1, rt_os_error(0 - pid))
+    }
+    let budget = ps_budget()
+    let started = ps_now()
+    let limit = t * 1000000
+    let mut status = 0
+    let mut timed_out = false
+    loop {
+        let w = ps_waitpid(pid, 1)
+        if w != -1000000 {
+            status = w
+            break
+        }
+        if ps_now() - started >= limit {
+            std::raw::syscall(62, pid, 9, 0, 0, 0, 0)
+            status = ps_waitpid(pid, 0)
+            timed_out = true
+            break
+        }
+        let until = ps_now() + 5000000
+        ps_pump(s, 2, 0, budget, until)
+        let rest = until - ps_now()
+        if rest > 0 {
+            let ts = rt_alloc(16)
+            std::raw::store(ts, 0)
+            std::raw::store(ts + 8, rest)
+            std::raw::syscall(35, ts, 0, 0, 0, 0, 0)
+            rt_free_block(ts)
+        }
+    }
+    ps_pump(s, 2, 0, budget, -1)
+    ps_unreserve(1)
+    let out = sb_finish_bytes(std::raw::load(s + 8))
+    let err = sb_finish_bytes(std::raw::load(s + 40))
+    let out_e = std::raw::load(s + 16)
+    let err_e = std::raw::load(s + 48)
+    rt_free_block(s)
+    let exceeded = std::raw::load(budget + 8)
+    rt_free_block(budget)
+    if status < 0 {
+        rt_native_fail(fname, rt_os_error(0 - status))
+    }
+    if out_e != 0 {
+        rt_native_fail(fname, rt_os_error(out_e))
+    }
+    if err_e != 0 {
+        rt_native_fail(fname, rt_os_error(err_e))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceed limit 4194304")
+    }
+    let code = ps_exit_code(status)
+    let mut code_v: any = nil
+    if code >= 0 {
+        code_v = code
+    }
+    let mut m: any = std__map__new()
+    m = std__map__insert(m, "status", code_v)
+    m = std__map__insert(m, "stderr", err)
+    m = std__map__insert(m, "stdout", out)
+    m = std__map__insert(m, "success", code == 0 && !timed_out)
+    m = std__map__insert(m, "timed_out", timed_out)
+    m
+}
+
+// ------------------------------------------------------------ segundo plano
+//
+// Tabla (globals + 2600): 32 filas de 64 bytes:
+//   +0 número (0 = libre), +8 pid del hijo, +16 estado crudo (-1 = sin
+//   recoger), +24 pid del ayudante, +32 socket con el ayudante,
+//   +40 inicio (ns, reloj monotónico)
+//
+// El ayudante es un fork del programa que hace lo que en Rust hacen los dos
+// hilos lectores (spawn_bounded_reader): lee stdout y stderr del hijo
+// mientras corre (con el mismo cupo compartido de 4 MiB) para que el hijo no
+// se quede bloqueado con el tubo lleno. Al llegar al final de los dos, manda
+// por el socket: excedido, errno de stdout, errno de stderr, largo de
+// stdout, largo de stderr (5 palabras) y los bytes; y termina. Muere si el
+// programa muere (PR_SET_PDEATHSIG), como los hilos mueren con el proceso.
+
+fn ps_table() -> int {
+    let g = ps_g()
+    let t = std::raw::load(g + 24)
+    if t != 0 {
+        return t
+    }
+    let nt = rt_alloc(64 * 32)
+    let mut i = 0
+    while i < 32 {
+        std::raw::store(nt + 64 * i, 0)
+        i += 1
+    }
+    std::raw::store(g + 24, nt)
+    nt
+}
+
+fn ps_row(handle: int) -> int {
+    let t = ps_table()
+    let mut i = 0
+    while i < 32 {
+        if std::raw::load(t + 64 * i) == handle {
+            return t + 64 * i
+        }
+        i += 1
+    }
+    0
+}
+
+// El número de proceso: u64::try_from de la VM y "unknown process handle".
+fn ps_handle_row(h: any, fname: string, what: string) -> int {
+    rt_expect_int(h, fname)
+    let v = std::raw::bits(h)
+    if v < 0 {
+        rt_native_fail(fname, rt_concat(what, " handle must be nonneg"))
+    }
+    let row = 0
+    if v > 0 {
+        let r = ps_row(v)
+        if r != 0 {
+            return r
+        }
+    }
+    rt_native_fail(fname, rt_concat("unknown process handle ", rt_int_to_str(v)))
+    row
+}
+
+// Escribe todo en un descriptor (reintenta EINTR); false si falla.
+fn ps_send(fd: int, p: int, n: int) -> bool {
+    let mut done = 0
+    while done < n {
+        let r = std::raw::syscall(1, fd, p + done, n - done, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            return false
+        }
+        done += r
+    }
+    true
+}
+
+// Lee exactamente n bytes (reintenta EINTR); false si se corta.
+fn ps_recv(fd: int, p: int, n: int) -> bool {
+    let mut done = 0
+    while done < n {
+        let r = std::raw::syscall(0, fd, p + done, n - done, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            return false
+        }
+        done += r
+    }
+    true
+}
+
+// El proceso ayudante (no vuelve).
+fn ps_collector(parent: int, out_r: int, err_r: int, sock: int) {
+    std::raw::syscall(157, 1, 9, 0, 0, 0, 0)
+    if std::raw::syscall(110, 0, 0, 0, 0, 0, 0) != parent {
+        std::raw::syscall(231, 0, 0, 0, 0, 0, 0)
+    }
+    // Solo se queda con sus tres descriptores.
+    let mut fd = 0
+    while fd < 1024 {
+        if fd != out_r && fd != err_r && fd != sock {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        }
+        fd += 1
+    }
+    let s = ps_streams(2)
+    std::raw::store(s, out_r)
+    std::raw::store(s + 32, err_r)
+    let budget = ps_budget()
+    ps_pump(s, 2, 0, budget, -1)
+    let ob = std::raw::load(s + 8)
+    let eb = std::raw::load(s + 40)
+    let head = rt_alloc(40)
+    std::raw::store(head, std::raw::load(budget + 8))
+    std::raw::store(head + 8, std::raw::load(s + 16))
+    std::raw::store(head + 16, std::raw::load(s + 48))
+    std::raw::store(head + 24, std::raw::load(ob))
+    std::raw::store(head + 32, std::raw::load(eb))
+    if ps_send(sock, head, 40) && ps_send(sock, std::raw::load(ob + 16), std::raw::load(ob)) {
+        ps_send(sock, std::raw::load(eb + 16), std::raw::load(eb))
+    }
+    std::raw::syscall(231, 0, 0, 0, 0, 0, 0)
+}
+
+// spawn_bg de Rust.
+fn std__process__spawn(cmd: any) -> any {
+    let fname = "std::process::spawn"
+    rt_expect_str(cmd, fname)
+    let argv = ps_parse(fname, cmd)
+    ps_spawn_background(argv)
+}
+
+// Internal argv form for Titan adapters that need to preserve arbitrary
+// paths (including whitespace and quote characters) without a shell parser.
+fn std__process__spawn_argv(argv: any) -> any {
+    let fname = "std::process::spawn"
+    rt_expect_array(argv, fname)
+    let n = rt_seq_len(argv)
+    if n == 0 {
+        rt_native_fail(fname, "shell syntax error: empty command")
+    }
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(argv, i), fname)
+        i += 1
+    }
+    ps_spawn_background(argv)
+}
+
+fn ps_spawn_background(argv: any) -> any {
+    let fname = "std::process::spawn"
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    let g = ps_g()
+    let handle = std::raw::load(g + 32) + 1
+    std::raw::store(g + 32, handle)
+    let started = ps_now()
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "spawn error: nul byte found in provided data")
+    }
+    let nul = ps_devnull()
+    if nul < 0 {
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - nul)))
+    }
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(nul)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - po)))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(nul)
+        tm_close_pair(po)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pe)))
+    }
+    let out_r = tm_ld32(po)
+    let err_r = tm_ld32(pe)
+    let pid = ps_spawn(argv, nul, tm_ld32(po + 4), tm_ld32(pe + 4))
+    ps_close(nul)
+    ps_close(tm_ld32(po + 4))
+    ps_close(tm_ld32(pe + 4))
+    rt_free_block(po)
+    rt_free_block(pe)
+    if pid < 0 {
+        ps_close(out_r)
+        ps_close(err_r)
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pid)))
+    }
+    // El ayudante, con los extremos de lectura (en el padre ya no hay
+    // extremos de escritura: el final llega cuando el hijo los cierra).
+    let sp = rt_alloc(8)
+    let r = std::raw::syscall(53, 1, 524289, 0, sp, 0, 0)
+    let mut cpid = r
+    let mut mine = -1
+    if r >= 0 {
+        mine = tm_ld32(sp)
+        let theirs = tm_ld32(sp + 4)
+        let parent = std::raw::syscall(39, 0, 0, 0, 0, 0, 0)
+        cpid = std::raw::syscall(57, 0, 0, 0, 0, 0, 0)
+        if cpid == 0 {
+            ps_collector(parent, out_r, err_r, theirs)
+        }
+        ps_close(theirs)
+    }
+    rt_free_block(sp)
+    ps_close(out_r)
+    ps_close(err_r)
+    if cpid < 0 {
+        // ProcessCapture::start falló: matar y esperar al hijo.
+        ps_close(mine)
+        std::raw::syscall(62, pid, 9, 0, 0, 0, 0)
+        ps_waitpid(pid, 0)
+        ps_fail_unreserve(fname, 1, rt_concat("process io error: ", rt_os_error(0 - cpid)))
+    }
+    let row = ps_row(0)
+    std::raw::store(row, handle)
+    std::raw::store(row + 8, pid)
+    std::raw::store(row + 16, -1)
+    std::raw::store(row + 24, cpid)
+    std::raw::store(row + 32, mine)
+    std::raw::store(row + 40, started)
+    handle
+}
+
+// try_wait de Rust (guarda el estado una vez recogido): estado, -1000000 si
+// sigue corriendo, o -errno.
+fn ps_try_wait(row: int) -> int {
+    let st = std::raw::load(row + 16)
+    if st >= 0 {
+        return st
+    }
+    let w = ps_waitpid(std::raw::load(row + 8), 1)
+    if w >= 0 {
+        std::raw::store(row + 16, w)
+    }
+    w
+}
+
+// wait de Rust (con el estado guardado si ya se recogió).
+fn ps_wait(row: int) -> int {
+    let st = std::raw::load(row + 16)
+    if st >= 0 {
+        return st
+    }
+    let w = ps_waitpid(std::raw::load(row + 8), 0)
+    if w >= 0 {
+        std::raw::store(row + 16, w)
+    }
+    w
+}
+
+// capture.finish(): espera lo leído por el ayudante. Devuelve un bloque de
+// 5 palabras (excedido, errno stdout, errno stderr, sb stdout, sb stderr).
+fn ps_finish_capture(row: int) -> int {
+    let sock = std::raw::load(row + 32)
+    let res = rt_alloc(40)
+    let head = rt_alloc(40)
+    let ob = sb_new(256)
+    let eb = sb_new(256)
+    let mut ok = ps_recv(sock, head, 40)
+    if ok {
+        let no = std::raw::load(head + 24)
+        let ne = std::raw::load(head + 32)
+        sb_reserve(ob, no)
+        sb_reserve(eb, ne)
+        ok = ps_recv(sock, std::raw::load(ob + 16), no)
+        if ok {
+            std::raw::store(ob, no)
+            ok = ps_recv(sock, std::raw::load(eb + 16), ne)
+            if ok {
+                std::raw::store(eb, ne)
+            }
+        }
+    }
+    if ok {
+        std::raw::store(res, std::raw::load(head))
+        std::raw::store(res + 8, std::raw::load(head + 8))
+        std::raw::store(res + 16, std::raw::load(head + 16))
+    } else {
+        // El ayudante murió sin entregar (en Rust: el hilo lector "panicked").
+        std::raw::store(res, 0)
+        std::raw::store(res + 8, -1)
+        std::raw::store(res + 16, 0)
+    }
+    std::raw::store(res + 24, ob)
+    std::raw::store(res + 32, eb)
+    rt_free_block(head)
+    ps_close(sock)
+    ps_waitpid(std::raw::load(row + 24), 0)
+    res
+}
+
+fn std__process__spawn_wait(h: any) -> any {
+    let fname = "std::process::spawn_wait"
+    let row = ps_handle_row(h, fname, "spawn_wait")
+    std::raw::store(row, 0)
+    let started = std::raw::load(row + 40)
+    let status = ps_wait(row)
+    let res = ps_finish_capture(row)
+    ps_unreserve(1)
+    let exceeded = std::raw::load(res)
+    let out_e = std::raw::load(res + 8)
+    let err_e = std::raw::load(res + 16)
+    let out = sb_finish(std::raw::load(res + 24))
+    let err = sb_finish(std::raw::load(res + 32))
+    rt_free_block(res)
+    if status < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - status)))
+    }
+    if out_e == -1 {
+        rt_native_fail(fname, "process io error: process output reader panicked")
+    }
+    if out_e != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(out_e)))
+    }
+    if err_e != 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(err_e)))
+    }
+    if exceeded != 0 {
+        rt_native_fail(fname, "captured process output bytes exceeds limit 4194304")
+    }
+    ps_output(dr_lossy(out), dr_lossy(err), ps_exit_code(status), ps_ms_since(started))
+}
+
+fn std__process__spawn_poll(h: any) -> any {
+    let fname = "std::process::spawn_poll"
+    let row = ps_handle_row(h, fname, "spawn_poll")
+    let w = ps_try_wait(row)
+    if w == -1000000 {
+        return ps_none()
+    }
+    if w < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - w)))
+    }
+    ps_some(ps_exit_code(w))
+}
+
+// Child::kill de Rust: si ya se recogió, no hace nada; si no, SIGKILL.
+fn std__process__spawn_kill(h: any) -> any {
+    let fname = "std::process::spawn_kill"
+    let row = ps_handle_row(h, fname, "spawn_kill")
+    if std::raw::load(row + 16) >= 0 {
+        return nil
+    }
+    let r = std::raw::syscall(62, std::raw::load(row + 8), 9, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - r)))
+    }
+    nil
+}
+
+fn std__process__spawn_pid(h: any) -> any {
+    let row = ps_handle_row(h, "std::process::spawn_pid", "spawn_pid")
+    std::raw::load(row + 8)
+}
+
+// Al terminar el programa (cleanup_runtime de Rust, después de las barras de
+// progreso): a cada proceso en segundo plano que siga vivo, SIGKILL; después
+// esperarlo y esperar a su ayudante (terminate_background).
+fn ps_cleanup() {
+    let t = std::raw::load(ps_g() + 24)
+    if t == 0 {
+        return
+    }
+    let mut i = 0
+    while i < 32 {
+        let row = t + 64 * i
+        if std::raw::load(row) != 0 {
+            std::raw::store(row, 0)
+            if ps_try_wait(row) < 0 {
+                std::raw::syscall(62, std::raw::load(row + 8), 9, 0, 0, 0, 0)
+            }
+            ps_wait(row)
+            let res = ps_finish_capture(row)
+            sb_finish(std::raw::load(res + 24))
+            sb_finish(std::raw::load(res + 32))
+            rt_free_block(res)
+        }
+        i += 1
+    }
+}

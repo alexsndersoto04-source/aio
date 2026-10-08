@@ -1,0 +1,43 @@
+struct Punto {
+    y: int,
+    x: int,
+}
+
+enum Forma {
+    Circulo(int),
+    Nada,
+}
+
+fn area(f: Forma) -> int {
+    match f {
+        Forma::Circulo(r) => r * r * 3,
+        Forma::Nada => 0,
+    }
+}
+
+fn main() {
+    let a = [1, 2, 3]
+    let b = std::array::push(a, 4)
+    print(a, b, len(b), b[3])
+    let t = (1, "dos", 'c')
+    print(t, t.1)
+    let p = Punto { x: 1, y: 2 }
+    print(p, p.x + p.y)
+    print(area(Forma::Circulo(2)), area(Forma::Nada), Forma::Circulo(5), Forma::Nada)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "b", 2)
+    m = std::map::insert(m, "a", 1)
+    m = std::map::insert(m, "c", [1, 2])
+    print(m, std::map::get(m, "a"), std::map::get(m, "z"), std::map::contains(m, "c"))
+    print(std::map::keys(m), std::map::values(m), std::map::length(m))
+    for x in b {
+        print("x", x)
+    }
+    for i in 0..3 {
+        print(i)
+    }
+    let s = "añb"
+    print(len(s), s[1])
+    print([1, [2, 3]] == [1, [2, 3]], p == Punto { x: 1, y: 2 }, Option::Some(1) == Option::Some(2))
+    print(std::array::slice(b, 1, 3), std::array::concat(a, b), std::array::set(a, 0, 9))
+}

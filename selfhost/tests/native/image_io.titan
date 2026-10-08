@@ -1,0 +1,67 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn check_jpeg(handle: int, label: string, path: string) {
+    let expected = std::image::encode(handle, "JpEg")
+    std::image::save(handle, path)
+    let written = std::fs::read_bytes(path)
+    println(label)
+    println(len(expected))
+    println(fingerprint(expected))
+    println(len(written))
+    println(fingerprint(written))
+    let decoded = std::image::load_bytes(expected)
+    println(std::image::width(decoded))
+    println(std::image::height(decoded))
+    println(std::image::color_type(decoded))
+    println(fingerprint(std::image::encode(decoded, "png")))
+    println(fingerprint(std::image::encode(decoded, "bmp")))
+    std::image::close(decoded)
+    std::fs::remove_file(path)
+}
+
+fn main() {
+    let args = std::env::args()
+    let base = args[len(args) - 1]
+    let h = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/rgba16.png"))
+    let formats = ["PnG", "BmP"]
+    let mut i = 0
+    while i < len(formats) {
+        let extension = if i == 0 { "png" } else { "bmp" }
+        let path = base + "." + extension
+        let expected = std::image::encode(h, formats[i])
+        std::image::save(h, path)
+        let written = std::fs::read_bytes(path)
+        println(extension)
+        println(len(expected))
+        println(fingerprint(expected))
+        println(len(written))
+        println(fingerprint(written))
+        std::fs::remove_file(path)
+        i += 1
+    }
+    check_jpeg(h, "jpeg rgba16", base + ".rgba.jpg")
+    let gray_alpha16 = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/graya16.png"))
+    check_jpeg(gray_alpha16, "jpeg grayscale alpha16", base + ".gray-alpha.jpg")
+    std::image::close(gray_alpha16)
+    let rgb_alpha8 = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/rgb8-trns.png"))
+    check_jpeg(rgb_alpha8, "jpeg rgb alpha8", base + ".rgb-alpha.jpg")
+    std::image::close(rgb_alpha8)
+    let rgb_alpha16 = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/rgb16-trns.png"))
+    check_jpeg(rgb_alpha16, "jpeg rgb alpha16", base + ".rgb-alpha16.jpg")
+    std::image::close(rgb_alpha16)
+    let color_jpeg = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/color-baseline.jpg"))
+    check_jpeg(color_jpeg, "jpeg color", base + ".jpg")
+    std::image::close(color_jpeg)
+    let gray_jpeg = std::image::load_bytes(std::fs::read_bytes("selfhost/native/image/testdata/gray-baseline.jpg"))
+    check_jpeg(gray_jpeg, "jpeg gray", base + ".gray.jpg")
+    std::image::close(gray_jpeg)
+    let unknown_format_rejected = match std::try::catch(|| std::image::encode(h, "tiff")) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+    std::testing::assert(unknown_format_rejected, "unknown image format is rejected")
+    println("rejected unknown format")
+    std::image::close(h)
+}

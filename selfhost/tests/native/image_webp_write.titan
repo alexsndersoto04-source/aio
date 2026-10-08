@@ -1,0 +1,44 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn validate_saved_image(path: string, label: string) {
+    let image = std::image::load(path)
+    println(label)
+    println(std::image::width(image))
+    println(std::image::height(image))
+    println(std::image::color_type(image))
+    println(fingerprint(std::image::encode(image, "png")))
+    println(fingerprint(std::image::encode(image, "bmp")))
+    std::image::close(image)
+}
+
+fn main() {
+    let args = std::env::args()
+    let output_base = args[len(args) - 1]
+
+    let rgb = std::image::load("selfhost/native/image/testdata/color-baseline.jpg")
+    std::fs::write_bytes(output_base + ".rgb.webp", std::image::encode(rgb, "webp"))
+    std::image::save(rgb, output_base + ".save-rgb.webp")
+    std::image::close(rgb)
+
+    let rgba = std::image::load("selfhost/native/image/testdata/rgb8-trns.png")
+    std::fs::write_bytes(output_base + ".rgba.webp", std::image::encode(rgba, "WEBP"))
+    std::image::close(rgba)
+
+    let gray = std::image::load("selfhost/native/image/testdata/gray-baseline.jpg")
+    std::fs::write_bytes(output_base + ".gray.webp", std::image::encode(gray, "webp"))
+    std::image::close(gray)
+
+    let rgba16 = std::image::load("selfhost/native/image/testdata/rgba16.png")
+    std::fs::write_bytes(output_base + ".rgba16.webp", std::image::encode(rgba16, "webp"))
+    std::image::close(rgba16)
+
+    let files = ["rgb.webp", "save-rgb.webp", "rgba.webp", "gray.webp", "rgba16.webp"]
+    let mut i = 0
+    while i < len(files) {
+        validate_saved_image(output_base + "." + files[i], files[i])
+        i += 1
+    }
+    println("wrote and decoded VP8L RGB, RGBA, L8 and converted 16-bit images")
+}

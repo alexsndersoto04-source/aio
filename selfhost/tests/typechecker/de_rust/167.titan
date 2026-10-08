@@ -1,0 +1,1 @@
+fn mixed(flag: bool) -> int { if flag { 1 } else { "bad" } }

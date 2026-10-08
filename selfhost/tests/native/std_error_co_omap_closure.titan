@@ -1,0 +1,4 @@
+fn main() {
+    let m = std::collections::omap_new()
+    std::collections::omap_insert(m, "k", |x: int| x + 1)
+}

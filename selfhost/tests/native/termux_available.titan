@@ -1,0 +1,29 @@
+fn main() {
+    let pid = std::json::stringify(std::process::self_pid())
+    let directory = "/tmp/titan-termux-path-" + pid
+    let command = std::path::join(directory, "termux-battery-status")
+    let old_path = std::process::env_get("PATH")
+
+    std::fs::create_dir(directory)
+    // which::which checks is_file(), not executable permission. Keep that
+    // behavior distinct from the fallback Command::spawn() check below.
+    std::fs::write_text(command, "not an executable")
+    std::process::env_set("PATH", directory)
+    let regular_file = std::termux::is_available()
+
+    std::fs::remove_file(command)
+    std::fs::create_dir(command)
+    let directory_entry = std::termux::is_available()
+    std::fs::remove_dir(command)
+
+    match old_path {
+        Option::Some(value) => std::process::env_set("PATH", value),
+        Option::None => std::process::env_unset("PATH"),
+    }
+    std::fs::remove_dir(directory)
+
+    std::testing::assert(regular_file, "is_available recognizes a regular PATH entry")
+    std::testing::assert(!directory_entry, "is_available rejects a directory PATH entry")
+    println("regular PATH file", regular_file)
+    println("directory PATH entry", directory_entry)
+}

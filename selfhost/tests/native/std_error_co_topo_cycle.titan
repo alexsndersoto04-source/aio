@@ -1,0 +1,6 @@
+fn main() {
+    let g = std::collections::graph_new(true)
+    std::collections::graph_add_edge(g, "a", "b", 1)
+    std::collections::graph_add_edge(g, "b", "a", 1)
+    print(std::collections::graph_topological_sort(g))
+}

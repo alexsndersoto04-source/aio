@@ -1,0 +1,48 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+fn show_image(h: int) {
+    println(std::image::width(h))
+    println(std::image::height(h))
+    println(std::image::color_type(h))
+    println(fingerprint(std::image::encode(h, "bmp")))
+    println(fingerprint(std::image::encode(h, "png")))
+}
+fn main() {
+    let source = std::image::from_rgba(4, 3, std::bytes::from_array([
+        0,0,0,255, 255,0,0,0, 0,255,0,64, 0,0,255,128,
+        255,255,0,255, 0,255,255,160, 255,0,255,80, 32,64,96,220,
+        11,23,45,67, 89,144,233,255, 250,190,130,30, 7,31,127,200
+    ]))
+    let filters = ["nearest", "triangle", "catmullrom", "gaussian", "lanczos3"]
+    let mut i = 0
+    while i < len(filters) {
+        let resized = std::image::resize_exact(source, 3, 5, filters[i])
+        show_image(resized)
+        std::image::close(resized)
+        i += 1
+    }
+    let contain = std::image::resize(source, 2, 2, "LaNcZoS3")
+    show_image(contain)
+    std::image::close(contain)
+    let thumb = std::image::thumbnail(source, 2, 2)
+    show_image(thumb)
+    std::image::close(thumb)
+    let thumb_up = std::image::thumbnail(source, 8, 6)
+    show_image(thumb_up)
+    std::image::close(thumb_up)
+    let sigmas = [0.0, 0.8, 1.4, 3.0, 100.0]
+    i = 0
+    while i < len(sigmas) {
+        let blurred = std::image::blur(source, sigmas[i])
+        show_image(blurred)
+        std::image::close(blurred)
+        i += 1
+    }
+    let filter_rejected = match std::try::catch(|| std::image::resize_exact(source, 2, 2, "NoSuchFilter")) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+    std::testing::assert(filter_rejected, "unknown resize filter is rejected")
+    std::image::close(source)
+}

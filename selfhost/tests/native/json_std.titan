@@ -1,0 +1,52 @@
+// std::json: escritura, pretty, pointer, merge y flatten, incluidos structs,
+// enums, tuplas, chars y bytes.
+struct Punto {
+    y: int,
+    x: float,
+    nombre: string,
+}
+
+enum Forma {
+    Circulo(float),
+    Vacio,
+}
+
+fn main() {
+    let p = Punto { y: 2, x: 1.5, nombre: "a/b~c" }
+    let mut datos = std::map::new()
+    datos = std::map::insert(datos, "punto", p)
+    datos = std::map::insert(datos, "formas", [Forma::Circulo(2.0), Forma::Vacio])
+    datos = std::map::insert(datos, "tupla", (1, 'ñ', "x"))
+    datos = std::map::insert(datos, "bytes", std::bytes::from_array([0, 255]))
+    datos = std::map::insert(datos, "vacios", [[], std::map::new()])
+    datos = std::map::insert(datos, "texto", "comillas \" barra \\ control  tab \t fin")
+    datos = std::map::insert(datos, "floats", [0.1, 1e21, 1e-7, 100.0, -0.0, 123456789.125])
+    datos = std::map::insert(datos, "nada", nil)
+    datos = std::map::insert(datos, "sí", true)
+    print(std::json::stringify(datos))
+    print(std::json::pretty(datos))
+    print(std::json::pretty([]))
+    print(std::json::pretty(std::map::new()))
+    print(std::json::pretty([[1, [2, std::map::new()]], std::map::insert(std::map::new(), "a", [])]))
+    print(std::json::stringify("solo"))
+    print(std::json::stringify(nil))
+    print(std::json::stringify(-9223372036854775807 - 1))
+    for ptr in ["", "/punto", "/punto/nombre", "/formas/0/payload", "/formas/1/variant", "/formas/2", "/formas/01", "/formas/+1", "/tupla/1", "/bytes/1", "nope", "/vacios/1", "/sí", "/texto/0", "/formas/", "/vacios/0/0"] {
+        let r = std::json::pointer(datos, ptr)
+        print("ptr [" + ptr + "] " + std::json::stringify(r))
+    }
+    let obj = std::json::parse("{\"a/b\":{\"~x\":1},\"c\":[{\"d\":null}]}")
+    print(std::json::stringify(std::json::pointer(obj, "/a~1b/~0x")))
+    print(std::json::flatten(obj))
+    print(std::json::flatten(datos))
+    print(std::json::flatten(5))
+    print(std::json::flatten([]))
+    let base = std::json::parse("{\"u\":{\"n\":\"Ada\",\"on\":true},\"k\":[1,2],\"s\":1}")
+    let patch = std::json::parse("{\"u\":{\"on\":null,\"age\":36,\"deep\":{\"z\":null}},\"k\":{\"x\":null},\"s\":null,\"new\":2}")
+    print(std::json::stringify(std::json::merge(base, patch)))
+    print(std::json::stringify(std::json::merge(1, patch)))
+    print(std::json::stringify(std::json::merge(base, 7)))
+    print(std::json::stringify(base))
+    let back = std::json::parse(std::json::stringify(datos))
+    print(std::json::stringify(back) == std::json::stringify(datos))
+}

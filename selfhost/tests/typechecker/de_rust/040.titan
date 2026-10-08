@@ -1,0 +1,1 @@
+fn register(listener: TcpListener) { std::http::serve_connection(listener, |request| request, 1) } fn main() {}

@@ -1,0 +1,4 @@
+// from_iso solo da el mensaje de chrono.
+fn main() {
+    print(std::datetime::from_iso("2024-02-30T03:04:05Z"))
+}

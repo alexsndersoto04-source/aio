@@ -1,0 +1,46 @@
+// Programa de prueba de libm/verify_libm.py: lee [funcion, m, e, (m2, e2)] de
+// un JSON (x = m * 2^e exacto) e imprime el resultado de std::math.
+fn main() {
+    let a = std::env::args()
+    let data = std::json::parse(std::fs::read_text(a[len(a) - 1]))
+    let mut p2 = std::array::filled(2100, 0.0)
+    let mut v = 1.0
+    let mut e = 0
+    while e <= 1023 {
+        p2 = std::array::set(p2, e + 1074, v)
+        v = v * 2.0
+        e += 1
+    }
+    v = 1.0
+    e = 0
+    while e >= -1074 {
+        p2 = std::array::set(p2, e + 1074, v)
+        v = v * 0.5
+        e -= 1
+    }
+    let mut i = 0
+    let n = len(data)
+    while i < n {
+        let row = data[i]
+        let f = row[0]
+        let x = std::math::to_float(row[1]) * p2[row[2] + 1074]
+        if f == 0 {
+            print(std::math::exp(x))
+        } else if f == 1 {
+            print(std::math::ln(x))
+        } else if f == 2 {
+            print(std::math::sin(x))
+        } else if f == 3 {
+            print(std::math::cos(x))
+        } else if f == 4 {
+            print(std::math::tan(x))
+        } else if f == 5 {
+            let y = std::math::to_float(row[3]) * p2[row[4] + 1074]
+            print(std::math::pow(x, y))
+        } else {
+            let y = std::math::to_float(row[3]) * p2[row[4] + 1074]
+            print(std::math::log(x, y))
+        }
+        i += 1
+    }
+}

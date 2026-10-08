@@ -1,0 +1,1 @@
+type Text = string fn write(stream: TcpStream, value: Text) { std::net::tcp_write(stream, value) } fn main() {}

@@ -1,0 +1,1704 @@
+// Compilador nativo: bytecode (el resultado de selfhost/codegen.titan) →
+// código máquina x86-64, enlazado con el runtime (selfhost/native/runtime.titan,
+// compilado por el mismo camino) en un ejecutable ELF sin dependencias.
+//
+// Modelo de ejecución (una función de bytecode = una función nativa):
+//   - Cada valor ocupa 16 bytes: etiqueta y contenido (ver runtime.titan).
+//   - La pila de operandos del bytecode ES la pila de la máquina: apilar un
+//     valor = push contenido; push etiqueta. La cima es [rsp] (etiqueta) y
+//     [rsp+8] (contenido).
+//   - Variables locales en el marco: la i-ésima en [rbp-16(i+1)] (etiqueta)
+//     y [rbp-16(i+1)+8] (contenido).
+//   - Llamada: los argumentos ya están apilados en orden (igual que en el
+//     bytecode); `call`; el resultado vuelve en rax (etiqueta) y rdx
+//     (contenido); quien llama retira los argumentos y apila el resultado.
+//   - Las closures llegan con su objeto en r12 (de ahí se copian las capturas).
+//   - r15 apunta siempre a las variables globales del runtime.
+//   - Las operaciones sencillas con enteros van en línea; el resto llama a
+//     una función del runtime (rt_add, rt_eq, rt_index...).
+//   - Las funciones del usuario cuentan la profundidad de llamadas (límite
+//     4096, como la VM); las del runtime no, igual que las nativas de la VM.
+//   - Conteo de referencias (como el `Rc` de la VM): cada lugar que guarda un
+//     valor (variable local, hueco de la pila, elemento de un contenedor)
+//     tiene una referencia. Leer una variable suma una (g_inc); descartar un
+//     valor, sobrescribir una variable o salir de la función restan (g_dec,
+//     g_drop). Al llegar a 0 el runtime libera el objeto (rt_free). Mover
+//     (TakeLocal, argumentos, resultados) no cambia la cuenta.
+// Prefijo `bk_`.
+
+import native::x64
+import native::elf
+import native::float
+import native::float_table
+
+// Trozo de código con referencias pendientes.
+//   b:   bytes
+//   fx:  referencias (Fx) a resolver más tarde
+//   lab: etiquetas locales del trozo (nombre -> posición)
+struct Pc {
+    b: array,
+    fx: array,
+    lab: map,
+}
+
+// Referencia pendiente en la posición `off`:
+//   "loc"    salto a una etiqueta local del trozo (rel32)
+//   "jmp"    salto a la instrucción `n` de la misma función (rel32)
+//   "rel"    llamada/salto a una etiqueta global `target` (rel32)
+//   "abs"    dirección absoluta de una etiqueta global (imm64)
+//   "str"    dirección del string estático con texto `target` (imm64)
+//   "schema" dirección del esquema de struct `target` (campos separados por \n)
+//   "unit"   dirección del enum sin contenido `target` ("Nombre\nVariante")
+//   "glob"   dirección de las variables globales (imm64)
+//   "error"  construcción no admitida todavía (`target` = mensaje)
+struct Fx {
+    off: int,
+    kind: string,
+    target: string,
+    n: int,
+}
+
+// Contexto de la función que se compila.
+struct Ctx {
+    prefix: string,
+    runtime: bool,
+    locals: int,
+    funcs: array,
+    table: array,
+    rt: map,
+    rt_arity: map,
+    epi: int,
+}
+
+fn pc_new() -> Pc {
+    Pc { b: [], fx: [], lab: std::map::new() }
+}
+
+// En estas funciones el array que crece se lee el último: así, con la pasada
+// de última lectura del optimizador (opt.titan), queda con un solo dueño y
+// se amplía en el sitio en vez de copiarse entero cada vez.
+fn pc_add(p: Pc, bytes: array) -> Pc {
+    let fx = p.fx
+    let lab = p.lab
+    let b = p.b
+    Pc { b: std::array::concat(b, bytes), fx: fx, lab: lab }
+}
+
+// Añade `bytes` con una referencia en bytes[at..].
+fn pc_ref(p: Pc, bytes: array, at: int, kind: string, target: string, n: int) -> Pc {
+    let f = Fx { off: len(p.b) + at, kind: kind, target: target, n: n }
+    let lab = p.lab
+    let fx = p.fx
+    let b = p.b
+    Pc { b: std::array::concat(b, bytes), fx: std::array::push(fx, f), lab: lab }
+}
+
+fn pc_label(p: Pc, name: string) -> Pc {
+    let at = len(p.b)
+    let b = p.b
+    let fx = p.fx
+    let lab = p.lab
+    Pc { b: b, fx: fx, lab: std::map::insert(lab, name, at) }
+}
+
+// Salto (jmp o jcc) a una etiqueta local; el rel32 son los 4 últimos bytes.
+fn pc_jl(p: Pc, bytes: array, name: string) -> Pc {
+    pc_ref(p, bytes, len(bytes) - 4, "loc", name, 0)
+}
+
+fn pc_error(p: Pc, message: string) -> Pc {
+    pc_ref(p, [], 0, "error", message, 0)
+}
+
+// Resuelve los saltos locales del trozo.
+fn pc_finish(p: Pc) -> Pc {
+    let mut b = p.b
+    let mut rest = []
+    for f in p.fx {
+        if f.kind == "loc" {
+            let target = std::map::get(p.lab, f.target)
+            let rel = x_i32(target - (f.off + 4))
+            let mut i = 0
+            while i < 4 {
+                b = std::array::set(b, f.off + i, rel[i])
+                i += 1
+            }
+        } else {
+            rest = std::array::push(rest, f)
+        }
+    }
+    Pc { b: b, fx: rest, lab: std::map::new() }
+}
+
+// ------------------------------------------------------------ ayudas
+
+fn bk_lt(i: int) -> int {
+    0 - 16 * (i + 1)
+}
+
+fn bk_lp(i: int) -> int {
+    bk_lt(i) + 8
+}
+
+// Etiqueta de la función `name` del runtime.
+fn bk_rt(ctx: Ctx, name: string) -> string {
+    if !std::map::contains(ctx.rt, name) {
+        return "missing:" + name
+    }
+    "r" + std::map::get(ctx.rt, name)
+}
+
+// Llama a una función del runtime con `argc` argumentos ya apilados y apila
+// el resultado.
+fn bk_call_rt(p0: Pc, ctx: Ctx, name: string, argc: int) -> Pc {
+    let mut p = pc_ref(p0, x_call(0), 1, "rel", bk_rt(ctx, name), 0)
+    if argc > 0 {
+        p = pc_add(p, x_add_ri(x_rsp(), 16 * argc))
+    }
+    p = pc_add(p, x_push(x_rdx()))
+    pc_add(p, x_push(x_rax()))
+}
+
+// Suma/resta una referencia al valor guardado en [base+disp] (etiqueta) y
+// [base+disp+8] (contenido).
+// En línea; solo usan r10 y r11 (bk_dec_at, si hay que liberar, llama a
+// g_dec, que conserva los registros que usa el código generado).
+fn bk_inc_at(p0: Pc, base: int, disp: int) -> Pc {
+    let r10 = x_r10()
+    let r11 = x_r11()
+    let at = len(p0.b)
+    let skip = "inc{at}"
+    let mut p = pc_add(p0, x_load(r10, base, disp))
+    p = pc_add(p, x_cmp_ri(r10, 5))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), skip)
+    p = pc_add(p, x_load(r10, base, disp + 8))
+    p = pc_add(p, x_load(r11, r10, 0))
+    p = pc_add(p, x_cmp_ri(r11, 1))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), skip)
+    p = pc_add(p, x_add_ri(r11, 1))
+    p = pc_add(p, x_store(r10, 0, r11))
+    pc_label(p, skip)
+}
+
+fn bk_dec_at(p0: Pc, base: int, disp: int) -> Pc {
+    let r10 = x_r10()
+    let r11 = x_r11()
+    let at = len(p0.b)
+    let id = "{at}"
+    let mut p = pc_add(p0, x_load(r10, base, disp))
+    p = pc_add(p, x_cmp_ri(r10, 5))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), "dskip" + id)
+    p = pc_add(p, x_load(r10, base, disp + 8))
+    p = pc_add(p, x_load(r11, r10, 0))
+    p = pc_add(p, x_cmp_ri(r11, 1))
+    p = pc_jl(p, x_jcc(x_cc_l(), 0), "dskip" + id)
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "dfree" + id)
+    p = pc_add(p, x_sub_ri(r11, 1))
+    p = pc_add(p, x_store(r10, 0, r11))
+    p = pc_jl(p, x_jmp(0), "dskip" + id)
+    p = pc_label(p, "dfree" + id)
+    p = pc_add(p, x_load(x_rdi(), base, disp))
+    p = pc_add(p, x_load(x_rsi(), base, disp + 8))
+    p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+    pc_label(p, "dskip" + id)
+}
+
+// Apila el string estático `text`.
+fn bk_push_str(p0: Pc, text: string) -> Pc {
+    let p = pc_ref(p0, x_mov_ri64(x_rax(), 0), 2, "str", text, 0)
+    pc_add(pc_add(p, x_push(x_rax())), x_push_i(5))
+}
+
+fn bk_push_int(p0: Pc, v: int) -> Pc {
+    let mut p = p0
+    if x_fits_i32(v) {
+        p = pc_add(p, x_push_i(v))
+    } else {
+        p = pc_add(p, x_mov_ri(x_rax(), v))
+        p = pc_add(p, x_push(x_rax()))
+    }
+    pc_add(p, x_push_i(1))
+}
+
+// Salta a `label` si alguno de los dos operandos de la cima no es entero.
+fn bk_both_int(p0: Pc, label: string) -> Pc {
+    let mut p = pc_add(p0, x_load(x_rax(), x_rsp(), 0))
+    p = pc_add(p, x_cmp_ri(x_rax(), 1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), label)
+    p = pc_add(p, x_load(x_rax(), x_rsp(), 16))
+    p = pc_add(p, x_cmp_ri(x_rax(), 1))
+    pc_jl(p, x_jcc(x_cc_ne(), 0), label)
+}
+
+// Fin de función: devuelve la cima de la pila (o nil si está vacía).
+fn bk_ret(p0: Pc, ctx: Ctx, tag: string) -> Pc {
+    let mut p = pc_add(p0, x_lea(x_rcx(), x_rbp(), 0 - 16 * ctx.locals))
+    p = pc_add(p, x_cmp_rr(x_rsp(), x_rcx()))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "have" + tag)
+    p = pc_add(p, x_push_i(0))
+    p = pc_add(p, x_push_i(0))
+    p = pc_label(p, "have" + tag)
+    bk_leave(p, ctx)
+}
+
+// Saca el valor de la cima a rax/rdx y salta al epílogo de la función.
+fn bk_leave(p0: Pc, ctx: Ctx) -> Pc {
+    let mut p = pc_add(p0, x_pop(x_rax()))
+    p = pc_add(p, x_pop(x_rdx()))
+    pc_ref(p, x_jmp(0), 1, "jmp", "", ctx.epi)
+}
+
+// Epílogo (resultado en rax/rdx): suelta las variables locales, descuenta
+// la profundidad y vuelve.
+fn bk_epilogue(ctx: Ctx) -> Pc {
+    let mut p = pc_new()
+    if ctx.locals > 0 {
+        p = pc_add(p, x_lea(x_r8(), x_rbp(), 0 - 16 * ctx.locals))
+        p = pc_add(p, x_mov_ri(x_rcx(), ctx.locals))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_drop", 0)
+    }
+    if !ctx.runtime {
+        p = pc_add(p, x_load(x_rcx(), x_r15(), 16))
+        p = pc_add(p, x_sub_ri(x_rcx(), 1))
+        p = pc_add(p, x_store(x_r15(), 16, x_rcx()))
+    }
+    p = pc_add(p, x_mov_rr(x_rsp(), x_rbp()))
+    p = pc_add(p, x_pop(x_rbp()))
+    pc_add(p, x_ret())
+}
+
+// NewArray/NewTuple/Print: crea la secuencia con los `n` valores de la cima.
+fn bk_new_seq(p0: Pc, ctx: Ctx, maker: string, n: int) -> Pc {
+    let mut p = bk_push_int(p0, n)
+    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, maker), 0)
+    p = pc_add(p, x_add_ri(x_rsp(), 16))
+    p = pc_add(p, x_load(x_rcx(), x_rdx(), 24))
+    let mut k = 0
+    while k < n {
+        let src = 16 * (n - 1 - k)
+        p = pc_add(p, x_load(x_r8(), x_rsp(), src))
+        p = pc_add(p, x_store(x_rcx(), 16 * k, x_r8()))
+        p = pc_add(p, x_load(x_r8(), x_rsp(), src + 8))
+        p = pc_add(p, x_store(x_rcx(), 16 * k + 8, x_r8()))
+        k += 1
+    }
+    if n > 0 {
+        p = pc_add(p, x_add_ri(x_rsp(), 16 * n))
+    }
+    p = pc_add(p, x_push(x_rdx()))
+    pc_add(p, x_push(x_rax()))
+}
+
+fn bk_sort_strings(items: array) -> array {
+    let mut out = []
+    for s in items {
+        let mut i = len(out)
+        out = std::array::push(out, s)
+        while i > 0 && out[i - 1] > s {
+            out = std::array::set(out, i, out[i - 1])
+            i -= 1
+        }
+        out = std::array::set(out, i, s)
+    }
+    out
+}
+
+fn bk_index_of(items: array, s: string) -> int {
+    let mut i = 0
+    while i < len(items) {
+        if items[i] == s {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn bk_join(items: array, sep: string) -> string {
+    let mut out = ""
+    let mut first = true
+    for s in items {
+        if !first {
+            out += sep
+        }
+        out += s
+        first = false
+    }
+    out
+}
+
+// "std::map::insert" -> "std__map__insert" (nombre de la función del runtime).
+fn bk_mangle(name: string) -> string {
+    let mut out = ""
+    for c in name {
+        if c == ':' {
+            out += "_"
+        } else {
+            out += c
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------ instrucciones
+
+fn bk_arith(p0: Pc, ctx: Ctx, k: string) -> Pc {
+    let mut p = bk_both_int(p0, "slow")
+    p = pc_add(p, x_load(x_rax(), x_rsp(), 24))
+    if k == "Add" {
+        p = pc_add(p, x_add_rm(x_rax(), x_rsp(), 8))
+    } else if k == "Sub" {
+        p = pc_add(p, x_sub_rm(x_rax(), x_rsp(), 8))
+    } else {
+        p = pc_add(p, x_imul_rm(x_rax(), x_rsp(), 8))
+    }
+    p = pc_ref(p, x_jcc(x_cc_o(), 0), 2, "rel", "g_overflow", 0)
+    p = pc_add(p, x_add_ri(x_rsp(), 16))
+    p = pc_add(p, x_store(x_rsp(), 8, x_rax()))
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    let mut name = "rt_mul"
+    if k == "Add" {
+        name = "rt_add"
+    } else if k == "Sub" {
+        name = "rt_sub"
+    }
+    p = bk_call_rt(p, ctx, name, 2)
+    pc_label(p, "done")
+}
+
+fn bk_divmod(p0: Pc, ctx: Ctx, k: string) -> Pc {
+    let mut p = bk_both_int(p0, "slow")
+    p = pc_add(p, x_load(x_rcx(), x_rsp(), 8))
+    p = pc_add(p, x_test_rr(x_rcx(), x_rcx()))
+    p = pc_ref(p, x_jcc(x_cc_e(), 0), 2, "rel", "g_divzero", 0)
+    p = pc_add(p, x_load(x_rax(), x_rsp(), 24))
+    p = pc_add(p, x_cmp_ri(x_rcx(), -1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "ok")
+    p = pc_add(p, x_mov_ri(x_rdx(), -9223372036854775807 - 1))
+    p = pc_add(p, x_cmp_rr(x_rax(), x_rdx()))
+    p = pc_ref(p, x_jcc(x_cc_e(), 0), 2, "rel", "g_overflow", 0)
+    p = pc_label(p, "ok")
+    p = pc_add(p, x_cqo())
+    p = pc_add(p, x_idiv(x_rcx()))
+    p = pc_add(p, x_add_ri(x_rsp(), 16))
+    if k == "Div" {
+        p = pc_add(p, x_store(x_rsp(), 8, x_rax()))
+    } else {
+        p = pc_add(p, x_store(x_rsp(), 8, x_rdx()))
+    }
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    if k == "Div" {
+        p = bk_call_rt(p, ctx, "rt_div", 2)
+    } else {
+        p = bk_call_rt(p, ctx, "rt_mod", 2)
+    }
+    pc_label(p, "done")
+}
+
+// Eq/Neq. Etiquetas distintas => falso (el PartialEq derivado de la VM);
+// mismo contenido => verdadero (salvo float: NaN != NaN); nil/int/bool/char
+// con contenido distinto => falso; el resto lo compara el runtime.
+fn bk_eq(p0: Pc, ctx: Ctx, negate: bool) -> Pc {
+    let mut p = pc_add(p0, x_load(x_rax(), x_rsp(), 0))
+    p = pc_add(p, x_cmp_rm(x_rax(), x_rsp(), 16))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "false")
+    p = pc_add(p, x_cmp_ri(x_rax(), 2))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "slow")
+    p = pc_add(p, x_load(x_rcx(), x_rsp(), 8))
+    p = pc_add(p, x_cmp_rm(x_rcx(), x_rsp(), 24))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "true")
+    // Dos strings de distinta longitud son distintos: sin llamar al runtime.
+    p = pc_add(p, x_cmp_ri(x_rax(), 5))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "notstr")
+    p = pc_add(p, x_load(x_r8(), x_rcx(), 8))
+    p = pc_add(p, x_load(x_rdx(), x_rsp(), 24))
+    p = pc_add(p, x_cmp_rm(x_r8(), x_rdx(), 8))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "false")
+    p = pc_jl(p, x_jmp(0), "slow")
+    p = pc_label(p, "notstr")
+    p = pc_add(p, x_cmp_ri(x_rax(), 4))
+    p = pc_jl(p, x_jcc(x_cc_a(), 0), "slow")
+    p = pc_label(p, "false")
+    p = bk_dec_at(p, x_rsp(), 0)
+    p = bk_dec_at(p, x_rsp(), 16)
+    p = pc_add(p, x_add_ri(x_rsp(), 32))
+    p = pc_add(p, x_mov_ri(x_rcx(), 0))
+    p = pc_jl(p, x_jmp(0), "store")
+    p = pc_label(p, "true")
+    p = bk_dec_at(p, x_rsp(), 0)
+    p = bk_dec_at(p, x_rsp(), 16)
+    p = pc_add(p, x_add_ri(x_rsp(), 32))
+    p = pc_add(p, x_mov_ri(x_rcx(), 1))
+    p = pc_jl(p, x_jmp(0), "store")
+    p = pc_label(p, "slow")
+    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_eq"), 0)
+    p = pc_add(p, x_add_ri(x_rsp(), 32))
+    p = pc_add(p, x_mov_rr(x_rcx(), x_rdx()))
+    p = pc_label(p, "store")
+    if negate {
+        p = pc_add(p, x_alu_ri(6, x_rcx(), 1))
+    }
+    p = pc_add(p, x_push(x_rcx()))
+    pc_add(p, x_push_i(3))
+}
+
+fn bk_order(p0: Pc, ctx: Ctx, k: string) -> Pc {
+    let mut cc = x_cc_l()
+    let mut name = "rt_lt"
+    if k == "Gt" {
+        cc = x_cc_g()
+        name = "rt_gt"
+    } else if k == "Lte" {
+        cc = x_cc_le()
+        name = "rt_le"
+    } else if k == "Gte" {
+        cc = x_cc_ge()
+        name = "rt_ge"
+    }
+    let mut p = bk_both_int(p0, "slow")
+    p = pc_add(p, x_load(x_rax(), x_rsp(), 24))
+    p = pc_add(p, x_cmp_rm(x_rax(), x_rsp(), 8))
+    p = pc_add(p, x_setcc_rax(cc))
+    p = pc_add(p, x_add_ri(x_rsp(), 32))
+    p = pc_add(p, x_push(x_rax()))
+    p = pc_add(p, x_push_i(3))
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_call_rt(p, ctx, name, 2)
+    pc_label(p, "done")
+}
+
+fn bk_bitop(p0: Pc, ctx: Ctx, k: string) -> Pc {
+    let mut p = bk_both_int(p0, "slow")
+    p = pc_add(p, x_load(x_rax(), x_rsp(), 24))
+    p = pc_add(p, x_load(x_rcx(), x_rsp(), 8))
+    if k == "BitAnd" {
+        p = pc_add(p, x_and_rr(x_rax(), x_rcx()))
+    } else if k == "BitOr" {
+        p = pc_add(p, x_or_rr(x_rax(), x_rcx()))
+    } else {
+        p = pc_add(p, x_xor_rr(x_rax(), x_rcx()))
+    }
+    p = pc_add(p, x_add_ri(x_rsp(), 16))
+    p = pc_add(p, x_store(x_rsp(), 8, x_rax()))
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_call_rt(p, ctx, "rt_bit_error", 0)
+    pc_label(p, "done")
+}
+
+// Valor de verdad de la VM: todo es verdadero salvo `false` y `nil`.
+// Deja en rdx 1 si es FALSO (para Not) y salta a `falsy` si se pide.
+fn bk_jump_if_false(p0: Pc, target: int) -> Pc {
+    let mut p = bk_dec_at(p0, x_rsp(), 0)
+    p = pc_add(p, x_pop(x_rax()))
+    p = pc_add(p, x_pop(x_rcx()))
+    p = pc_add(p, x_test_rr(x_rax(), x_rax()))
+    p = pc_ref(p, x_jcc(x_cc_e(), 0), 2, "jmp", "", target)
+    p = pc_add(p, x_cmp_ri(x_rax(), 3))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "cont")
+    p = pc_add(p, x_test_rr(x_rcx(), x_rcx()))
+    p = pc_ref(p, x_jcc(x_cc_e(), 0), 2, "jmp", "", target)
+    pc_label(p, "cont")
+}
+
+fn bk_not(p0: Pc) -> Pc {
+    let mut p = bk_dec_at(p0, x_rsp(), 0)
+    p = pc_add(p, x_pop(x_rax()))
+    p = pc_add(p, x_pop(x_rcx()))
+    p = pc_add(p, x_mov_ri(x_rdx(), 1))
+    p = pc_add(p, x_test_rr(x_rax(), x_rax()))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "done")
+    p = pc_add(p, x_cmp_ri(x_rax(), 3))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "zero")
+    p = pc_add(p, x_test_rr(x_rcx(), x_rcx()))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "done")
+    p = pc_label(p, "zero")
+    p = pc_add(p, x_mov_ri(x_rdx(), 0))
+    p = pc_label(p, "done")
+    p = pc_add(p, x_push(x_rdx()))
+    pc_add(p, x_push_i(3))
+}
+
+// Cambia el valor de la cima (el contenedor, cuya dirección está en rcx y
+// su etiqueta en `tag`) por el elemento que hay en [r10] / [r10+8]: el
+// elemento gana una referencia y el contenedor pierde la suya.
+fn bk_replace_top(p0: Pc, tag: int) -> Pc {
+    let mut p = pc_add(p0, x_load(x_rdi(), x_r10(), 0))
+    p = pc_add(p, x_load(x_rsi(), x_r10(), 8))
+    p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+    p = pc_add(p, x_store(x_rsp(), 0, x_rdi()))
+    p = pc_add(p, x_store(x_rsp(), 8, x_rsi()))
+    if tag >= 0 {
+        p = pc_add(p, x_mov_ri(x_rdi(), tag))
+    } else {
+        p = pc_add(p, x_mov_rr(x_rdi(), x_rax()))
+    }
+    p = pc_add(p, x_mov_rr(x_rsi(), x_rcx()))
+    pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+}
+
+// x.campo: si x es un struct, se busca en línea la dirección del nombre
+// (los nombres son strings estáticos únicos) en su esquema; si no, rt_get_field.
+fn bk_get_field(p0: Pc, ctx: Ctx, field: string) -> Pc {
+    let rsp = x_rsp()
+    let rcx = x_rcx()
+    let rdx = x_rdx()
+    let r8 = x_r8()
+    let r10 = x_r10()
+    let mut p = pc_add(p0, x_cmp_mi(rsp, 0, 10))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_add(p, x_load(rcx, rsp, 8))
+    p = pc_add(p, x_load(rdx, rcx, 16))
+    p = pc_add(p, x_load(r8, rcx, 24))
+    p = pc_add(p, x_test_rr(r8, r8))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "slow")
+    p = pc_ref(p, x_mov_ri64(x_rax(), 0), 2, "str", field, 0)
+    p = pc_add(p, x_lea(r10, rdx, 8))
+    p = pc_label(p, "loop")
+    p = pc_add(p, x_cmp_rm(x_rax(), r10, 0))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "found")
+    p = pc_add(p, x_add_ri(r10, 8))
+    p = pc_add(p, x_sub_ri(r8, 1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "loop")
+    p = pc_jl(p, x_jmp(0), "slow")
+    p = pc_label(p, "found")
+    // r10 = esquema + 8 + 8i  ->  r10 = struct + 16i (el valor está en +32)
+    p = pc_add(p, x_sub_rr(r10, rdx))
+    p = pc_add(p, x_sub_ri(r10, 8))
+    p = pc_add(p, x_add_rr(r10, r10))
+    p = pc_add(p, x_add_rr(r10, rcx))
+    p = pc_add(p, x_add_ri(r10, 32))
+    p = bk_replace_top(p, 10)
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_push_str(p, field)
+    p = bk_call_rt(p, ctx, "rt_get_field", 2)
+    pc_label(p, "done")
+}
+
+// a[i] con a array/tupla e i entero dentro de rango, en línea; si no, rt_index.
+fn bk_index(p0: Pc, ctx: Ctx) -> Pc {
+    let rsp = x_rsp()
+    let rax = x_rax()
+    let rcx = x_rcx()
+    let r8 = x_r8()
+    let r10 = x_r10()
+    let mut p = pc_add(p0, x_cmp_mi(rsp, 0, 1))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_add(p, x_load(rax, rsp, 16))
+    p = pc_add(p, x_cmp_ri(rax, 7))
+    p = pc_jl(p, x_jcc(x_cc_e(), 0), "seq")
+    p = pc_add(p, x_cmp_ri(rax, 8))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+    p = pc_label(p, "seq")
+    p = pc_add(p, x_load(rcx, rsp, 24))
+    p = pc_add(p, x_load(r8, rsp, 8))
+    p = pc_add(p, x_cmp_rm(r8, rcx, 8))
+    p = pc_jl(p, x_jcc(x_cc_ae(), 0), "slow")
+    p = pc_add(p, x_load(r10, rcx, 24))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r8, r8))
+    p = pc_add(p, x_add_rr(r10, r8))
+    p = pc_add(p, x_add_ri(rsp, 16))
+    p = bk_replace_top(p, -1)
+    p = pc_jl(p, x_jmp(0), "done")
+    p = pc_label(p, "slow")
+    p = bk_call_rt(p, ctx, "rt_index", 2)
+    pc_label(p, "done")
+}
+
+fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
+    let mut p = p0
+    let rax = x_rax()
+    let rcx = x_rcx()
+    let rsp = x_rsp()
+    if name == "std::raw::load" || name == "std::raw::load8" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        if name == "std::raw::load" {
+            p = pc_add(p, x_load(rax, rax, 0))
+        } else {
+            p = pc_add(p, x_load8(rax, rax, 0))
+        }
+        p = pc_add(p, x_store(rsp, 8, rax))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::store" || name == "std::raw::store8" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        if name == "std::raw::store" {
+            p = pc_add(p, x_store(rax, 0, rcx))
+        } else {
+            p = pc_add(p, x_store8(rax, 0, rcx))
+        }
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
+    }
+    // Registros de hardware (MMIO): accesos de 32 bits tal cual (este
+    // backend nunca quita ni reordena accesos a memoria).
+    if name == "std::raw::mmio_load32" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, [139, 0])
+        p = pc_add(p, x_store(rsp, 8, rax))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::mmio_store32" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, [137, 8])
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
+    }
+    // Los registros de sistema son de ARM64: en x86-64 la instrucción es
+    // ud2 (trampa), nunca un valor inventado. El runtime solo las usa si
+    // std::raw::bare() == 1, que aquí siempre es 0 (programa con Linux).
+    if name == "std::raw::sysreg" {
+        p = pc_add(p, [15, 11])
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::set_sysreg" || name == "std::raw::hvc" {
+        p = pc_add(p, [15, 11])
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push_i(0))
+        if name == "std::raw::hvc" {
+            return pc_add(p, x_push_i(1))
+        }
+        return pc_add(p, x_push_i(0))
+    }
+    if name == "std::raw::svc" {
+        // Solo ARM64 (el runtime la usa con std::raw::bare() == 1): ud2.
+        p = pc_add(p, [15, 11])
+        p = pc_add(p, x_add_ri(rsp, 96))
+        p = pc_add(p, x_store_i(rsp, 8, 0))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::bare" {
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(1))
+    }
+    // tag/bits consumen el valor (restan su referencia; g_dec conserva rax).
+    if name == "std::raw::tag" {
+        p = pc_add(p, x_load(rax, rsp, 0))
+        p = bk_dec_at(p, rsp, 0)
+        p = pc_add(p, x_store(rsp, 8, rax))
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    if name == "std::raw::bits" {
+        p = bk_dec_at(p, rsp, 0)
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    // keep: como bits, pero la referencia pasa a la memoria donde se guarde.
+    if name == "std::raw::keep" {
+        return pc_add(p, x_store_i(rsp, 0, 1))
+    }
+    // value: valor nuevo que apunta a algo guardado en memoria (suma una
+    // referencia); adopt: se queda con la referencia que ya existe (objetos
+    // recién creados, o sacados de un contenedor que los suelta).
+    if name == "std::raw::value" || name == "std::raw::adopt" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(rcx))
+        p = pc_add(p, x_push(rax))
+        if name == "std::raw::value" {
+            p = bk_inc_at(p, rsp, 0)
+        }
+        return p
+    }
+    // retain/release (etiqueta, contenido): suma/resta una referencia.
+    if name == "std::raw::retain" || name == "std::raw::release" {
+        p = pc_add(p, x_load(x_rdi(), rsp, 24))
+        p = pc_add(p, x_load(x_rsi(), rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        if name == "std::raw::retain" {
+            p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+        } else {
+            p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+        }
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
+    }
+    // Aritmética de floats (bits IEEE 754 en enteros) con SSE2.
+    if name == "std::raw::fadd" || name == "std::raw::fsub" || name == "std::raw::fmul" || name == "std::raw::fdiv" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_movq_xr(1, rcx))
+        if name == "std::raw::fadd" {
+            p = pc_add(p, x_addsd(0, 1))
+        } else if name == "std::raw::fsub" {
+            p = pc_add(p, x_subsd(0, 1))
+        } else if name == "std::raw::fmul" {
+            p = pc_add(p, x_mulsd(0, 1))
+        } else {
+            p = pc_add(p, x_divsd(0, 1))
+        }
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // Enteros sin comprobar desbordamiento (dan la vuelta, como wrapping_*
+    // de Rust) y desplazamientos de bits (la cuenta se toma módulo 64):
+    // para hashes y códigos de comprobación.
+    if name == "std::raw::wadd" || name == "std::raw::wsub" || name == "std::raw::wmul" || name == "std::raw::shl" || name == "std::raw::shr" || name == "std::raw::sar" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        if name == "std::raw::wadd" {
+            p = pc_add(p, x_add_rr(rax, rcx))
+        } else if name == "std::raw::wsub" {
+            p = pc_add(p, x_sub_rr(rax, rcx))
+        } else if name == "std::raw::wmul" {
+            p = pc_add(p, x_imul_rr(rax, rcx))
+        } else if name == "std::raw::shl" {
+            p = pc_add(p, x_shl_cl(rax))
+        } else if name == "std::raw::shr" {
+            p = pc_add(p, x_shr_cl(rax))
+        } else {
+            p = pc_add(p, x_sar_cl(rax))
+        }
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // fsqrt (sqrtsd, exacta) y ftoint (cvttsd2si: hacia cero).
+    if name == "std::raw::fsqrt" || name == "std::raw::ftoint" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        if name == "std::raw::fsqrt" {
+            p = pc_add(p, x_sqrtsd(0, 0))
+            p = pc_add(p, x_movq_rx(rax, 0))
+        } else {
+            p = pc_add(p, x_cvttsd2si(rax, 0))
+        }
+        p = pc_add(p, x_add_ri(rsp, 16))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // ffma(a, b, c) = a * b + c con un solo redondeo (vfmadd231sd). El
+    // runtime sólo la usa si la CPU y el sistema la permiten (rt_has_fma).
+    if name == "std::raw::ffma" {
+        p = pc_add(p, x_load(rax, rsp, 40))
+        p = pc_add(p, x_movq_xr(1, rax))
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_movq_xr(2, rax))
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_vfmadd231sd_012())
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 48))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // cpuid(hoja, subhoja) = (ebx << 32) | ecx. rbx se guarda (lo usa el
+    // resto del código).
+    if name == "std::raw::cpuid" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, [83])
+        p = pc_add(p, x_cpuid())
+        p = pc_add(p, [137, 200])
+        p = pc_add(p, [72, 193, 227, 32])
+        p = pc_add(p, [72, 9, 216])
+        p = pc_add(p, [91])
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // xgetbv() = XCR0 (edx:eax con ecx = 0).
+    if name == "std::raw::xgetbv" {
+        p = pc_add(p, x_mov_ri(rcx, 0))
+        p = pc_add(p, x_xgetbv())
+        p = pc_add(p, [72, 193, 226, 32])
+        p = pc_add(p, [137, 192])
+        p = pc_add(p, [72, 9, 208])
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // ffromint: el entero convertido a float (cvtsi2sd; exacto si |v| < 2^53).
+    if name == "std::raw::ffromint" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        p = pc_add(p, x_cvtsi2sd(0, rax))
+        p = pc_add(p, x_movq_rx(rax, 0))
+        p = pc_add(p, x_add_ri(rsp, 16))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // fcmp: -1 menor, 0 igual, 1 mayor, 2 sin orden (algún NaN).
+    if name == "std::raw::fcmp" {
+        p = pc_add(p, x_load(rax, rsp, 24))
+        p = pc_add(p, x_load(rcx, rsp, 8))
+        p = pc_add(p, x_movq_xr(0, rax))
+        p = pc_add(p, x_movq_xr(1, rcx))
+        p = pc_add(p, x_ucomisd(0, 1))
+        p = pc_add(p, x_mov_ri(x_rdx(), 2))
+        p = pc_jl(p, x_jcc(x_cc_p(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), 0))
+        p = pc_jl(p, x_jcc(x_cc_e(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), -1))
+        p = pc_jl(p, x_jcc(x_cc_b(), 0), "fdone")
+        p = pc_add(p, x_mov_ri(x_rdx(), 1))
+        p = pc_label(p, "fdone")
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(p, x_push(x_rdx()))
+        return pc_add(p, x_push_i(1))
+    }
+    if name == "std::raw::syscall" {
+        p = pc_add(p, x_load(rax, rsp, 104))
+        p = pc_add(p, x_load(x_rdi(), rsp, 88))
+        p = pc_add(p, x_load(x_rsi(), rsp, 72))
+        p = pc_add(p, x_load(x_rdx(), rsp, 56))
+        p = pc_add(p, x_load(x_r10(), rsp, 40))
+        p = pc_add(p, x_load(x_r8(), rsp, 24))
+        p = pc_add(p, x_load(x_r9(), rsp, 8))
+        p = pc_add(p, x_syscall())
+        p = pc_add(p, x_add_ri(rsp, 112))
+        p = pc_add(p, x_push(rax))
+        return pc_add(p, x_push_i(1))
+    }
+    // arch: 0 = x86-64 (este backend solo genera x86-64).
+    if name == "std::raw::arch" {
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(1))
+    }
+    if name == "std::raw::globals" {
+        p = pc_add(p, x_push(x_r15()))
+        return pc_add(p, x_push_i(1))
+    }
+    if name == "std::raw::fail" {
+        p = pc_add(p, x_load(rax, rsp, 8))
+        return pc_ref(p, x_jmp(0), 1, "rel", "g_raise", 0)
+    }
+    if name == "std::raw::throw" {
+        // Salta al std::try::catch activo (registro en [r15+24], ver TryCall)
+        // con el mensaje en rax (etiqueta) y rdx (contenido).
+        let r15 = x_r15()
+        let r11 = x_r11()
+        p = pc_add(p, x_load(x_rdx(), rsp, 8))
+        p = pc_add(p, x_load(rax, rsp, 0))
+        p = pc_add(p, x_load(rsp, r15, 24))
+        p = pc_add(p, x_load(x_rbp(), rsp, 8))
+        p = pc_add(p, x_load(r11, rsp, 16))
+        p = pc_add(p, x_store(r15, 16, r11))
+        p = pc_add(p, x_load(r11, rsp, 24))
+        return pc_add(p, x_jmp_r(r11))
+    }
+    pc_error(p, "unknown intrinsic " + name)
+}
+
+fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
+    let k = op.k
+    let n = op.n
+    let rsp = x_rsp()
+    let rbp = x_rbp()
+    let mut p = pc_new()
+    if k == "PushInt" {
+        return bk_push_int(p, n)
+    }
+    if k == "PushNil" {
+        return pc_add(pc_add(p, x_push_i(0)), x_push_i(0))
+    }
+    if k == "PushBool" {
+        let mut b = 0
+        if op.flag {
+            b = 1
+        }
+        return pc_add(pc_add(p, x_push_i(b)), x_push_i(3))
+    }
+    if k == "PushFloat" {
+        // El texto es el de f64::to_string: vuelve a dar exactamente los mismos bits.
+        let bits = fl_parse(op.s)
+        if bits == nil {
+            return pc_error(p, "invalid float literal " + op.s)
+        }
+        if x_fits_i32(bits) {
+            p = pc_add(p, x_push_i(bits))
+        } else {
+            p = pc_add(p, x_mov_ri(x_rax(), bits))
+            p = pc_add(p, x_push(x_rax()))
+        }
+        return pc_add(p, x_push_i(2))
+    }
+    if k == "PushChar" {
+        let code = std::text::char_code(std::text::chars(op.s)[0])
+        return pc_add(pc_add(p, x_push_i(code)), x_push_i(4))
+    }
+    if k == "PushStr" {
+        return bk_push_str(p, ctx.table[n])
+    }
+    if k == "PushLocal" {
+        p = pc_add(pc_add(p, x_push_m(rbp, bk_lp(n))), x_push_m(rbp, bk_lt(n)))
+        return bk_inc_at(p, rbp, bk_lt(n))
+    }
+    if k == "TakeLocal" {
+        p = pc_add(pc_add(p, x_push_m(rbp, bk_lp(n))), x_push_m(rbp, bk_lt(n)))
+        return pc_add(pc_add(p, x_store_i(rbp, bk_lt(n), 0)), x_store_i(rbp, bk_lp(n), 0))
+    }
+    if k == "StoreLocal" {
+        p = bk_dec_at(p, rbp, bk_lt(n))
+        return pc_add(pc_add(p, x_pop_m(rbp, bk_lt(n))), x_pop_m(rbp, bk_lp(n)))
+    }
+    if k == "Pop" {
+        p = bk_dec_at(p, rsp, 0)
+        return pc_add(p, x_add_ri(rsp, 16))
+    }
+    if k == "Dup" {
+        p = pc_add(pc_add(p, x_push_m(rsp, 8)), x_push_m(rsp, 8))
+        return bk_inc_at(p, rsp, 0)
+    }
+    if k == "Add" || k == "Sub" || k == "Mul" {
+        return bk_arith(p, ctx, k)
+    }
+    if k == "Div" || k == "Mod" {
+        return bk_divmod(p, ctx, k)
+    }
+    if k == "Eq" {
+        return bk_eq(p, ctx, false)
+    }
+    if k == "Neq" {
+        return bk_eq(p, ctx, true)
+    }
+    if k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" {
+        return bk_order(p, ctx, k)
+    }
+    if k == "BitAnd" || k == "BitOr" || k == "BitXor" {
+        return bk_bitop(p, ctx, k)
+    }
+    if k == "Neg" {
+        p = pc_add(p, x_load(x_rax(), rsp, 0))
+        p = pc_add(p, x_cmp_ri(x_rax(), 1))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+        p = pc_add(p, x_load(x_rax(), rsp, 8))
+        p = pc_add(p, x_neg(x_rax()))
+        p = pc_ref(p, x_jcc(x_cc_o(), 0), 2, "rel", "g_overflow", 0)
+        p = pc_add(p, x_store(rsp, 8, x_rax()))
+        p = pc_jl(p, x_jmp(0), "done")
+        p = pc_label(p, "slow")
+        p = bk_call_rt(p, ctx, "rt_neg", 1)
+        return pc_label(p, "done")
+    }
+    if k == "BitNot" {
+        p = pc_add(p, x_load(x_rax(), rsp, 0))
+        p = pc_add(p, x_cmp_ri(x_rax(), 1))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "slow")
+        p = pc_add(p, x_load(x_rax(), rsp, 8))
+        p = pc_add(p, x_not(x_rax()))
+        p = pc_add(p, x_store(rsp, 8, x_rax()))
+        p = pc_jl(p, x_jmp(0), "done")
+        p = pc_label(p, "slow")
+        p = bk_call_rt(p, ctx, "rt_bitnot_error", 0)
+        return pc_label(p, "done")
+    }
+    if k == "Not" {
+        return bk_not(p)
+    }
+    // Llamada integrada por el optimizador (opt.titan): cuenta la
+    // profundidad igual que una llamada de verdad (mismo límite, mismo error).
+    if k == "InlEnter" {
+        if ctx.runtime {
+            return p
+        }
+        p = pc_add(p, x_load(x_rax(), x_r15(), 16))
+        p = pc_add(p, x_cmp_ri(x_rax(), 4096))
+        p = pc_ref(p, x_jcc(x_cc_ge(), 0), 2, "rel", "g_depth", 0)
+        p = pc_add(p, x_add_ri(x_rax(), 1))
+        return pc_add(p, x_store(x_r15(), 16, x_rax()))
+    }
+    if k == "InlLeave" {
+        if ctx.runtime {
+            return p
+        }
+        p = pc_add(p, x_load(x_rcx(), x_r15(), 16))
+        p = pc_add(p, x_sub_ri(x_rcx(), 1))
+        return pc_add(p, x_store(x_r15(), 16, x_rcx()))
+    }
+    if k == "Jump" {
+        return pc_ref(p, x_jmp(0), 1, "jmp", "", n)
+    }
+    if k == "JumpIfFalse" {
+        return bk_jump_if_false(p, n)
+    }
+    if k == "Call" {
+        if op.flag {
+            return bk_call_rt(p, ctx, "rt_range", op.m)
+        }
+        p = pc_ref(p, x_call(0), 1, "rel", ctx.prefix + "{n}", 0)
+        if op.m > 0 {
+            p = pc_add(p, x_add_ri(rsp, 16 * op.m))
+        }
+        return pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+    }
+    if k == "CallNative" {
+        let name = op.s
+        if std::text::starts_with(name, "std::raw::") {
+            if !ctx.runtime {
+                return pc_error(p, "'" + name + "' is only available to the native runtime")
+            }
+            return bk_intrinsic(p, name, n)
+        }
+        let target = bk_mangle(name)
+        if !std::map::contains(ctx.rt, target) {
+            return pc_error(p, "native function '" + name + "' is not implemented in the native runtime yet")
+        }
+        if std::map::get(ctx.rt_arity, target) != n {
+            return pc_error(p, "native function '" + name + "' has a different arity in the native runtime")
+        }
+        return bk_call_rt(p, ctx, target, n)
+    }
+    if k == "Ret" {
+        return bk_ret(p, ctx, "")
+    }
+    if k == "Print" {
+        p = bk_new_seq(p, ctx, "rt_array_new", n)
+        return bk_call_rt(p, ctx, "rt_print", 1)
+    }
+    if k == "NewArray" {
+        return bk_new_seq(p, ctx, "rt_array_new", n)
+    }
+    if k == "NewTuple" {
+        return bk_new_seq(p, ctx, "rt_tuple_new", n)
+    }
+    if k == "ToString" {
+        return bk_call_rt(p, ctx, "rt_to_string", 1)
+    }
+    if k == "Len" {
+        return bk_call_rt(p, ctx, "rt_len", 1)
+    }
+    if k == "ArraySortBy" {
+        return bk_call_rt(p, ctx, "rt_sort_by", 2)
+    }
+    if k == "Index" {
+        return bk_index(p, ctx)
+    }
+    if k == "GetField" {
+        return bk_get_field(p, ctx, op.s)
+    }
+    if k == "NewStruct" {
+        let fields = op.list
+        let count = len(fields)
+        let sorted = bk_sort_strings(fields)
+        p = bk_push_str(p, op.s)
+        p = pc_ref(p, x_mov_ri64(x_rax(), 0), 2, "schema", bk_join(sorted, "\n"), count)
+        p = pc_add(p, x_push(x_rax()))
+        p = pc_add(p, x_push_i(1))
+        p = bk_push_int(p, count)
+        p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_struct_new"), 0)
+        p = pc_add(p, x_add_ri(rsp, 48))
+        let mut j = 0
+        while j < count {
+            let src = 16 * (count - 1 - j)
+            let dst = 32 + 16 * bk_index_of(sorted, fields[j])
+            p = pc_add(p, x_load(x_r8(), rsp, src))
+            p = pc_add(p, x_store(x_rdx(), dst, x_r8()))
+            p = pc_add(p, x_load(x_r8(), rsp, src + 8))
+            p = pc_add(p, x_store(x_rdx(), dst + 8, x_r8()))
+            j += 1
+        }
+        if count > 0 {
+            p = pc_add(p, x_add_ri(rsp, 16 * count))
+        }
+        return pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+    }
+    if k == "NewEnum" {
+        if op.flag {
+            p = bk_push_str(p, op.s)
+            p = bk_push_str(p, op.s2)
+            return bk_call_rt(p, ctx, "rt_enum_new", 3)
+        }
+        p = pc_ref(p, x_mov_ri64(x_rax(), 0), 2, "unit", op.s + "\n" + op.s2, 0)
+        return pc_add(pc_add(p, x_push(x_rax())), x_push_i(11))
+    }
+    if k == "EnumIs" {
+        p = bk_push_str(p, op.s)
+        p = bk_push_str(p, op.s2)
+        return bk_call_rt(p, ctx, "rt_enum_is", 3)
+    }
+    if k == "EnumPayload" {
+        return bk_call_rt(p, ctx, "rt_enum_payload", 1)
+    }
+    if k == "Try" {
+        p = pc_add(pc_add(p, x_push_m(rsp, 8)), x_push_m(rsp, 8))
+        p = bk_inc_at(p, rsp, 0)
+        p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_try_kind"), 0)
+        p = pc_add(p, x_add_ri(rsp, 16))
+        p = pc_add(p, x_test_rr(x_rdx(), x_rdx()))
+        p = pc_jl(p, x_jcc(x_cc_e(), 0), "unwrap")
+        p = bk_leave(p, ctx)
+        p = pc_label(p, "unwrap")
+        p = pc_add(p, x_load(x_rcx(), rsp, 8))
+        p = pc_add(p, x_load(x_rax(), x_rcx(), 32))
+        p = pc_add(p, x_load(x_rdx(), x_rcx(), 40))
+        p = pc_add(p, x_store(rsp, 0, x_rax()))
+        p = pc_add(p, x_store(rsp, 8, x_rdx()))
+        // El contenido gana una referencia y el enum pierde la suya.
+        p = pc_add(p, x_mov_rr(x_rdi(), x_rax()))
+        p = pc_add(p, x_mov_rr(x_rsi(), x_rdx()))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_inc", 0)
+        p = pc_add(p, x_mov_ri(x_rdi(), 11))
+        p = pc_add(p, x_mov_rr(x_rsi(), x_rcx()))
+        return pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+    }
+    if k == "MakeClosure" {
+        let f = ctx.funcs[n]
+        let caps = op.list
+        p = pc_ref(p, x_mov_ri64(x_rax(), 0), 2, "abs", ctx.prefix + "{n}", 0)
+        p = pc_add(pc_add(p, x_push(x_rax())), x_push_i(1))
+        p = bk_push_int(p, len(caps))
+        p = bk_push_int(p, f.arity)
+        p = bk_push_int(p, n)
+        p = bk_push_str(p, f.name)
+        p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_closure_new"), 0)
+        p = pc_add(p, x_add_ri(rsp, 80))
+        let mut i = 0
+        for slot in caps {
+            p = pc_add(p, x_load(x_r8(), rbp, bk_lt(slot)))
+            p = pc_add(p, x_store(x_rdx(), 48 + 16 * i, x_r8()))
+            p = pc_add(p, x_load(x_r8(), rbp, bk_lp(slot)))
+            p = pc_add(p, x_store(x_rdx(), 56 + 16 * i, x_r8()))
+            p = bk_inc_at(p, rbp, bk_lt(slot))
+            i += 1
+        }
+        return pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+    }
+    if k == "CallValue" {
+        let off = 16 * n
+        p = pc_add(p, x_load(x_rax(), rsp, off))
+        p = pc_add(p, x_cmp_ri(x_rax(), 12))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "err")
+        p = pc_add(p, x_load(x_r12(), rsp, off + 8))
+        p = pc_add(p, x_cmp_mi(x_r12(), 24, n))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "err")
+        p = pc_add(p, x_load(x_rax(), x_r12(), 8))
+        p = pc_add(p, x_call_r(x_rax()))
+        if n > 0 {
+            p = pc_add(p, x_add_ri(rsp, 16 * n))
+        }
+        p = pc_add(pc_add(p, x_pop(x_rdi())), x_pop(x_rsi()))
+        p = pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+        p = pc_jl(p, x_jmp(0), "done")
+        p = pc_label(p, "err")
+        p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
+        p = bk_push_int(p, n)
+        p = bk_call_rt(p, ctx, "rt_call_error", 2)
+        return pc_label(p, "done")
+    }
+    if k == "TryCall" {
+        // std::try::catch(f, args...): como la VM, un error dentro de la
+        // llamada se devuelve como Result::Err(mensaje) y el éxito como
+        // Result::Ok(valor). Antes de llamar se deja un registro de 32 bytes
+        // justo encima del cierre: [manejador anterior][rbp][profundidad]
+        // [dirección de reanudación], y [r15+24] apunta a él; rt_fatal salta
+        // ahí (std::raw::throw) con el mensaje en rax/rdx.
+        let off = 16 * n
+        let rax = x_rax()
+        let rcx = x_rcx()
+        let r15 = x_r15()
+        p = pc_add(p, x_load(rax, rsp, off))
+        p = pc_add(p, x_cmp_ri(rax, 12))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "noclo")
+        p = pc_add(p, x_sub_ri(rsp, 32))
+        let mut w = 0
+        while w < 2 * (n + 1) {
+            p = pc_add(p, x_load(rax, rsp, 32 + 8 * w))
+            p = pc_add(p, x_store(rsp, 8 * w, rax))
+            w += 1
+        }
+        p = pc_add(p, x_lea(rcx, rsp, off + 16))
+        p = pc_add(p, x_load(rax, r15, 24))
+        p = pc_add(p, x_store(rcx, 0, rax))
+        p = pc_add(p, x_store(rcx, 8, x_rbp()))
+        p = pc_add(p, x_load(rax, r15, 16))
+        p = pc_add(p, x_store(rcx, 16, rax))
+        p = pc_jl(p, [72, 141, 5, 0, 0, 0, 0], "resume")
+        p = pc_add(p, x_store(rcx, 24, rax))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_load(x_r12(), rsp, off + 8))
+        p = pc_add(p, x_cmp_mi(x_r12(), 24, n))
+        p = pc_jl(p, x_jcc(x_cc_ne(), 0), "err")
+        p = pc_add(p, x_load(rax, x_r12(), 8))
+        p = pc_add(p, x_call_r(rax))
+        if n > 0 {
+            p = pc_add(p, x_add_ri(rsp, off))
+        }
+        p = pc_add(pc_add(p, x_pop(x_rdi())), x_pop(x_rsi()))
+        p = pc_add(p, x_load(rcx, rsp, 0))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(pc_add(p, x_push(x_rdx())), x_push(rax))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_dec", 0)
+        p = bk_call_rt(p, ctx, "rt_try_ok", 1)
+        p = pc_jl(p, x_jmp(0), "done")
+        // Aridad distinta: el error pasa por rt_fatal con el registro puesto,
+        // así que termina en "resume" como cualquier otro.
+        p = pc_label(p, "err")
+        p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
+        p = bk_push_int(p, n)
+        p = bk_call_rt(p, ctx, "rt_call_error", 2)
+        p = pc_add(p, x_ud2())
+        // Reanudación: rsp = registro, rbp y profundidad ya restaurados.
+        p = pc_label(p, "resume")
+        p = pc_add(p, x_load(rcx, rsp, 0))
+        p = pc_add(p, x_store(r15, 24, rcx))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_add(pc_add(p, x_push(x_rdx())), x_push(rax))
+        p = bk_call_rt(p, ctx, "rt_try_err", 1)
+        p = pc_jl(p, x_jmp(0), "done")
+        p = pc_label(p, "noclo")
+        w = 0
+        while w <= n {
+            p = bk_dec_at(p, rsp, 0)
+            p = pc_add(p, x_add_ri(rsp, 16))
+            w += 1
+        }
+        p = bk_push_str(p, "std::try::catch expected a closure")
+        p = bk_call_rt(p, ctx, "rt_try_err", 1)
+        return pc_label(p, "done")
+    }
+    pc_error(p, "instruction " + k + " is not supported by the native backend yet")
+}
+
+// ------------------------------------------------------------ funciones
+
+fn bk_prologue(ctx: Ctx, f: Func) -> Pc {
+    let mut p = pc_new()
+    let rbp = x_rbp()
+    p = pc_add(p, x_push(rbp))
+    p = pc_add(p, x_mov_rr(rbp, x_rsp()))
+    if ctx.locals > 0 {
+        p = pc_add(p, x_sub_ri(x_rsp(), 16 * ctx.locals))
+    }
+    if !ctx.runtime {
+        p = pc_add(p, x_load(x_rax(), x_r15(), 16))
+        p = pc_add(p, x_cmp_ri(x_rax(), 4096))
+        p = pc_ref(p, x_jcc(x_cc_ge(), 0), 2, "rel", "g_depth", 0)
+        p = pc_add(p, x_add_ri(x_rax(), 1))
+        p = pc_add(p, x_store(x_r15(), 16, x_rax()))
+    }
+    let c = f.captures
+    let a = f.arity
+    let mut i = c + a
+    while i < ctx.locals {
+        p = pc_add(p, x_store_i(rbp, bk_lt(i), 0))
+        p = pc_add(p, x_store_i(rbp, bk_lp(i), 0))
+        i += 1
+    }
+    i = 0
+    while i < c {
+        p = pc_add(p, x_load(x_rax(), x_r12(), 48 + 16 * i))
+        p = pc_add(p, x_store(rbp, bk_lt(i), x_rax()))
+        p = pc_add(p, x_load(x_rax(), x_r12(), 56 + 16 * i))
+        p = pc_add(p, x_store(rbp, bk_lp(i), x_rax()))
+        p = bk_inc_at(p, rbp, bk_lt(i))
+        i += 1
+    }
+    i = 0
+    while i < a {
+        let src = 16 + 16 * (a - 1 - i)
+        p = pc_add(p, x_load(x_rax(), rbp, src))
+        p = pc_add(p, x_store(rbp, bk_lt(c + i), x_rax()))
+        p = pc_add(p, x_load(x_rax(), rbp, src + 8))
+        p = pc_add(p, x_store(rbp, bk_lp(c + i), x_rax()))
+        i += 1
+    }
+    pc_finish(p)
+}
+
+// Compila una función: Pc con referencias globales relativas a su inicio.
+fn bk_function(ctx0: Ctx, f: Func) -> Pc {
+    let mut locals = f.locals
+    if f.arity + f.captures > locals {
+        locals = f.arity + f.captures
+    }
+    let ctx = Ctx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, epi: len(f.code) + 1 }
+    let head = bk_prologue(ctx, f)
+    let mut code = head.b
+    let mut fx = head.fx
+    let mut offs = []
+    let mut pc = 0
+    for op in f.code {
+        offs = std::array::push(offs, len(code))
+        let piece = pc_finish(bk_op(ctx, op, pc))
+        let base = len(code)
+        for r in piece.fx {
+            fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
+        }
+        code = std::array::concat(code, piece.b)
+        pc += 1
+    }
+    // Salir por el final devuelve la cima o nil, como la VM.
+    offs = std::array::push(offs, len(code))
+    let tail = pc_finish(bk_ret(pc_new(), ctx, ""))
+    let tail_base = len(code)
+    for r in tail.fx {
+        fx = std::array::push(fx, Fx { off: r.off + tail_base, kind: r.kind, target: r.target, n: r.n })
+    }
+    code = std::array::concat(code, tail.b)
+    offs = std::array::push(offs, len(code))
+    let epi = pc_finish(bk_epilogue(ctx))
+    let epi_base = len(code)
+    for r in epi.fx {
+        fx = std::array::push(fx, Fx { off: r.off + epi_base, kind: r.kind, target: r.target, n: r.n })
+    }
+    code = std::array::concat(code, epi.b)
+    let mut rest = []
+    for r in fx {
+        if r.kind == "jmp" {
+            let rel = x_i32(offs[r.n] - (r.off + 4))
+            let mut i = 0
+            while i < 4 {
+                code = std::array::set(code, r.off + i, rel[i])
+                i += 1
+            }
+        } else {
+            rest = std::array::push(rest, r)
+        }
+    }
+    Pc { b: code, fx: rest, lab: std::map::new() }
+}
+
+// ------------------------------------------------------------ enlazado
+
+fn bk_glue(ctx: Ctx, entry: string) -> array {
+    let rax = x_rax()
+    let rsp = x_rsp()
+    let mut pieces = []
+    // g_raise: rax = string con el mensaje del error.
+    let mut p = pc_label(pc_new(), "g_raise")
+    p = pc_add(p, x_push(rax))
+    p = pc_add(p, x_push_i(5))
+    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_fatal"), 0)
+    p = pc_add(p, x_ud2())
+    pieces = std::array::push(pieces, p)
+    for pair in [("g_overflow", "integer overflow"), ("g_divzero", "division by zero"), ("g_depth", "call depth limit exceeded")] {
+        let (label, message) = pair
+        let mut q = pc_label(pc_new(), label)
+        q = pc_ref(q, x_mov_ri64(rax, 0), 2, "str", message, 0)
+        q = pc_ref(q, x_jmp(0), 1, "rel", "g_raise", 0)
+        pieces = std::array::push(pieces, q)
+    }
+    // g_inc (rdi = etiqueta, rsi = contenido): suma una referencia si es un
+    // objeto contado (etiqueta >= 5 y cuenta > 0; -1 = inmortal). Solo usa r11.
+    let rdi = x_rdi()
+    let rsi = x_rsi()
+    let r11 = x_r11()
+    let mut gi = pc_label(pc_new(), "g_inc")
+    gi = pc_add(gi, x_cmp_ri(rdi, 5))
+    gi = pc_jl(gi, x_jcc(x_cc_l(), 0), "out")
+    gi = pc_add(gi, x_load(r11, rsi, 0))
+    gi = pc_add(gi, x_cmp_ri(r11, 1))
+    gi = pc_jl(gi, x_jcc(x_cc_l(), 0), "out")
+    gi = pc_add(gi, x_add_ri(r11, 1))
+    gi = pc_add(gi, x_store(rsi, 0, r11))
+    gi = pc_label(gi, "out")
+    gi = pc_add(gi, x_ret())
+    pieces = std::array::push(pieces, gi)
+    // g_dec (rdi, rsi): resta una referencia; si llega a 0 llama a
+    // rt_free(etiqueta, dirección). Conserva rax, rcx, rdx, rsi, rdi y r8.
+    let mut gd = pc_label(pc_new(), "g_dec")
+    gd = pc_add(gd, x_cmp_ri(rdi, 5))
+    gd = pc_jl(gd, x_jcc(x_cc_l(), 0), "out")
+    gd = pc_add(gd, x_load(r11, rsi, 0))
+    gd = pc_add(gd, x_cmp_ri(r11, 1))
+    gd = pc_jl(gd, x_jcc(x_cc_l(), 0), "out")
+    gd = pc_jl(gd, x_jcc(x_cc_e(), 0), "free")
+    gd = pc_add(gd, x_sub_ri(r11, 1))
+    gd = pc_add(gd, x_store(rsi, 0, r11))
+    gd = pc_add(gd, x_ret())
+    gd = pc_label(gd, "free")
+    gd = pc_add(gd, x_store_i(rsi, 0, 0))
+    for r in [rax, x_rdx(), x_rcx(), x_r8(), rdi, rsi] {
+        gd = pc_add(gd, x_push(r))
+    }
+    gd = pc_add(gd, x_push(rdi))
+    gd = pc_add(gd, x_push_i(1))
+    gd = pc_add(gd, x_push(rsi))
+    gd = pc_add(gd, x_push_i(1))
+    gd = pc_ref(gd, x_call(0), 1, "rel", bk_rt(ctx, "rt_free"), 0)
+    gd = pc_add(gd, x_add_ri(rsp, 32))
+    for r in [rsi, rdi, x_r8(), x_rcx(), x_rdx(), rax] {
+        gd = pc_add(gd, x_pop(r))
+    }
+    gd = pc_label(gd, "out")
+    gd = pc_add(gd, x_ret())
+    pieces = std::array::push(pieces, gd)
+    // g_drop (r8 = primer hueco, rcx = cuántos): g_dec de cada variable
+    // local al salir de una función. Conserva rax y rdx (el resultado).
+    let mut gp = pc_label(pc_new(), "g_drop")
+    gp = pc_add(gp, x_test_rr(x_rcx(), x_rcx()))
+    gp = pc_jl(gp, x_jcc(x_cc_e(), 0), "out")
+    gp = pc_label(gp, "loop")
+    gp = pc_add(gp, x_load(rdi, x_r8(), 0))
+    gp = pc_add(gp, x_cmp_ri(rdi, 5))
+    gp = pc_jl(gp, x_jcc(x_cc_l(), 0), "next")
+    gp = pc_add(gp, x_load(rsi, x_r8(), 8))
+    gp = pc_ref(gp, x_call(0), 1, "rel", "g_dec", 0)
+    gp = pc_label(gp, "next")
+    gp = pc_add(gp, x_add_ri(x_r8(), 16))
+    gp = pc_add(gp, x_sub_ri(x_rcx(), 1))
+    gp = pc_jl(gp, x_jcc(x_cc_ne(), 0), "loop")
+    gp = pc_label(gp, "out")
+    gp = pc_add(gp, x_ret())
+    pieces = std::array::push(pieces, gp)
+    // g_start: globales, pila propia de 1 GiB (reservada, no ocupada) y main.
+    let size = 1073741824
+    let mut s = pc_label(pc_new(), "g_start")
+    s = pc_ref(s, x_mov_ri64(x_r15(), 0), 2, "glob", "", 0)
+    s = pc_add(s, x_store(x_r15(), 32, rsp))
+    s = pc_add(s, x_mov_ri(rax, 9))
+    s = pc_add(s, x_mov_ri(x_rdi(), 0))
+    s = pc_add(s, x_mov_ri(x_rsi(), size))
+    s = pc_add(s, x_mov_ri(x_rdx(), 3))
+    s = pc_add(s, x_mov_ri(x_r10(), 16418))
+    s = pc_add(s, x_mov_ri(x_r8(), -1))
+    s = pc_add(s, x_mov_ri(x_r9(), 0))
+    s = pc_add(s, x_syscall())
+    s = pc_add(s, x_lea(rsp, rax, size))
+    s = pc_ref(s, x_call(0), 1, "rel", entry, 0)
+    s = pc_add(s, x_push(x_rdx()))
+    s = pc_add(s, x_push(rax))
+    s = pc_ref(s, x_call(0), 1, "rel", bk_rt(ctx, "rt_finish"), 0)
+    s = pc_add(s, x_ud2())
+    pieces = std::array::push(pieces, s)
+    pieces
+}
+
+// "a\nb" -> ["a", "b"]
+fn bk_split_lines(s: string) -> array {
+    let mut out = []
+    let mut cur = ""
+    for c in s {
+        if c == '\n' {
+            out = std::array::push(out, cur)
+            cur = ""
+        } else {
+            cur += c
+        }
+    }
+    std::array::push(out, cur)
+}
+
+fn bk_utf8(s: string) -> array {
+    std::bytes::to_array(std::encoding::utf8_encode(s))
+}
+
+fn bk_align(v: int, a: int) -> int {
+    return ((v + a - 1) / a) * a
+}
+
+// Índices de las funciones del runtime por nombre, y sus aridades.
+fn bk_rt_tables(gr: G) -> (map, map) {
+    let mut names = std::map::new()
+    let mut arity = std::map::new()
+    let mut i = 0
+    for f in gr.funcs {
+        names = std::map::insert(names, f.name, i)
+        arity = std::map::insert(arity, f.name, f.arity)
+        i += 1
+    }
+    return (names, arity)
+}
+
+// Programa (gu) + runtime (gr) -> Result::Ok(bytes del ELF) o Err(mensajes).
+// "r" seguido solo de cifras: etiqueta de una función del runtime.
+fn bk_is_rt_label(t: string) -> bool {
+    if len(t) < 2 || !std::text::starts_with(t, "r") {
+        return false
+    }
+    for c in std::text::chars(std::text::substring(t, 1, len(t))) {
+        if c < '0' || c > '9' {
+            return false
+        }
+    }
+    true
+}
+
+fn bk_label_index(t: string) -> int {
+    match std::text::parse_int(std::text::substring(t, 1, len(t))) {
+        Option::Some(v) => v,
+        Option::None => -1,
+    }
+}
+
+fn bk_build(gu: G, gr: G) -> Result {
+    let (rt, rt_arity) = bk_rt_tables(gr)
+    let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, epi: 0 }
+    let rctx = Ctx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, epi: 0 }
+    let mut code = []
+    let mut fx = []
+    let mut labels = std::map::new()
+    let mut units = []
+    // Mapa de símbolos (posición en el código y nombre de cada función),
+    // para perfiles y depuración.
+    let mut syms = []
+    let entry_index = gu.entry
+    for piece in bk_glue(rctx, "u{entry_index}") {
+        let base = len(code)
+        for name in std::map::keys(piece.lab) {
+            labels = std::map::insert(labels, name, base + std::map::get(piece.lab, name))
+            if std::text::starts_with(name, "g_") {
+                syms = std::array::push(syms, (base + std::map::get(piece.lab, name), "glue:" + name))
+            }
+        }
+        let done = pc_finish(piece)
+        for r in done.fx {
+            fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
+        }
+        code = std::array::concat(code, done.b)
+    }
+    let mut i = 0
+    for f in gu.funcs {
+        labels = std::map::insert(labels, "u{i}", len(code))
+        syms = std::array::push(syms, (len(code), f.name))
+        let piece = bk_function(uctx, f)
+        let base = len(code)
+        for r in piece.fx {
+            fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
+        }
+        code = std::array::concat(code, piece.b)
+        i += 1
+    }
+    // Del runtime solo entran las funciones que se usan (como un enlazador):
+    // se recorren las referencias ya emitidas y cada función "rN" nueva se
+    // traduce y añade, con sus propias referencias, hasta que no queda ninguna.
+    let mut emitted = std::map::new()
+    let mut scan = 0
+    while scan < len(fx) {
+        let target = fx[scan].target
+        scan += 1
+        if !bk_is_rt_label(target) || std::map::contains(emitted, target) {
+            continue
+        }
+        emitted = std::map::insert(emitted, target, true)
+        let index = bk_label_index(target)
+        let f = gr.funcs[index]
+        labels = std::map::insert(labels, target, len(code))
+        syms = std::array::push(syms, (len(code), "runtime:" + f.name))
+        let piece = bk_function(rctx, f)
+        let base = len(code)
+        for r in piece.fx {
+            fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
+        }
+        code = std::array::concat(code, piece.b)
+    }
+    // Errores: construcciones que el compilador nativo aún no admite.
+    let mut errors = []
+    let mut seen = std::map::new()
+    for r in fx {
+        if r.kind == "error" && !std::map::contains(seen, r.target) {
+            errors = std::array::push(errors, r.target)
+            seen = std::map::insert(seen, r.target, true)
+        }
+        if r.kind == "rel" && std::text::starts_with(r.target, "missing:") && !std::map::contains(seen, r.target) {
+            errors = std::array::push(errors, "native runtime function '" + std::text::substring(r.target, 8, len(r.target)) + "' not found")
+            seen = std::map::insert(seen, r.target, true)
+        }
+    }
+    if len(errors) > 0 {
+        return Result::Err(bk_join(errors, "\n"))
+    }
+    // Datos: primero todos los strings (una vez cada texto), luego esquemas y
+    // enums sin contenido, que apuntan a strings.
+    let code_base = el_code_address()
+    let data_base = bk_align(code_base + len(code), 16)
+    let mut texts = []
+    let mut want = std::map::new()
+    for r in fx {
+        let mut needed = []
+        if r.kind == "str" {
+            needed = [r.target]
+        } else if r.kind == "schema" {
+            if r.n > 0 {
+                needed = bk_split_lines(r.target)
+            }
+        } else if r.kind == "unit" {
+            needed = bk_split_lines(r.target)
+        }
+        for t in needed {
+            if !std::map::contains(want, t) {
+                want = std::map::insert(want, t, true)
+                texts = std::array::push(texts, t)
+            }
+        }
+    }
+    let mut data = []
+    let mut addr = std::map::new()
+    for t in texts {
+        let bytes = bk_utf8(t)
+        addr = std::map::insert(addr, t, data_base + len(data))
+        data = std::array::concat(data, x_i64(-1))
+        data = std::array::concat(data, x_i64(len(bytes)))
+        data = std::array::concat(data, bytes)
+        while len(data) % 16 != 0 {
+            data = std::array::push(data, 0)
+        }
+    }
+    let mut objects = std::map::new()
+    for r in fx {
+        if (r.kind == "schema" || r.kind == "unit") && !std::map::contains(objects, r.kind + ":" + r.target) {
+            objects = std::map::insert(objects, r.kind + ":" + r.target, data_base + len(data))
+            if r.kind == "schema" {
+                let mut names = []
+                if r.n > 0 {
+                    names = bk_split_lines(r.target)
+                }
+                data = std::array::concat(data, x_i64(len(names)))
+                for t in names {
+                    data = std::array::concat(data, x_i64(std::map::get(addr, t)))
+                }
+            } else {
+                let parts = bk_split_lines(r.target)
+                data = std::array::concat(data, x_i64(-1))
+                data = std::array::concat(data, x_i64(std::map::get(addr, parts[0])))
+                data = std::array::concat(data, x_i64(std::map::get(addr, parts[1])))
+                data = std::array::concat(data, x_i64(0))
+                data = std::array::concat(data, x_i64(0))
+                data = std::array::concat(data, x_i64(0))
+            }
+            while len(data) % 16 != 0 {
+                data = std::array::push(data, 0)
+            }
+        }
+    }
+    let globals = bk_align(data_base + len(data), 16)
+    for r in fx {
+        let mut bytes = []
+        if r.kind == "rel" {
+            let target = std::map::get(labels, r.target)
+            bytes = x_i32(target - (r.off + 4))
+        } else if r.kind == "abs" {
+            bytes = x_i64(code_base + std::map::get(labels, r.target))
+        } else if r.kind == "str" {
+            bytes = x_i64(std::map::get(addr, r.target))
+        } else if r.kind == "schema" || r.kind == "unit" {
+            bytes = x_i64(std::map::get(objects, r.kind + ":" + r.target))
+        } else if r.kind == "glob" {
+            bytes = x_i64(globals)
+        }
+        let mut j = 0
+        while j < len(bytes) {
+            code = std::array::set(code, r.off + j, bytes[j])
+            j += 1
+        }
+    }
+    let mut body = code
+    while code_base + len(body) < data_base {
+        body = std::array::push(body, 0)
+    }
+    body = std::array::concat(body, data)
+    let entry = code_base + std::map::get(labels, "g_start")
+    let mut map_lines = []
+    for sym in syms {
+        let (off, name) = sym
+        let address = code_base + off
+        map_lines = std::array::push(map_lines, "{address} " + name)
+    }
+    let image = el_image(body, entry, globals - (code_base + len(body)) + 4096)
+    Result::Ok((image, bk_join(map_lines, "\n") + "\n"))
+}

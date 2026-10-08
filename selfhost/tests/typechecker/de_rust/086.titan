@@ -1,0 +1,1 @@
+struct Counter { value: int } impl Counter { fn len(self) -> int { self.value } } fn main() { let counter = Counter { value: 42 } let result: string = counter.len() }

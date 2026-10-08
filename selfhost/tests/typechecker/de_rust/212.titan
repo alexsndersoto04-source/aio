@@ -1,0 +1,1 @@
+fn halt_and() -> ! { true && loop {} } fn halt_or() -> ! { false || loop {} } fn main() {}

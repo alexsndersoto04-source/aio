@@ -1,0 +1,85 @@
+// std::mobile: administrador local de eventos de ciclo de vida.
+// La biblioteca acepta eventos explícitos del host o del programa; no instala
+// callbacks Android. Conserva el estado y una cola acotada por proceso, igual
+// que crates/titan_stdlib/src/mobile.rs.
+//
+// Estado persistente en globals+3152: puntero a un bloque de 32 bytes de
+// cabecera seguido de 1024 eventos de 264 bytes (longitud + hasta 256 bytes).
+
+const MB_MAX_EVENTS: int = 1024
+const MB_MAX_EVENT_BYTES: int = 256
+const MB_EVENT_SLOT_BYTES: int = 264
+const MB_EVENTS_OFFSET: int = 32
+
+fn mb_global() -> int {
+    std::raw::globals() + 3152
+}
+
+fn mb_state() -> int {
+    let slot = mb_global()
+    let current = std::raw::load(slot)
+    if current != 0 {
+        return current
+    }
+    let created = rt_alloc_zero(MB_EVENTS_OFFSET + MB_MAX_EVENTS * MB_EVENT_SLOT_BYTES)
+    // 0 = Running, 1 = Paused, 2 = Stopped, 3 = Destroyed.
+    std::raw::store(created, 0)
+    std::raw::store(slot, created)
+    created
+}
+
+fn std__mobile__state() -> any {
+    let state = std::raw::load(mb_state())
+    if state == 0 { return "Running" }
+    if state == 1 { return "Paused" }
+    if state == 2 { return "Stopped" }
+    "Destroyed"
+}
+
+fn std__mobile__trigger(event: any) -> any {
+    let function = "std::mobile::trigger"
+    rt_expect_str(event, function)
+    let bytes = rt_slen(event)
+    if bytes == 0 || bytes > MB_MAX_EVENT_BYTES {
+        return false
+    }
+    let state = mb_state()
+    let count = std::raw::load(state + 8)
+    if count >= MB_MAX_EVENTS {
+        return false
+    }
+    let slot = state + MB_EVENTS_OFFSET + count * MB_EVENT_SLOT_BYTES
+    std::raw::store(slot, bytes)
+    rt_copy(slot + 8, std::raw::bits(event) + 16, bytes)
+    std::raw::store(state + 8, count + 1)
+
+    if event == "onStart" || event == "onResume" {
+        std::raw::store(state, 0)
+    } else if event == "onPause" {
+        std::raw::store(state, 1)
+    } else if event == "onStop" {
+        std::raw::store(state, 2)
+    } else if event == "onDestroy" {
+        std::raw::store(state, 3)
+    }
+    true
+}
+
+fn std__mobile__poll_events() -> any {
+    let state = mb_state()
+    let count = std::raw::load(state + 8)
+    let events = rt_seq_alloc(7, count, count)
+    let data = rt_seq_data(events)
+    let mut i = 0
+    while i < count {
+        let slot = state + MB_EVENTS_OFFSET + i * MB_EVENT_SLOT_BYTES
+        let bytes = std::raw::load(slot)
+        let text = rt_str_alloc(bytes)
+        rt_copy(text + 16, slot + 8, bytes)
+        rt_seq_put(data, i, rt_sval(text))
+        i += 1
+    }
+    // poll_events drains the entire queue but leaves lifecycle state intact.
+    std::raw::store(state + 8, 0)
+    events
+}

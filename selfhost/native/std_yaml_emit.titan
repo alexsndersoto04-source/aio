@@ -1,0 +1,763 @@
+// std::yaml::stringify en Titan: lo mismo que yaml_mod.rs::stringify, es
+// decir serde_yaml 0.9.34 (ser.rs) sobre el emisor de unsafe-libyaml 0.2.11
+// (emitter.rs), con los ajustes que pone serde_yaml: unicode activado,
+// ancho -1 (sin partir líneas), sangría 2, saltos "\n", documento implícito.
+//
+// El valor pasa antes por js_norm (la misma conversión to_json de la VM:
+// bytes -> lista de números, structs y enums -> mapas, floats no finitos ->
+// "non-finite JSON number"). Como serde_json::Value nunca lleva etiquetas ni
+// anclas, del emisor solo intervienen escalares, secuencias y mapas; las
+// listas y mapas vacíos salen en estilo flujo ("[]", "{}"), lo demás en
+// bloque, así que el nivel de flujo de un escalar siempre es 0.
+//
+// Estado e: +0 sb de salida, +8 columna (en caracteres), +16 whitespace,
+// +24 indention, +32 indent, +40 contextos (bit 1 mapa, bit 2 clave simple).
+// Análisis de un escalar a: +0 multiline, +8 flow_plain_allowed,
+// +16 block_plain_allowed, +24 single_quoted_allowed, +32 block_allowed.
+
+// Estilos: 0 cualquiera, 1 plano, 2 comillas simples, 3 dobles, 4 literal.
+
+fn ym_at(p: int, n: int, i: int) -> int {
+    if i >= n {
+        return 0
+    }
+    std::raw::load8(p + i)
+}
+
+fn ym_width_at(p: int, n: int, i: int) -> int {
+    let b = ym_at(p, n, i)
+    if (b & 128) == 0 {
+        return 1
+    }
+    if (b & 224) == 192 {
+        return 2
+    }
+    if (b & 240) == 224 {
+        return 3
+    }
+    if (b & 248) == 240 {
+        return 4
+    }
+    0
+}
+
+fn ym_printable_at(p: int, n: int, i: int) -> bool {
+    let b = ym_at(p, n, i)
+    if b == 10 || (b >= 32 && b <= 126) {
+        return true
+    }
+    if b == 194 {
+        let c = ym_at(p, n, i + 1)
+        return c >= 160 && c <= 191
+    }
+    if b >= 195 && b <= 236 {
+        return true
+    }
+    if b == 237 {
+        return ym_at(p, n, i + 1) <= 159
+    }
+    if b == 238 {
+        return true
+    }
+    if b == 239 {
+        let c = ym_at(p, n, i + 1)
+        if c == 187 {
+            return ym_at(p, n, i + 2) != 191
+        }
+        if c == 191 {
+            let d = ym_at(p, n, i + 2)
+            return d != 190 && d != 191
+        }
+        return true
+    }
+    b >= 240 && b <= 244
+}
+
+fn ym_break_at(p: int, n: int, i: int) -> bool {
+    let b = ym_at(p, n, i)
+    if b == 13 || b == 10 {
+        return true
+    }
+    if b == 194 {
+        return ym_at(p, n, i + 1) == 133
+    }
+    if b == 226 && ym_at(p, n, i + 1) == 128 {
+        let c = ym_at(p, n, i + 2)
+        return c == 168 || c == 169
+    }
+    false
+}
+
+fn ym_blankz_at(p: int, n: int, i: int) -> bool {
+    let b = ym_at(p, n, i)
+    b == 32 || b == 9 || b == 0 || ym_break_at(p, n, i)
+}
+
+// yaml_emitter_analyze_scalar.
+fn ym_analyze(a: int, p: int, n: int) {
+    if n == 0 {
+        std::raw::store(a, 0)
+        std::raw::store(a + 8, 0)
+        std::raw::store(a + 16, 1)
+        std::raw::store(a + 24, 1)
+        std::raw::store(a + 32, 0)
+        return
+    }
+    let mut block_ind = false
+    let mut flow_ind = false
+    let mut line_breaks = false
+    let mut special = false
+    let mut leading_space = false
+    let mut leading_break = false
+    let mut trailing_space = false
+    let mut trailing_break = false
+    let mut break_space = false
+    let mut space_break = false
+    let mut prev_space = false
+    let mut prev_break = false
+    let c0 = ym_at(p, n, 0)
+    let c1 = ym_at(p, n, 1)
+    let c2 = ym_at(p, n, 2)
+    if (c0 == 45 && c1 == 45 && c2 == 45) || (c0 == 46 && c1 == 46 && c2 == 46) {
+        block_ind = true
+        flow_ind = true
+    }
+    let mut preceded_ws = true
+    let mut followed_ws = ym_blankz_at(p, n, ym_width_at(p, n, 0))
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if i == 0 {
+            if c == 35 || c == 44 || c == 91 || c == 93 || c == 123 || c == 125 || c == 38 || c == 42 || c == 33 || c == 124 || c == 62 || c == 39 || c == 34 || c == 37 || c == 64 || c == 96 {
+                flow_ind = true
+                block_ind = true
+            }
+            if c == 63 || c == 58 {
+                flow_ind = true
+                if followed_ws {
+                    block_ind = true
+                }
+            }
+            if c == 45 && followed_ws {
+                flow_ind = true
+                block_ind = true
+            }
+        } else {
+            if c == 44 || c == 63 || c == 91 || c == 93 || c == 123 || c == 125 {
+                flow_ind = true
+            }
+            if c == 58 {
+                flow_ind = true
+                if followed_ws {
+                    block_ind = true
+                }
+            }
+            if c == 35 && preceded_ws {
+                flow_ind = true
+                block_ind = true
+            }
+        }
+        if !ym_printable_at(p, n, i) {
+            special = true
+        }
+        let is_break = ym_break_at(p, n, i)
+        if is_break {
+            line_breaks = true
+        }
+        let w = ym_width_at(p, n, i)
+        if c == 32 {
+            if i == 0 {
+                leading_space = true
+            }
+            if i + w == n {
+                trailing_space = true
+            }
+            if prev_break {
+                break_space = true
+            }
+            prev_space = true
+            prev_break = false
+        } else if is_break {
+            if i == 0 {
+                leading_break = true
+            }
+            if i + w == n {
+                trailing_break = true
+            }
+            if prev_space {
+                space_break = true
+            }
+            prev_space = false
+            prev_break = true
+        } else {
+            prev_space = false
+            prev_break = false
+        }
+        preceded_ws = ym_blankz_at(p, n, i)
+        i += w
+        if i < n {
+            followed_ws = ym_blankz_at(p, n, i + ym_width_at(p, n, i))
+        }
+    }
+    let mut flow_plain = true
+    let mut block_plain = true
+    let mut single = true
+    let mut block = true
+    if leading_space || leading_break || trailing_space || trailing_break {
+        flow_plain = false
+        block_plain = false
+    }
+    if trailing_space {
+        block = false
+    }
+    if break_space {
+        flow_plain = false
+        block_plain = false
+        single = false
+    }
+    if space_break || special {
+        flow_plain = false
+        block_plain = false
+        single = false
+        block = false
+    }
+    if line_breaks {
+        flow_plain = false
+        block_plain = false
+    }
+    if flow_ind {
+        flow_plain = false
+    }
+    if block_ind {
+        block_plain = false
+    }
+    std::raw::store(a, ym_b2i(line_breaks))
+    std::raw::store(a + 8, ym_b2i(flow_plain))
+    std::raw::store(a + 16, ym_b2i(block_plain))
+    std::raw::store(a + 24, ym_b2i(single))
+    std::raw::store(a + 32, ym_b2i(block))
+}
+
+fn ym_b2i(b: bool) -> int {
+    if b {
+        return 1
+    }
+    0
+}
+
+// ------------------------------------------------------------ escritura
+
+fn ym_put(e: int, c: int) {
+    sb_byte(std::raw::load(e), c)
+    std::raw::store(e + 8, std::raw::load(e + 8) + 1)
+}
+
+fn ym_put_break(e: int) {
+    sb_byte(std::raw::load(e), 10)
+    std::raw::store(e + 8, 0)
+}
+
+// WRITE: copia un carácter UTF-8 entero; la columna sube 1.
+fn ym_write(e: int, p: int, n: int, i: int) -> int {
+    let w = ym_width_at(p, n, i)
+    sb_raw(std::raw::load(e), p + i, w)
+    std::raw::store(e + 8, std::raw::load(e + 8) + 1)
+    i + w
+}
+
+fn ym_write_break(e: int, p: int, n: int, i: int) -> int {
+    if std::raw::load8(p + i) == 10 {
+        ym_put_break(e)
+        return i + 1
+    }
+    let w = ym_width_at(p, n, i)
+    sb_raw(std::raw::load(e), p + i, w)
+    std::raw::store(e + 8, 0)
+    i + w
+}
+
+fn ym_write_indent(e: int) {
+    let mut indent = std::raw::load(e + 32)
+    if indent < 0 {
+        indent = 0
+    }
+    let col = std::raw::load(e + 8)
+    if std::raw::load(e + 24) == 0 || col > indent || (col == indent && std::raw::load(e + 16) == 0) {
+        ym_put_break(e)
+    }
+    while std::raw::load(e + 8) < indent {
+        ym_put(e, 32)
+    }
+    std::raw::store(e + 16, 1)
+    std::raw::store(e + 24, 1)
+}
+
+fn ym_indicator(e: int, s: string, need_ws: bool, is_ws: bool, is_ind: bool) {
+    if need_ws && std::raw::load(e + 16) == 0 {
+        ym_put(e, 32)
+    }
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        i = ym_write(e, p, n, i)
+    }
+    std::raw::store(e + 16, ym_b2i(is_ws))
+    if !is_ind {
+        std::raw::store(e + 24, 0)
+    }
+}
+
+fn ym_write_plain(e: int, p: int, n: int) {
+    if std::raw::load(e + 16) == 0 && n != 0 {
+        ym_put(e, 32)
+    }
+    let mut breaks = false
+    let mut spaces = false
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 32 {
+            i = ym_write(e, p, n, i)
+            spaces = true
+        } else if ym_break_at(p, n, i) {
+            if !breaks && c == 10 {
+                ym_put_break(e)
+            }
+            i = ym_write_break(e, p, n, i)
+            std::raw::store(e + 24, 1)
+            breaks = true
+        } else {
+            if breaks {
+                ym_write_indent(e)
+            }
+            i = ym_write(e, p, n, i)
+            std::raw::store(e + 24, 0)
+            spaces = false
+            breaks = false
+        }
+    }
+    std::raw::store(e + 16, 0)
+    std::raw::store(e + 24, 0)
+}
+
+fn ym_write_single(e: int, p: int, n: int) {
+    ym_indicator(e, "'", true, false, false)
+    let mut breaks = false
+    let mut spaces = false
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 32 {
+            i = ym_write(e, p, n, i)
+            spaces = true
+        } else if ym_break_at(p, n, i) {
+            if !breaks && c == 10 {
+                ym_put_break(e)
+            }
+            i = ym_write_break(e, p, n, i)
+            std::raw::store(e + 24, 1)
+            breaks = true
+        } else {
+            if breaks {
+                ym_write_indent(e)
+            }
+            if c == 39 {
+                ym_put(e, 39)
+            }
+            i = ym_write(e, p, n, i)
+            std::raw::store(e + 24, 0)
+            spaces = false
+            breaks = false
+        }
+    }
+    if breaks {
+        ym_write_indent(e)
+    }
+    ym_indicator(e, "'", false, false, false)
+    std::raw::store(e + 16, 0)
+    std::raw::store(e + 24, 0)
+}
+
+fn ym_hexu(d: int) -> int {
+    if d < 10 {
+        return 48 + d
+    }
+    55 + d
+}
+
+fn ym_write_double(e: int, p: int, n: int) {
+    ym_indicator(e, "\"", true, false, false)
+    let mut spaces = false
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let bom = c == 239 && ym_at(p, n, i + 1) == 187 && ym_at(p, n, i + 2) == 191
+        if !ym_printable_at(p, n, i) || bom || ym_break_at(p, n, i) || c == 34 || c == 92 {
+            let w = ym_width_at(p, n, i)
+            let mut v = 0
+            if w == 1 {
+                v = c & 127
+            } else if w == 2 {
+                v = c & 31
+            } else if w == 3 {
+                v = c & 15
+            } else if w == 4 {
+                v = c & 7
+            }
+            let mut k = 1
+            while k < w {
+                v = v * 64 + (std::raw::load8(p + i + k) & 63)
+                k += 1
+            }
+            i += w
+            ym_put(e, 92)
+            if v == 0 {
+                ym_put(e, 48)
+            } else if v == 7 {
+                ym_put(e, 97)
+            } else if v == 8 {
+                ym_put(e, 98)
+            } else if v == 9 {
+                ym_put(e, 116)
+            } else if v == 10 {
+                ym_put(e, 110)
+            } else if v == 11 {
+                ym_put(e, 118)
+            } else if v == 12 {
+                ym_put(e, 102)
+            } else if v == 13 {
+                ym_put(e, 114)
+            } else if v == 27 {
+                ym_put(e, 101)
+            } else if v == 34 {
+                ym_put(e, 34)
+            } else if v == 92 {
+                ym_put(e, 92)
+            } else if v == 133 {
+                ym_put(e, 78)
+            } else if v == 160 {
+                ym_put(e, 95)
+            } else if v == 8232 {
+                ym_put(e, 76)
+            } else if v == 8233 {
+                ym_put(e, 80)
+            } else {
+                let mut digits = 8
+                if v <= 255 {
+                    ym_put(e, 120)
+                    digits = 2
+                } else if v <= 65535 {
+                    ym_put(e, 117)
+                    digits = 4
+                } else {
+                    ym_put(e, 85)
+                }
+                let mut sh = (digits - 1) * 4
+                while sh >= 0 {
+                    ym_put(e, ym_hexu(std::raw::shr(v, sh) & 15))
+                    sh -= 4
+                }
+            }
+            spaces = false
+        } else if c == 32 {
+            i = ym_write(e, p, n, i)
+            spaces = true
+        } else {
+            i = ym_write(e, p, n, i)
+            spaces = false
+        }
+    }
+    ym_indicator(e, "\"", false, false, false)
+    std::raw::store(e + 16, 0)
+    std::raw::store(e + 24, 0)
+}
+
+// Retrocede al comienzo del carácter UTF-8 anterior a la posición i.
+fn ym_prev_char(p: int, i: int) -> int {
+    let mut j = i - 1
+    while (std::raw::load8(p + j) & 192) == 128 {
+        j -= 1
+    }
+    j
+}
+
+fn ym_write_literal(e: int, p: int, n: int) {
+    ym_indicator(e, "|", true, false, false)
+    if ym_at(p, n, 0) == 32 || ym_break_at(p, n, 0) {
+        ym_indicator(e, "2", false, false, false)
+    }
+    if n == 0 {
+        ym_indicator(e, "-", false, false, false)
+    } else {
+        let last = ym_prev_char(p, n)
+        if !ym_break_at(p, n, last) {
+            ym_indicator(e, "-", false, false, false)
+        } else if last == 0 {
+            ym_indicator(e, "+", false, false, false)
+        } else {
+            let before = ym_prev_char(p, last)
+            if ym_break_at(p, n, before) {
+                ym_indicator(e, "+", false, false, false)
+            }
+        }
+    }
+    ym_put_break(e)
+    std::raw::store(e + 24, 1)
+    std::raw::store(e + 16, 1)
+    let mut breaks = true
+    let mut i = 0
+    while i < n {
+        if ym_break_at(p, n, i) {
+            i = ym_write_break(e, p, n, i)
+            std::raw::store(e + 24, 1)
+            breaks = true
+        } else {
+            if breaks {
+                ym_write_indent(e)
+            }
+            i = ym_write(e, p, n, i)
+            std::raw::store(e + 24, 0)
+            breaks = false
+        }
+    }
+}
+
+// ------------------------------------------------------------ nodos
+
+fn ym_push_indent(e: int, flow: bool, indentless: bool) -> int {
+    let old = std::raw::load(e + 32)
+    if old < 0 {
+        if flow {
+            std::raw::store(e + 32, 2)
+        } else {
+            std::raw::store(e + 32, 0)
+        }
+    } else if !indentless {
+        std::raw::store(e + 32, old + 2)
+    }
+    old
+}
+
+// Estilo que pide serde_yaml para un string (serialize_str).
+fn ym_str_style(st: int, p: int, n: int) -> int {
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 10 {
+            return 4
+        }
+        i += 1
+    }
+    if n == 0 || ym_is_null_word(p, n) || ym_parse_bool(p, n) >= 0 {
+        return 2
+    }
+    if ym_visit_int(p, n, st) != 0 {
+        return 2
+    }
+    if ym_digits_but_not_number(p, n) {
+        return 2
+    }
+    if ym_parse_f64(p, n, st) != 0 {
+        return 2
+    }
+    0
+}
+
+// yaml_emitter_emit_scalar: elige el estilo final y escribe.
+fn ym_emit_scalar(e: int, a: int, p: int, n: int, req: int) {
+    ym_analyze(a, p, n)
+    let simple_key = (std::raw::load(e + 40) & 2) != 0
+    let mut style = req
+    if style == 0 {
+        style = 1
+    }
+    if simple_key && std::raw::load(a) != 0 {
+        style = 3
+    }
+    if style == 1 {
+        if std::raw::load(a + 16) == 0 {
+            style = 2
+        }
+        if n == 0 && simple_key {
+            style = 2
+        }
+    }
+    if style == 2 && std::raw::load(a + 24) == 0 {
+        style = 3
+    }
+    if style == 4 && (std::raw::load(a + 32) == 0 || simple_key) {
+        style = 3
+    }
+    let old = ym_push_indent(e, true, false)
+    if style == 1 {
+        ym_write_plain(e, p, n)
+    } else if style == 2 {
+        ym_write_single(e, p, n)
+    } else if style == 3 {
+        ym_write_double(e, p, n)
+    } else {
+        ym_write_literal(e, p, n)
+    }
+    std::raw::store(e + 32, old)
+}
+
+fn ym_emit_text(e: int, a: int, s: any, req: int) {
+    ym_emit_scalar(e, a, std::raw::bits(s) + 16, rt_slen(s), req)
+}
+
+fn ym_emit_node(e: int, a: int, st: int, v: any, mapping: bool, simple_key: bool) {
+    let mut ctx = 0
+    if mapping {
+        ctx = 1
+    }
+    if simple_key {
+        ctx += 2
+    }
+    std::raw::store(e + 40, ctx)
+    let t = std::raw::tag(v)
+    if t == 0 {
+        ym_emit_text(e, a, "null", 1)
+        return
+    }
+    if t == 3 {
+        if std::raw::bits(v) != 0 {
+            ym_emit_text(e, a, "true", 1)
+        } else {
+            ym_emit_text(e, a, "false", 1)
+        }
+        return
+    }
+    if t == 1 {
+        ym_emit_text(e, a, rt_int_to_str(std::raw::bits(v)), 1)
+        return
+    }
+    if t == 2 {
+        ym_emit_text(e, a, ym_float_text(std::raw::bits(v)), 1)
+        return
+    }
+    if t == 5 {
+        let p = std::raw::bits(v) + 16
+        let n = rt_slen(v)
+        ym_emit_scalar(e, a, p, n, ym_str_style(st, p, n))
+        return
+    }
+    if t == 7 {
+        let n = rt_seq_len(v)
+        if n == 0 {
+            ym_indicator(e, "[", true, true, false)
+            ym_indicator(e, "]", false, false, false)
+            return
+        }
+        let indentless = mapping && std::raw::load(e + 24) == 0
+        let old = ym_push_indent(e, false, indentless)
+        let mut i = 0
+        while i < n {
+            ym_write_indent(e)
+            ym_indicator(e, "-", true, false, true)
+            ym_emit_node(e, a, st, rt_seq_get(v, i), false, false)
+            i += 1
+        }
+        std::raw::store(e + 32, old)
+        return
+    }
+    let m = std::raw::bits(v)
+    let n = std::raw::load(m + 8)
+    if n == 0 {
+        ym_indicator(e, "{", true, true, false)
+        ym_indicator(e, "}", false, false, false)
+        return
+    }
+    let old = ym_push_indent(e, false, false)
+    let mut i = 0
+    while i < n {
+        let ent = std::raw::load(m + 24) + 24 * i
+        let key = std::raw::value(5, std::raw::load(ent))
+        let val = std::raw::value(std::raw::load(ent + 8), std::raw::load(ent + 16))
+        ym_write_indent(e)
+        // check_simple_key: una línea y como mucho 128 bytes.
+        ym_analyze(a, std::raw::bits(key) + 16, rt_slen(key))
+        if std::raw::load(a) == 0 && rt_slen(key) <= 128 {
+            ym_emit_node(e, a, st, key, true, true)
+            ym_indicator(e, ":", false, false, false)
+        } else {
+            ym_indicator(e, "?", true, false, true)
+            ym_emit_node(e, a, st, key, true, false)
+            ym_write_indent(e)
+            ym_indicator(e, ":", true, false, true)
+        }
+        ym_emit_node(e, a, st, val, true, false)
+        i += 1
+    }
+    std::raw::store(e + 32, old)
+}
+
+// ryu::Buffer::format_finite (exponente sin '+').
+fn ym_float_text(bits: int) -> any {
+    let negative = bits < 0
+    let b = bits & 9223372036854775807
+    let sbuf = sb_new(32)
+    if negative {
+        sb_byte(sbuf, 45)
+    }
+    if b == 0 {
+        sb_str(sbuf, "0.0")
+        return sb_finish(sbuf)
+    }
+    let (num, nd, k) = fl_shortest(b)
+    let text = rt_int_to_str(num)
+    let tp = std::raw::bits(text) + 16
+    if nd <= k && k <= 16 {
+        sb_raw(sbuf, tp, nd)
+        let mut z = nd
+        while z < k {
+            sb_byte(sbuf, 48)
+            z += 1
+        }
+        sb_byte(sbuf, 46)
+        sb_byte(sbuf, 48)
+    } else if 0 < k && k <= 16 {
+        sb_raw(sbuf, tp, k)
+        sb_byte(sbuf, 46)
+        sb_raw(sbuf, tp + k, nd - k)
+    } else if k > -5 && k <= 0 {
+        sb_byte(sbuf, 48)
+        sb_byte(sbuf, 46)
+        let mut z = 0
+        while z < 0 - k {
+            sb_byte(sbuf, 48)
+            z += 1
+        }
+        sb_raw(sbuf, tp, nd)
+    } else {
+        sb_raw(sbuf, tp, 1)
+        if nd > 1 {
+            sb_byte(sbuf, 46)
+            sb_raw(sbuf, tp + 1, nd - 1)
+        }
+        sb_byte(sbuf, 101)
+        sb_str(sbuf, rt_int_to_str(k - 1))
+    }
+    sb_finish(sbuf)
+}
+
+fn std__yaml__stringify(v: any) -> any {
+    let norm = js_norm(v, "std::yaml::stringify")
+    let e = rt_alloc(48)
+    std::raw::store(e, sb_new(128))
+    std::raw::store(e + 8, 0)
+    std::raw::store(e + 16, 1)
+    std::raw::store(e + 24, 1)
+    std::raw::store(e + 32, -1)
+    std::raw::store(e + 40, 0)
+    let a = rt_alloc(40)
+    let st = rt_alloc(56)
+    ym_emit_node(e, a, st, norm, false, false)
+    // Fin de documento implícito.
+    std::raw::store(e + 32, -1)
+    ym_write_indent(e)
+    let out = sb_finish(std::raw::load(e))
+    rt_free_block(st)
+    rt_free_block(a)
+    rt_free_block(e)
+    out
+}

@@ -1,0 +1,41 @@
+// Opt-in end-to-end regression against a real mpv process and its Unix IPC.
+// Set TITAN_TEST_REAL_MPV_PLAYER=1 only on a machine where audio playback is
+// safe to start; the test produces an audible 440 Hz tone while it runs.
+fn main() {
+    if std::env::get("TITAN_TEST_REAL_MPV_PLAYER") != "1" {
+        println("real mpv player integration skipped")
+        return
+    }
+    if std::audio::player_backend() != "mpv" {
+        println("real mpv player integration skipped: mpv is unavailable")
+        return
+    }
+
+    let suffix = std::encoding::hex_encode(std::random::bytes(8))
+    let first = std::path::join(std::dirs::temp(), "titan player's " + suffix + " first.wav")
+    let second = std::path::join(std::dirs::temp(), "titan player's " + suffix + " second.wav")
+    let samples = std::audio::sine_wave(440.0, 5000, 8000, 0.2)
+    std::audio::write_wav(first, samples, 8000, 1)
+    std::audio::write_wav(second, samples, 8000, 1)
+
+    std::testing::assert(std::text::contains(std::audio::player_play(first), " via mpv"), "mpv starts through its IPC-enabled backend")
+    std::time::sleep_ms(200)
+    std::testing::assert_eq(std::audio::player_pause(), "paused", "mpv pause command")
+    std::testing::assert_eq(std::audio::player_resume(), "resumed", "mpv resume command")
+    std::testing::assert(std::audio::player_set_volume(35), "mpv volume property")
+    std::testing::assert_eq(std::audio::player_seek(1.26), "seek to 1.3s", "mpv absolute seek")
+    std::testing::assert(std::math::abs(std::audio::player_position() - 1.25) < 0.5, "mpv reports the sought playback position")
+    std::testing::assert(std::text::contains(std::audio::player_queue_add(second), "queued "), "mpv appends a real track")
+
+    let current = std::audio::player_current()
+    std::testing::assert_eq(std::map::get(current, "index"), 0, "mpv reports the current playlist index")
+    std::testing::assert_eq(std::map::get(current, "count"), 2, "mpv reports the queue length")
+    std::testing::assert(std::text::ends_with(std::map::get(current, "path"), " first.wav"), "mpv preserves a path containing spaces and an apostrophe")
+    std::testing::assert_eq(std::audio::player_next(), "moved to playlist-next", "mpv advances the queue")
+    std::testing::assert_eq(std::audio::player_prev(), "moved to playlist-prev", "mpv returns to the previous track")
+    std::testing::assert_eq(std::audio::player_queue_clear(), "queue cleared", "mpv clears queued tracks")
+    std::testing::assert_eq(std::audio::player_stop(), "stopped", "mpv process is stopped")
+    std::fs::remove_file(first)
+    std::fs::remove_file(second)
+    println("real mpv player integration ok")
+}

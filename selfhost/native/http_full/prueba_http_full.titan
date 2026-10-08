@@ -1,0 +1,119 @@
+fn show_response(label: string, response: any) {
+    println(label)
+    println(std::map::get(response, "status"))
+    println(std::map::get(response, "final_url"))
+    println(std::encoding::utf8_decode(std::map::get(response, "body")))
+}
+
+fn main() {
+    let args = std::env::args()
+    let headers = std::map::new()
+    let options = std::map::new()
+    if len(args) >= 2 && args[len(args) - 1] == "--tls-std" {
+        let url = args[len(args) - 2]
+        let response = std::http::request("GET", url, headers, std::encoding::utf8_encode(""), 67108864, 3, 5000)
+        println(std::map::get(response, "status"))
+        println(std::map::get(response, "final_url"))
+        println(std::encoding::utf8_decode(std::map::get(response, "body")))
+        return
+    }
+    if len(args) >= 2 && (args[len(args) - 1] == "--tls" || args[len(args) - 1] == "--tls-timeout") {
+        let url = args[len(args) - 2]
+        let mut tls_options = options
+        if args[len(args) - 1] == "--tls-timeout" {
+            tls_options = std::map::insert(tls_options, "timeout_ms", 100)
+        }
+        println(std::json::stringify(std::http_full::get_json(url, headers, tls_options)))
+        return
+    }
+    let base = args[len(args) - 1]
+
+    println("GET JSON")
+    println(std::json::stringify(std::http_full::get_json(base + "/json", headers, options)))
+
+    println("GET gzip JSON")
+    println(std::json::stringify(std::http_full::get_json(base + "/gzip", headers, options)))
+
+    let payload = std::json::parse("{\"msg\":\"hola\",\"n\":42}")
+    println("POST JSON")
+    println(std::json::stringify(std::http_full::post_json(base + "/json-echo", payload, headers, options)))
+
+    let form = [["note", "hola mundo"], ["path", "a/b+c"]]
+    let form_response = std::http_full::post_form(base + "/form-echo", form, headers, options)
+    show_response("POST form", form_response)
+
+    let custom_headers = std::map::insert(std::map::new(), "X-Probe", "seen")
+    let custom_options = std::map::insert(std::map::new(), "basic_user", "alice")
+    let custom_options = std::map::insert(custom_options, "basic_pass", "secret")
+    let custom_options = std::map::insert(custom_options, "bearer", "token-123")
+    let custom_options = std::map::insert(custom_options, "user_agent", "http-full-test/1")
+    let custom_options = std::map::insert(custom_options, "timeout_ms", 5000)
+    let custom_options = std::map::insert(custom_options, "max_redirects", 3)
+    let response = std::http_full::request(
+        "gEt",
+        base + "/redirect",
+        custom_headers,
+        std::encoding::utf8_encode(""),
+        custom_options,
+    )
+    show_response("REQUEST redirect/options", response)
+
+    let basic_options = std::map::insert(std::map::new(), "basic_user", "alice")
+    let basic_options = std::map::insert(basic_options, "basic_pass", "secret")
+    let basic_response = std::http_full::request(
+        "GET",
+        base + "/reflect",
+        headers,
+        std::encoding::utf8_encode(""),
+        basic_options,
+    )
+    show_response("REQUEST basic/options", basic_response)
+
+    let https_url = std::text::replace(base, "http://", "https://") + "/json"
+    let https_rejected = match std::try::catch(|| std::http_full::request(
+        "GET",
+        https_url,
+        headers,
+        std::encoding::utf8_encode(""),
+        options,
+    )) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+    if https_rejected {
+        println("Plain HTTP port rejects TLS: true")
+    } else {
+        println("Plain HTTP port rejects TLS: false")
+    }
+
+    let missing_rejected = match std::try::catch(|| std::http_full::request(
+        "GET",
+        base + "/missing",
+        headers,
+        std::encoding::utf8_encode(""),
+        options,
+    )) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+    if missing_rejected {
+        println("HTTP 404 rejected: true")
+    } else {
+        println("HTTP 404 rejected: false")
+    }
+
+    let no_redirect_options = std::map::insert(custom_options, "max_redirects", 0)
+    let no_redirect_response = std::http_full::request(
+        "GET",
+        base + "/redirect",
+        custom_headers,
+        std::encoding::utf8_encode(""),
+        no_redirect_options,
+    )
+    let redirect_limit_honored = std::map::get(no_redirect_response, "status") == 302 && std::map::get(no_redirect_response, "final_url") == base + "/redirect"
+    if redirect_limit_honored {
+        println("Redirect limit honored: true")
+    } else {
+        println("Redirect limit honored: false")
+    }
+}

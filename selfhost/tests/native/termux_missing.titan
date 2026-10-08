@@ -1,0 +1,15 @@
+fn main() {
+    let available = std::termux::is_available()
+    println("Termux API available", available)
+    if !available {
+        let result = std::try::catch(|| std::termux::battery_status())
+        match result {
+            Result::Ok(_) => std::testing::assert(false, "missing Termux CLI must fail"),
+            Result::Err(message) => {
+                let expected = "native function 'std::termux::battery_status' failed: termux-api CLI 'termux-battery-status' is not installed. Run: pkg install termux-api"
+                std::testing::assert(std::text::equals(message, expected), "Termux missing-CLI error")
+                println("battery status missing-CLI error", message)
+            },
+        }
+    }
+}

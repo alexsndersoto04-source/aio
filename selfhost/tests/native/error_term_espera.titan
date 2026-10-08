@@ -1,0 +1,5 @@
+// read_key: el plazo no puede ser negativo.
+fn main() {
+    print(std::term::read_key(-1))
+    print("no llega")
+}

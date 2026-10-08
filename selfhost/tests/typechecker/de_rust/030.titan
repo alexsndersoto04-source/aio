@@ -1,0 +1,1 @@
+fn main() { std::net::tcp_close(42) }

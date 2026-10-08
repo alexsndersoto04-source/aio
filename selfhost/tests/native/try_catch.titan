@@ -1,0 +1,61 @@
+// std::try::catch: errores atrapados como Result::Err(mensaje).
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok({v})",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn divide(a: int, b: int) -> int {
+    a / b
+}
+
+fn deep(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    1 + deep(n - 1)
+}
+
+fn nested(x: int) -> int {
+    let inner = std::try::catch(|| { divide(x, 0) })
+    match inner {
+        Result::Ok(v) => v,
+        Result::Err(e) => len(e),
+    }
+}
+
+fn main() {
+    println(show(std::try::catch(|| { 40 + 2 })))
+    println(show(std::try::catch(|| { divide(1, 0) })))
+    let big = 9223372036854775807
+    println(show(std::try::catch(|| { big + 1 })))
+    println(show(std::try::catch(|| { deep(100000) })))
+    println(show(std::try::catch(|| { deep(100) })))
+    let xs = [1, 2, 3]
+    println(show(std::try::catch(|| { xs[7] })))
+    println(show(std::try::catch(|| { len(std::path::canonical("/no/existe/de/verdad")) })))
+    println(show(std::try::catch(|| { nested(5) })))
+    // Un catch dentro de otro: el de dentro atrapa y el de fuera sigue.
+    let outer = std::try::catch(|| {
+        let a = nested(1)
+        a + divide(10, 0)
+    })
+    println(show(outer))
+    // Muchos catch seguidos (el registro se quita siempre).
+    let mut ok = 0
+    let mut bad = 0
+    let mut i = 0
+    while i < 2000 {
+        let r = std::try::catch(|| { divide(100, i % 3) })
+        match r {
+            Result::Ok(_) => { ok += 1 },
+            Result::Err(_) => { bad += 1 },
+        }
+        i += 1
+    }
+    println("ok={ok} bad={bad}")
+    // Después de los catch, un error sin catch sigue terminando el programa.
+    println(divide(1, 0))
+}

@@ -1,0 +1,4 @@
+fn main() {
+    let h = std::process::spawn("head -c 5000000 /dev/zero")
+    std::process::spawn_wait(h)
+}

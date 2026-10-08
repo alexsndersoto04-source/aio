@@ -1,0 +1,179 @@
+// Llamadas al sistema SIN sistema operativo (objetivo aarch64-none).
+//
+// El runtime pide todo con std::raw::syscall y números de Linux x86-64. En
+// un programa que arranca solo (sin Linux debajo), el backend LLVM convierte
+// cada std::raw::syscall en una llamada a rt_sys_bare, que la atiende con el
+// hardware de verdad de la máquina "virt" (QEMU y placas compatibles):
+//   - write en 1/2: puerto serie PL011 en 0x09000000 (espera a que haya hueco
+//     en la cola, bandera TXFF, y escribe el byte en el registro de datos);
+//   - read en 0: el mismo puerto serie (espera al menos un byte, RXFE);
+//   - mmap anónimo: memoria propia que va desde el final del programa
+//     (__kernel_end, alineado a 4096) hasta 0x80000000; se entrega a cero
+//     como en Linux; munmap devuelve la memoria si es la última entregada;
+//   - exit / exit_group: apaga la máquina con PSCI SYSTEM_OFF (hvc #0) y deja
+//     el código de salida en x1 para quien lo quiera leer; si no hay firmware
+//     PSCI, se queda parada (wfi);
+//   - clock_gettime: el contador del procesador (CNTVCT_EL0 / CNTFRQ_EL0);
+//   - nanosleep: espera real mirando ese contador;
+//   - close de 0/1/2: 0; ioctl: -ENOTTY (el puerto serie no es terminal).
+// Todo lo demás (archivos, procesos, red, ...) no existe sin sistema
+// operativo y devuelve -ENOSYS (-38): nunca se inventa un resultado.
+// Solo se compila para aarch64-none (en los demás nadie la llama).
+// Prefijo `sb_` ya usado por el constructor de strings: aquí `bm_`.
+
+fn bm_uart() -> int {
+    150994944
+}
+
+// Globales + 3000: siguiente dirección libre; + 3008: fin de la memoria.
+fn bm_heap() -> int {
+    std::raw::globals() + 3000
+}
+
+fn bm_putc(c: int) {
+    let u = bm_uart()
+    // FR (+0x18) bit 5 = TXFF (cola de envío llena).
+    while (std::raw::mmio_load32(u + 24) & 32) != 0 {
+    }
+    std::raw::mmio_store32(u, c & 255)
+}
+
+fn bm_write(fd: int, buf: int, n: int) -> int {
+    if fd != 1 && fd != 2 {
+        return -9
+    }
+    let mut i = 0
+    while i < n {
+        bm_putc(std::raw::load8(buf + i))
+        i += 1
+    }
+    n
+}
+
+fn bm_read(fd: int, buf: int, n: int) -> int {
+    if fd != 0 {
+        return -9
+    }
+    if n <= 0 {
+        return 0
+    }
+    let u = bm_uart()
+    // FR bit 4 = RXFE (cola de recepción vacía): espera el primer byte y
+    // después toma los que ya hayan llegado.
+    while (std::raw::mmio_load32(u + 24) & 16) != 0 {
+    }
+    let mut i = 0
+    while i < n && (std::raw::mmio_load32(u + 24) & 16) == 0 {
+        std::raw::store8(buf + i, std::raw::mmio_load32(u) & 255)
+        i += 1
+    }
+    i
+}
+
+fn bm_mmap(addr: int, size: int, flags: int, fd: int) -> int {
+    // Solo memoria anónima (MAP_ANONYMOUS = 0x20): no hay archivos.
+    if (flags & 32) == 0 {
+        return -19
+    }
+    if size <= 0 {
+        return -22
+    }
+    let h = bm_heap()
+    let n = (size + 4095) & (-4096)
+    let p = std::raw::load(h)
+    let end = std::raw::load(h + 8)
+    if n > end - p {
+        return -12
+    }
+    std::raw::store(h, p + n)
+    // A cero, como la memoria anónima de Linux.
+    let mut q = p
+    while q < p + n {
+        std::raw::store(q, 0)
+        q += 8
+    }
+    p
+}
+
+fn bm_munmap(addr: int, size: int) -> int {
+    if (addr & 4095) != 0 || size <= 0 {
+        return -22
+    }
+    let h = bm_heap()
+    let n = (size + 4095) & (-4096)
+    if addr + n == std::raw::load(h) {
+        std::raw::store(h, addr)
+    }
+    0
+}
+
+fn bm_exit(code: int) -> int {
+    // PSCI SYSTEM_OFF = 0x84000008.
+    std::raw::hvc(2214592520, code)
+    while true {
+    }
+    0
+}
+
+fn bm_clock(clk: int, ts: int) -> int {
+    let c = std::raw::sysreg(1)
+    let f = std::raw::sysreg(2)
+    if f <= 0 {
+        return -22
+    }
+    std::raw::store(ts, c / f)
+    std::raw::store(ts + 8, (c % f) * 1000000000 / f)
+    0
+}
+
+fn bm_nanosleep(req: int, rem: int) -> int {
+    let s = std::raw::load(req)
+    let ns = std::raw::load(req + 8)
+    if s < 0 || ns < 0 || ns > 999999999 {
+        return -22
+    }
+    let f = std::raw::sysreg(2)
+    let ticks = s * f + ns * f / 1000000000
+    let t0 = std::raw::sysreg(1)
+    while std::raw::sysreg(1) - t0 < ticks {
+    }
+    if rem != 0 {
+        std::raw::store(rem, 0)
+        std::raw::store(rem + 8, 0)
+    }
+    0
+}
+
+fn rt_sys_bare(n: int, a: int, b: int, c: int, d: int, e: int, f: int) -> int {
+    if n == 1 {
+        return bm_write(a, b, c)
+    }
+    if n == 0 {
+        return bm_read(a, b, c)
+    }
+    if n == 9 {
+        return bm_mmap(a, b, d, e)
+    }
+    if n == 11 {
+        return bm_munmap(a, b)
+    }
+    if n == 60 || n == 231 {
+        return bm_exit(a)
+    }
+    if n == 228 {
+        return bm_clock(a, b)
+    }
+    if n == 35 {
+        return bm_nanosleep(a, b)
+    }
+    if n == 3 {
+        if a >= 0 && a <= 2 {
+            return 0
+        }
+        return -9
+    }
+    if n == 16 {
+        return -25
+    }
+    -38
+}

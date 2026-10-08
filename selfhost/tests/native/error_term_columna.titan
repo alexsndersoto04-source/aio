@@ -1,0 +1,5 @@
+// move_to: la columna tiene que caber en u16 (se revisa primero).
+fn main() {
+    std::term::move_to(-1, 70000)
+    print("no llega")
+}

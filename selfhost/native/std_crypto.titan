@@ -1,0 +1,867 @@
+// std::crypto: cifrado autenticado como chacha20poly1305 0.10.1 y
+// aes-gcm 0.10.3 (RustCrypto).
+//
+//   ChaCha20-Poly1305: RFC 8439 (clave 32 bytes, nonce 12, etiqueta 16).
+//   AES-256-GCM: FIPS 197 + NIST SP 800-38D (nonce 12, etiqueta 16).
+// Mismas comprobaciones y mismos mensajes que crypto_mod.rs: primero la
+// longitud de la clave, luego la del nonce; al descifrar, una etiqueta
+// incorrecta (o un texto de menos de 16 bytes) es "cipher failed (...)";
+// `*_open` mira antes que haya al menos 12 bytes para el nonce.
+// Las claves y nonces aleatorios salen de getrandom, como OsRng.
+
+fn cr_m32() -> int { 4294967295 }
+
+fn cr_le32(p: int) -> int {
+    std::raw::load8(p) | std::raw::shl(std::raw::load8(p + 1), 8) | std::raw::shl(std::raw::load8(p + 2), 16) | std::raw::shl(std::raw::load8(p + 3), 24)
+}
+
+fn cr_put_le32(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+fn cr_put_le64(p: int, v: int) {
+    cr_put_le32(p, v & 4294967295)
+    cr_put_le32(p + 4, std::raw::shr(v, 32))
+}
+
+fn cr_put_be64(p: int, v: int) {
+    let mut i = 0
+    while i < 8 {
+        std::raw::store8(p + i, std::raw::shr(v, 56 - 8 * i) & 255)
+        i += 1
+    }
+}
+
+fn cr_be64(p: int) -> int {
+    let mut v = 0
+    let mut i = 0
+    while i < 8 {
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+        i += 1
+    }
+    v
+}
+
+fn cr_zero(p: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::store8(p + i, 0)
+        i += 1
+    }
+}
+
+// Comparación de etiquetas sin salir antes (como subtle::ConstantTimeEq).
+fn cr_tag_eq(a: int, b: int) -> bool {
+    let mut d = 0
+    let mut i = 0
+    while i < 16 {
+        d = d | (std::raw::load8(a + i) ^ std::raw::load8(b + i))
+        i += 1
+    }
+    d == 0
+}
+
+// ------------------------------------------------------------ ChaCha20
+
+// Un bloque de 64 bytes de ChaCha20 (RFC 8439 §2.3) en `out`.
+fn cr_chacha_block(key: int, counter: int, nonce: int, st: int, x: int, out: int) {
+    let m = 4294967295
+    let k0 = cr_le32(key)
+    let k1 = cr_le32(key + 4)
+    let k2 = cr_le32(key + 8)
+    let k3 = cr_le32(key + 12)
+    let k4 = cr_le32(key + 16)
+    let k5 = cr_le32(key + 20)
+    let k6 = cr_le32(key + 24)
+    let k7 = cr_le32(key + 28)
+    let c0 = counter & m
+    let n0 = cr_le32(nonce)
+    let n1 = cr_le32(nonce + 4)
+    let n2 = cr_le32(nonce + 8)
+    let mut x0 = 1634760805
+    let mut x1 = 857760878
+    let mut x2 = 2036477234
+    let mut x3 = 1797285236
+    let mut x4 = k0
+    let mut x5 = k1
+    let mut x6 = k2
+    let mut x7 = k3
+    let mut x8 = k4
+    let mut x9 = k5
+    let mut x10 = k6
+    let mut x11 = k7
+    let mut x12 = c0
+    let mut x13 = n0
+    let mut x14 = n1
+    let mut x15 = n2
+    let mut r = 0
+    while r < 10 {
+        x0 = (x0 + x4) & m
+        x12 = x12 ^ x0
+        x12 = (std::raw::shl(x12, 16) | std::raw::shr(x12, 16)) & m
+        x8 = (x8 + x12) & m
+        x4 = x4 ^ x8
+        x4 = (std::raw::shl(x4, 12) | std::raw::shr(x4, 20)) & m
+        x0 = (x0 + x4) & m
+        x12 = x12 ^ x0
+        x12 = (std::raw::shl(x12, 8) | std::raw::shr(x12, 24)) & m
+        x8 = (x8 + x12) & m
+        x4 = x4 ^ x8
+        x4 = (std::raw::shl(x4, 7) | std::raw::shr(x4, 25)) & m
+        x1 = (x1 + x5) & m
+        x13 = x13 ^ x1
+        x13 = (std::raw::shl(x13, 16) | std::raw::shr(x13, 16)) & m
+        x9 = (x9 + x13) & m
+        x5 = x5 ^ x9
+        x5 = (std::raw::shl(x5, 12) | std::raw::shr(x5, 20)) & m
+        x1 = (x1 + x5) & m
+        x13 = x13 ^ x1
+        x13 = (std::raw::shl(x13, 8) | std::raw::shr(x13, 24)) & m
+        x9 = (x9 + x13) & m
+        x5 = x5 ^ x9
+        x5 = (std::raw::shl(x5, 7) | std::raw::shr(x5, 25)) & m
+        x2 = (x2 + x6) & m
+        x14 = x14 ^ x2
+        x14 = (std::raw::shl(x14, 16) | std::raw::shr(x14, 16)) & m
+        x10 = (x10 + x14) & m
+        x6 = x6 ^ x10
+        x6 = (std::raw::shl(x6, 12) | std::raw::shr(x6, 20)) & m
+        x2 = (x2 + x6) & m
+        x14 = x14 ^ x2
+        x14 = (std::raw::shl(x14, 8) | std::raw::shr(x14, 24)) & m
+        x10 = (x10 + x14) & m
+        x6 = x6 ^ x10
+        x6 = (std::raw::shl(x6, 7) | std::raw::shr(x6, 25)) & m
+        x3 = (x3 + x7) & m
+        x15 = x15 ^ x3
+        x15 = (std::raw::shl(x15, 16) | std::raw::shr(x15, 16)) & m
+        x11 = (x11 + x15) & m
+        x7 = x7 ^ x11
+        x7 = (std::raw::shl(x7, 12) | std::raw::shr(x7, 20)) & m
+        x3 = (x3 + x7) & m
+        x15 = x15 ^ x3
+        x15 = (std::raw::shl(x15, 8) | std::raw::shr(x15, 24)) & m
+        x11 = (x11 + x15) & m
+        x7 = x7 ^ x11
+        x7 = (std::raw::shl(x7, 7) | std::raw::shr(x7, 25)) & m
+        x0 = (x0 + x5) & m
+        x15 = x15 ^ x0
+        x15 = (std::raw::shl(x15, 16) | std::raw::shr(x15, 16)) & m
+        x10 = (x10 + x15) & m
+        x5 = x5 ^ x10
+        x5 = (std::raw::shl(x5, 12) | std::raw::shr(x5, 20)) & m
+        x0 = (x0 + x5) & m
+        x15 = x15 ^ x0
+        x15 = (std::raw::shl(x15, 8) | std::raw::shr(x15, 24)) & m
+        x10 = (x10 + x15) & m
+        x5 = x5 ^ x10
+        x5 = (std::raw::shl(x5, 7) | std::raw::shr(x5, 25)) & m
+        x1 = (x1 + x6) & m
+        x12 = x12 ^ x1
+        x12 = (std::raw::shl(x12, 16) | std::raw::shr(x12, 16)) & m
+        x11 = (x11 + x12) & m
+        x6 = x6 ^ x11
+        x6 = (std::raw::shl(x6, 12) | std::raw::shr(x6, 20)) & m
+        x1 = (x1 + x6) & m
+        x12 = x12 ^ x1
+        x12 = (std::raw::shl(x12, 8) | std::raw::shr(x12, 24)) & m
+        x11 = (x11 + x12) & m
+        x6 = x6 ^ x11
+        x6 = (std::raw::shl(x6, 7) | std::raw::shr(x6, 25)) & m
+        x2 = (x2 + x7) & m
+        x13 = x13 ^ x2
+        x13 = (std::raw::shl(x13, 16) | std::raw::shr(x13, 16)) & m
+        x8 = (x8 + x13) & m
+        x7 = x7 ^ x8
+        x7 = (std::raw::shl(x7, 12) | std::raw::shr(x7, 20)) & m
+        x2 = (x2 + x7) & m
+        x13 = x13 ^ x2
+        x13 = (std::raw::shl(x13, 8) | std::raw::shr(x13, 24)) & m
+        x8 = (x8 + x13) & m
+        x7 = x7 ^ x8
+        x7 = (std::raw::shl(x7, 7) | std::raw::shr(x7, 25)) & m
+        x3 = (x3 + x4) & m
+        x14 = x14 ^ x3
+        x14 = (std::raw::shl(x14, 16) | std::raw::shr(x14, 16)) & m
+        x9 = (x9 + x14) & m
+        x4 = x4 ^ x9
+        x4 = (std::raw::shl(x4, 12) | std::raw::shr(x4, 20)) & m
+        x3 = (x3 + x4) & m
+        x14 = x14 ^ x3
+        x14 = (std::raw::shl(x14, 8) | std::raw::shr(x14, 24)) & m
+        x9 = (x9 + x14) & m
+        x4 = x4 ^ x9
+        x4 = (std::raw::shl(x4, 7) | std::raw::shr(x4, 25)) & m
+        r += 1
+    }
+    cr_put_le32(out + 0, (x0 + 1634760805) & m)
+    cr_put_le32(out + 4, (x1 + 857760878) & m)
+    cr_put_le32(out + 8, (x2 + 2036477234) & m)
+    cr_put_le32(out + 12, (x3 + 1797285236) & m)
+    cr_put_le32(out + 16, (x4 + k0) & m)
+    cr_put_le32(out + 20, (x5 + k1) & m)
+    cr_put_le32(out + 24, (x6 + k2) & m)
+    cr_put_le32(out + 28, (x7 + k3) & m)
+    cr_put_le32(out + 32, (x8 + k4) & m)
+    cr_put_le32(out + 36, (x9 + k5) & m)
+    cr_put_le32(out + 40, (x10 + k6) & m)
+    cr_put_le32(out + 44, (x11 + k7) & m)
+    cr_put_le32(out + 48, (x12 + c0) & m)
+    cr_put_le32(out + 52, (x13 + n0) & m)
+    cr_put_le32(out + 56, (x14 + n1) & m)
+    cr_put_le32(out + 60, (x15 + n2) & m)
+}
+
+// dst[i] = src[i] xor flujo ChaCha20 empezando en el bloque `counter`.
+fn cr_chacha_xor(key: int, counter: int, nonce: int, src: int, dst: int, n: int) {
+    let st = rt_alloc(128)
+    let x = rt_alloc(128)
+    let block = rt_alloc(64)
+    let mut c = counter
+    let mut done = 0
+    while done < n {
+        cr_chacha_block(key, c, nonce, st, x, block)
+        let mut take = n - done
+        if take > 64 {
+            take = 64
+        }
+        let mut i = 0
+        while i < take {
+            std::raw::store8(dst + done + i, std::raw::load8(src + done + i) ^ std::raw::load8(block + i))
+            i += 1
+        }
+        done += take
+        c += 1
+    }
+    rt_free_block(st)
+    rt_free_block(x)
+    rt_free_block(block)
+}
+
+// ------------------------------------------------------------ Poly1305
+
+// Poly1305 (RFC 8439 §2.5) de m[0..n) con la clave de 32 bytes; etiqueta en out.
+// Límbs de 26 bits como poly1305-donna.
+fn cr_poly1305(key: int, m: int, n: int, out: int) {
+    let mk = 67108863
+    let r0 = cr_le32(key) & 67108863
+    let r1 = std::raw::shr(cr_le32(key + 3), 2) & 67108611
+    let r2 = std::raw::shr(cr_le32(key + 6), 4) & 67092735
+    let r3 = std::raw::shr(cr_le32(key + 9), 6) & 66076671
+    let r4 = std::raw::shr(cr_le32(key + 12), 8) & 1048575
+    let s1 = r1 * 5
+    let s2 = r2 * 5
+    let s3 = r3 * 5
+    let s4 = r4 * 5
+    let mut h0 = 0
+    let mut h1 = 0
+    let mut h2 = 0
+    let mut h3 = 0
+    let mut h4 = 0
+    let buf = rt_alloc(24)
+    let mut pos = 0
+    while pos < n {
+        let mut take = n - pos
+        let mut hibit = 16777216
+        if take >= 16 {
+            take = 16
+            rt_copy(buf, m + pos, 16)
+        } else {
+            cr_zero(buf, 16)
+            rt_copy(buf, m + pos, take)
+            std::raw::store8(buf + take, 1)
+            hibit = 0
+        }
+        h0 += cr_le32(buf) & mk
+        h1 += std::raw::shr(cr_le32(buf + 3), 2) & mk
+        h2 += std::raw::shr(cr_le32(buf + 6), 4) & mk
+        h3 += std::raw::shr(cr_le32(buf + 9), 6) & mk
+        h4 += std::raw::shr(cr_le32(buf + 12), 8) | hibit
+        let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1
+        let mut d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2
+        let mut d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3
+        let mut d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4
+        let mut d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+        let mut c = std::raw::shr(d0, 26)
+        h0 = d0 & mk
+        d1 += c
+        c = std::raw::shr(d1, 26)
+        h1 = d1 & mk
+        d2 += c
+        c = std::raw::shr(d2, 26)
+        h2 = d2 & mk
+        d3 += c
+        c = std::raw::shr(d3, 26)
+        h3 = d3 & mk
+        d4 += c
+        c = std::raw::shr(d4, 26)
+        h4 = d4 & mk
+        h0 += c * 5
+        c = std::raw::shr(h0, 26)
+        h0 = h0 & mk
+        h1 += c
+        pos += take
+    }
+    rt_free_block(buf)
+    let mut c = std::raw::shr(h1, 26)
+    h1 = h1 & mk
+    h2 += c
+    c = std::raw::shr(h2, 26)
+    h2 = h2 & mk
+    h3 += c
+    c = std::raw::shr(h3, 26)
+    h3 = h3 & mk
+    h4 += c
+    c = std::raw::shr(h4, 26)
+    h4 = h4 & mk
+    h0 += c * 5
+    c = std::raw::shr(h0, 26)
+    h0 = h0 & mk
+    h1 += c
+    // h - p: si no es negativo, se usa.
+    let mut g0 = h0 + 5
+    c = std::raw::shr(g0, 26)
+    g0 = g0 & mk
+    let mut g1 = h1 + c
+    c = std::raw::shr(g1, 26)
+    g1 = g1 & mk
+    let mut g2 = h2 + c
+    c = std::raw::shr(g2, 26)
+    g2 = g2 & mk
+    let mut g3 = h3 + c
+    c = std::raw::shr(g3, 26)
+    g3 = g3 & mk
+    let g4 = h4 + c - 67108864
+    if g4 >= 0 {
+        h0 = g0
+        h1 = g1
+        h2 = g2
+        h3 = g3
+        h4 = g4
+    }
+    let w0 = (h0 | std::raw::shl(h1, 26)) & 4294967295
+    let w1 = (std::raw::shr(h1, 6) | std::raw::shl(h2, 20)) & 4294967295
+    let w2 = (std::raw::shr(h2, 12) | std::raw::shl(h3, 14)) & 4294967295
+    let w3 = (std::raw::shr(h3, 18) | std::raw::shl(h4, 8)) & 4294967295
+    let mut f = w0 + cr_le32(key + 16)
+    cr_put_le32(out, f & 4294967295)
+    f = w1 + cr_le32(key + 20) + std::raw::shr(f, 32)
+    cr_put_le32(out + 4, f & 4294967295)
+    f = w2 + cr_le32(key + 24) + std::raw::shr(f, 32)
+    cr_put_le32(out + 8, f & 4294967295)
+    f = w3 + cr_le32(key + 28) + std::raw::shr(f, 32)
+    cr_put_le32(out + 12, f & 4294967295)
+}
+
+fn cr_pad16(n: int) -> int { (16 - n % 16) % 16 }
+
+// Etiqueta de ChaCha20-Poly1305 (RFC 8439 §2.8) sobre aad y el texto cifrado.
+fn cr_chacha_tag(key: int, nonce: int, aad: int, na: int, ct: int, nc: int, out: int) {
+    let st = rt_alloc(128)
+    let x = rt_alloc(128)
+    let pk = rt_alloc(64)
+    cr_chacha_block(key, 0, nonce, st, x, pk)
+    let total = na + cr_pad16(na) + nc + cr_pad16(nc) + 16
+    let m = rt_alloc(total + 8)
+    cr_zero(m, total)
+    rt_copy(m, aad, na)
+    let at = na + cr_pad16(na)
+    rt_copy(m + at, ct, nc)
+    let lp = at + nc + cr_pad16(nc)
+    cr_put_le64(m + lp, na)
+    cr_put_le64(m + lp + 8, nc)
+    cr_poly1305(pk, m, total, out)
+    rt_free_block(m)
+    rt_free_block(pk)
+    rt_free_block(st)
+    rt_free_block(x)
+}
+
+// ------------------------------------------------------------ AES-256
+
+fn cr_xtime(b: int) -> int {
+    let s = std::raw::shl(b, 1)
+    if (b & 128) != 0 {
+        return (s ^ 27) & 255
+    }
+    s & 255
+}
+
+fn cr_gmul(a0: int, b0: int) -> int {
+    let mut a = a0
+    let mut b = b0
+    let mut p = 0
+    while b != 0 {
+        if (b & 1) != 0 {
+            p = p ^ a
+        }
+        a = cr_xtime(a)
+        b = std::raw::shr(b, 1)
+    }
+    p
+}
+
+fn cr_rotl8(x: int, n: int) -> int {
+    (std::raw::shl(x, n) | std::raw::shr(x, 8 - n)) & 255
+}
+
+// Caja S de AES (FIPS 197 §5.1.1): inverso en GF(2^8) y transformación afín.
+fn cr_sbox() -> int {
+    let sb = rt_alloc(256)
+    let mut x = 0
+    while x < 256 {
+        let mut inv = 0
+        if x != 0 {
+            let mut y = 1
+            while y < 256 {
+                if cr_gmul(x, y) == 1 {
+                    inv = y
+                    y = 256
+                }
+                y += 1
+            }
+        }
+        let s = inv ^ cr_rotl8(inv, 1) ^ cr_rotl8(inv, 2) ^ cr_rotl8(inv, 3) ^ cr_rotl8(inv, 4) ^ 99
+        std::raw::store8(sb + x, s)
+        x += 1
+    }
+    sb
+}
+
+// Tablas de AES calculadas una vez (globales +2520): [caja S (256 bytes),
+// T0..T3 (4 × 256 palabras)]. T_r[x] es la columna r de MixColumns por S[x]
+// (palabras con el byte de la fila 0 abajo).
+fn cr_aes_tables() -> int {
+    let g = std::raw::globals() + 2520
+    let p = std::raw::load(g)
+    if p != 0 {
+        return p
+    }
+    let sb = cr_sbox()
+    let t = rt_alloc(8 + 4 * 256 * 8)
+    std::raw::store(t, sb)
+    let mut x = 0
+    while x < 256 {
+        let v = std::raw::load8(sb + x)
+        let v2 = cr_xtime(v)
+        let v3 = v2 ^ v
+        let t0 = v2 | std::raw::shl(v, 8) | std::raw::shl(v, 16) | std::raw::shl(v3, 24)
+        std::raw::store(t + 8 + 8 * x, t0)
+        std::raw::store(t + 8 + 8 * (256 + x), cr_rotl32(t0, 8))
+        std::raw::store(t + 8 + 8 * (512 + x), cr_rotl32(t0, 16))
+        std::raw::store(t + 8 + 8 * (768 + x), cr_rotl32(t0, 24))
+        x += 1
+    }
+    std::raw::store(g, t)
+    t
+}
+
+fn cr_rotl32(x: int, n: int) -> int {
+    (std::raw::shl(x, n) | std::raw::shr(x, 32 - n)) & 4294967295
+}
+
+// Expansión de la clave de 32 bytes: 60 palabras (15 claves de ronda).
+fn cr_aes_expand(key: int, sb: int) -> int {
+    let w = rt_alloc(60 * 8)
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(w + 8 * i, cr_le32(key + 4 * i))
+        i += 1
+    }
+    let mut rcon = 1
+    i = 8
+    while i < 60 {
+        let mut t = std::raw::load(w + 8 * (i - 1))
+        if i % 8 == 0 {
+            // RotWord + SubWord + Rcon (bytes: fila 0 abajo)
+            t = cr_rotl32(t, 24)
+            t = std::raw::load8(sb + (t & 255)) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 8) & 255)), 8) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 16) & 255)), 16) | std::raw::shl(std::raw::load8(sb + std::raw::shr(t, 24)), 24)
+            t = t ^ rcon
+            rcon = cr_xtime(rcon)
+        } else if i % 8 == 4 {
+            t = std::raw::load8(sb + (t & 255)) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 8) & 255)), 8) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 16) & 255)), 16) | std::raw::shl(std::raw::load8(sb + std::raw::shr(t, 24)), 24)
+        }
+        std::raw::store(w + 8 * i, std::raw::load(w + 8 * (i - 8)) ^ t)
+        i += 1
+    }
+    w
+}
+
+// Cifra un bloque de 16 bytes (src → dst) con las tablas T.
+fn cr_aes_block(w: int, tb: int, src: int, dst: int) {
+    let sb = std::raw::load(tb)
+    let t0 = tb + 8
+    let t1 = tb + 8 + 2048
+    let t2 = tb + 8 + 4096
+    let t3 = tb + 8 + 6144
+    let mut s0 = cr_le32(src) ^ std::raw::load(w)
+    let mut s1 = cr_le32(src + 4) ^ std::raw::load(w + 8)
+    let mut s2 = cr_le32(src + 8) ^ std::raw::load(w + 16)
+    let mut s3 = cr_le32(src + 12) ^ std::raw::load(w + 24)
+    let mut round = 1
+    while round < 14 {
+        let k = w + 32 * round
+        let u0 = std::raw::load(t0 + 8 * (s0 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s1, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s2, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s3, 24)) ^ std::raw::load(k)
+        let u1 = std::raw::load(t0 + 8 * (s1 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s2, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s3, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s0, 24)) ^ std::raw::load(k + 8)
+        let u2 = std::raw::load(t0 + 8 * (s2 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s3, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s0, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s1, 24)) ^ std::raw::load(k + 16)
+        let u3 = std::raw::load(t0 + 8 * (s3 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s0, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s1, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s2, 24)) ^ std::raw::load(k + 24)
+        s0 = u0
+        s1 = u1
+        s2 = u2
+        s3 = u3
+        round += 1
+    }
+    let k = w + 32 * 14
+    cr_put_le32(dst, cr_last(sb, s0, s1, s2, s3) ^ std::raw::load(k))
+    cr_put_le32(dst + 4, cr_last(sb, s1, s2, s3, s0) ^ std::raw::load(k + 8))
+    cr_put_le32(dst + 8, cr_last(sb, s2, s3, s0, s1) ^ std::raw::load(k + 16))
+    cr_put_le32(dst + 12, cr_last(sb, s3, s0, s1, s2) ^ std::raw::load(k + 24))
+}
+
+// Última ronda: SubBytes + ShiftRows de una columna.
+fn cr_last(sb: int, a: int, b: int, c: int, d: int) -> int {
+    std::raw::load8(sb + (a & 255)) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(b, 8) & 255)), 8) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(c, 16) & 255)), 16) | std::raw::shl(std::raw::load8(sb + std::raw::shr(d, 24)), 24)
+}
+
+// ------------------------------------------------------------ GCM
+
+// v = v · x en GF(2^128) con la convención de GCM (desplazar a la derecha).
+fn cr_gf_shift(hi: int, lo: int) -> (int, int) {
+    let lsb = lo & 1
+    let nlo = std::raw::shr(lo, 1) | std::raw::shl(hi, 63)
+    let mut nhi = std::raw::shr(hi, 1)
+    if lsb != 0 {
+        nhi = nhi ^ std::raw::shl(225, 56)
+    }
+    return (nhi, nlo)
+}
+
+// Tabla de 16 múltiplos de H para multiplicar de 4 en 4 bits (Shoup).
+fn cr_htable(hhi: int, hlo: int) -> int {
+    let t = rt_alloc(16 * 16)
+    std::raw::store(t, 0)
+    std::raw::store(t + 8, 0)
+    let mut vhi = hhi
+    let mut vlo = hlo
+    let mut i = 8
+    while i > 0 {
+        std::raw::store(t + 16 * i, vhi)
+        std::raw::store(t + 16 * i + 8, vlo)
+        let (a, b) = cr_gf_shift(vhi, vlo)
+        vhi = a
+        vlo = b
+        i = i / 2
+    }
+    i = 2
+    while i < 16 {
+        let mut j = 1
+        while j < i {
+            std::raw::store(t + 16 * (i + j), std::raw::load(t + 16 * i) ^ std::raw::load(t + 16 * j))
+            std::raw::store(t + 16 * (i + j) + 8, std::raw::load(t + 16 * i + 8) ^ std::raw::load(t + 16 * j + 8))
+            j += 1
+        }
+        i = i * 2
+    }
+    t
+}
+
+// Reducción de los 4 bits que salen por la derecha.
+fn cr_rem4(r: int) -> int {
+    let mut v = 0
+    if (r & 1) != 0 { v = v ^ 7200 }
+    if (r & 2) != 0 { v = v ^ 14400 }
+    if (r & 4) != 0 { v = v ^ 28800 }
+    if (r & 8) != 0 { v = v ^ 57600 }
+    std::raw::shl(v, 48)
+}
+
+// y = y · H con la tabla (y: palabras big-endian hi, lo).
+fn cr_gf_mul(y: int, ht: int, rem: int) {
+    let yhi = std::raw::load(y)
+    let ylo = std::raw::load(y + 8)
+    let mut zhi = 0
+    let mut zlo = 0
+    let mut k = 15
+    while k >= 0 {
+        let mut byte = 0
+        if k < 8 {
+            byte = std::raw::shr(yhi, 56 - 8 * k) & 255
+        } else {
+            byte = std::raw::shr(ylo, 120 - 8 * k) & 255
+        }
+        let mut h = 0
+        while h < 2 {
+            let mut nib = byte & 15
+            if h == 1 {
+                nib = std::raw::shr(byte, 4)
+            }
+            if k != 15 || h != 0 {
+                let r = zlo & 15
+                zlo = std::raw::shr(zlo, 4) | std::raw::shl(zhi, 60)
+                zhi = std::raw::shr(zhi, 4) ^ std::raw::load(rem + 8 * r)
+            }
+            zhi = zhi ^ std::raw::load(ht + 16 * nib)
+            zlo = zlo ^ std::raw::load(ht + 16 * nib + 8)
+            h += 1
+        }
+        k -= 1
+    }
+    std::raw::store(y, zhi)
+    std::raw::store(y + 8, zlo)
+}
+
+// GHASH de datos (rellenados a 16) en el acumulador y.
+fn cr_ghash(y: int, ht: int, rem: int, p: int, n: int, buf: int) {
+    let mut pos = 0
+    while pos < n {
+        let mut take = n - pos
+        if take >= 16 {
+            take = 16
+            std::raw::store(y, std::raw::load(y) ^ cr_be64(p + pos))
+            std::raw::store(y + 8, std::raw::load(y + 8) ^ cr_be64(p + pos + 8))
+        } else {
+            cr_zero(buf, 16)
+            rt_copy(buf, p + pos, take)
+            std::raw::store(y, std::raw::load(y) ^ cr_be64(buf))
+            std::raw::store(y + 8, std::raw::load(y + 8) ^ cr_be64(buf + 8))
+        }
+        cr_gf_mul(y, ht, rem)
+        pos += take
+    }
+}
+
+// Contador de 32 bits big-endian de los últimos 4 bytes.
+fn cr_inc32(cb: int) {
+    let v = (std::raw::shl(std::raw::load8(cb + 12), 24) | std::raw::shl(std::raw::load8(cb + 13), 16) | std::raw::shl(std::raw::load8(cb + 14), 8) | std::raw::load8(cb + 15)) + 1
+    std::raw::store8(cb + 12, std::raw::shr(v, 24) & 255)
+    std::raw::store8(cb + 13, std::raw::shr(v, 16) & 255)
+    std::raw::store8(cb + 14, std::raw::shr(v, 8) & 255)
+    std::raw::store8(cb + 15, v & 255)
+}
+
+// AES-256-GCM. Cifra/descifra src → dst con CTR y deja la etiqueta en tag
+// (calculada sobre el texto cifrado: src al descifrar, dst al cifrar).
+fn cr_gcm(key: int, nonce: int, aad: int, na: int, src: int, dst: int, n: int, encrypt: bool, tag: int) {
+    let tb = cr_aes_tables()
+    let w = cr_aes_expand(key, std::raw::load(tb))
+    let buf = rt_alloc(16)
+    let hb = rt_alloc(16)
+    cr_zero(buf, 16)
+    cr_aes_block(w, tb, buf, hb)
+    let ht = cr_htable(cr_be64(hb), cr_be64(hb + 8))
+    let rem = rt_alloc(16 * 8)
+    let mut r = 0
+    while r < 16 {
+        std::raw::store(rem + 8 * r, cr_rem4(r))
+        r += 1
+    }
+    let j0 = rt_alloc(16)
+    rt_copy(j0, nonce, 12)
+    std::raw::store8(j0 + 12, 0)
+    std::raw::store8(j0 + 13, 0)
+    std::raw::store8(j0 + 14, 0)
+    std::raw::store8(j0 + 15, 1)
+    let y = rt_alloc(16)
+    std::raw::store(y, 0)
+    std::raw::store(y + 8, 0)
+    cr_ghash(y, ht, rem, aad, na, buf)
+    if !encrypt {
+        cr_ghash(y, ht, rem, src, n, buf)
+    }
+    let cb = rt_alloc(16)
+    rt_copy(cb, j0, 16)
+    let ks = rt_alloc(16)
+    let mut pos = 0
+    while pos < n {
+        cr_inc32(cb)
+        cr_aes_block(w, tb, cb, ks)
+        let mut take = n - pos
+        if take > 16 {
+            take = 16
+        }
+        let mut i = 0
+        while i < take {
+            std::raw::store8(dst + pos + i, std::raw::load8(src + pos + i) ^ std::raw::load8(ks + i))
+            i += 1
+        }
+        pos += take
+    }
+    if encrypt {
+        cr_ghash(y, ht, rem, dst, n, buf)
+    }
+    // Longitudes en bits.
+    std::raw::store(y, std::raw::load(y) ^ std::raw::shl(na, 3))
+    std::raw::store(y + 8, std::raw::load(y + 8) ^ std::raw::shl(n, 3))
+    cr_gf_mul(y, ht, rem)
+    cr_aes_block(w, tb, j0, ks)
+    cr_put_be64(buf, std::raw::load(y))
+    cr_put_be64(buf + 8, std::raw::load(y + 8))
+    let mut i = 0
+    while i < 16 {
+        std::raw::store8(tag + i, std::raw::load8(ks + i) ^ std::raw::load8(buf + i))
+        i += 1
+    }
+    rt_free_block(w)
+    rt_free_block(buf)
+    rt_free_block(hb)
+    rt_free_block(ht)
+    rt_free_block(rem)
+    rt_free_block(j0)
+    rt_free_block(y)
+    rt_free_block(cb)
+    rt_free_block(ks)
+}
+
+// ------------------------------------------------------------ nativas
+
+fn cr_ptr(v: any) -> int { std::raw::bits(v) + 16 }
+
+fn cr_check_key(key: any, function: string) {
+    let n = rt_slen(key)
+    if n != 32 {
+        rt_native_fail(function, rt_concat(rt_concat("invalid key length: expected 32 bytes, got ", rt_int_to_str(n)), ""))
+    }
+}
+
+fn cr_check_nonce(nonce: any, function: string) {
+    let n = rt_slen(nonce)
+    if n != 12 {
+        rt_native_fail(function, rt_concat(rt_concat("invalid nonce length: expected 12 bytes, got ", rt_int_to_str(n)), ""))
+    }
+}
+
+fn cr_cipher_fail(function: string) {
+    rt_native_fail(function, "cipher failed (wrong key/nonce or tampered ciphertext)")
+}
+
+// alg: 0 ChaCha20-Poly1305, 1 AES-256-GCM. Devuelve prefix || cifrado || etiqueta.
+fn cr_seal_raw(alg: int, key: int, nonce: int, pt: int, n: int, aad: int, na: int, prefix: int) -> any {
+    let out = rt_alloc(prefix + n + 16 + 8)
+    rt_copy(out, nonce, prefix)
+    if alg == 0 {
+        cr_chacha_xor(key, 1, nonce, pt, out + prefix, n)
+        cr_chacha_tag(key, nonce, aad, na, out + prefix, n, out + prefix + n)
+    } else {
+        cr_gcm(key, nonce, aad, na, pt, out + prefix, n, true, out + prefix + n)
+    }
+    let b = rt_bytes_from(out, prefix + n + 16)
+    rt_free_block(out)
+    b
+}
+
+fn cr_open_raw(alg: int, key: int, nonce: int, ct: int, n: int, aad: int, na: int, function: string) -> any {
+    if n < 16 {
+        cr_cipher_fail(function)
+    }
+    let m = n - 16
+    let tag = rt_alloc(16)
+    let out = rt_alloc(m + 8)
+    if alg == 0 {
+        cr_chacha_tag(key, nonce, aad, na, ct, m, tag)
+        if !cr_tag_eq(tag, ct + m) {
+            cr_cipher_fail(function)
+        }
+        cr_chacha_xor(key, 1, nonce, ct, out, m)
+    } else {
+        cr_gcm(key, nonce, aad, na, ct, out, m, false, tag)
+        if !cr_tag_eq(tag, ct + m) {
+            cr_cipher_fail(function)
+        }
+    }
+    let b = rt_bytes_from(out, m)
+    rt_free_block(out)
+    rt_free_block(tag)
+    b
+}
+
+fn cr_encrypt(alg: int, key: any, nonce: any, pt: any, aad: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(nonce, function)
+    rt_expect_bytes(pt, function)
+    rt_expect_bytes(aad, function)
+    cr_check_key(key, function)
+    cr_check_nonce(nonce, function)
+    cr_seal_raw(alg, cr_ptr(key), cr_ptr(nonce), cr_ptr(pt), rt_slen(pt), cr_ptr(aad), rt_slen(aad), 0)
+}
+
+fn cr_decrypt(alg: int, key: any, nonce: any, ct: any, aad: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(nonce, function)
+    rt_expect_bytes(ct, function)
+    rt_expect_bytes(aad, function)
+    cr_check_key(key, function)
+    cr_check_nonce(nonce, function)
+    cr_open_raw(alg, cr_ptr(key), cr_ptr(nonce), cr_ptr(ct), rt_slen(ct), cr_ptr(aad), rt_slen(aad), function)
+}
+
+fn cr_seal(alg: int, key: any, pt: any, aad: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(pt, function)
+    rt_expect_bytes(aad, function)
+    cr_check_key(key, function)
+    let nonce = rt_alloc(16)
+    rn_os_fill(nonce, 12)
+    let b = cr_seal_raw(alg, cr_ptr(key), nonce, cr_ptr(pt), rt_slen(pt), cr_ptr(aad), rt_slen(aad), 12)
+    rt_free_block(nonce)
+    b
+}
+
+fn cr_open(alg: int, key: any, sealed: any, aad: any, function: string) -> any {
+    rt_expect_bytes(key, function)
+    rt_expect_bytes(sealed, function)
+    rt_expect_bytes(aad, function)
+    let n = rt_slen(sealed)
+    if n < 12 {
+        rt_native_fail(function, "sealed message is truncated (needs at least 12 bytes for the nonce)")
+    }
+    cr_check_key(key, function)
+    let p = cr_ptr(sealed)
+    cr_open_raw(alg, cr_ptr(key), p, p + 12, n - 12, cr_ptr(aad), rt_slen(aad), function)
+}
+
+fn cr_random(n: int) -> any {
+    let p = rt_alloc(n + 8)
+    rn_os_fill(p, n)
+    let b = rt_bytes_from(p, n)
+    rt_free_block(p)
+    b
+}
+
+fn std__crypto__generate_key_32() -> any { cr_random(32) }
+
+fn std__crypto__generate_nonce() -> any { cr_random(12) }
+
+fn std__crypto__chacha20_encrypt(key: any, nonce: any, pt: any, aad: any) -> any {
+    cr_encrypt(0, key, nonce, pt, aad, "std::crypto::chacha20_encrypt")
+}
+
+fn std__crypto__chacha20_decrypt(key: any, nonce: any, ct: any, aad: any) -> any {
+    cr_decrypt(0, key, nonce, ct, aad, "std::crypto::chacha20_decrypt")
+}
+
+fn std__crypto__chacha20_seal(key: any, pt: any, aad: any) -> any {
+    cr_seal(0, key, pt, aad, "std::crypto::chacha20_seal")
+}
+
+fn std__crypto__chacha20_open(key: any, sealed: any, aad: any) -> any {
+    cr_open(0, key, sealed, aad, "std::crypto::chacha20_open")
+}
+
+fn std__crypto__aes_gcm_encrypt(key: any, nonce: any, pt: any, aad: any) -> any {
+    cr_encrypt(1, key, nonce, pt, aad, "std::crypto::aes_gcm_encrypt")
+}
+
+fn std__crypto__aes_gcm_decrypt(key: any, nonce: any, ct: any, aad: any) -> any {
+    cr_decrypt(1, key, nonce, ct, aad, "std::crypto::aes_gcm_decrypt")
+}
+
+fn std__crypto__aes_gcm_seal(key: any, pt: any, aad: any) -> any {
+    cr_seal(1, key, pt, aad, "std::crypto::aes_gcm_seal")
+}
+
+fn std__crypto__aes_gcm_open(key: any, sealed: any, aad: any) -> any {
+    cr_open(1, key, sealed, aad, "std::crypto::aes_gcm_open")
+}

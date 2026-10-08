@@ -1,0 +1,3 @@
+fn main() {
+    std::process::pipe(["head -c 5000000 /dev/zero", "cat"])
+}

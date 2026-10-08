@@ -1,0 +1,1 @@
+fn main() { spawn |value: int| value }

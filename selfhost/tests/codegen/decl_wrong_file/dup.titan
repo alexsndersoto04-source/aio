@@ -1,0 +1,7 @@
+fn same() -> int {
+    1
+}
+
+fn same() -> int {
+    2
+}

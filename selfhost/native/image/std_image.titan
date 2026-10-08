@@ -1,0 +1,429 @@
+// Núcleo de imágenes del runtime Titan selfhost.
+fn im_fail(function: string, message: any) {
+    rt_native_fail(function, message)
+}
+
+fn im_img_err(function: string, inner: any) {
+    im_fail(function, "image error: " + inner)
+}
+
+fn im_io_err(function: string, errno: int) {
+    im_fail(function, "image I/O error: " + rt_os_error(errno))
+}
+
+fn im_lim(function: string, resource: any, limit: int) {
+    im_fail(function, resource + " exceeds limit " + rt_int_to_str(limit))
+}
+
+fn im_param(function: string, why: any) {
+    im_fail(function, "invalid image dimensions or transform parameters: " + why)
+}
+
+fn im_u32(function: string, v: int, name: any) -> int {
+    if v < 0 || v > 4294967295 {
+        im_fail(function, name + " out of range")
+    }
+    v
+}
+
+fn im_dims(function: string, w: int, h: int) {
+    if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
+        im_param(function, "width and height must be positive and within the dimension limit")
+    }
+}
+
+fn im_channels(color: int) -> int {
+    if color == 1 || color == 5 { return 1 }
+    if color == 2 || color == 6 { return 2 }
+    if color == 3 || color == 7 { return 3 }
+    4
+}
+
+fn im_sample_bytes(color: int) -> int {
+    if color >= 5 { return 2 }
+    1
+}
+
+fn im_bpp(color: int) -> int {
+    im_channels(color) * im_sample_bytes(color)
+}
+
+fn im_sample_get(p: int, sample_bytes: int) -> int {
+    let low = std::raw::load8(p)
+    if sample_bytes == 1 { return low }
+    low + 256 * std::raw::load8(p + 1)
+}
+
+fn im_sample_put(p: int, sample_bytes: int, value: int) {
+    std::raw::store8(p, value & 255)
+    if sample_bytes == 2 {
+        std::raw::store8(p + 1, std::raw::shr(value, 8) & 255)
+    }
+}
+
+fn im_max_sample(color: int) -> int {
+    if im_sample_bytes(color) == 1 { return 255 }
+    65535
+}
+
+fn im_ct_name(color: int) -> any {
+    if color == 1 { return "L8" }
+    if color == 2 { return "La8" }
+    if color == 3 { return "Rgb8" }
+    if color == 5 { return "L16" }
+    if color == 6 { return "La16" }
+    if color == 7 { return "Rgb16" }
+    if color == 8 { return "Rgba16" }
+    "Rgba8"
+}
+
+fn im_g() -> int { std::raw::globals() + 3136 }
+
+fn im_reg() -> int {
+    let g = im_g()
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let r = rt_alloc_zero(24 + 8 * 64)
+    std::raw::store(r, 1)
+    std::raw::store(g, r)
+    r
+}
+
+fn im_find(id: int) -> int {
+    let r = im_reg()
+    let n = std::raw::load(r + 8)
+    let mut i = 0
+    while i < n {
+        let e = std::raw::load(r + 24 + 8 * i)
+        if std::raw::load(e) == id {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+fn im_need(function: string, id: int) -> int {
+    let e = im_find(id)
+    if e == 0 {
+        im_fail(function, "no image registered under handle " + rt_int_to_str(id))
+    }
+    e
+}
+
+fn im_pix_len(w: int, h: int, color: int) -> int {
+    w * h * im_bpp(color)
+}
+
+fn im_insert(function: string, w: int, h: int, color: int, pix: int, nbytes: int) -> int {
+    im_dims(function, w, h)
+    if nbytes > 67108864 {
+        rt_free_block(pix)
+        im_lim(function, "decoded image bytes", 67108864)
+    }
+    let r = im_reg()
+    let n = std::raw::load(r + 8)
+    if n >= 64 {
+        rt_free_block(pix)
+        im_lim(function, "image handles", 64)
+    }
+    let used = std::raw::load(r + 16)
+    if used + nbytes > 134217728 {
+        rt_free_block(pix)
+        im_lim(function, "runtime decoded image bytes", 134217728)
+    }
+    let id = std::raw::load(r)
+    if id == 9223372036854775807 {
+        rt_free_block(pix)
+        im_fail(function, "image handle space exhausted")
+    }
+    let e = rt_alloc(40)
+    std::raw::store(e, id)
+    std::raw::store(e + 8, w)
+    std::raw::store(e + 16, h)
+    std::raw::store(e + 24, color)
+    std::raw::store(e + 32, pix)
+    std::raw::store(r + 24 + 8 * n, e)
+    std::raw::store(r + 8, n + 1)
+    std::raw::store(r + 16, used + nbytes)
+    std::raw::store(r, id + 1)
+    id
+}
+
+fn im_dup(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let n = im_pix_len(w, h, c)
+    let pix = rt_alloc(n)
+    rt_copy(pix, std::raw::load(e + 32), n)
+    im_insert(function, w, h, c, pix, n)
+}
+
+fn im_free_entry(e: int) {
+    rt_free_block(std::raw::load(e + 32))
+    rt_free_block(e)
+}
+
+fn im_luma(r: int, g: int, b: int) -> int {
+    (2126 * r + 7152 * g + 722 * b) / 10000
+}
+
+fn im_px(e: int, x: int, y: int) -> int {
+    let w = std::raw::load(e + 8)
+    let bpp = im_bpp(std::raw::load(e + 24))
+    std::raw::load(e + 32) + (y * w + x) * bpp
+}
+
+fn im_ch4(e: int, x: int, y: int, out: int) {
+    let c = std::raw::load(e + 24)
+    let p = im_px(e, x, y)
+    if c == 1 {
+        std::raw::store8(out, std::raw::load8(p))
+        std::raw::store8(out + 1, 255)
+        std::raw::store8(out + 2, 255)
+        std::raw::store8(out + 3, 255)
+    } else {
+        if c == 2 {
+            std::raw::store8(out, std::raw::load8(p))
+            std::raw::store8(out + 1, std::raw::load8(p + 1))
+            std::raw::store8(out + 2, 255)
+            std::raw::store8(out + 3, 255)
+        } else {
+            if c == 3 {
+                std::raw::store8(out, std::raw::load8(p))
+                std::raw::store8(out + 1, std::raw::load8(p + 1))
+                std::raw::store8(out + 2, std::raw::load8(p + 2))
+                std::raw::store8(out + 3, 255)
+            } else {
+                std::raw::store8(out, std::raw::load8(p))
+                std::raw::store8(out + 1, std::raw::load8(p + 1))
+                std::raw::store8(out + 2, std::raw::load8(p + 2))
+                std::raw::store8(out + 3, std::raw::load8(p + 3))
+            }
+        }
+    }
+}
+
+fn im_put_ch(e: int, x: int, y: int, src: int) {
+    let c = std::raw::load(e + 24)
+    let p = im_px(e, x, y)
+    let bpp = im_bpp(c)
+    let mut i = 0
+    while i < bpp {
+        std::raw::store8(p + i, std::raw::load8(src + i))
+        i += 1
+    }
+}
+
+fn im_clamp255(x: int) -> int {
+    if x < 0 { return 0 }
+    if x > 255 { return 255 }
+    x
+}
+
+fn im_clamp_sample(x: int, max_value: int) -> int {
+    if x < 0 { return 0 }
+    if x > max_value { return max_value }
+    x
+}
+
+fn im_i32_wrap(value: int) -> int {
+    let bits = value & 4294967295
+    if bits >= 2147483648 { return bits - 4294967296 }
+    bits
+}
+
+fn im_new_buf(w: int, h: int, color: int) -> int {
+    rt_alloc_zero(im_pix_len(w, h, color))
+}
+
+fn im_gray_of(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    if c == 1 || c == 2 || c == 5 || c == 6 {
+        return im_dup(function, e)
+    }
+    let sample_bytes = im_sample_bytes(c)
+    let mut oc = 1
+    if c == 4 { oc = 2 }
+    if c == 7 { oc = 5 }
+    if c == 8 { oc = 6 }
+    let pix = im_new_buf(w, h, oc)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let p = im_px(e, x, y)
+            let r = im_sample_get(p, sample_bytes)
+            let g = im_sample_get(p + sample_bytes, sample_bytes)
+            let b = im_sample_get(p + 2 * sample_bytes, sample_bytes)
+            let l = im_luma(r, g, b)
+            let d = pix + (y * w + x) * im_bpp(oc)
+            im_sample_put(d, sample_bytes, l)
+            if c == 4 {
+                im_sample_put(d + 1, sample_bytes, std::raw::load8(p + 3))
+            } else if c == 8 {
+                im_sample_put(d + 2, sample_bytes, im_sample_get(p + 6, sample_bytes))
+            }
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, w, h, oc, pix, im_pix_len(w, h, oc))
+}
+
+fn im_rot90(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let src = std::raw::load(e + 32)
+    let pix = im_new_buf(h, w, c)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let from = src + (y * w + x) * bpp
+            let to = pix + (x * h + (h - 1 - y)) * bpp
+            rt_copy(to, from, bpp)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, h, w, c, pix, im_pix_len(h, w, c))
+}
+
+fn im_rot180(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let src = std::raw::load(e + 32)
+    let pix = im_new_buf(w, h, c)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let from = src + (y * w + x) * bpp
+            let to = pix + ((h - 1 - y) * w + (w - 1 - x)) * bpp
+            rt_copy(to, from, bpp)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, w, h, c, pix, im_pix_len(w, h, c))
+}
+
+fn im_rot270(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let src = std::raw::load(e + 32)
+    let pix = im_new_buf(h, w, c)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let from = src + (y * w + x) * bpp
+            let to = pix + ((w - 1 - x) * h + y) * bpp
+            rt_copy(to, from, bpp)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, h, w, c, pix, im_pix_len(h, w, c))
+}
+
+fn im_fliph(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let src = std::raw::load(e + 32)
+    let pix = im_new_buf(w, h, c)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let from = src + (y * w + x) * bpp
+            let to = pix + (y * w + (w - 1 - x)) * bpp
+            rt_copy(to, from, bpp)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, w, h, c, pix, im_pix_len(w, h, c))
+}
+
+fn im_flipv(function: string, e: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let bpp = im_bpp(c)
+    let src = std::raw::load(e + 32)
+    let pix = im_new_buf(w, h, c)
+    let mut y = 0
+    while y < h {
+        let mut x = 0
+        while x < w {
+            let from = src + (y * w + x) * bpp
+            let to = pix + ((h - 1 - y) * w + x) * bpp
+            rt_copy(to, from, bpp)
+            x += 1
+        }
+        y += 1
+    }
+    im_insert(function, w, h, c, pix, im_pix_len(w, h, c))
+}
+
+fn im_crop_do(function: string, e: int, x: int, y: int, w: int, h: int) -> int {
+    let c = std::raw::load(e + 24)
+    let pix = im_new_buf(w, h, c)
+    let bpp = im_bpp(c)
+    let sw = std::raw::load(e + 8)
+    let mut yy = 0
+    while yy < h {
+        rt_copy(pix + yy * w * bpp, std::raw::load(e + 32) + ((y + yy) * sw + x) * bpp, w * bpp)
+        yy += 1
+    }
+    im_insert(function, w, h, c, pix, im_pix_len(w, h, c))
+}
+
+// El brillo del crate image suma en i32 antes de saturar el canal. Se conserva
+// también el desbordamiento de esa suma, igual que en una compilación release.
+fn im_bright(function: string, e: int, value: int) -> int {
+    let w = std::raw::load(e + 8)
+    let h = std::raw::load(e + 16)
+    let c = std::raw::load(e + 24)
+    let pix = im_new_buf(w, h, c)
+    let bpp = im_bpp(c)
+    let channels = im_channels(c)
+    let sample_bytes = im_sample_bytes(c)
+    let mut alpha = 0 - 1
+    if channels == 2 || channels == 4 { alpha = channels - 1 }
+    let max_value = im_max_sample(c)
+    let n = w * h
+    let src = std::raw::load(e + 32)
+    let mut i = 0
+    while i < n {
+        let mut k = 0
+        while k < channels {
+            let from = src + i * bpp + k * sample_bytes
+            let to = pix + i * bpp + k * sample_bytes
+            let v = im_sample_get(from, sample_bytes)
+            if k == alpha {
+                im_sample_put(to, sample_bytes, v)
+            } else {
+                im_sample_put(to, sample_bytes, im_clamp_sample(im_i32_wrap(v + value), max_value))
+            }
+            k += 1
+        }
+        i += 1
+    }
+    im_insert(function, w, h, c, pix, im_pix_len(w, h, c))
+}

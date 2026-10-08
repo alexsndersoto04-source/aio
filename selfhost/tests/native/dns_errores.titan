@@ -1,0 +1,25 @@
+// Errores de std::dns: mismo texto que la VM (hickory 0.24.4).
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(v) => println(label + " OK " + std::json::stringify(v)),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("rev_bad", std::try::catch(|| { std::dns::reverse("not an ip") }))
+    show("rev_empty", std::try::catch(|| { std::dns::reverse("") }))
+    show("rev_host", std::try::catch(|| { std::dns::reverse("example.com") }))
+    show("rev_short", std::try::catch(|| { std::dns::reverse("1.2.3") }))
+    show("res_space", std::try::catch(|| { std::dns::resolve("a b") }))
+    show("res_bang", std::try::catch(|| { std::dns::resolve("notahost!!!") }))
+    show("res_empty", std::try::catch(|| { std::dns::resolve("") }))
+    show("res_a", std::try::catch(|| { std::dns::resolve("a") }))
+    show("nx_dot", std::try::catch(|| { std::dns::resolve("this-name-should-not-exist-xyzzy-titan.test.") }))
+    show("cn_exdot", std::try::catch(|| { std::dns::resolve_cname("example.com.") }))
+    show("mx_empty", std::try::catch(|| { std::dns::resolve_mx("") }))
+    show("txt_space", std::try::catch(|| { std::dns::resolve_txt("a b") }))
+    show("mx_loc", std::try::catch(|| { std::dns::resolve_mx("localhost.") }))
+    show("onion", std::try::catch(|| { std::dns::resolve("foo.onion.") }))
+    show("invdot", std::try::catch(|| { std::dns::resolve("x.invalid.") }))
+}

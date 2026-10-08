@@ -1,0 +1,43 @@
+// std::process::spawn y compañía: el hijo corre mientras el programa sigue;
+// su salida se lee aunque sea grande (1 MB) y al final se recoge.
+fn main() {
+    let h = std::process::spawn("sh -c 'echo empieza; sleep 0.3; echo termina; echo aviso >&2; exit 5'")
+    print(h)
+    print(std::process::spawn_poll(h))
+    print(std::process::spawn_pid(h) > 1)
+    let r = std::process::spawn_wait(h)
+    print(r["stdout"], r["stderr"], r["exit_code"])
+    let g = std::process::spawn("sh -c 'head -c 1000000 /dev/zero | tr \"\\0\" x; echo; echo fin >&2'")
+    std::time::sleep_ms(300)
+    print(std::process::spawn_poll(g))
+    let rg = std::process::spawn_wait(g)
+    print(len(rg["stdout"]), rg["stderr"], rg["exit_code"])
+    let k = std::process::spawn("sleep 30")
+    print(k)
+    print(std::process::spawn_poll(k))
+    std::process::spawn_kill(k)
+    std::process::spawn_kill(k)
+    let rk = std::process::spawn_wait(k)
+    print(rk["exit_code"], rk["stdout"] == "")
+    let q = std::process::spawn("true")
+    std::time::sleep_ms(200)
+    print(std::process::spawn_poll(q))
+    print(std::process::spawn_poll(q))
+    std::process::spawn_kill(q)
+    print(std::process::spawn_wait(q)["exit_code"])
+    let a = std::process::spawn("sh -c 'sleep 0.2; echo A'")
+    let b = std::process::spawn("sh -c 'echo B'")
+    print(std::process::spawn_wait(b)["stdout"], std::process::spawn_wait(a)["stdout"])
+    let primero = std::process::spawn("sleep 20")
+    let mut ultimo = primero
+    let mut i = 1
+    while i < 32 {
+        ultimo = std::process::spawn("sleep 20")
+        i += 1
+    }
+    print(primero, ultimo)
+    std::process::spawn_kill(primero)
+    print(std::process::spawn_wait(primero)["exit_code"])
+    print(std::process::spawn("sh -c 'echo ultimo'"))
+    print("fin: los que quedan vivos se matan al salir")
+}

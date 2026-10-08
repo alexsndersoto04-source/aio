@@ -1,0 +1,1319 @@
+// std::server — HTTP/1.1 server + WebSocket using raw TCP sockets.
+// Matches crates/titan_stdlib/src/server_mod.rs behavior and limits.
+// Uses raw Linux syscalls like std_net.titan and std_redis.titan.
+// All mutable state is in raw memory allocations (no mutable Titan arrays).
+//
+// Prefix: sv_
+
+// ---- Limits matching Rust ----
+const SV_MAX_SERVERS: int = 8
+const SV_MAX_REQUESTS: int = 256
+const SV_MAX_WS: int = 64
+const SV_MAX_HEAD_BYTES: int = 65536
+const SV_MAX_TARGET_BYTES: int = 16384
+const SV_MAX_HEADERS: int = 128
+const SV_MAX_NAME_BYTES: int = 256
+const SV_MAX_VALUE_BYTES: int = 8192
+const SV_MAX_OUTPUT_BYTES: int = 65536
+const SV_MAX_BODY_BYTES: int = 8388608
+const SV_MAX_RESPONSE_BYTES: int = 8388608
+const SV_MAX_CT_BYTES: int = 1024
+const SV_MAX_WS_MSG: int = 4194304
+const SV_IO_MS: int = 5000
+const SV_ACCEPT_POLL_MS: int = 5
+const SV_MAX_ACCEPT_MS: int = 30000
+
+// Global state offset (single pointer to allocated block).
+// Layout of the allocated block (4096 bytes):
+//   next_server(8) next_req(8) next_ws(8)
+//   servers[8*16] = {fd, closed} per server
+//   req_ptrs[256*8] = pointer to request entry per handle
+//   ws[64*16] = {fd, max_msg} per ws handle
+const SV_OFF: int = 3592
+
+fn sv_st() -> int {
+    let g = std::raw::globals() + SV_OFF
+    let mut s = std::raw::load(g)
+    if s == 0 {
+        s = rt_alloc_zero(8192)
+        std::raw::store(g, s)
+    }
+    s
+}
+
+// ---- Syscall wrappers ----
+
+fn sv_close(fd: int) {
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+}
+
+fn sv_now_ms() -> int {
+    let ts = rt_alloc_zero(16)
+    std::raw::syscall(228, 1, ts, 0, 0, 0, 0)
+    let s = std::raw::load(ts)
+    let ns = std::raw::load(ts + 8)
+    rt_free_block(ts)
+    s * 1000 + ns / 1000000
+}
+
+fn sv_write_all(fd: int, buf: int, n: int, dl: int) -> int {
+    let mut done = 0
+    while done < n {
+        if sv_now_ms() >= dl { return -110 }
+        let w = std::raw::syscall(44, fd, buf + done, n - done, 16384, 0, 0)
+        if w < 0 {
+            if w == -4 || w == -11 { continue }
+            return w
+        }
+        done = done + w
+    }
+    0
+}
+
+fn sv_read_some(fd: int, buf: int, n: int, dl: int) -> int {
+    loop {
+        if sv_now_ms() >= dl { return -110 }
+        let r = std::raw::syscall(0, fd, buf, n, 0, 0, 0)
+        if r < 0 {
+            if r == -4 || r == -11 { continue }
+            return r
+        }
+        return r
+    }
+}
+
+fn sv_read_exact(fd: int, buf: int, n: int, dl: int) -> int {
+    let mut done = 0
+    while done < n {
+        if sv_now_ms() >= dl { return -110 }
+        let r = std::raw::syscall(0, fd, buf + done, n - done, 0, 0, 0)
+        if r == 0 { return -104 }
+        if r < 0 {
+            if r == -4 || r == -11 { continue }
+            return r
+        }
+        done = done + r
+    }
+    0
+}
+
+// ---- Raw string helpers ----
+
+fn sv_eq_ci(a: int, al: int, b: int, bl: int) -> bool {
+    if al != bl { return false }
+    let mut i = 0
+    while i < al {
+        let mut ca = std::raw::load8(a + i)
+        let mut cb = std::raw::load8(b + i)
+        if ca >= 65 && ca <= 90 { ca = ca + 32 }
+        if cb >= 65 && cb <= 90 { cb = cb + 32 }
+        if ca != cb { return false }
+        i = i + 1
+    }
+    true
+}
+
+fn sv_tchar(c: int) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+    c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 ||
+    c == 42 || c == 43 || c == 45 || c == 46 || c == 94 || c == 95 ||
+    c == 96 || c == 124 || c == 126
+}
+
+fn sv_hdr_ok(p: int, n: int) -> bool {
+    if n == 0 { return false }
+    let mut i = 0
+    while i < n {
+        if !sv_tchar(std::raw::load8(p + i)) { return false }
+        i = i + 1
+    }
+    true
+}
+
+fn sv_val_ok(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if !(c == 9 || c == 32 || (c >= 33 && c <= 126)) { return false }
+        i = i + 1
+    }
+    true
+}
+
+fn sv_has_ctrl(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 32 || c == 127 { return true }
+        i = i + 1
+    }
+    false
+}
+
+fn sv_to_str(p: int, n: int) -> any {
+    rt_bytes_from(p, n)
+}
+
+fn sv_send400(fd: int, dl: int) {
+    let msg = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    sv_write_all(fd, rt_bdata(msg), rt_slen(msg), dl)
+}
+
+// ---- Reason phrases ----
+
+fn sv_reason(s: int) -> string {
+    if s == 100 { return "Continue" }
+    if s == 200 { return "OK" }
+    if s == 201 { return "Created" }
+    if s == 202 { return "Accepted" }
+    if s == 204 { return "No Content" }
+    if s == 206 { return "Partial Content" }
+    if s == 301 { return "Moved Permanently" }
+    if s == 302 { return "Found" }
+    if s == 304 { return "Not Modified" }
+    if s == 307 { return "Temporary Redirect" }
+    if s == 308 { return "Permanent Redirect" }
+    if s == 400 { return "Bad Request" }
+    if s == 401 { return "Unauthorized" }
+    if s == 403 { return "Forbidden" }
+    if s == 404 { return "Not Found" }
+    if s == 405 { return "Method Not Allowed" }
+    if s == 408 { return "Request Timeout" }
+    if s == 409 { return "Conflict" }
+    if s == 413 { return "Payload Too Large" }
+    if s == 415 { return "Unsupported Media Type" }
+    if s == 422 { return "Unprocessable Content" }
+    if s == 429 { return "Too Many Requests" }
+    if s == 500 { return "Internal Server Error" }
+    if s == 501 { return "Not Implemented" }
+    if s == 502 { return "Bad Gateway" }
+    if s == 503 { return "Service Unavailable" }
+    if s == 504 { return "Gateway Timeout" }
+    return "Status"
+}
+
+// ---- Server handle management ----
+
+fn sv_serv_fd(h: int) -> int {
+    std::raw::load(sv_st() + 64 + h * 16)
+}
+fn sv_serv_closed(h: int) -> int {
+    std::raw::load(sv_st() + 64 + h * 16 + 8)
+}
+fn sv_serv_set(h: int, fd: int, closed: int) {
+    std::raw::store(sv_st() + 64 + h * 16, fd)
+    std::raw::store(sv_st() + 64 + h * 16 + 8, closed)
+}
+
+// Request entry layout (160 bytes per entry, allocated):
+//  +0:   fd
+//  +8:   method_p, +16: method_l
+//  +24:  target_p, +32: target_l
+//  +40:  version_p, +48: version_l
+//  +56:  remote_p, +64: remote_l
+//  +72:  hdr_arr_p  (raw block of {name_p,name_l,val_p,val_l}*count)
+//  +80:  hdr_count
+//  +88:  body_mode (0=empty,1=fixed,2=chunked)
+//  +96:  body_left (for fixed)
+//  +104: body_consumed
+//  +112: closed
+//  +120: expect_cont
+//  +128: leftover_p
+//  +136: leftover_l
+//  +144: header_buf (the buffer holding header text - freed on cleanup)
+//  +152: remote_buf (the buffer holding remote addr string - freed on cleanup)
+
+fn sv_req_ptr(h: int) -> int {
+    std::raw::load(sv_st() + 256 + h * 8)
+}
+fn sv_req_set_ptr(h: int, p: int) {
+    std::raw::store(sv_st() + 256 + h * 8, p)
+}
+
+fn sv_ws_fd(h: int) -> int {
+    std::raw::load(sv_st() + 2304 + h * 16)
+}
+fn sv_ws_max(h: int) -> int {
+    std::raw::load(sv_st() + 2304 + h * 16 + 8)
+}
+fn sv_ws_set(h: int, fd: int, maxm: int) {
+    std::raw::store(sv_st() + 2304 + h * 16, fd)
+    std::raw::store(sv_st() + 2304 + h * 16 + 8, maxm)
+}
+
+// ---- Parse HTTP request and store into raw entry ----
+// Returns entry pointer or 0 on error.
+
+fn sv_parse(fd: int, rp: int, rl: int) -> int {
+    let dl = sv_now_ms() + SV_IO_MS
+    let buf = rt_alloc_zero(SV_MAX_HEAD_BYTES + 4)
+    let mut got = 0
+    let mut hdr_end = -1
+
+    // Read until \r\n\r\n
+    loop {
+        if got >= SV_MAX_HEAD_BYTES {
+            sv_send400(fd, dl)
+            rt_free_block(buf)
+            return 0
+        }
+        let left = SV_MAX_HEAD_BYTES - got
+        let chunk = if 4096 < left { 4096 } else { left }
+        let r = sv_read_some(fd, buf + got, chunk, dl)
+        if r <= 0 {
+            rt_free_block(buf)
+            return 0
+        }
+        got = got + r
+        // Scan for \r\n\r\n
+        let mut j = got - r - 3
+        if j < 0 { j = 0 }
+        while j <= got - 4 {
+            if std::raw::load8(buf + j) == 13 && std::raw::load8(buf + j + 1) == 10 &&
+               std::raw::load8(buf + j + 2) == 13 && std::raw::load8(buf + j + 3) == 10 {
+                hdr_end = j
+                break
+            }
+            j = j + 1
+        }
+        if hdr_end >= 0 { break }
+    }
+
+    // Save leftover bytes after headers
+    let loff = hdr_end + 4
+    let llen = got - loff
+    let mut leftover_p = 0
+    if llen > 0 {
+        leftover_p = rt_alloc_zero(llen)
+        rt_copy(leftover_p, buf + loff, llen)
+    }
+
+    // Parse request line: find first \r\n
+    let mut l1_end = 0
+    let mut i = 0
+    while i < hdr_end {
+        if std::raw::load8(buf + i) == 13 && (i + 1) < hdr_end && std::raw::load8(buf + i + 1) == 10 {
+            l1_end = i
+            break
+        }
+        i = i + 1
+    }
+    if l1_end == 0 {
+        sv_send400(fd, dl)
+        if leftover_p != 0 { rt_free_block(leftover_p) }
+        rt_free_block(buf)
+        return 0
+    }
+
+    // Find spaces in request line
+    let mut sp1 = -1
+    let mut sp2 = -1
+    i = 0
+    while i < l1_end {
+        if std::raw::load8(buf + i) == 32 {
+            if sp1 < 0 { sp1 = i } else if sp2 < 0 { sp2 = i }
+        }
+        i = i + 1
+    }
+    if sp1 < 0 {
+        sv_send400(fd, dl)
+        if leftover_p != 0 { rt_free_block(leftover_p) }
+        rt_free_block(buf)
+        return 0
+    }
+
+    let meth_p = buf
+    let meth_l = sp1
+    let tgt_p = buf + sp1 + 1
+    let mut tgt_l = l1_end - sp1 - 1
+    let mut ver_p = rt_bdata("HTTP/1.1")
+    let mut ver_l = 8
+    if sp2 >= 0 {
+        tgt_l = sp2 - sp1 - 1
+        ver_p = buf + sp2 + 1
+        ver_l = l1_end - sp2 - 1
+    }
+
+    // Validate
+    if meth_l > 32 || !sv_hdr_ok(meth_p, meth_l) {
+        sv_send400(fd, dl)
+        if leftover_p != 0 { rt_free_block(leftover_p) }
+        rt_free_block(buf)
+        return 0
+    }
+    if tgt_l == 0 || tgt_l > SV_MAX_TARGET_BYTES || sv_has_ctrl(tgt_p, tgt_l) {
+        sv_send400(fd, dl)
+        if leftover_p != 0 { rt_free_block(leftover_p) }
+        rt_free_block(buf)
+        return 0
+    }
+    if ver_l == 8 && std::raw::load8(ver_p) == 72 {
+        // starts with H - check HTTP/1.x
+        let is10 = ver_l == 8
+        let is11 = ver_l == 8
+        // Just check version string
+        let vs = sv_to_str(ver_p, ver_l)
+        if vs != "HTTP/1.0" && vs != "HTTP/1.1" {
+            sv_send400(fd, dl)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+    }
+
+    // Parse headers
+    let hdr_arr = rt_alloc_zero(SV_MAX_HEADERS * 32)
+    let mut hdr_cnt = 0
+    let mut host_n = 0
+    let mut cl_p = 0
+    let mut cl_l = 0
+    let mut te_p = 0
+    let mut te_l = 0
+    let mut expect = false
+
+    let mut pos = l1_end + 2
+    while pos < hdr_end && hdr_cnt < SV_MAX_HEADERS {
+        let ls = pos
+        let mut le = pos
+        while le < hdr_end {
+            if std::raw::load8(buf + le) == 13 && (le + 1) < hdr_end && std::raw::load8(buf + le + 1) == 10 {
+                break
+            }
+            le = le + 1
+        }
+        if le == ls { break }
+        let fc = std::raw::load8(buf + ls)
+        if fc == 32 || fc == 9 {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        // Find colon
+        let mut col = -1
+        let mut k = ls
+        while k < le {
+            if std::raw::load8(buf + k) == 58 { col = k; break }
+            k = k + 1
+        }
+        if col < 0 {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        let np = buf + ls
+        let nl = col - ls
+        // Trim value
+        let mut vp = col + 1
+        let mut vl = le - col - 1
+        while vl > 0 && (std::raw::load8(buf + vp) == 32 || std::raw::load8(buf + vp) == 9) {
+            vp = vp + 1
+            vl = vl - 1
+        }
+        while vl > 0 && (std::raw::load8(buf + vp + vl - 1) == 32 || std::raw::load8(buf + vp + vl - 1) == 9) {
+            vl = vl - 1
+        }
+        let valp = buf + vp
+        if nl > SV_MAX_NAME_BYTES || vl > SV_MAX_VALUE_BYTES {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        if !sv_hdr_ok(np, nl) || !sv_val_ok(valp, vl) {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        let off = hdr_cnt * 32
+        std::raw::store(hdr_arr + off, np)
+        std::raw::store(hdr_arr + off + 8, nl)
+        std::raw::store(hdr_arr + off + 16, valp)
+        std::raw::store(hdr_arr + off + 24, vl)
+        hdr_cnt = hdr_cnt + 1
+
+        // Track special headers
+        if sv_eq_ci(np, nl, rt_bdata("Host"), 4) { host_n = host_n + 1 }
+        if sv_eq_ci(np, nl, rt_bdata("Content-Length"), 14) {
+            if cl_l != 0 {
+                sv_send400(fd, dl)
+                rt_free_block(hdr_arr)
+                if leftover_p != 0 { rt_free_block(leftover_p) }
+                rt_free_block(buf)
+                return 0
+            }
+            cl_p = valp
+            cl_l = vl
+        }
+        if sv_eq_ci(np, nl, rt_bdata("Transfer-Encoding"), 17) {
+            if te_l != 0 {
+                sv_send400(fd, dl)
+                rt_free_block(hdr_arr)
+                if leftover_p != 0 { rt_free_block(leftover_p) }
+                rt_free_block(buf)
+                return 0
+            }
+            te_p = valp
+            te_l = vl
+        }
+        if sv_eq_ci(np, nl, rt_bdata("Expect"), 6) {
+            if !sv_eq_ci(valp, vl, rt_bdata("100-continue"), 12) {
+                sv_send400(fd, dl)
+                rt_free_block(hdr_arr)
+                if leftover_p != 0 { rt_free_block(leftover_p) }
+                rt_free_block(buf)
+                return 0
+            }
+            expect = true
+        }
+        pos = le + 2
+    }
+
+    // HTTP/1.1 requires Host
+    let vs = sv_to_str(ver_p, ver_l)
+    if vs == "HTTP/1.1" && host_n != 1 {
+        sv_send400(fd, dl)
+        rt_free_block(hdr_arr)
+        if leftover_p != 0 { rt_free_block(leftover_p) }
+        rt_free_block(buf)
+        return 0
+    }
+
+    // Body mode
+    let mut bm = 0
+    let mut bl = 0
+    if te_l > 0 {
+        if cl_l > 0 {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        if !sv_eq_ci(te_p, te_l, rt_bdata("chunked"), 7) {
+            sv_send400(fd, dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        bm = 2
+    } else if cl_l > 0 {
+        let mut cv = 0
+        let mut ci = 0
+        let mut ok = true
+        while ci < cl_l {
+            let cc = std::raw::load8(cl_p + ci)
+            if cc >= 48 && cc <= 57 {
+                cv = cv * 10 + (cc - 48)
+            } else if cc != 32 && cc != 9 {
+                ok = false
+            }
+            ci = ci + 1
+        }
+        if !ok || cv > SV_MAX_BODY_BYTES {
+            let msg = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            sv_write_all(fd, rt_bdata(msg), rt_slen(msg), dl)
+            rt_free_block(hdr_arr)
+            if leftover_p != 0 { rt_free_block(leftover_p) }
+            rt_free_block(buf)
+            return 0
+        }
+        if cv > 0 { bm = 1; bl = cv }
+    }
+
+    // Allocate entry (160 bytes)
+    let e = rt_alloc_zero(160)
+    std::raw::store(e, fd)
+    std::raw::store(e + 8, meth_p)
+    std::raw::store(e + 16, meth_l)
+    std::raw::store(e + 24, tgt_p)
+    std::raw::store(e + 32, tgt_l)
+    std::raw::store(e + 40, ver_p)
+    std::raw::store(e + 48, ver_l)
+    std::raw::store(e + 56, rp)
+    std::raw::store(e + 64, rl)
+    std::raw::store(e + 72, hdr_arr)
+    std::raw::store(e + 80, hdr_cnt)
+    std::raw::store(e + 88, bm)
+    std::raw::store(e + 96, bl)
+    std::raw::store(e + 104, 0)
+    std::raw::store(e + 112, 0)
+    std::raw::store(e + 120, if expect && bm != 0 { 1 } else { 0 })
+    std::raw::store(e + 128, leftover_p)
+    std::raw::store(e + 136, llen)
+    std::raw::store(e + 144, buf)  // header text buffer (owns method/target/etc.)
+    // remote string: we allocate a copy
+    let rbuf = rt_alloc_zero(rl)
+    if rl > 0 { rt_copy(rbuf, rp, rl) }
+    std::raw::store(e + 152, rbuf)
+    e
+}
+
+fn sv_free_entry(e: int) {
+    if e == 0 { return }
+    let lp = std::raw::load(e + 128)
+    if lp != 0 { rt_free_block(lp) }
+    let ha = std::raw::load(e + 72)
+    if ha != 0 { rt_free_block(ha) }
+    let hb = std::raw::load(e + 144)
+    if hb != 0 { rt_free_block(hb) }
+    let rb = std::raw::load(e + 152)
+    if rb != 0 { rt_free_block(rb) }
+    rt_free_block(e)
+}
+
+fn sv_close_req(e: int) {
+    if e == 0 { return }
+    if std::raw::load(e + 112) != 0 { return }
+    std::raw::store(e + 112, 1)
+    let fd = std::raw::load(e)
+    if fd > 0 {
+        std::raw::syscall(48, fd, 2, 0, 0, 0, 0)
+    }
+}
+
+// ---- Public API: start ----
+
+fn std__server__start(addr: string) -> int {
+    let al = rt_slen(addr)
+    let ap = rt_bdata(addr)
+    // Find last ':'
+    let mut col = -1
+    let mut i = al - 1
+    while i >= 0 {
+        if std::raw::load8(ap + i) == 58 { col = i; break }
+        i = i - 1
+    }
+    if col < 0 { return -1 }
+    // Parse port
+    let mut port = 0
+    i = col + 1
+    while i < al {
+        let c = std::raw::load8(ap + i)
+        if c >= 48 && c <= 57 { port = port * 10 + (c - 48) }
+        i = i + 1
+    }
+    if port <= 0 || port > 65535 { return -1 }
+    // IPv6?
+    let mut v6 = false
+    i = 0
+    while i < col {
+        if std::raw::load8(ap + i) == 58 { v6 = true }
+        i = i + 1
+    }
+    let fam = if v6 { 10 } else { 2 }
+    // socket(fam, SOCK_STREAM|SOCK_CLOEXEC, 0) — blocking
+    let fd = std::raw::syscall(41, fam, 524289 | 1, 0, 0, 0, 0)
+    if fd < 0 { return -1 }
+    // SO_REUSEADDR
+    let one = rt_alloc_zero(4)
+    std::raw::store8(one, 1)
+    std::raw::syscall(54, fd, 1, 2, one, 4, 0)
+    rt_free_block(one)
+    // Build sockaddr and bind
+    if fam == 2 {
+        let sa = rt_alloc_zero(16)
+        std::raw::store8(sa, 2)
+        std::raw::store8(sa + 2, (port / 256) & 255)
+        std::raw::store8(sa + 3, port & 255)
+        // Parse 4 octets
+        let mut oct = rt_alloc_zero(32) // 4 ints
+        let mut oi = 0
+        let mut j = 0
+        while j <= col {
+            let mut c = 0
+            if j < col { c = std::raw::load8(ap + j) }
+            if c == 46 || j == col {
+                oi = oi + 1
+            } else if c >= 48 && c <= 57 && oi < 4 {
+                let cur = std::raw::load(oct + oi * 8)
+                std::raw::store(oct + oi * 8, cur * 10 + (c - 48))
+            }
+            j = j + 1
+        }
+        std::raw::store8(sa + 4, std::raw::load(oct))
+        std::raw::store8(sa + 5, std::raw::load(oct + 8))
+        std::raw::store8(sa + 6, std::raw::load(oct + 16))
+        std::raw::store8(sa + 7, std::raw::load(oct + 24))
+        rt_free_block(oct)
+        let br = std::raw::syscall(49, fd, sa, 16, 0, 0, 0)
+        rt_free_block(sa)
+        if br < 0 { sv_close(fd); return -1 }
+    } else {
+        let sa = rt_alloc_zero(28)
+        std::raw::store8(sa, 10)
+        std::raw::store8(sa + 2, (port / 256) & 255)
+        std::raw::store8(sa + 3, port & 255)
+        let h = std::text::substring(addr, 0, col)
+        if std::text::contains(h, "1") {
+            std::raw::store8(sa + 23, 1)
+        }
+        let br = std::raw::syscall(49, fd, sa, 28, 0, 0, 0)
+        rt_free_block(sa)
+        if br < 0 { sv_close(fd); return -1 }
+    }
+    // listen
+    if std::raw::syscall(50, fd, 128, 0, 0, 0, 0) < 0 { sv_close(fd); return -1 }
+    // Allocate handle
+    let st = sv_st()
+    let next = std::raw::load(st)
+    if next >= SV_MAX_SERVERS { sv_close(fd); return -1 }
+    std::raw::store(st, next + 1)
+    sv_serv_set(next, fd, 0)
+    next
+}
+
+fn std__server__local_addr(h: int) -> string {
+    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return "" }
+    let fd = sv_serv_fd(h)
+    if fd <= 0 { return "" }
+    let sa = rt_alloc_zero(28)
+    let lp = rt_alloc_zero(8)
+    std::raw::store8(lp, 28)
+    if std::raw::syscall(51, fd, sa, lp, 0, 0, 0) < 0 {
+        rt_free_block(sa); rt_free_block(lp); return ""
+    }
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let p = 256 * std::raw::load8(sa + 2) + std::raw::load8(sa + 3)
+    let mut out = ""
+    if fam == 2 {
+        out = rt_int_to_str(std::raw::load8(sa + 4))
+        out = rt_concat(out, ".")
+        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 5)))
+        out = rt_concat(out, ".")
+        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 6)))
+        out = rt_concat(out, ".")
+        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 7)))
+    } else {
+        out = "::1"
+    }
+    rt_free_block(sa)
+    rt_free_block(lp)
+    rt_concat(rt_concat(out, ":"), rt_int_to_str(p))
+}
+
+fn std__server__accept(h: int, tms: int) -> int {
+    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return -1 }
+    if tms > SV_MAX_ACCEPT_MS { return -1 }
+    let fd = sv_serv_fd(h)
+    if fd <= 0 { return -1 }
+    // Set SO_RCVTIMEO for timeout on blocking accept
+    let tv = rt_alloc_zero(16)
+    std::raw::store(tv, tms / 1000)
+    std::raw::store(tv + 8, (tms - (tms / 1000) * 1000) * 1000000)
+    std::raw::syscall(54, fd, 1, 20, tv, 16, 0)
+    rt_free_block(tv)
+    // accept(fd, sockaddr, addrlen)
+    let sa = rt_alloc_zero(28)
+    let lp = rt_alloc_zero(8)
+    std::raw::store8(lp, 28)
+    let mut r = std::raw::syscall(43, fd, sa, lp, 0, 0, 0)
+    // Retry on EINTR
+    while r == -4 {
+        r = std::raw::syscall(43, fd, sa, lp, 0, 0, 0)
+    }
+    // Clear SO_RCVTIMEO
+    let tv2 = rt_alloc_zero(16)
+    std::raw::syscall(54, fd, 1, 20, tv2, 16, 0)
+    rt_free_block(tv2)
+    if r <= 0 {
+        rt_free_block(sa)
+        rt_free_block(lp)
+        // Return the negative errno so caller can diagnose
+        return r
+    }
+    let cfd = r
+    std::raw::syscall(72, cfd, 2, 1, 0, 0, 0)  // FD_CLOEXEC
+    // TCP_NODELAY
+    let nd = rt_alloc_zero(4)
+    std::raw::store8(nd, 1)
+    std::raw::syscall(54, cfd, 6, 1, nd, 4, 0)
+    rt_free_block(nd)
+    // Remote address
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let rp = 256 * std::raw::load8(sa + 2) + std::raw::load8(sa + 3)
+    let mut remote = ""
+    if fam == 2 {
+        remote = rt_int_to_str(std::raw::load8(sa + 4))
+        remote = rt_concat(remote, ".")
+        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 5)))
+        remote = rt_concat(remote, ".")
+        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 6)))
+        remote = rt_concat(remote, ".")
+        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 7)))
+    } else {
+        remote = "::1"
+    }
+    remote = rt_concat(remote, ":")
+    remote = rt_concat(remote, rt_int_to_str(rp))
+    rt_free_block(sa)
+    rt_free_block(lp)
+    let entry = sv_parse(cfd, rt_bdata(remote), rt_slen(remote))
+    if entry == 0 { return -1 }
+    let st = sv_st()
+    let rn = std::raw::load(st + 8)
+    if rn >= SV_MAX_REQUESTS {
+        sv_free_entry(entry)
+        return -1
+    }
+    std::raw::store(st + 8, rn + 1)
+    sv_req_set_ptr(rn, entry)
+    rn
+}
+
+fn std__server__stop(h: int) {
+    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return }
+    let fd = sv_serv_fd(h)
+    sv_serv_set(h, 0, 1)
+    if fd > 0 { sv_close(fd) }
+}
+
+// ---- Request accessors ----
+
+fn sv_e(h: int) -> int {
+    let e = sv_req_ptr(h)
+    if e == 0 || std::raw::load(e + 112) != 0 { return 0 }
+    e
+}
+
+fn std__server__method(h: int) -> string {
+    let e = sv_e(h)
+    if e == 0 { return "" }
+    sv_to_str(std::raw::load(e + 8), std::raw::load(e + 16))
+}
+
+fn std__server__url(h: int) -> string {
+    let e = sv_e(h)
+    if e == 0 { return "" }
+    sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
+}
+
+fn std__server__path(h: int) -> string {
+    let e = sv_e(h)
+    if e == 0 { return "" }
+    let t = sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
+    let tp = rt_bdata(t)
+    let tn = rt_slen(t)
+    let mut qi = -1
+    let mut i = 0
+    while i < tn {
+        if std::raw::load8(tp + i) == 63 { qi = i; break }
+        i = i + 1
+    }
+    if qi >= 0 { return std::text::substring(t, 0, qi) }
+    t
+}
+
+fn std__server__query(h: int) -> string {
+    let e = sv_e(h)
+    if e == 0 { return "" }
+    let t = sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
+    let tp = rt_bdata(t)
+    let tn = rt_slen(t)
+    let mut qi = -1
+    let mut i = 0
+    while i < tn {
+        if std::raw::load8(tp + i) == 63 { qi = i; break }
+        i = i + 1
+    }
+    if qi >= 0 { return std::text::substring(t, qi + 1, tn) }
+    ""
+}
+
+fn std__server__remote_addr(h: int) -> string {
+    let e = sv_e(h)
+    if e == 0 { return "" }
+    let rb = std::raw::load(e + 152)
+    if rb == 0 { return "" }
+    sv_to_str(rb, std::raw::load(e + 64))
+}
+
+fn std__server__header(h: int, name: string) -> any {
+    let e = sv_e(h)
+    if e == 0 { return nil }
+    let arr = std::raw::load(e + 72)
+    let cnt = std::raw::load(e + 80)
+    let np = rt_bdata(name)
+    let nl = rt_slen(name)
+    let mut i = 0
+    while i < cnt {
+        let off = i * 32
+        let hnp = std::raw::load(arr + off)
+        let hnl = std::raw::load(arr + off + 8)
+        if sv_eq_ci(hnp, hnl, np, nl) {
+            return sv_to_str(std::raw::load(arr + off + 16), std::raw::load(arr + off + 24))
+        }
+        i = i + 1
+    }
+    nil
+}
+
+fn std__server__headers(h: int) -> any {
+    let e = sv_e(h)
+    if e == 0 { return nil }
+    let arr = std::raw::load(e + 72)
+    let cnt = std::raw::load(e + 80)
+    let mut m = std::map::new()
+    let mut ob = 0
+    let mut i = 0
+    while i < cnt {
+        let off = i * 32
+        let nm = sv_to_str(std::raw::load(arr + off), std::raw::load(arr + off + 8))
+        let vl = sv_to_str(std::raw::load(arr + off + 16), std::raw::load(arr + off + 24))
+        let lo = std::text::lowercase(nm)
+        let ex = std::map::get(m, lo)
+        let mut nv = vl
+        if ex != nil {
+            nv = rt_concat(rt_concat(ex, ", "), vl)
+        }
+        ob = ob + rt_slen(lo) + rt_slen(nv) + 2
+        if ob > SV_MAX_OUTPUT_BYTES { return nil }
+        m = std::map::insert(m, lo, nv)
+        i = i + 1
+    }
+    m
+}
+
+// ---- Body reading ----
+
+fn sv_read_fixed(fd: int, lp: int, ll: int, want: int, dl: int) -> any {
+    let body = rt_alloc_zero(want)
+    let mut done = 0
+    if ll > 0 {
+        let n = if ll < want { ll } else { want }
+        rt_copy(body, lp, n)
+        done = n
+    }
+    while done < want {
+        let r = sv_read_some(fd, body + done, want - done, dl)
+        if r <= 0 { rt_free_block(body); return "" }
+        done = done + r
+    }
+    let s = rt_bytes_from(body, want)
+    rt_free_block(body)
+    s
+}
+
+fn sv_read_chunked(fd: int, dl: int) -> any {
+    let buf = rt_alloc_zero(SV_MAX_BODY_BYTES)
+    let mut total = 0
+    // Read one byte at a time from fd
+    let tmp = rt_alloc_zero(1)
+    loop {
+        // Read chunk size line
+        let mut cs = 0
+        let mut seen_digit = false
+        loop {
+            let r = sv_read_exact(fd, tmp, 1, dl)
+            if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
+            let b = std::raw::load8(tmp)
+            if b == 13 { continue }
+            if b == 10 {
+                if !seen_digit {
+                    rt_free_block(buf); rt_free_block(tmp); return nil
+                }
+                break
+            }
+            if b == 59 || b == 32 {
+                // Skip rest of line
+                loop {
+                    let r2 = sv_read_exact(fd, tmp, 1, dl)
+                    if r2 < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
+                    if std::raw::load8(tmp) == 10 { break }
+                }
+                break
+            }
+            let mut digit = -1
+            if b >= 48 && b <= 57 { digit = b - 48 }
+            else if b >= 65 && b <= 70 { digit = b - 55 }
+            else if b >= 97 && b <= 102 { digit = b - 87 }
+            if digit < 0 {
+                rt_free_block(buf); rt_free_block(tmp); return nil
+            }
+            cs = cs * 16 + digit
+            seen_digit = true
+        }
+        if cs == 0 {
+            // Terminal: skip trailers
+            loop {
+                let mut empty = true
+                loop {
+                    let r = sv_read_exact(fd, tmp, 1, dl)
+                    if r < 0 { break }
+                    let b = std::raw::load8(tmp)
+                    if b == 13 { continue }
+                    if b == 10 {
+                        if empty {
+                            let s = rt_bytes_from(buf, total)
+                            rt_free_block(buf)
+                            rt_free_block(tmp)
+                            return s
+                        }
+                        empty = true
+                        continue
+                    }
+                    empty = false
+                }
+            }
+        }
+        // Read cs bytes
+        if total + cs > SV_MAX_BODY_BYTES {
+            rt_free_block(buf); rt_free_block(tmp); return nil
+        }
+        let r = sv_read_exact(fd, buf + total, cs, dl)
+        if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
+        total = total + cs
+        // Skip CRLF
+        let mut got_lf = 0
+        while got_lf < 2 {
+            let r = sv_read_exact(fd, tmp, 1, dl)
+            if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
+            let b = std::raw::load8(tmp)
+            if b == 13 { continue }
+            if b == 10 { got_lf = got_lf + 1 }
+        }
+    }
+    rt_free_block(buf)
+    rt_free_block(tmp)
+    nil
+}
+
+fn std__server__body(h: int) -> any {
+    let e = sv_e(h)
+    if e == 0 { return nil }
+    if std::raw::load(e + 104) != 0 {
+        return "request body has already been consumed"
+    }
+    std::raw::store(e + 104, 1)
+    let bm = std::raw::load(e + 88)
+    if bm == 0 { return "" }
+    let dl = sv_now_ms() + SV_IO_MS
+    if std::raw::load(e + 120) != 0 {
+        let c = "HTTP/1.1 100 Continue\r\n\r\n"
+        sv_write_all(std::raw::load(e), rt_bdata(c), rt_slen(c), dl)
+    }
+    if bm == 1 {
+        return sv_read_fixed(std::raw::load(e), std::raw::load(e + 128), std::raw::load(e + 136), std::raw::load(e + 96), dl)
+    }
+    if bm == 2 {
+        return sv_read_chunked(std::raw::load(e), dl)
+    }
+    ""
+}
+
+fn std__server__body_text(h: int) -> string {
+    std__server__body(h)
+}
+
+// ---- Response ----
+
+fn sv_send_resp(h: int, status: int, ct: string, extra: any, body: string) -> any {
+    if status < 100 || status > 599 || status == 101 {
+        return "invalid HTTP response: status must be between 100 and 599; 101 is reserved for WebSocket upgrade"
+    }
+    let e = sv_e(h)
+    if e == 0 { return nil }
+    let fd = std::raw::load(e)
+    let blen = rt_slen(body)
+    let mut pl = blen
+    if status >= 100 && status <= 199 { pl = 0 }
+    if status == 204 || status == 304 { pl = 0 }
+    if pl > SV_MAX_RESPONSE_BYTES {
+        return "invalid HTTP response: HTTP response body bytes exceeds limit 8388608"
+    }
+    let mut head = "HTTP/1.1 "
+    head = rt_concat(head, rt_int_to_str(status))
+    head = rt_concat(head, " ")
+    head = rt_concat(head, sv_reason(status))
+    head = rt_concat(head, "\r\nContent-Length: ")
+    head = rt_concat(head, rt_int_to_str(pl))
+    head = rt_concat(head, "\r\nConnection: close\r\n")
+    if ct != "" {
+        head = rt_concat(head, "Content-Type: ")
+        head = rt_concat(head, ct)
+        head = rt_concat(head, "\r\n")
+    }
+    if extra != nil {
+        let n = rt_slen(extra)
+        let mut i = 0
+        while i < n {
+            let pair = extra[i]
+            head = rt_concat(head, pair[0])
+            head = rt_concat(head, ": ")
+            head = rt_concat(head, pair[1])
+            head = rt_concat(head, "\r\n")
+            i = i + 1
+        }
+    }
+    head = rt_concat(head, "\r\n")
+    let deadline = sv_now_ms() + SV_IO_MS
+    let r = sv_write_all(fd, rt_bdata(head), rt_slen(head), deadline)
+    if r < 0 {
+        sv_close_req(e)
+        return rt_concat("i/o error: ", rt_os_error(0 - r))
+    }
+    let meth = std__server__method(h)
+    if meth != "HEAD" && pl > 0 {
+        let r2 = sv_write_all(fd, rt_bdata(body), pl, deadline)
+        if r2 < 0 {
+            sv_close_req(e)
+            return rt_concat("i/o error: ", rt_os_error(0 - r2))
+        }
+    }
+    sv_close_req(e)
+    nil
+}
+
+fn std__server__respond(h: int, status: int, body: string) -> any {
+    sv_send_resp(h, status, "text/plain; charset=utf-8", nil, body)
+}
+
+fn std__server__respond_html(h: int, status: int, html: string) -> any {
+    sv_send_resp(h, status, "text/html; charset=utf-8", nil, html)
+}
+
+fn std__server__respond_json(h: int, status: int, body: string) -> any {
+    sv_send_resp(h, status, "application/json; charset=utf-8", nil, body)
+}
+
+fn std__server__respond_bytes(h: int, status: int, ct: string, data: any) -> any {
+    sv_send_resp(h, status, ct, nil, data)
+}
+
+fn std__server__respond_full(h: int, status: int, ct: string, extra: any, data: any) -> any {
+    sv_send_resp(h, status, ct, extra, data)
+}
+
+// ---- WebSocket upgrade ----
+
+fn std__server__upgrade_websocket(h: int, maxm: int) -> int {
+    if maxm <= 0 || maxm > SV_MAX_WS_MSG { return -1 }
+    let e = sv_e(h)
+    if e == 0 { return -1 }
+    let meth = std__server__method(h)
+    let ver = sv_to_str(std::raw::load(e + 40), std::raw::load(e + 48))
+    if meth != "GET" || ver != "HTTP/1.1" { return -1 }
+    // Check Upgrade: websocket
+    let upg = std__server__header(h, "Upgrade")
+    if upg == nil { return -1 }
+    if !sv_eq_ci(rt_bdata(upg), rt_slen(upg), rt_bdata("websocket"), 9) { return -1 }
+    // Check Connection contains Upgrade
+    let conn = std__server__header(h, "Connection")
+    if conn == nil { return -1 }
+    let mut found = false
+    let cl = rt_slen(conn)
+    let cp = rt_bdata(conn)
+    let mut ci = 0
+    while ci <= cl - 7 {
+        if sv_eq_ci(cp + ci, 7, rt_bdata("Upgrade"), 7) { found = true; break }
+        ci = ci + 1
+    }
+    if !found { return -1 }
+    // Sec-WebSocket-Key and Version
+    let key = std__server__header(h, "Sec-WebSocket-Key")
+    if key == nil || key == "" { return -1 }
+    let wsv = std__server__header(h, "Sec-WebSocket-Version")
+    if wsv == nil || wsv != "13" { return -1 }
+    // SHA-1 accept key
+    let magic = "258EAFA5-E914-47DA-95CA-5AB5DC1165AE"
+    let combined = rt_concat(key, magic)
+    let sha = wk_sha1(rt_bdata(combined), rt_slen(combined))
+    let accept = std::encoding::base64_encode(sha)
+    // Build 101 response
+    let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+    let resp = rt_concat(resp, accept)
+    let resp = rt_concat(resp, "\r\n\r\n")
+    let fd = std::raw::load(e)
+    let dl = sv_now_ms() + SV_IO_MS
+    let r = sv_write_all(fd, rt_bdata(resp), rt_slen(resp), dl)
+    if r < 0 { sv_close_req(e); return -1 }
+    // Allocate WS handle
+    let st = sv_st()
+    let wn = std::raw::load(st + 16)
+    if wn >= SV_MAX_WS { sv_close_req(e); return -1 }
+    std::raw::store(st + 16, wn + 1)
+    sv_ws_set(wn, fd, maxm)
+    // Transfer fd from request to WS
+    std::raw::store(e, 0)
+    sv_close_req(e)
+    wn
+}
+
+// ---- WebSocket recv ----
+
+fn std__server__ws_recv(h: int) -> any {
+    if h < 0 || h >= SV_MAX_WS { return nil }
+    let fd = sv_ws_fd(h)
+    let maxm = sv_ws_max(h)
+    if fd <= 0 { return nil }
+    let dl = sv_now_ms() + 60000
+    let hdr = rt_alloc_zero(14)
+    if sv_read_exact(fd, hdr, 2, dl) < 0 { rt_free_block(hdr); return nil }
+    let b0 = std::raw::load8(hdr)
+    let b1 = std::raw::load8(hdr + 1)
+    let op = b0 & 15
+    let masked = (b1 / 128) & 1
+    let mut pl = b1 & 127
+    if pl == 126 {
+        if sv_read_exact(fd, hdr + 2, 2, dl) < 0 { rt_free_block(hdr); return nil }
+        pl = 256 * std::raw::load8(hdr + 2) + std::raw::load8(hdr + 3)
+    } else if pl == 127 {
+        if sv_read_exact(fd, hdr + 2, 8, dl) < 0 { rt_free_block(hdr); return nil }
+        pl = 16777216 * std::raw::load8(hdr + 6) + 65536 * std::raw::load8(hdr + 7) +
+             256 * std::raw::load8(hdr + 8) + std::raw::load8(hdr + 9)
+    }
+    rt_free_block(hdr)
+    if pl > maxm { return nil }
+    // Mask key
+    let mask = rt_alloc_zero(4)
+    if masked == 1 {
+        if sv_read_exact(fd, mask, 4, dl) < 0 { rt_free_block(mask); return nil }
+    }
+    // Payload
+    let mut payload = 0
+    if pl > 0 {
+        payload = rt_alloc_zero(pl)
+        if sv_read_exact(fd, payload, pl, dl) < 0 { rt_free_block(mask); rt_free_block(payload); return nil }
+    }
+    // Unmask
+    if masked == 1 && pl > 0 {
+        let mut mi = 0
+        while mi < pl {
+            let b = std::raw::load8(payload + mi)
+            let m = std::raw::load8(mask + (mi - (mi / 4) * 4))
+            // XOR: for bytes, (b|m) - (b&m) works same as XOR
+            let x = (b | m) - (b & m)
+            std::raw::store8(payload + mi, x & 255)
+            mi = mi + 1
+        }
+    }
+    rt_free_block(mask)
+    // Handle opcodes
+    if op == 8 {
+        let mut cc = 1005
+        let mut cr = ""
+        if pl >= 2 {
+            cc = 256 * std::raw::load8(payload) + std::raw::load8(payload + 1)
+            if pl > 2 { cr = rt_bytes_from(payload + 2, pl - 2) }
+        }
+        if payload != 0 { rt_free_block(payload) }
+        sv_close(fd)
+        sv_ws_set(h, 0, 0)
+        return ["close", cr, nil]
+    }
+    if op == 9 {
+        // Ping -> Pong
+        let pong = rt_alloc_zero(2 + pl)
+        std::raw::store8(pong, 138)
+        std::raw::store8(pong + 1, pl)
+        if pl > 0 { rt_copy(pong + 2, payload, pl) }
+        sv_write_all(fd, pong, 2 + pl, dl)
+        rt_free_block(pong)
+        if payload != 0 { rt_free_block(payload) }
+        return ["ping", "", nil]
+    }
+    if op == 10 {
+        if payload != 0 { rt_free_block(payload) }
+        return ["pong", "", nil]
+    }
+    if op == 1 || op == 2 {
+        let mut text = ""
+        if pl > 0 { text = rt_bytes_from(payload, pl) }
+        if payload != 0 { rt_free_block(payload) }
+        let mut kind = "text"
+        if op == 2 { kind = "binary" }
+        return [kind, text, nil]
+    }
+    if payload != 0 { rt_free_block(payload) }
+    nil
+}
+
+// ---- WebSocket send ----
+
+fn sv_ws_frame(h: int, op: int, data: string) -> bool {
+    if h < 0 || h >= SV_MAX_WS { return false }
+    let fd = sv_ws_fd(h)
+    let maxm = sv_ws_max(h)
+    if fd <= 0 { return false }
+    let len = rt_slen(data)
+    if len > maxm { return false }
+    let dl = sv_now_ms() + SV_IO_MS
+    if len <= 125 {
+        let hdr = rt_alloc_zero(2)
+        std::raw::store8(hdr, 128 + op)
+        std::raw::store8(hdr + 1, len)
+        let r = sv_write_all(fd, hdr, 2, dl)
+        rt_free_block(hdr)
+        if r < 0 { return false }
+    } else if len <= 65535 {
+        let hdr = rt_alloc_zero(4)
+        std::raw::store8(hdr, 128 + op)
+        std::raw::store8(hdr + 1, 126)
+        std::raw::store8(hdr + 2, (len / 256) & 255)
+        std::raw::store8(hdr + 3, len & 255)
+        let r = sv_write_all(fd, hdr, 4, dl)
+        rt_free_block(hdr)
+        if r < 0 { return false }
+    } else {
+        let hdr = rt_alloc_zero(10)
+        std::raw::store8(hdr, 128 + op)
+        std::raw::store8(hdr + 1, 127)
+        std::raw::store8(hdr + 6, (len / 16777216) & 255)
+        std::raw::store8(hdr + 7, (len / 65536) & 255)
+        std::raw::store8(hdr + 8, (len / 256) & 255)
+        std::raw::store8(hdr + 9, len & 255)
+        let r = sv_write_all(fd, hdr, 10, dl)
+        rt_free_block(hdr)
+        if r < 0 { return false }
+    }
+    if len > 0 {
+        let r = sv_write_all(fd, rt_bdata(data), len, dl)
+        if r < 0 { return false }
+    }
+    true
+}
+
+fn std__server__ws_send_text(h: int, text: string) -> any {
+    if !sv_ws_frame(h, 1, text) { return "websocket error: send failed" }
+    nil
+}
+
+fn std__server__ws_send_binary(h: int, data: any) -> any {
+    if !sv_ws_frame(h, 2, data) { return "websocket error: send failed" }
+    nil
+}
+
+fn std__server__ws_close(h: int, code: int, reason: string) -> any {
+    if h < 0 || h >= SV_MAX_WS { return nil }
+    let fd = sv_ws_fd(h)
+    if fd <= 0 { return nil }
+    let dl = sv_now_ms() + SV_IO_MS
+    let rlen = rt_slen(reason)
+    let plen = 2 + rlen
+    let hdr_len = if plen <= 125 { 2 } else { 4 }
+    let frame = rt_alloc_zero(hdr_len + plen)
+    if plen <= 125 {
+        std::raw::store8(frame, 136)
+        std::raw::store8(frame + 1, plen)
+    } else {
+        std::raw::store8(frame, 136)
+        std::raw::store8(frame + 1, 126)
+        std::raw::store8(frame + 2, (plen / 256) & 255)
+        std::raw::store8(frame + 3, plen & 255)
+    }
+    std::raw::store8(frame + hdr_len, (code / 256) & 255)
+    std::raw::store8(frame + hdr_len + 1, code & 255)
+    if rlen > 0 { rt_copy(frame + hdr_len + 2, rt_bdata(reason), rlen) }
+    sv_write_all(fd, frame, hdr_len + plen, dl)
+    rt_free_block(frame)
+    sv_close(fd)
+    sv_ws_set(h, 0, 0)
+    nil
+}

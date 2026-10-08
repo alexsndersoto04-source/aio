@@ -1,0 +1,4 @@
+fn main() {
+    let c = std::collections::counter_from(["a"])
+    print(std::collections::counter_most_common(c, -1))
+}

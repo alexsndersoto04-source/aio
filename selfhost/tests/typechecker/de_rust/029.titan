@@ -1,0 +1,1 @@
+type Socket = TcpStream type Listener = TcpListener fn close(stream: Socket, listener: Listener) { std::net::tcp_close(stream) std::net::tcp_close(listener) } fn main() {}

@@ -1,0 +1,99 @@
+// Prueba std::server: arranca un servidor HTTP real y verifica respuestas.
+// La VM pasa todas las pruebas. El nativo tiene un problema conocido con
+// accept (syscall 43 devuelve -1 en este entorno) que requiere depuración
+// de la integración raw-syscall del compilador nativo.
+fn main() {
+    let srv = std::server::start("127.0.0.1:19877")
+    std::testing::assert(srv >= 0, "start server on 127.0.0.1:19877")
+    let addr = std::server::local_addr(srv)
+    std::testing::assert_eq(addr, "127.0.0.1:19877", "local_addr matches")
+    println("servidor en: " + addr)
+
+    // Test 1: simple GET via curl
+    let client = std::process::spawn("curl -s -D- http://127.0.0.1:19877/hello")
+    let req = std::server::accept(srv, 5000)
+    std::testing::assert(req >= 0, "accept returns valid handle")
+    std::testing::assert_eq(std::server::method(req), "GET", "method is GET")
+    std::testing::assert_eq(std::server::path(req), "/hello", "path is /hello")
+    std::testing::assert_eq(std::server::query(req), "", "query is empty")
+    let host_hdr = std::server::header(req, "Host")
+    std::testing::assert(host_hdr != nil, "Host header present")
+    let ra = std::server::remote_addr(req)
+    std::testing::assert(std::text::contains(ra, "127.0.0.1"), "remote is localhost")
+    std::server::respond(req, 200, "Hello from Titan!")
+    let cw = std::process::spawn_wait(client)
+    let out = std::map::get(cw, "stdout")
+    println("test1:")
+    println(out)
+    std::testing::assert(std::text::contains(out, "Hello from Titan!"), "body received")
+    std::testing::assert(std::text::contains(out, "200 OK"), "200 status")
+    println("test 1 OK")
+
+    // Test 2: JSON response
+    let client2 = std::process::spawn("curl -s -D- http://127.0.0.1:19877/api")
+    let req2 = std::server::accept(srv, 5000)
+    std::testing::assert(req2 >= 0, "accept second")
+    std::server::respond_json(req2, 200, "{\"ok\":true}")
+    let cw2 = std::process::spawn_wait(client2)
+    let out2 = std::map::get(cw2, "stdout")
+    println("test2:")
+    println(out2)
+    std::testing::assert(std::text::contains(out2, "{\"ok\":true}"), "JSON body")
+    std::testing::assert(std::text::contains(out2, "application/json"), "JSON CT")
+    println("test 2 OK")
+
+    // Test 3: 404
+    let client3 = std::process::spawn("curl -s -D- http://127.0.0.1:19877/missing")
+    let req3 = std::server::accept(srv, 5000)
+    std::testing::assert(req3 >= 0, "accept third")
+    std::testing::assert_eq(std::server::url(req3), "/missing", "url /missing")
+    std::server::respond(req3, 404, "Not Found")
+    let cw3 = std::process::spawn_wait(client3)
+    let out3 = std::map::get(cw3, "stdout")
+    println("test3:")
+    println(out3)
+    std::testing::assert(std::text::contains(out3, "404"), "404 status")
+    std::testing::assert(std::text::contains(out3, "Not Found"), "404 body")
+    println("test 3 OK")
+
+    // Test 4: HTML response
+    let client4 = std::process::spawn("curl -s -D- http://127.0.0.1:19877/page")
+    let req4 = std::server::accept(srv, 5000)
+    std::testing::assert(req4 >= 0, "accept fourth")
+    std::server::respond_html(req4, 200, "<h1>Hello</h1>")
+    let cw4 = std::process::spawn_wait(client4)
+    let out4 = std::map::get(cw4, "stdout")
+    println("test4:")
+    println(out4)
+    std::testing::assert(std::text::contains(out4, "<h1>Hello</h1>"), "HTML body")
+    std::testing::assert(std::text::contains(out4, "text/html"), "HTML CT")
+    println("test 4 OK")
+
+    // Test 5: query string
+    let client5 = std::process::spawn("curl -s -D- 'http://127.0.0.1:19877/search?q=hello&lang=en'")
+    let req5 = std::server::accept(srv, 5000)
+    std::testing::assert(req5 >= 0, "accept fifth")
+    std::testing::assert_eq(std::server::path(req5), "/search", "path /search")
+    std::testing::assert_eq(std::server::query(req5), "q=hello&lang=en", "query")
+    std::server::respond(req5, 200, "OK")
+    let cw5 = std::process::spawn_wait(client5)
+    println("test 5 OK")
+
+    // Test 6: custom headers
+    let client6 = std::process::spawn("curl -s -D- -H 'X-Custom: value1' http://127.0.0.1:19877/h")
+    let req6 = std::server::accept(srv, 5000)
+    std::testing::assert(req6 >= 0, "accept sixth")
+    let custom = std::server::header(req6, "X-Custom")
+    std::testing::assert(custom != nil, "X-Custom present")
+    if custom != nil {
+        std::testing::assert_eq(custom, "value1", "X-Custom value")
+    }
+    let hdrs = std::server::headers(req6)
+    std::testing::assert(hdrs != nil, "headers map not nil")
+    std::server::respond(req6, 200, "OK")
+    let cw6 = std::process::spawn_wait(client6)
+    println("test 6 OK")
+
+    std::server::stop(srv)
+    println("ALL SERVER TESTS PASSED")
+}

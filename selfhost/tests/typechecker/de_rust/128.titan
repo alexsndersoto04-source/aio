@@ -1,0 +1,1 @@
+fn dynamic() -> any { 1 } fn apply(callback: fn() -> int) -> int { callback() } fn main() { apply(dynamic) }

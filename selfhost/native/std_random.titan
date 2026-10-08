@@ -1,0 +1,273 @@
+// std::random escrito en Titan.
+//
+// * Con semilla: exactamente lo mismo que rand 0.9 + rand_chacha 0.9 en la VM:
+//   ChaCha20Rng::seed_from_u64 (la semilla de 32 bytes sale de PCG32), bloques
+//   ChaCha20 con contador de 64 bits desde 0, enteros con el método de Canon
+//   (versión con sesgo, la que usa rand sin la opción "unbiased") y floats como
+//   (u64 >> 11) * 2^-53.
+// * Sin semilla: entropía real del sistema (llamada getrandom, número 318),
+//   con los mismos algoritmos de rango/float/bool.
+
+fn rn_min() -> int { -9223372036854775807 - 1 }
+
+// Comparación sin signo a < b.
+fn rn_ult(a: int, b: int) -> bool {
+    (a ^ rn_min()) < (b ^ rn_min())
+}
+
+// Parte alta del producto sin signo de 64x64 bits.
+fn rn_mulhi(a: int, b: int) -> int {
+    let m = 4294967295
+    let a0 = a & m
+    let a1 = std::raw::shr(a, 32)
+    let b0 = b & m
+    let b1 = std::raw::shr(b, 32)
+    let p00 = std::raw::wmul(a0, b0)
+    let p01 = std::raw::wmul(a0, b1)
+    let p10 = std::raw::wmul(a1, b0)
+    let p11 = std::raw::wmul(a1, b1)
+    let mid = std::raw::shr(p00, 32) + (p01 & m) + (p10 & m)
+    std::raw::wadd(std::raw::wadd(p11, std::raw::shr(p01, 32)), std::raw::wadd(std::raw::shr(p10, 32), std::raw::shr(mid, 32)))
+}
+
+// ---------------- ChaCha20 ----------------
+
+fn rn_rotl32(x: int, n: int) -> int {
+    (std::raw::shl(x, n) | std::raw::shr(x, 32 - n)) & 4294967295
+}
+
+fn rn_qr(s: int, a: int, b: int, c: int, d: int) {
+    let m = 4294967295
+    let mut va = std::raw::load(s + 8 * a)
+    let mut vb = std::raw::load(s + 8 * b)
+    let mut vc = std::raw::load(s + 8 * c)
+    let mut vd = std::raw::load(s + 8 * d)
+    va = (va + vb) & m
+    vd = rn_rotl32(vd ^ va, 16)
+    vc = (vc + vd) & m
+    vb = rn_rotl32(vb ^ vc, 12)
+    va = (va + vb) & m
+    vd = rn_rotl32(vd ^ va, 8)
+    vc = (vc + vd) & m
+    vb = rn_rotl32(vb ^ vc, 7)
+    std::raw::store(s + 8 * a, va)
+    std::raw::store(s + 8 * b, vb)
+    std::raw::store(s + 8 * c, vc)
+    std::raw::store(s + 8 * d, vd)
+}
+
+// Escribe `count` bytes del flujo ChaCha20 (clave de 8 palabras en `key`,
+// nonce 0) en `out`.
+fn rn_chacha_stream(key: int, out: int, count: int) {
+    let input = rt_alloc(16 * 8)
+    let x = rt_alloc(16 * 8)
+    let block = rt_alloc(64)
+    // "expand 32-byte k"
+    std::raw::store(input, 1634760805)
+    std::raw::store(input + 8, 857760878)
+    std::raw::store(input + 16, 2036477234)
+    std::raw::store(input + 24, 1797285236)
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(input + 32 + 8 * i, std::raw::load(key + 8 * i))
+        i += 1
+    }
+    std::raw::store(input + 112, 0)
+    std::raw::store(input + 120, 0)
+    let mut counter = 0
+    let mut done = 0
+    while done < count {
+        std::raw::store(input + 96, counter & 4294967295)
+        std::raw::store(input + 104, std::raw::shr(counter, 32))
+        i = 0
+        while i < 16 {
+            std::raw::store(x + 8 * i, std::raw::load(input + 8 * i))
+            i += 1
+        }
+        let mut r = 0
+        while r < 10 {
+            rn_qr(x, 0, 4, 8, 12)
+            rn_qr(x, 1, 5, 9, 13)
+            rn_qr(x, 2, 6, 10, 14)
+            rn_qr(x, 3, 7, 11, 15)
+            rn_qr(x, 0, 5, 10, 15)
+            rn_qr(x, 1, 6, 11, 12)
+            rn_qr(x, 2, 7, 8, 13)
+            rn_qr(x, 3, 4, 9, 14)
+            r += 1
+        }
+        i = 0
+        while i < 16 {
+            let v = (std::raw::load(x + 8 * i) + std::raw::load(input + 8 * i)) & 4294967295
+            std::raw::store8(block + 4 * i, v & 255)
+            std::raw::store8(block + 4 * i + 1, std::raw::shr(v, 8) & 255)
+            std::raw::store8(block + 4 * i + 2, std::raw::shr(v, 16) & 255)
+            std::raw::store8(block + 4 * i + 3, std::raw::shr(v, 24) & 255)
+            i += 1
+        }
+        let mut take = count - done
+        if take > 64 {
+            take = 64
+        }
+        i = 0
+        while i < take {
+            std::raw::store8(out + done + i, std::raw::load8(block + i))
+            i += 1
+        }
+        done += take
+        counter += 1
+    }
+    rt_free_block(input)
+    rt_free_block(x)
+    rt_free_block(block)
+}
+
+// SeedableRng::seed_from_u64 de rand_core: 8 palabras de 32 bits con PCG32.
+fn rn_seed_key(seed: int) -> int {
+    let key = rt_alloc(8 * 8)
+    let mut state = seed
+    let mut i = 0
+    while i < 8 {
+        // INC = 11634580027462260723 (como entero con signo de 64 bits)
+        state = std::raw::wadd(std::raw::wmul(state, 6364136223846793005), -6812164046247290893)
+        let xorshifted = std::raw::shr(std::raw::shr(state, 18) ^ state, 27) & 4294967295
+        let rot = std::raw::shr(state, 59)
+        let mut x = xorshifted
+        if rot != 0 {
+            x = (std::raw::shr(xorshifted, rot) | std::raw::shl(xorshifted, 32 - rot)) & 4294967295
+        }
+        std::raw::store(key + 8 * i, x)
+        i += 1
+    }
+    key
+}
+
+// Los primeros `count` bytes que produce ChaCha20Rng::seed_from_u64(seed).
+fn rn_seeded(seed: int, count: int) -> int {
+    let key = rn_seed_key(seed)
+    let out = rt_alloc(count + 8)
+    rn_chacha_stream(key, out, count)
+    rt_free_block(key)
+    out
+}
+
+// ---------------- Entropía del sistema ----------------
+
+fn rn_os_fill(p: int, count: int) {
+    let mut done = 0
+    while done < count {
+        let r = std::raw::syscall(318, p + done, count - done, 0, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            rt_native_fail("std::random", rt_os_error(0 - r))
+        }
+        done += r
+    }
+}
+
+fn rn_os_u64() -> int {
+    let p = rt_alloc(8)
+    rn_os_fill(p, 8)
+    let v = std::raw::load(p)
+    rt_free_block(p)
+    v
+}
+
+// ---------------- Conversión común ----------------
+
+// Método de Canon con sesgo (rand 0.9, sample_single_inclusive para i64).
+// `u1` y `u2` son las dos muestras u64 (u2 solo se usa si hace falta).
+fn rn_canon(low: int, high: int, u1: int, u2: int) -> int {
+    let range = std::raw::wadd(std::raw::wsub(high, low), 1)
+    if range == 0 {
+        return u1
+    }
+    let mut result = rn_mulhi(u1, range)
+    let lo = std::raw::wmul(u1, range)
+    if rn_ult(std::raw::wsub(0, range), lo) {
+        let new_hi = rn_mulhi(u2, range)
+        if rn_ult(std::raw::wadd(lo, new_hi), lo) {
+            result = std::raw::wadd(result, 1)
+        }
+    }
+    std::raw::wadd(low, result)
+}
+
+// (u >> 11) * 2^-53, como bits de un f64.
+fn rn_unit_float(u: int) -> any {
+    let m = std::raw::shr(u, 11)
+    if m == 0 {
+        return rt_float(0)
+    }
+    rt_float(std::raw::ffromint(m) - std::raw::shl(53, 52))
+}
+
+// ---------------- Nativas ----------------
+
+fn std__random__int() -> any {
+    rn_os_u64()
+}
+
+fn std__random__range(min: any, max: any) -> any {
+    rt_expect_int(min, "std::random::range")
+    rt_expect_int(max, "std::random::range")
+    let lo = std::raw::bits(min)
+    let hi = std::raw::bits(max)
+    if hi < lo {
+        return lo
+    }
+    let u1 = rn_os_u64()
+    rn_canon(lo, hi, u1, rn_os_u64())
+}
+
+fn std__random__float() -> any {
+    rn_unit_float(rn_os_u64())
+}
+
+fn std__random__bool() -> any {
+    // rand: (next_u32() as i32) < 0
+    (rn_os_u64() & 2147483648) != 0
+}
+
+fn std__random__bytes(n: any) -> any {
+    let count = rt_nonnegative(n, "std::random::bytes")
+    let p = rt_alloc(count + 8)
+    rn_os_fill(p, count)
+    let b = rt_bytes_from(p, count)
+    rt_free_block(p)
+    b
+}
+
+fn std__random__seeded_int(seed: any, min: any, max: any) -> any {
+    rt_expect_int(seed, "std::random::seeded_int")
+    rt_expect_int(min, "std::random::seeded_int")
+    rt_expect_int(max, "std::random::seeded_int")
+    let lo = std::raw::bits(min)
+    let hi = std::raw::bits(max)
+    if hi < lo {
+        return lo
+    }
+    let p = rn_seeded(std::raw::bits(seed), 16)
+    let r = rn_canon(lo, hi, std::raw::load(p), std::raw::load(p + 8))
+    rt_free_block(p)
+    r
+}
+
+fn std__random__seeded_float(seed: any) -> any {
+    rt_expect_int(seed, "std::random::seeded_float")
+    let p = rn_seeded(std::raw::bits(seed), 8)
+    let v = std::raw::load(p)
+    rt_free_block(p)
+    rn_unit_float(v)
+}
+
+fn std__random__seeded_bytes(seed: any, n: any) -> any {
+    rt_expect_int(seed, "std::random::seeded_bytes")
+    let count = rt_nonnegative(n, "std::random::seeded_bytes")
+    let p = rn_seeded(std::raw::bits(seed), count)
+    let b = rt_bytes_from(p, count)
+    rt_free_block(p)
+    b
+}

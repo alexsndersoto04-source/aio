@@ -1,0 +1,4 @@
+fn main() {
+    std::process::shell("printf hola > /tmp/titan_noexec; chmod +x /tmp/titan_noexec")
+    std::process::run("/tmp/titan_noexec")
+}

@@ -1,0 +1,1201 @@
+// std::math::{exp, ln, log, pow, sin, cos, tan} en Titan (prefijo lm_).
+//
+// Es el mismo cálculo que hace la VM de Rust: f64::exp/ln/powf/sin/cos/tan
+// llaman a la libm de glibc 2.36, que en x86-64 con FMA y AVX2 usa sus
+// variantes "fma" (e_exp-fma, e_log-fma, e_pow-fma, s_sin-fma, s_tan-fma).
+// Aquí está el mismo algoritmo de glibc, operación por operación, con las
+// multiplicaciones-sumas fusionadas justo donde las fusiona gcc 12.2 al
+// compilar glibc (se ven con -fdump-tree-widening_mul; ver libm/README.md).
+// branred (reducción de ángulos enormes) se compila en glibc sin fusionar.
+// Las tablas son las de glibc (extraídas de libm.so.6; std_libm_tab.titan).
+//
+// La fusión usa la instrucción FMA de la CPU si existe (cpuid + xgetbv, la
+// misma condición que glibc); si no, una FMA exacta por software con
+// enteros, que da el mismo resultado bit a bit.
+//
+// GENERADO por libm/gen_libm.py desde libm/std_libm.titan.in: las
+// constantes entre arrobas son floats de C convertidos a sus bits. No
+// editar a mano.
+
+// ------------------------------------------------------------ utilidades
+
+fn lm_min() -> int { -9223372036854775807 - 1 }
+
+fn lm_ult(a: int, b: int) -> bool {
+    (a ^ lm_min()) < (b ^ lm_min())
+}
+
+fn lm_a(x: int, y: int) -> int { std::raw::fadd(x, y) }
+fn lm_s(x: int, y: int) -> int { std::raw::fsub(x, y) }
+fn lm_m(x: int, y: int) -> int { std::raw::fmul(x, y) }
+fn lm_d(x: int, y: int) -> int { std::raw::fdiv(x, y) }
+fn lm_neg(x: int) -> int { x ^ lm_min() }
+fn lm_abs(x: int) -> int { x & 9223372036854775807 }
+fn lm_lt(x: int, y: int) -> bool { std::raw::fcmp(x, y) == -1 }
+fn lm_gt(x: int, y: int) -> bool { std::raw::fcmp(x, y) == 1 }
+fn lm_eq(x: int, y: int) -> bool { std::raw::fcmp(x, y) == 0 }
+
+fn lm_le(x: int, y: int) -> bool {
+    let c = std::raw::fcmp(x, y)
+    let lt = c == -1
+    lt || c == 0
+}
+
+fn lm_copysign(x: int, s: int) -> int {
+    (x & 9223372036854775807) | (s & lm_min())
+}
+
+// Los 32 bits bajos (u.i[LOW_HALF]).
+fn lm_low32(x: int) -> int { x & 4294967295 }
+
+// a * b + c con un solo redondeo.
+fn lm_f(a: int, b: int, c: int) -> int {
+    if lm_hw() {
+        return std::raw::ffma(a, b, c)
+    }
+    lm_fma_soft(a, b, c)
+}
+
+// .FMS(a, b, c) = a * b - c; .FNMA(a, b, c) = c - a * b.
+fn lm_fms(a: int, b: int, c: int) -> int { lm_f(a, b, lm_neg(c)) }
+fn lm_fnma(a: int, b: int, c: int) -> int { lm_f(lm_neg(a), b, c) }
+
+// ¿FMA por hardware? La misma condición que glibc para sus variantes fma:
+// FMA y AVX2 en cpuid, OSXSAVE, y el sistema guarda los registros YMM.
+// Se calcula una vez (globales +2504: 0 sin mirar, 1 sí, 2 no).
+fn lm_hw() -> bool {
+    let g = std::raw::globals() + 2504
+    let mut m = std::raw::load(g)
+    if m == 0 {
+        m = lm_detect()
+        std::raw::store(g, m)
+    }
+    m == 1
+}
+
+fn lm_bit(v: int, n: int) -> bool {
+    (std::raw::shr(v, n) & 1) == 1
+}
+
+fn lm_detect() -> int {
+    let l1 = std::raw::cpuid(1, 0)
+    if !lm_bit(l1, 12) || !lm_bit(l1, 27) || !lm_bit(l1, 28) {
+        return 2
+    }
+    if (std::raw::xgetbv() & 6) != 6 {
+        return 2
+    }
+    let l7 = std::raw::cpuid(7, 0)
+    if !lm_bit(l7, 32 + 5) {
+        return 2
+    }
+    1
+}
+
+// ------------------------------------------------------------ FMA exacta por software
+//
+// Enteros grandes de 8 miembros de 30 bits (240 bits) en bloques crudos.
+
+fn lm_bn() -> int {
+    let p = rt_alloc(64)
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(p + 8 * i, 0)
+        i += 1
+    }
+    p
+}
+
+fn lm_limb(p: int, i: int) -> int {
+    if i < 0 || i >= 8 {
+        return 0
+    }
+    std::raw::load(p + 8 * i)
+}
+
+// dst = floor(src * 2^s) (s puede ser negativo); devuelve 1 si se perdieron
+// bits distintos de cero.
+fn lm_bn_shift(dst: int, src: int, s: int) -> int {
+    let mask = 1073741823
+    let mut i = 0
+    while i < 8 {
+        std::raw::store(dst + 8 * i, 0)
+        i += 1
+    }
+    if s >= 0 {
+        let q = s / 30
+        let r = s - 30 * q
+        i = 0
+        while i < 8 {
+            let v = lm_limb(src, i)
+            if v != 0 {
+                let lo = std::raw::shl(v, r) & mask
+                let hi = std::raw::shr(v, 30 - r)
+                if i + q < 8 {
+                    std::raw::store(dst + 8 * (i + q), std::raw::load(dst + 8 * (i + q)) | lo)
+                }
+                if r > 0 && i + q + 1 < 8 {
+                    std::raw::store(dst + 8 * (i + q + 1), std::raw::load(dst + 8 * (i + q + 1)) | hi)
+                }
+            }
+            i += 1
+        }
+        return 0
+    }
+    let t = 0 - s
+    let q = t / 30
+    let r = t - 30 * q
+    let mut sticky = 0
+    i = 0
+    while i < 8 {
+        let below_q = i < q
+        if below_q {
+            if lm_limb(src, i) != 0 {
+                sticky = 1
+            }
+        } else if i == q {
+            if (lm_limb(src, i) & (std::raw::shl(1, r) - 1)) != 0 {
+                sticky = 1
+            }
+        }
+        i += 1
+    }
+    i = 0
+    while i < 8 {
+        let lo = std::raw::shr(lm_limb(src, i + q), r)
+        let mut hi = 0
+        if r > 0 {
+            hi = std::raw::shl(lm_limb(src, i + q + 1), 30 - r) & mask
+        }
+        std::raw::store(dst + 8 * i, lo | hi)
+        i += 1
+    }
+    sticky
+}
+
+fn lm_bn_cmp(a: int, b: int) -> int {
+    let mut i = 7
+    while i >= 0 {
+        let x = std::raw::load(a + 8 * i)
+        let y = std::raw::load(b + 8 * i)
+        if x != y {
+            if x < y {
+                return -1
+            }
+            return 1
+        }
+        i -= 1
+    }
+    0
+}
+
+// dst = a + b.
+fn lm_bn_add(dst: int, a: int, b: int) {
+    let mut carry = 0
+    let mut i = 0
+    while i < 8 {
+        let v = std::raw::load(a + 8 * i) + std::raw::load(b + 8 * i) + carry
+        std::raw::store(dst + 8 * i, v & 1073741823)
+        carry = std::raw::shr(v, 30)
+        i += 1
+    }
+}
+
+// dst = a - b (a >= b).
+fn lm_bn_sub(dst: int, a: int, b: int) {
+    let mut borrow = 0
+    let mut i = 0
+    while i < 8 {
+        let mut v = std::raw::load(a + 8 * i) - std::raw::load(b + 8 * i) - borrow
+        borrow = 0
+        if v < 0 {
+            v += 1073741824
+            borrow = 1
+        }
+        std::raw::store(dst + 8 * i, v)
+        i += 1
+    }
+}
+
+// Posición del bit más alto (-1 si es cero).
+fn lm_bn_top(a: int) -> int {
+    let mut i = 7
+    while i >= 0 {
+        let v = std::raw::load(a + 8 * i)
+        if v != 0 {
+            let mut b = 29
+            while !lm_bit(v, b) {
+                b -= 1
+            }
+            return 30 * i + b
+        }
+        i -= 1
+    }
+    -1
+}
+
+// Las dos primeras palabras como entero (para valores < 2^60).
+fn lm_bn_low60(a: int) -> int {
+    std::raw::load(a) | std::raw::shl(std::raw::load(a + 8), 30)
+}
+
+// Signo, mantisa entera y exponente de un float finito distinto de cero:
+// valor = m * 2^e.
+fn lm_decode(x: int) -> (int, int) {
+    let be = std::raw::shr(x, 52) & 2047
+    let f = x & 4503599627370495
+    if be == 0 {
+        return (f, -1074)
+    }
+    return (f | 4503599627370496, be - 1075)
+}
+
+fn lm_fma_soft(a: int, b: int, c: int) -> int {
+    let ea = std::raw::shr(a, 52) & 2047
+    let eb = std::raw::shr(b, 52) & 2047
+    let ec = std::raw::shr(c, 52) & 2047
+    let a_special = ea == 2047
+    if a_special || eb == 2047 {
+        return lm_a(lm_m(a, b), c)
+    }
+    if ec == 2047 {
+        return lm_a(c, c)
+    }
+    let a_zero = lm_abs(a) == 0
+    if a_zero || lm_abs(b) == 0 {
+        return lm_a(lm_m(a, b), c)
+    }
+    if lm_abs(c) == 0 {
+        return lm_m(a, b)
+    }
+    let (ma, xa) = lm_decode(a)
+    let (mb, xb) = lm_decode(b)
+    let (mc, xc) = lm_decode(c)
+    let sp = std::raw::shr(a ^ b, 63)
+    let sc = std::raw::shr(c, 63)
+    let ep = xa + xb
+    // P = ma * mb (< 2^106) en miembros de 30 bits.
+    let p = lm_bn()
+    let a0 = ma & 1073741823
+    let a1 = std::raw::shr(ma, 30)
+    let b0 = mb & 1073741823
+    let b1 = std::raw::shr(mb, 30)
+    let mut v = a0 * b0
+    std::raw::store(p, v & 1073741823)
+    let mut carry = std::raw::shr(v, 30)
+    v = carry + (a0 * b1 & 1073741823) + (a1 * b0 & 1073741823)
+    std::raw::store(p + 8, v & 1073741823)
+    carry = std::raw::shr(v, 30) + std::raw::shr(a0 * b1, 30) + std::raw::shr(a1 * b0, 30)
+    v = carry + a1 * b1
+    std::raw::store(p + 16, v & 1073741823)
+    std::raw::store(p + 24, std::raw::shr(v, 30))
+    let cm = lm_bn()
+    std::raw::store(cm, mc & 1073741823)
+    std::raw::store(cm + 8, std::raw::shr(mc, 30))
+    // Ventana: W = floor(V / 2^e0) * 2 + (bits perdidos != 0), W < 2^232.
+    let mut top = ep + 106
+    if xc + 53 > top {
+        top = xc + 53
+    }
+    let e0 = top - 231
+    let wx = lm_bn()
+    let wy = lm_bn()
+    let stx = lm_bn_shift(wx, p, ep + 1 - e0)
+    std::raw::store(wx, std::raw::load(wx) | stx)
+    let sty = lm_bn_shift(wy, cm, xc + 1 - e0)
+    std::raw::store(wy, std::raw::load(wy) | sty)
+    let r = lm_bn()
+    let mut sign = sp
+    if sp == sc {
+        lm_bn_add(r, wx, wy)
+    } else {
+        let cmp = lm_bn_cmp(wx, wy)
+        if cmp == 0 {
+            rt_free_block(p)
+            rt_free_block(cm)
+            rt_free_block(wx)
+            rt_free_block(wy)
+            rt_free_block(r)
+            return 0
+        }
+        if cmp > 0 {
+            lm_bn_sub(r, wx, wy)
+        } else {
+            lm_bn_sub(r, wy, wx)
+            sign = sc
+        }
+    }
+    // valor = R * 2^(e0 - 1); se redondea a 53 bits (o a 2^-1074).
+    let h = lm_bn_top(r)
+    let mut sh = h - 52
+    let lowest = -1074 - (e0 - 1)
+    if sh < lowest {
+        sh = lowest
+    }
+    let mut m = 0
+    if sh <= 0 {
+        let t = lm_bn()
+        lm_bn_shift(t, r, 0 - sh)
+        m = lm_bn_low60(t)
+        rt_free_block(t)
+    } else {
+        let t = lm_bn()
+        let st = lm_bn_shift(t, r, 1 - sh)
+        let m2 = lm_bn_low60(t)
+        rt_free_block(t)
+        m = std::raw::shr(m2, 1)
+        let round_bit = (m2 & 1) == 1
+        if round_bit && (st == 1 || (m & 1) == 1) {
+            m += 1
+        }
+    }
+    rt_free_block(p)
+    rt_free_block(cm)
+    rt_free_block(wx)
+    rt_free_block(wy)
+    rt_free_block(r)
+    let mut ex = sh + e0 - 1
+    if m == 9007199254740992 {
+        m = 4503599627370496
+        ex += 1
+    }
+    let s = std::raw::shl(sign, 63)
+    if m < 4503599627370496 {
+        return s | m
+    }
+    let biased = ex + 52 + 1023
+    if biased >= 2047 {
+        return s | 9218868437227405312
+    }
+    s | std::raw::shl(biased, 52) | (m - 4503599627370496)
+}
+
+// ------------------------------------------------------------ tablas
+
+// Bloque con las tablas de glibc (se lee una vez; globales +2496):
+//   0..255     __exp_data.tab (u64)
+//   256..511   __log_data.tab {invc, logc}
+//   512..895   __pow_log_data.tab {invc, logc, logctail} (sin el relleno)
+//   896..1639  xfg de utan.tbl (186 x 4)
+//   1640..2079 __sincostab (440)
+fn lm_tab() -> int {
+    let g = std::raw::globals() + 2496
+    let cached = std::raw::load(g)
+    if cached != 0 {
+        return cached
+    }
+    let text = lm_tables_hex()
+    let n = rt_slen(text) / 16
+    let blk = rt_alloc(8 * n)
+    let src = std::raw::bits(text) + 16
+    let mut i = 0
+    while i < n {
+        let mut v = 0
+        let mut j = 0
+        while j < 16 {
+            let c = std::raw::load8(src + 16 * i + j)
+            let mut d = c - 48
+            if c >= 97 {
+                d = c - 87
+            }
+            v = std::raw::shl(v, 4) | d
+            j += 1
+        }
+        std::raw::store(blk + 8 * i, v)
+        i += 1
+    }
+    std::raw::store(g, blk)
+    blk
+}
+
+fn lm_t(i: int) -> int {
+    std::raw::load(lm_tab() + 8 * i)
+}
+
+// ------------------------------------------------------------ errores de glibc
+
+fn lm_oflow(sign: int) -> int {
+    if sign != 0 {
+        return @-inf@
+    }
+    @inf@
+}
+
+fn lm_uflow(sign: int) -> int {
+    if sign != 0 {
+        return lm_min()
+    }
+    0
+}
+
+fn lm_divzero(sign: int) -> int {
+    if sign != 0 {
+        return @-inf@
+    }
+    @inf@
+}
+
+// (x - x) / (x - x): NaN.
+fn lm_invalid(x: int) -> int {
+    let d = lm_s(x, x)
+    lm_d(d, d)
+}
+
+// ------------------------------------------------------------ exp (e_exp.c)
+//
+// __exp_data: InvLn2N = 0x1.71547652b82fep7, NegLn2hiN, NegLn2loN,
+// C2..C5, Shift = 0x1.8p52; tabla T en lm_t(0..255).
+
+fn lm_exp_special(tmp: int, sbits0: int, ki: int) -> int {
+    if (ki & 2147483648) == 0 {
+        let scale = std::raw::wsub(sbits0, @u:1009<<52@)
+        return lm_m(lm_f(tmp, scale, scale), @0x1p1009@)
+    }
+    let scale = std::raw::wadd(sbits0, @u:1022<<52@)
+    let p = lm_m(tmp, scale)
+    let mut y = lm_a(scale, p)
+    if lm_lt(y, @1.0@) {
+        let lo0 = lm_a(p, lm_s(scale, y))
+        let hi = lm_a(y, @1.0@)
+        let lo = lm_a(lo0, lm_a(y, lm_s(@1.0@, hi)))
+        y = lm_s(lm_a(hi, lo), @1.0@)
+        if lm_eq(y, 0) {
+            y = 0
+        }
+        return lm_m(y, @0x1p-1022@)
+    }
+    lm_m(y, @0x1p-1022@)
+}
+
+fn lm_exp(x: int) -> int {
+    let mut abstop = std::raw::shr(x, 52) & 2047
+    let out_of_range = abstop < 969
+    if out_of_range || abstop - 969 >= 63 {
+        if abstop < 969 {
+            return lm_a(x, @1.0@)
+        }
+        if abstop >= 1033 {
+            if x == @-inf@ {
+                return 0
+            }
+            if abstop >= 2047 {
+                return lm_a(x, @1.0@)
+            }
+            if x < 0 {
+                return lm_uflow(0)
+            }
+            return lm_oflow(0)
+        }
+        abstop = 0
+    }
+    let kd0 = lm_f(x, @0x1.71547652b82fep7@, @0x1.8p52@)
+    let ki = kd0
+    let kd = lm_s(kd0, @0x1.8p52@)
+    let r = lm_f(kd, @-0x1.cf79abc9e3b3ap-47@, lm_f(kd, @-0x1.62e42fefa0000p-8@, x))
+    let idx = 2 * (ki & 127)
+    let top = std::raw::shl(ki, 45)
+    let tail = lm_t(idx)
+    let sbits = std::raw::wadd(lm_t(idx + 1), top)
+    let r2 = lm_m(r, r)
+    let s = lm_f(lm_f(r, @0x1.555555555543cp-3@, @0x1.ffffffffffdbdp-2@), r2, lm_a(r, tail))
+    let tmp = lm_f(lm_m(r2, r2), lm_f(r, @0x1.1111167a4d017p-7@, @0x1.55555cf172b91p-5@), s)
+    if abstop == 0 {
+        return lm_exp_special(tmp, sbits, ki)
+    }
+    lm_f(tmp, sbits, sbits)
+}
+
+// ------------------------------------------------------------ log (e_log.c)
+
+fn lm_log(x: int) -> int {
+    let mut ix = x
+    let top = std::raw::shr(x, 48)
+    if lm_ult(std::raw::wsub(ix, @0x1.ep-1@), @u:0x3ff1090000000000-0x3fee000000000000@) {
+        if ix == @1.0@ {
+            return 0
+        }
+        let r = lm_s(x, @1.0@)
+        let r2 = lm_m(r, r)
+        let r3 = lm_m(r, r2)
+        let p7 = lm_f(r, @-0x1.ffffffffffdcbp-3@, @0x1.5555555555577p-2@)
+        let p9 = lm_f(r2, @0x1.999999995dd0cp-3@, p7)
+        let p11 = lm_f(r, @0x1.24924a344de30p-3@, @-0x1.55555556745a7p-3@)
+        let p13 = lm_f(r2, @-0x1.fffffa4423d65p-4@, p11)
+        let p15 = lm_f(r, @-0x1.999eb43b068ffp-4@, @0x1.c7184282ad6cap-4@)
+        let p17 = lm_f(r2, @0x1.78182f7afd085p-4@, p15)
+        let p19 = lm_f(r3, @-0x1.5521375d145cdp-4@, p17)
+        let p21 = lm_f(p19, r3, p13)
+        let p23 = lm_f(p21, r3, p9)
+        let p24 = lm_f(r, @0x1p27@, r)
+        let rhi = lm_fnma(r, @0x1p27@, p24)
+        let rlo = lm_s(r, rhi)
+        let p25 = lm_m(rhi, rhi)
+        let hi = lm_f(p25, @-0.5@, r)
+        let p26 = lm_s(r, hi)
+        let lo93 = lm_f(p25, @-0.5@, p26)
+        let p27 = lm_m(rlo, @-0.5@)
+        let p28 = lm_a(r, rhi)
+        let lo94 = lm_f(p27, p28, lo93)
+        let y95 = lm_f(p23, r3, lo94)
+        return lm_a(hi, y95)
+    }
+    let below = top < 16
+    if below || top - 16 >= 32736 {
+        if std::raw::shl(ix, 1) == 0 {
+            return lm_divzero(1)
+        }
+        if ix == @inf@ {
+            return x
+        }
+        let neg = (top & 32768) != 0
+        if neg || (top & 32752) == 32752 {
+            return lm_invalid(x)
+        }
+        ix = std::raw::wsub(lm_m(x, @0x1p52@), @u:52<<52@)
+    }
+    let tmp = std::raw::wsub(ix, @u:0x3fe6000000000000@)
+    let i = std::raw::shr(tmp, 45) & 127
+    let k = std::raw::sar(tmp, 52)
+    let iz = std::raw::wsub(ix, tmp & @u:0xfff0000000000000@)
+    let invc = lm_t(256 + 2 * i)
+    let logc = lm_t(256 + 2 * i + 1)
+    let r = lm_f(iz, invc, @-1.0@)
+    let kd = std::raw::ffromint(k)
+    let w = lm_f(kd, @0x1.62e42fefa3800p-1@, logc)
+    let hi = lm_a(r, w)
+    let lo = lm_f(kd, @0x1.ef35793c76730p-45@, lm_a(lm_s(w, hi), r))
+    let r2 = lm_m(r, r)
+    let q50 = lm_f(r2, @-0x1.0000000000001p-1@, lo)
+    let q51 = lm_m(r, r2)
+    let q53 = lm_f(r, @-0x1.fffffffeb4590p-3@, @0x1.555555551305bp-2@)
+    let q55 = lm_f(r, @-0x1.55575e506c89fp-3@, @0x1.999b324f10111p-3@)
+    let q57 = lm_f(q55, r2, q53)
+    let q59 = lm_f(q51, q57, q50)
+    lm_a(q59, hi)
+}
+
+// ------------------------------------------------------------ pow (e_pow.c)
+
+// (y, cola) = log(x) con ~15 bits extra.
+fn lm_log_inline(ix: int) -> (int, int) {
+    let tmp = std::raw::wsub(ix, @u:0x3fe6955500000000@)
+    let i = std::raw::shr(tmp, 45) & 127
+    let k = std::raw::sar(tmp, 52)
+    let iz = std::raw::wsub(ix, tmp & @u:0xfff0000000000000@)
+    let kd = std::raw::ffromint(k)
+    let invc = lm_t(512 + 3 * i)
+    let logc = lm_t(512 + 3 * i + 1)
+    let logctail = lm_t(512 + 3 * i + 2)
+    let r = lm_f(iz, invc, @-1.0@)
+    let t1 = lm_f(kd, @0x1.62e42fefa3800p-1@, logc)
+    let t2 = lm_a(r, t1)
+    let lo1 = lm_f(kd, @0x1.ef35793c76730p-45@, logctail)
+    let lo2 = lm_a(r, lm_s(t1, t2))
+    let ar = lm_m(r, @-0.5@)
+    let ar2 = lm_m(r, ar)
+    let ar3 = lm_m(r, ar2)
+    let hi = lm_a(t2, ar2)
+    let lo3 = lm_fms(r, ar, ar2)
+    let lo4 = lm_a(ar2, lm_s(t2, hi))
+    let p199 = lm_f(r, @0x1.0000000000006p-1@, @-0x1.5555555555560p-1@)
+    let p201 = lm_f(r, @-0x1.555555529a47ap-1@, @0x1.999999959554ep-1@)
+    let p203 = lm_f(r, @0x1.0002b8b263fc3p+0@, @-0x1.2495b9b4845e9p+0@)
+    let p205 = lm_f(ar2, p203, p201)
+    let p207 = lm_f(ar2, p205, p199)
+    let s = lm_a(lo4, lm_a(lo3, lm_a(lo1, lo2)))
+    let lo = lm_f(ar3, p207, s)
+    let y = lm_a(hi, lo)
+    return (y, lm_a(lo, lm_s(hi, y)))
+}
+
+fn lm_pow_special(tmp: int, sbits0: int, ki: int) -> int {
+    if (ki & 2147483648) == 0 {
+        let scale = std::raw::wsub(sbits0, @u:1009<<52@)
+        return lm_m(lm_f(tmp, scale, scale), @0x1p1009@)
+    }
+    let sbits = std::raw::wadd(sbits0, @u:1022<<52@)
+    let scale = sbits
+    let p = lm_m(tmp, scale)
+    let mut y = lm_a(scale, p)
+    if lm_lt(lm_abs(y), @1.0@) {
+        let mut one = @1.0@
+        if lm_lt(y, 0) {
+            one = @-1.0@
+        }
+        let lo0 = lm_a(p, lm_s(scale, y))
+        let hi = lm_a(y, one)
+        let lo = lm_a(lo0, lm_a(y, lm_s(one, hi)))
+        y = lm_s(lm_a(hi, lo), one)
+        if lm_eq(y, 0) {
+            y = sbits & lm_min()
+        }
+    }
+    lm_m(y, @0x1p-1022@)
+}
+
+fn lm_exp_inline(x: int, xtail: int, sign_bias: int) -> int {
+    let mut abstop = std::raw::shr(x, 52) & 2047
+    let tiny = abstop < 969
+    if tiny || abstop - 969 >= 63 {
+        if abstop < 969 {
+            let one = lm_a(x, @1.0@)
+            if sign_bias != 0 {
+                return lm_neg(one)
+            }
+            return one
+        }
+        if abstop >= 1033 {
+            if x < 0 {
+                return lm_uflow(sign_bias)
+            }
+            return lm_oflow(sign_bias)
+        }
+        abstop = 0
+    }
+    let kd0 = lm_f(x, @0x1.71547652b82fep7@, @0x1.8p52@)
+    let ki = kd0
+    let kd = lm_s(kd0, @0x1.8p52@)
+    let r0 = lm_f(kd, @-0x1.cf79abc9e3b3ap-47@, lm_f(kd, @-0x1.62e42fefa0000p-8@, x))
+    let r = lm_a(xtail, r0)
+    let idx = 2 * (ki & 127)
+    let top = std::raw::shl(std::raw::wadd(ki, sign_bias), 45)
+    let tail = lm_t(idx)
+    let sbits = std::raw::wadd(lm_t(idx + 1), top)
+    let r2 = lm_m(r, r)
+    let s = lm_f(r2, lm_f(r, @0x1.555555555543cp-3@, @0x1.ffffffffffdbdp-2@), lm_a(r, tail))
+    let tmp = lm_f(lm_m(r2, r2), lm_f(r, @0x1.1111167a4d017p-7@, @0x1.55555cf172b91p-5@), s)
+    if abstop == 0 {
+        return lm_pow_special(tmp, sbits, ki)
+    }
+    lm_f(tmp, sbits, sbits)
+}
+
+// 0 no entero, 1 entero impar, 2 entero par (iy finito distinto de 0).
+fn lm_checkint(iy: int) -> int {
+    let e = std::raw::shr(iy, 52) & 2047
+    if e < 1023 {
+        return 0
+    }
+    if e > 1023 + 52 {
+        return 2
+    }
+    let b = std::raw::shl(1, 1023 + 52 - e)
+    if (iy & (b - 1)) != 0 {
+        return 0
+    }
+    if (iy & b) != 0 {
+        return 1
+    }
+    2
+}
+
+fn lm_zeroinfnan(i: int) -> bool {
+    !lm_ult(std::raw::wsub(std::raw::shl(i, 1), 1), std::raw::wsub(std::raw::shl(@inf@, 1), 1))
+}
+
+fn lm_issig(x: int) -> bool {
+    lm_ult(std::raw::shl(@u:0x7ff8000000000000@, 1), std::raw::shl(x ^ @u:0x0008000000000000@, 1))
+}
+
+fn lm_pow(x: int, y: int) -> int {
+    let mut sign_bias = 0
+    let mut ix = x
+    let iy = y
+    let mut topx = std::raw::shr(x, 52)
+    let topy = std::raw::shr(y, 52)
+    let ty = topy & 2047
+    let bad_x = topx == 0 || topx - 1 >= 2046
+    let bad_y = ty < 958 || ty - 958 >= 128
+    if bad_x || bad_y {
+        if lm_zeroinfnan(iy) {
+            if std::raw::shl(iy, 1) == 0 {
+                if lm_issig(x) {
+                    return lm_a(x, y)
+                }
+                return @1.0@
+            }
+            if ix == @1.0@ {
+                if lm_issig(y) {
+                    return lm_a(x, y)
+                }
+                return @1.0@
+            }
+            let inf2 = std::raw::shl(@inf@, 1)
+            let nan_x = lm_ult(inf2, std::raw::shl(ix, 1))
+            if nan_x || lm_ult(inf2, std::raw::shl(iy, 1)) {
+                return lm_a(x, y)
+            }
+            if std::raw::shl(ix, 1) == std::raw::shl(@1.0@, 1) {
+                return @1.0@
+            }
+            let small = lm_ult(std::raw::shl(ix, 1), std::raw::shl(@1.0@, 1))
+            if small == (iy >= 0) {
+                return 0
+            }
+            return lm_m(y, y)
+        }
+        if lm_zeroinfnan(ix) {
+            let mut x2 = lm_m(x, x)
+            if ix < 0 && lm_checkint(iy) == 1 {
+                x2 = lm_neg(x2)
+                sign_bias = 1
+            }
+            if std::raw::shl(ix, 1) == 0 && iy < 0 {
+                return lm_divzero(sign_bias)
+            }
+            if iy < 0 {
+                return lm_d(@1.0@, x2)
+            }
+            return x2
+        }
+        if ix < 0 {
+            let yint = lm_checkint(iy)
+            if yint == 0 {
+                return lm_invalid(x)
+            }
+            if yint == 1 {
+                sign_bias = 262144
+            }
+            ix = ix & 9223372036854775807
+            topx = topx & 2047
+        }
+        if ty < 958 || ty - 958 >= 128 {
+            if ix == @1.0@ {
+                return @1.0@
+            }
+            if ty < 958 {
+                if ix > @1.0@ {
+                    return lm_a(@1.0@, y)
+                }
+                return lm_s(@1.0@, y)
+            }
+            if (ix > @1.0@) == (topy < 2048) {
+                return lm_oflow(0)
+            }
+            return lm_uflow(0)
+        }
+        if topx == 0 {
+            ix = lm_m(x, @0x1p52@) & 9223372036854775807
+            ix = std::raw::wsub(ix, @u:52<<52@)
+        }
+    }
+    let (hi, lo) = lm_log_inline(ix)
+    let ehi = lm_m(y, hi)
+    let elo = lm_f(y, lo, lm_fms(y, hi, ehi))
+    lm_exp_inline(ehi, elo, sign_bias)
+}
+
+// ------------------------------------------------------------ sin / cos (s_sin.c)
+//
+// usncs.h: big = 0x1.8p45, hp0/hp1 = pi/2, mp1/mp2, pp3/pp4, hpinv, toint;
+// sn3..cs6 de s_sin.c; s1..s5 del polinomio de Taylor.
+
+fn lm_sct(k: int) -> int { lm_t(1640 + k) }
+
+fn lm_do_cos(x0: int, dx0: int) -> int {
+    let mut dx = dx0
+    if lm_lt(x0, 0) {
+        dx = lm_neg(dx)
+    }
+    let ax = lm_abs(x0)
+    let u = lm_a(ax, @0x1.8p45@)
+    let x = lm_a(lm_s(ax, lm_s(u, @0x1.8p45@)), dx)
+    let xx = lm_m(x, x)
+    let s = lm_f(lm_m(x, xx), lm_f(xx, @8.33333214285722277379541354343671E-03@, @-1.66666666666664880952546298448555E-01@), x)
+    let c = lm_m(lm_f(lm_f(xx, @1.38888874007937613028114285595617E-03@, @-4.16666666666664434524222570944589E-02@), xx, @0.5@), xx)
+    let k = std::raw::shl(lm_low32(u), 2)
+    let sn = lm_sct(k)
+    let ssn = lm_sct(k + 1)
+    let cs = lm_sct(k + 2)
+    let ccs = lm_sct(k + 3)
+    let cor = lm_fnma(s, sn, lm_fnma(c, cs, lm_fnma(s, ssn, ccs)))
+    lm_a(cs, cor)
+}
+
+fn lm_do_sin(x0: int, dx0: int) -> int {
+    let ax = lm_abs(x0)
+    if lm_lt(ax, @0.126@) {
+        let xx = lm_m(x0, x0)
+        let p4 = lm_f(xx, @-0x1.ADDFFC2FCDF59p-26@, @0x1.71DE27B9A7ED9p-19@)
+        let p6 = lm_f(xx, p4, @-0x1.A01A019DB08B8p-13@)
+        let p8 = lm_f(xx, p6, @0x1.1111111110ECEp-7@)
+        let p10 = lm_f(xx, p8, @-0x1.5555555555555p-3@)
+        let p13 = lm_fms(p10, x0, lm_m(dx0, @0.5@))
+        let t = lm_f(xx, p13, dx0)
+        return lm_a(x0, t)
+    }
+    let mut dx = dx0
+    if lm_le(x0, 0) {
+        dx = lm_neg(dx)
+    }
+    let u = lm_a(ax, @0x1.8p45@)
+    let x = lm_s(ax, lm_s(u, @0x1.8p45@))
+    let xx = lm_m(x, x)
+    let s = lm_a(lm_f(lm_m(x, xx), lm_f(xx, @8.33333214285722277379541354343671E-03@, @-1.66666666666664880952546298448555E-01@), dx), x)
+    let c27 = lm_m(lm_f(lm_f(xx, @1.38888874007937613028114285595617E-03@, @-4.16666666666664434524222570944589E-02@), xx, @0.5@), xx)
+    let c = lm_f(dx, x, c27)
+    let k = std::raw::shl(lm_low32(u), 2)
+    let sn = lm_sct(k)
+    let ssn = lm_sct(k + 1)
+    let cs = lm_sct(k + 2)
+    let ccs = lm_sct(k + 3)
+    let cor = lm_f(s, cs, lm_fnma(c, sn, lm_f(s, ccs, ssn)))
+    lm_copysign(lm_a(sn, cor), x0)
+}
+
+// (n, a, da): x = n * pi/2 + (a + da), |x| < 105414350.
+fn lm_reduce(x: int) -> (int, int, int) {
+    let t = lm_f(x, @0x1.45F306DC9C883p-1@, @0x1.8p52@)
+    let xn = lm_s(t, @0x1.8p52@)
+    let y = lm_fnma(xn, @-0x1.DDE973C000000p-27@, lm_fnma(xn, @0x1.921FB58000000p0@, x))
+    let n = lm_low32(t) & 3
+    let t2 = lm_fnma(xn, @-0x1.CB3B398000000p-55@, y)
+    let db = lm_fnma(xn, @-0x1.CB3B398000000p-55@, lm_s(y, t2))
+    let b = lm_fnma(xn, @-0x1.d747f23e32ed7p-83@, t2)
+    let db2 = lm_a(lm_fnma(xn, @-0x1.d747f23e32ed7p-83@, lm_s(t2, b)), db)
+    return (n, b, db2)
+}
+
+fn lm_do_sincos(a: int, da: int, n: int) -> int {
+    let mut r = 0
+    if (n & 1) != 0 {
+        r = lm_do_cos(a, da)
+    } else {
+        r = lm_do_sin(a, da)
+    }
+    if (n & 2) != 0 {
+        return lm_neg(r)
+    }
+    r
+}
+
+fn lm_sin(x: int) -> int {
+    let k = std::raw::shr(x, 32) & 2147483647
+    if k < 1045430272 {
+        return x
+    }
+    if k < 1072390144 {
+        return lm_do_sin(x, 0)
+    }
+    if k < 1073965309 {
+        let t = lm_s(@0x1.921FB54442D18p0@, lm_abs(x))
+        return lm_copysign(lm_do_cos(t, @0x1.1A62633145C07p-54@), x)
+    }
+    if k < 1100554747 {
+        let (n, a, da) = lm_reduce(x)
+        return lm_do_sincos(a, da, n)
+    }
+    if k < 2146435072 {
+        let (n, a, da) = lm_branred(x)
+        return lm_do_sincos(a, da, n)
+    }
+    lm_d(x, x)
+}
+
+fn lm_cos(x: int) -> int {
+    let k = std::raw::shr(x, 32) & 2147483647
+    if k < 1044381696 {
+        return @1.0@
+    }
+    if k < 1072390144 {
+        return lm_do_cos(x, 0)
+    }
+    if k < 1073965309 {
+        let y = lm_s(@0x1.921FB54442D18p0@, lm_abs(x))
+        let a = lm_a(y, @0x1.1A62633145C07p-54@)
+        let da = lm_a(lm_s(y, a), @0x1.1A62633145C07p-54@)
+        return lm_do_sin(a, da)
+    }
+    if k < 1100554747 {
+        let (n, a, da) = lm_reduce(x)
+        return lm_do_sincos(a, da, n + 1)
+    }
+    if k < 2146435072 {
+        let (n, a, da) = lm_branred(x)
+        return lm_do_sincos(a, da, n + 1)
+    }
+    lm_d(x, x)
+}
+
+// ------------------------------------------------------------ branred (sin fusionar)
+
+fn lm_toverp(i: int) -> int {
+    let digits = "10680707,7228996,1387004,2578385,16069853,12639074,9804092,4427841,16666979,11263675,12935607,2387514,4345298,14681673,3074569,13734428,16653803,1880361,10960616,8533493,3062596,8710556,7349940,6258241,3772886,3769171,3798172,8675211,12450088,3874808,9961438,366607,15675153,9132554,7151469,3571407,2607881,12013382,4155038,6285869,7677882,13102053,15825725,473591,9065106,15363067,6271263,9264392,5636912,4652155,7056368,13614112,10155062,1944035,9527646,15080200,6658437,6231200,6832269,16767104,5075751,3212806,1398474,7579849,6349435,12618859,4703257,12806093,14477321,2786137,12875403,9837734,14528324,13719321,343717"
+    let src = std::raw::bits(digits) + 16
+    let n = rt_slen(digits)
+    let mut idx = 0
+    let mut pos = 0
+    while idx < i {
+        if std::raw::load8(src + pos) == 44 {
+            idx += 1
+        }
+        pos += 1
+    }
+    let mut v = 0
+    while pos < n && std::raw::load8(src + pos) != 44 {
+        v = 10 * v + std::raw::load8(src + pos) - 48
+        pos += 1
+    }
+    std::raw::ffromint(v)
+}
+
+// Una mitad de branred: (sum, b, bb) para x1 o x2.
+fn lm_branred_part(xp: int) -> (int, int, int) {
+    let mut k = std::raw::shr(xp, 52) & 2047
+    k = (k - 450) / 24
+    if k < 0 {
+        k = 0
+    }
+    let mut gor = std::raw::wsub(@0x1p576@, std::raw::shl(k * 24, 52))
+    let r = rt_alloc(48)
+    let mut i = 0
+    while i < 6 {
+        std::raw::store(r + 8 * i, lm_m(lm_m(xp, lm_toverp(k + i)), gor))
+        gor = lm_m(gor, @0x1p-24@)
+        i += 1
+    }
+    let mut sum = 0
+    i = 0
+    while i < 3 {
+        let ri = std::raw::load(r + 8 * i)
+        let s = lm_s(lm_a(ri, @0x1.8p52@), @0x1.8p52@)
+        sum = lm_a(sum, s)
+        std::raw::store(r + 8 * i, lm_s(ri, s))
+        i += 1
+    }
+    let mut t = 0
+    i = 0
+    while i < 6 {
+        t = lm_a(t, std::raw::load(r + 8 * (5 - i)))
+        i += 1
+    }
+    let mut bb = lm_s(std::raw::load(r), t)
+    i = 1
+    while i < 6 {
+        bb = lm_a(bb, std::raw::load(r + 8 * i))
+        i += 1
+    }
+    rt_free_block(r)
+    let s = lm_s(lm_a(t, @0x1.8p52@), @0x1.8p52@)
+    sum = lm_a(sum, s)
+    t = lm_s(t, s)
+    let b = lm_a(t, bb)
+    bb = lm_a(lm_s(t, b), bb)
+    let s2 = lm_s(lm_a(sum, @0x1.8p54@), @0x1.8p54@)
+    sum = lm_s(sum, s2)
+    return (sum, b, bb)
+}
+
+fn lm_branred(x0: int) -> (int, int, int) {
+    let x = lm_m(x0, @0x1p-600@)
+    let t = lm_m(x, @134217729.0@)
+    let x1 = lm_s(t, lm_s(t, x))
+    let x2 = lm_s(x, x1)
+    let (sum1, b1, bb1) = lm_branred_part(x1)
+    let (sum2, b2, bb2) = lm_branred_part(x2)
+    let mut sum = lm_a(sum1, sum2)
+    let mut b = lm_a(b1, b2)
+    let mut bb = 0
+    if lm_gt(lm_abs(b1), lm_abs(b2)) {
+        bb = lm_a(lm_s(b1, b), b2)
+    } else {
+        bb = lm_a(lm_s(b2, b), b1)
+    }
+    if lm_gt(b, @0.5@) {
+        b = lm_s(b, @1.0@)
+        sum = lm_a(sum, @1.0@)
+    } else if lm_lt(b, @-0.5@) {
+        b = lm_a(b, @1.0@)
+        sum = lm_s(sum, @1.0@)
+    }
+    let s = lm_a(b, lm_a(lm_a(bb, bb1), bb2))
+    let t2 = lm_a(lm_a(lm_s(b, s), bb), lm_a(bb1, bb2))
+    let bs = lm_m(s, @134217729.0@)
+    let t1 = lm_s(bs, lm_s(bs, s))
+    let tt2 = lm_s(s, t1)
+    let bh = lm_m(s, @0x1.921FB54442D18p0@)
+    let left = lm_a(lm_a(lm_s(lm_m(t1, @0x1.921FB58000000p0@), bh), lm_m(t1, @-0x1.DDE9740000000p-27@)), lm_m(tt2, @0x1.921FB58000000p0@))
+    let right = lm_a(lm_a(lm_m(tt2, @-0x1.DDE9740000000p-27@), lm_m(s, @0x1.1A62633145C07p-54@)), lm_m(t2, @0x1.921FB54442D18p0@))
+    let bb3 = lm_a(left, right)
+    let s3 = lm_a(bh, bb3)
+    let t3 = lm_a(lm_s(bh, s3), bb3)
+    return (std::raw::ftoint(sum) & 3, s3, t3)
+}
+
+// ------------------------------------------------------------ tan (s_tan.c)
+//
+// utan.h: d3..d11, e0, e1, mfftnhf = -15.5, g1..g5, gy2, mp1..mp3, pp3,
+// pp4, hpinv, toint. xfg[i][j] = lm_t(896 + 4 i + j).
+
+fn lm_xfg(i: int, j: int) -> int { lm_t(896 + 4 * i + j) }
+
+fn lm_tan_poly(a2: int) -> int {
+    let t9 = lm_f(a2, @u:0x3F82385A3CF2E4EA@, @u:0x3F9664ED49CFC666@)
+    let t7 = lm_f(a2, t9, @u:0x3FABA1BA1CDB8745@)
+    let t5 = lm_f(a2, t7, @u:0x3FC11111111107C6@)
+    lm_f(a2, t5, @u:0x3FD5555555555555@)
+}
+
+// pz = z + z^3 (e0 + z^2 e1).
+fn lm_tan_pz(z: int) -> int {
+    let z2 = lm_m(z, z)
+    lm_f(lm_m(z, z2), lm_f(z2, @u:0x3FC11112E0A6B45F@, @u:0x3FD5555555554DBD@), z)
+}
+
+fn lm_tan_index(w: int) -> int {
+    std::raw::ftoint(lm_f(w, @256.0@, @-15.5@))
+}
+
+// Casos VI..XI: tan o -cot de a + da (n = 1: -cot).
+fn lm_tan_tail(a: int, da: int, n: int) -> int {
+    let mut ya = a
+    let mut yya = da
+    let mut sy = @1.0@
+    if lm_lt(a, 0) {
+        ya = lm_neg(a)
+        yya = lm_neg(da)
+        sy = @-1.0@
+    }
+    if lm_le(ya, @u:0x3faf212d00000000@) {
+        let a2 = lm_m(a, a)
+        let t2 = lm_f(lm_m(a, a2), lm_tan_poly(a2), da)
+        let b = lm_a(a, t2)
+        if n != 0 {
+            let mut db = 0
+            if lm_gt(lm_abs(a), lm_abs(t2)) {
+                db = lm_a(lm_s(a, b), t2)
+            } else {
+                db = lm_a(a, lm_s(t2, b))
+            }
+            let c = lm_d(@1.0@, b)
+            let u = lm_m(c, b)
+            let uu = lm_fms(c, b, u)
+            let q = lm_a(lm_s(lm_s(@1.0@, u), uu), 0)
+            let cc = lm_d(lm_fnma(db, c, q), b)
+            let z = lm_a(c, cc)
+            let zz = lm_a(lm_s(c, z), cc)
+            return lm_neg(lm_a(z, zz))
+        }
+        return b
+    }
+    let i = lm_tan_index(ya)
+    let z = lm_a(yya, lm_s(ya, lm_xfg(i, 0)))
+    let pz = lm_tan_pz(z)
+    let fi = lm_xfg(i, 1)
+    let gi = lm_xfg(i, 2)
+    let num = lm_m(pz, lm_a(fi, gi))
+    if n != 0 {
+        let y = lm_s(gi, lm_d(num, lm_a(pz, fi)))
+        return lm_m(lm_neg(sy), y)
+    }
+    let y = lm_a(fi, lm_d(num, lm_s(gi, pz)))
+    lm_m(sy, y)
+}
+
+// EADD(a, da): (z, zz) con z + zz = a + da exacto.
+fn lm_eadd(x: int, y: int) -> (int, int) {
+    let z = lm_a(x, y)
+    if lm_gt(lm_abs(x), lm_abs(y)) {
+        return (z, lm_a(y, lm_s(x, z)))
+    }
+    return (z, lm_a(x, lm_s(y, z)))
+}
+
+fn lm_tan(x: int) -> int {
+    let ux = std::raw::shr(x, 32)
+    if (ux & 2146435072) == 2146435072 {
+        return lm_s(x, x)
+    }
+    let w = lm_abs(x)
+    if lm_le(w, @u:0x3e4b096c00000000@) {
+        return x
+    }
+    if lm_le(w, @u:0x3faf212d00000000@) {
+        let x2 = lm_m(x, x)
+        return lm_f(lm_m(x, x2), lm_tan_poly(x2), x)
+    }
+    if lm_le(w, @u:0x3fe92f1a00000000@) {
+        let i = lm_tan_index(w)
+        let z = lm_s(w, lm_xfg(i, 0))
+        let mut s = @1.0@
+        if lm_lt(x, 0) {
+            s = @-1.0@
+        }
+        let pz = lm_tan_pz(z)
+        let fi = lm_xfg(i, 1)
+        let gi = lm_xfg(i, 2)
+        let t2 = lm_d(lm_m(lm_a(fi, gi), pz), lm_s(gi, pz))
+        return lm_m(s, lm_a(fi, t2))
+    }
+    if lm_le(w, @25.0@) {
+        let t = lm_f(x, @u:0x3FE45F306DC9C883@, @0x1.8p52@)
+        let xn = lm_s(t, @0x1.8p52@)
+        let t1 = lm_fnma(xn, @u:0xBE4DDE973C000000@, lm_fnma(xn, @u:0x3FF921FB58000000@, x))
+        let n = lm_low32(t) & 1
+        let a = lm_fnma(xn, @u:0xBC8CB3B399D747F2@, t1)
+        let da = lm_fnma(xn, @u:0xBC8CB3B399D747F2@, lm_s(t1, a))
+        return lm_tan_tail(a, da, n)
+    }
+    if lm_le(w, @u:0x4197d78400000000@) {
+        let t = lm_f(x, @u:0x3FE45F306DC9C883@, @0x1.8p52@)
+        let xn = lm_s(t, @0x1.8p52@)
+        let t1 = lm_fnma(xn, @u:0xBE4DDE973C000000@, lm_fnma(xn, @u:0x3FF921FB58000000@, x))
+        let n = lm_low32(t) & 1
+        let tt = lm_fnma(xn, @u:0xBC8CB3B398000000@, t1)
+        let da1 = lm_fnma(xn, @u:0xBC8CB3B398000000@, lm_s(t1, tt))
+        let a = lm_fnma(xn, @u:0xBACD747F23E32ED7@, tt)
+        let da2 = lm_fnma(xn, @u:0xBACD747F23E32ED7@, lm_s(tt, a))
+        let (a3, da3) = lm_eadd(a, lm_a(da1, da2))
+        return lm_tan_tail(a3, da3, n)
+    }
+    let (n, a, da) = lm_branred(x)
+    let (a3, da3) = lm_eadd(a, da)
+    lm_tan_tail(a3, da3, n & 1)
+}
+
+// ------------------------------------------------------------ nativas
+
+fn std__math__exp(x: any) -> any {
+    rt_float(lm_exp(rt_expect_number(x, "std::math::exp")))
+}
+
+fn std__math__sin(x: any) -> any {
+    rt_float(lm_sin(rt_expect_number(x, "std::math::sin")))
+}
+
+fn std__math__cos(x: any) -> any {
+    rt_float(lm_cos(rt_expect_number(x, "std::math::cos")))
+}
+
+fn std__math__tan(x: any) -> any {
+    let r = lm_tan(rt_expect_number(x, "std::math::tan"))
+    if !rt_is_finite(r) {
+        rt_native_fail("std::math::tan", "tan produced a non-finite result")
+    }
+    rt_float(r)
+}
+
+fn std__math__ln(x: any) -> any {
+    let r = lm_log(rt_expect_number(x, "std::math::ln"))
+    if !rt_is_finite(r) {
+        rt_native_fail("std::math::ln", "ln domain error")
+    }
+    rt_float(r)
+}
+
+// f64::log(self, base) = self.ln() / base.ln().
+fn std__math__log(x: any, base: any) -> any {
+    let a = rt_expect_number(x, "std::math::log")
+    let b = rt_expect_number(base, "std::math::log")
+    rt_float(lm_d(lm_log(a), lm_log(b)))
+}
+
+fn std__math__pow(base: any, e: any) -> any {
+    let a = rt_expect_number(base, "std::math::pow")
+    let b = rt_expect_number(e, "std::math::pow")
+    let r = lm_pow(a, b)
+    if !rt_is_finite(r) {
+        rt_native_fail("std::math::pow", "pow domain error")
+    }
+    rt_float(r)
+}

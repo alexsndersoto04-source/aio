@@ -1,0 +1,1 @@
+fn halt() -> ! { [1][loop {}] } fn main() {}

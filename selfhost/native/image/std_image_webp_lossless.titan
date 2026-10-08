@@ -1,0 +1,504 @@
+// Elementos comunes del flujo VP8L: referencias atrás, caché de colores y
+// descodificación de los cinco árboles de cada grupo.
+fn im_webp_prefix_value(function: string, reader: int, code: int) -> int {
+    if code < 4 { return code + 1 }
+    let extra = (code - 2) / 2
+    let offset = std::raw::shl(2 + (code & 1), extra)
+    offset + im_webp_read_bits(function, reader, extra) + 1
+}
+
+fn im_webp_plane_distance(function: string, width: int, code: int) -> int {
+    if code > 120 { return code - 120 }
+    let x_offset = [0, 1, 1, -1, 0, 2, 1, -1, 2, -2, 2, -2, 0, 3, 1, -1, 3, -3, 2, -2, 3, -3, 0, 4, 1, -1, 4, -4, 3, -3, 2, -2, 4, -4, 0, 3, -3, 4, -4, 5, 1, -1, 5, -5, 2, -2, 5, -5, 4, -4, 3, -3, 5, -5, 0, 6, 1, -1, 6, -6, 2, -2, 6, -6, 4, -4, 5, -5, 3, -3, 6, -6, 0, 7, 1, -1, 5, -5, 7, -7, 4, -4, 6, -6, 2, -2, 7, -7, 3, -3, 7, -7, 5, -5, 6, -6, 8, 4, -4, 7, -7, 8, 8, 6, -6, 8, 5, -5, 7, -7, 8, 6, -6, 7, -7, 8, 7, -7, 8, 8]
+    let y_offset = [1, 0, 1, 1, 2, 0, 2, 2, 1, 1, 2, 2, 3, 0, 3, 3, 1, 1, 3, 3, 2, 2, 4, 0, 4, 4, 1, 1, 3, 3, 4, 4, 2, 2, 5, 4, 4, 3, 3, 0, 5, 5, 1, 1, 5, 5, 2, 2, 4, 4, 5, 5, 3, 3, 6, 0, 6, 6, 1, 1, 6, 6, 2, 2, 5, 5, 4, 4, 6, 6, 3, 3, 7, 0, 7, 7, 5, 5, 1, 1, 6, 6, 4, 4, 7, 7, 2, 2, 7, 7, 3, 3, 6, 6, 5, 5, 0, 7, 7, 4, 4, 1, 2, 6, 6, 3, 7, 7, 5, 5, 4, 7, 7, 6, 6, 5, 7, 7, 6, 7]
+    let index = code - 1
+    let distance = x_offset[index] + y_offset[index] * width
+    if distance < 1 { return 1 }
+    distance
+}
+
+fn im_webp_cache_insert(cache: int, bits: int, rgba: int) {
+    if cache == 0 { return }
+    let red = std::raw::load8(rgba)
+    let green = std::raw::load8(rgba + 1)
+    let blue = std::raw::load8(rgba + 2)
+    let alpha = std::raw::load8(rgba + 3)
+    let color = alpha * 16777216 + red * 65536 + green * 256 + blue
+    let hash = (color * 506832829) & 4294967295
+    let index = std::raw::shr(hash, 32 - bits)
+    rt_copy(cache + 4 * index, rgba, 4)
+}
+
+fn im_webp_group_free(trees: int) {
+    if trees == 0 { return }
+    let mut i = 0
+    while i < 5 {
+        im_webp_tree_free(std::raw::load(trees + 8 * i))
+        i += 1
+    }
+    rt_free_block(trees)
+}
+
+fn im_webp_groups_free(groups: int, group_count: int) {
+    if groups == 0 { return }
+    let mut group = 0
+    while group < group_count {
+        im_webp_group_free(std::raw::load(groups + 8 * group))
+        group += 1
+    }
+    rt_free_block(groups)
+}
+
+fn im_webp_group_tree_read(function: string, reader: int, trees: int, slot: int, alphabet: int, group_table_bytes: int) -> int {
+    let tree = im_webp_read_tree(function, reader, alphabet)
+    std::raw::store(trees + 8 * slot, tree)
+    group_table_bytes + std::raw::load(tree + 16) * 8
+}
+
+fn im_webp_decode_stream(function: string, reader: int, width: int, height: int, output: int, is_main_image: bool) {
+    let mut cache_bits = 0
+    let cache_enabled = im_webp_read_bits(function, reader, 1)
+    let mut cache = 0
+    let mut cache_count = 0
+    if cache_enabled != 0 {
+        cache_bits = im_webp_read_bits(function, reader, 4)
+        if cache_bits < 1 || cache_bits > 11 { im_img_err(function, "Invalid WebP color cache size") }
+        cache_count = std::raw::shl(1, cache_bits)
+        cache = rt_alloc_zero(cache_count * 4)
+    }
+
+    let mut meta_bits = 0
+    let mut meta_width = 1
+    let mut meta_height = 1
+    let mut meta_image = 0
+    let mut used_groups = 0
+    let mut group_count = 1
+    let meta_enabled = if is_main_image { im_webp_read_bits(function, reader, 1) != 0 } else { false }
+    if meta_enabled {
+        meta_bits = 2 + im_webp_read_bits(function, reader, 3)
+        meta_width = im_webp_subsample_size(width, meta_bits)
+        meta_height = im_webp_subsample_size(height, meta_bits)
+        meta_image = rt_alloc(meta_width * meta_height * 4)
+        im_webp_decode_stream(function, reader, meta_width, meta_height, meta_image, false)
+        // El ID meta ocupa 16 bits; marca los grupos que realmente aparecen.
+        used_groups = rt_alloc_zero(65536)
+        let meta_pixels = meta_width * meta_height
+        let mut i = 0
+        while i < meta_pixels {
+            let red = std::raw::load8(meta_image + 4 * i)
+            let green = std::raw::load8(meta_image + 4 * i + 1)
+            let group = red * 256 + green
+            std::raw::store8(used_groups + group, 1)
+            if group >= group_count { group_count = group + 1 }
+            i += 1
+        }
+    } else {
+        used_groups = rt_alloc_zero(1)
+        std::raw::store8(used_groups, 1)
+    }
+
+    // El ID de grupo ocupa 16 bits; el tope seguro se aplica a las tablas,
+    // no a un número fijo de grupos.
+    let groups = rt_alloc_zero(group_count * 8)
+    let mut total_table_bytes = 0
+    let mut group_index = 0
+    // Los grupos se leen en orden, pero solo se retienen los referenciados por el mapa.
+    while group_index < group_count {
+        let trees = rt_alloc_zero(5 * 8)
+        std::raw::store(groups + 8 * group_index, trees)
+        let green_alphabet = 280 + cache_count
+        let mut group_table_bytes = 0
+        group_table_bytes = im_webp_group_tree_read(function, reader, trees, 0, green_alphabet, group_table_bytes)
+        group_table_bytes = im_webp_group_tree_read(function, reader, trees, 1, 256, group_table_bytes)
+        group_table_bytes = im_webp_group_tree_read(function, reader, trees, 2, 256, group_table_bytes)
+        group_table_bytes = im_webp_group_tree_read(function, reader, trees, 3, 256, group_table_bytes)
+        group_table_bytes = im_webp_group_tree_read(function, reader, trees, 4, 40, group_table_bytes)
+        if std::raw::load8(used_groups + group_index) != 0 {
+            total_table_bytes += group_table_bytes
+            if total_table_bytes > 67108864 {
+                im_webp_groups_free(groups, group_count)
+                rt_free_block(used_groups)
+                if meta_image != 0 { rt_free_block(meta_image) }
+                if cache != 0 { rt_free_block(cache) }
+                im_img_err(function, "ImageLimitError: WebP Huffman tables exceed 67108864 bytes")
+            }
+        } else {
+            im_webp_group_free(trees)
+            std::raw::store(groups + 8 * group_index, 0)
+        }
+        group_index += 1
+    }
+    rt_free_block(used_groups)
+
+    let pixels = width * height
+    let mut index = 0
+    while index < pixels {
+        let mut selected_group = 0
+        if meta_image != 0 {
+            let x = index % width
+            let y = index / width
+            let meta_index = std::raw::shr(y, meta_bits) * meta_width + std::raw::shr(x, meta_bits)
+            let red = std::raw::load8(meta_image + 4 * meta_index)
+            let green = std::raw::load8(meta_image + 4 * meta_index + 1)
+            selected_group = red * 256 + green
+            if selected_group >= group_count { im_img_err(function, "Invalid WebP Huffman group index") }
+        }
+        let trees = std::raw::load(groups + 8 * selected_group)
+        if trees == 0 { im_img_err(function, "Invalid WebP Huffman group index") }
+        let green = im_webp_tree_symbol(function, std::raw::load(trees), reader)
+        if green < 256 {
+            let red = im_webp_tree_symbol(function, std::raw::load(trees + 8), reader)
+            let blue = im_webp_tree_symbol(function, std::raw::load(trees + 16), reader)
+            let alpha = im_webp_tree_symbol(function, std::raw::load(trees + 24), reader)
+            let pixel = output + 4 * index
+            std::raw::store8(pixel, red)
+            std::raw::store8(pixel + 1, green)
+            std::raw::store8(pixel + 2, blue)
+            std::raw::store8(pixel + 3, alpha)
+            im_webp_cache_insert(cache, cache_bits, pixel)
+            index += 1
+        } else if green < 280 {
+            let length = im_webp_prefix_value(function, reader, green - 256)
+            let distance_code = im_webp_tree_symbol(function, std::raw::load(trees + 32), reader)
+            let distance_prefix = im_webp_prefix_value(function, reader, distance_code)
+            let distance = im_webp_plane_distance(function, width, distance_prefix)
+            if distance > index || length > pixels - index {
+                if cache != 0 { rt_free_block(cache) }
+                im_img_err(function, "Corrupt WebP backward reference")
+            }
+            let mut j = 0
+            while j < length {
+                let src = output + 4 * (index + j - distance)
+                let dst = output + 4 * (index + j)
+                rt_copy(dst, src, 4)
+                im_webp_cache_insert(cache, cache_bits, dst)
+                j += 1
+            }
+            index += length
+        } else {
+            if cache == 0 {
+                im_img_err(function, "WebP color cache code without a color cache")
+            }
+            let cache_index = green - 280
+            if cache_index >= cache_count { im_img_err(function, "Invalid WebP color cache index") }
+            rt_copy(output + 4 * index, cache + 4 * cache_index, 4)
+            index += 1
+            im_webp_cache_insert(cache, cache_bits, output + 4 * (index - 1))
+        }
+    }
+
+    im_webp_groups_free(groups, group_count)
+    if meta_image != 0 { rt_free_block(meta_image) }
+    if cache != 0 { rt_free_block(cache) }
+}
+
+fn im_webp_subsample_size(size: int, bits: int) -> int {
+    (size + std::raw::shl(1, bits) - 1) / std::raw::shl(1, bits)
+}
+
+fn im_webp_transforms_read(function: string, reader: int, width: int, height: int) -> int {
+    let state = rt_alloc_zero(48)
+    let order = rt_alloc_zero(4 * 8)
+    let entries = rt_alloc_zero(4 * 48)
+    std::raw::store(state + 16, order)
+    std::raw::store(state + 24, entries)
+    let mut transformed_width = width
+    let mut count = 0
+    while im_webp_read_bits(function, reader, 1) == 1 {
+        let kind = im_webp_read_bits(function, reader, 2)
+        if kind < 0 || kind > 3 { im_img_err(function, "Invalid WebP transform") }
+        let entry = entries + 48 * kind
+        if std::raw::load(entry) != 0 { im_img_err(function, "Repeated WebP transform") }
+        std::raw::store(entry, 1)
+        std::raw::store(entry + 8, kind)
+        std::raw::store(order + 8 * count, kind)
+        count += 1
+        if count > 4 { im_img_err(function, "Too many WebP transforms") }
+        if kind == 0 || kind == 1 {
+            let size_bits = 2 + im_webp_read_bits(function, reader, 3)
+            let block_width = im_webp_subsample_size(transformed_width, size_bits)
+            let block_height = im_webp_subsample_size(height, size_bits)
+            let transform_data = rt_alloc(block_width * block_height * 4)
+            im_webp_decode_stream(function, reader, block_width, block_height, transform_data, false)
+            std::raw::store(entry + 16, size_bits)
+            std::raw::store(entry + 24, transform_data)
+            std::raw::store(entry + 32, transformed_width)
+        } else if kind == 3 {
+            let table_size = 1 + im_webp_read_bits(function, reader, 8)
+            let table_data = rt_alloc(table_size * 4)
+            im_webp_decode_stream(function, reader, table_size, 1, table_data, false)
+            let mut i = 1
+            while i < table_size {
+                let mut ch = 0
+                while ch < 4 {
+                    let value = (std::raw::load8(table_data + 4 * i + ch) + std::raw::load8(table_data + 4 * (i - 1) + ch)) & 255
+                    std::raw::store8(table_data + 4 * i + ch, value)
+                    ch += 1
+                }
+                i += 1
+            }
+            let index_bits = if table_size <= 2 { 3 } else if table_size <= 4 { 2 } else if table_size <= 16 { 1 } else { 0 }
+            std::raw::store(entry + 16, index_bits)
+            std::raw::store(entry + 24, table_data)
+            std::raw::store(entry + 32, table_size)
+            std::raw::store(entry + 40, transformed_width)
+            transformed_width = im_webp_subsample_size(transformed_width, index_bits)
+        }
+    }
+    std::raw::store(state, count)
+    std::raw::store(state + 8, transformed_width)
+    std::raw::store(state + 32, width)
+    std::raw::store(state + 40, height)
+    state
+}
+
+fn im_webp_avg2(a: int, b: int) -> int {
+    (a + b) / 2
+}
+
+fn im_webp_abs(value: int) -> int {
+    if value < 0 { return 0 - value }
+    value
+}
+
+fn im_webp_predict(mode: int, channel: int, left: int, top: int, top_left: int, top_right: int) -> int {
+    if mode == 0 { return if channel == 3 { 255 } else { 0 } }
+    if mode == 1 { return left }
+    if mode == 2 { return top }
+    if mode == 3 { return top_right }
+    if mode == 4 { return top_left }
+    if mode == 5 { return im_webp_avg2(im_webp_avg2(left, top_right), top) }
+    if mode == 6 { return im_webp_avg2(left, top_left) }
+    if mode == 7 { return im_webp_avg2(left, top) }
+    if mode == 8 { return im_webp_avg2(top_left, top) }
+    if mode == 9 { return im_webp_avg2(top, top_right) }
+    if mode == 10 { return im_webp_avg2(im_webp_avg2(left, top_left), im_webp_avg2(top, top_right)) }
+    if mode == 11 {
+        let predicted = left + top - top_left
+        let left_distance = im_webp_abs(predicted - left)
+        let top_distance = im_webp_abs(predicted - top)
+        return if left_distance < top_distance { left } else { top }
+    }
+    if mode == 12 {
+        let value = left + top - top_left
+        return if value < 0 { 0 } else if value > 255 { 255 } else { value }
+    }
+    if mode == 13 {
+        let average = im_webp_avg2(left, top)
+        let value = average + (average - top_left) / 2
+        return if value < 0 { 0 } else if value > 255 { 255 } else { value }
+    }
+    0
+}
+
+fn im_webp_predictor11_left(left: int, top: int, top_left: int) -> bool {
+    let mut left_distance = 0
+    let mut top_distance = 0
+    let mut channel = 0
+    while channel < 4 {
+        let l = std::raw::load8(left + channel)
+        let t = std::raw::load8(top + channel)
+        let tl = std::raw::load8(top_left + channel)
+        let predicted = l + t - tl
+        left_distance += im_webp_abs(predicted - l)
+        top_distance += im_webp_abs(predicted - t)
+        channel += 1
+    }
+    left_distance < top_distance
+}
+
+fn im_webp_apply_predictor(function: string, image: int, width: int, height: int, size_bits: int, predictor_data: int) {
+    if width <= 0 || height <= 0 { return }
+    let block_width = im_webp_subsample_size(width, size_bits)
+    let first_alpha = (std::raw::load8(image + 3) + 255) & 255
+    std::raw::store8(image + 3, first_alpha)
+    let mut x = 1
+    while x < width {
+        let mut ch = 0
+        while ch < 4 {
+            let p = image + 4 * x + ch
+            std::raw::store8(p, (std::raw::load8(p) + std::raw::load8(p - 4)) & 255)
+            ch += 1
+        }
+        x += 1
+    }
+    let mut y = 1
+    while y < height {
+        let mut ch = 0
+        while ch < 4 {
+            let p = image + 4 * (y * width) + ch
+            std::raw::store8(p, (std::raw::load8(p) + std::raw::load8(p - 4 * width)) & 255)
+            ch += 1
+        }
+        y += 1
+    }
+    y = 1
+    while y < height {
+        let mut block_x = 0
+        while block_x < block_width {
+            let block_index = (y / std::raw::shl(1, size_bits)) * block_width + block_x
+            let mode = std::raw::load8(predictor_data + 4 * block_index + 1)
+            let mut start_x = std::raw::shl(block_x, size_bits)
+            if start_x < 1 { start_x = 1 }
+            let mut end_x = std::raw::shl(block_x + 1, size_bits)
+            if end_x > width { end_x = width }
+            x = start_x
+            while x < end_x {
+                let left = image + 4 * (y * width + x - 1)
+                let top = image + 4 * ((y - 1) * width + x)
+                let top_left = image + 4 * ((y - 1) * width + x - 1)
+                let top_right = image + 4 * ((y - 1) * width + x + 1)
+                let pixel = image + 4 * (y * width + x)
+                let use_left = if mode == 11 { im_webp_predictor11_left(left, top, top_left) } else { false }
+                let mut ch = 0
+                while ch < 4 {
+                    let predictor = if mode == 11 {
+                        if use_left { std::raw::load8(left + ch) } else { std::raw::load8(top + ch) }
+                    } else {
+                        im_webp_predict(mode, ch, std::raw::load8(left + ch), std::raw::load8(top + ch), std::raw::load8(top_left + ch), std::raw::load8(top_right + ch))
+                    }
+                    let value = std::raw::load8(pixel + ch) + predictor
+                    std::raw::store8(pixel + ch, value & 255)
+                    ch += 1
+                }
+                x += 1
+            }
+            block_x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_signed_byte(value: int) -> int {
+    if value >= 128 { value - 256 } else { value }
+}
+
+fn im_webp_color_delta(multiplier: int, channel: int) -> int {
+    let product = im_webp_signed_byte(multiplier) * im_webp_signed_byte(channel)
+    if product >= 0 { return product / 32 }
+    0 - ((0 - product + 31) / 32)
+}
+
+fn im_webp_apply_color_transform(image: int, width: int, height: int, size_bits: int, transform_data: int) {
+    let block_width = im_webp_subsample_size(width, size_bits)
+    let mut y = 0
+    while y < height {
+        let block_row = y / std::raw::shl(1, size_bits)
+        let mut x = 0
+        while x < width {
+            let block_x = x / std::raw::shl(1, size_bits)
+            let transform = transform_data + 4 * (block_row * block_width + block_x)
+            let pixel = image + 4 * (y * width + x)
+            let green = std::raw::load8(pixel + 1)
+            let red = (std::raw::load8(pixel) + im_webp_color_delta(std::raw::load8(transform + 2), green)) & 255
+            let blue = (std::raw::load8(pixel + 2) + im_webp_color_delta(std::raw::load8(transform + 1), green) + im_webp_color_delta(std::raw::load8(transform), red)) & 255
+            std::raw::store8(pixel, red)
+            std::raw::store8(pixel + 2, blue)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_webp_apply_subtract_green(image: int, pixels: int) {
+    let mut i = 0
+    while i < pixels {
+        let pixel = image + 4 * i
+        let green = std::raw::load8(pixel + 1)
+        std::raw::store8(pixel, (std::raw::load8(pixel) + green) & 255)
+        std::raw::store8(pixel + 2, (std::raw::load8(pixel + 2) + green) & 255)
+        i += 1
+    }
+}
+
+fn im_webp_apply_color_index(function: string, image: int, width: int, height: int, table_size: int, table: int, packed_width: int) {
+    if table_size > 16 {
+        let mut i = 0
+        while i < width * height {
+            let pixel = image + 4 * i
+            let index = std::raw::load8(pixel + 1)
+            if index < table_size {
+                rt_copy(pixel, table + 4 * index, 4)
+            } else {
+                std::raw::store8(pixel, 0)
+                std::raw::store8(pixel + 1, 0)
+                std::raw::store8(pixel + 2, 0)
+                std::raw::store8(pixel + 3, 0)
+            }
+            i += 1
+        }
+        return
+    }
+    let index_bits = if table_size <= 2 { 1 } else if table_size <= 4 { 2 } else { 4 }
+    let per_byte = 8 / index_bits
+    let mask = std::raw::shl(1, index_bits) - 1
+    let expected_packed_width = im_webp_subsample_size(width, if index_bits == 1 { 3 } else if index_bits == 2 { 2 } else { 1 })
+    if packed_width != expected_packed_width { im_img_err(function, "Invalid WebP color-index width") }
+    let packed = rt_alloc(packed_width)
+    let mut y = height - 1
+    while y >= 0 {
+        let mut x = 0
+        while x < packed_width {
+            std::raw::store8(packed + x, std::raw::load8(image + 4 * (y * packed_width + x) + 1))
+            x += 1
+        }
+        x = 0
+        while x < width {
+            let packed_byte = std::raw::load8(packed + x / per_byte)
+            let index = std::raw::shr(packed_byte, (x % per_byte) * index_bits) & mask
+            let pixel = image + 4 * (y * width + x)
+            if index < table_size {
+                rt_copy(pixel, table + 4 * index, 4)
+            } else {
+                std::raw::store8(pixel, 0)
+                std::raw::store8(pixel + 1, 0)
+                std::raw::store8(pixel + 2, 0)
+                std::raw::store8(pixel + 3, 0)
+            }
+            x += 1
+        }
+        y -= 1
+    }
+    rt_free_block(packed)
+}
+
+fn im_webp_transforms_apply(function: string, image: int, width: int, height: int, state: int) {
+    let count = std::raw::load(state)
+    let order = std::raw::load(state + 16)
+    let entries = std::raw::load(state + 24)
+    let mut current_width = std::raw::load(state + 8)
+    let mut i = count - 1
+    while i >= 0 {
+        let kind = std::raw::load(order + 8 * i)
+        let entry = entries + 48 * kind
+        let data = std::raw::load(entry + 24)
+        if kind == 0 {
+            im_webp_apply_predictor(function, image, current_width, height, std::raw::load(entry + 16), data)
+        } else if kind == 1 {
+            im_webp_apply_color_transform(image, current_width, height, std::raw::load(entry + 16), data)
+        } else if kind == 2 {
+            im_webp_apply_subtract_green(image, current_width * height)
+        } else {
+            let table_size = std::raw::load(entry + 32)
+            let old_width = std::raw::load(entry + 40)
+            im_webp_apply_color_index(function, image, old_width, height, table_size, data, current_width)
+            current_width = old_width
+        }
+        i -= 1
+    }
+}
+
+fn im_webp_transforms_free(state: int) {
+    if state == 0 { return }
+    let entries = std::raw::load(state + 24)
+    let mut i = 0
+    while i < 4 {
+        let entry = entries + 48 * i
+        let data = std::raw::load(entry + 24)
+        if data != 0 { rt_free_block(data) }
+        i += 1
+    }
+    rt_free_block(entries)
+    rt_free_block(std::raw::load(state + 16))
+    rt_free_block(state)
+}

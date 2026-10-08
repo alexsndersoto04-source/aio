@@ -1,0 +1,217 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn check_animation(path: string) {
+    println("checking animation file " + path)
+    let by_path = std::image::load(path)
+    show_image(by_path, "animación WebP path")
+    std::image::close(by_path)
+    let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+    show_image(by_bytes, "animación WebP bytes")
+    std::image::close(by_bytes)
+}
+
+fn rejected_bytes(data: any, expected: string) -> bool {
+    match std::try::catch(|| std::image::load_bytes(data)) {
+        Result::Ok(handle) => {
+            std::image::close(handle)
+            println("unexpectedly accepted WebP input")
+            false
+        },
+        Result::Err(message) => {
+            let matches = std::text::contains(message, expected)
+            if !matches {
+                println("expected error fragment: " + expected)
+                println("actual error: " + message)
+            }
+            matches
+        },
+    }
+}
+
+fn assert_rejected(data: any, expected: string, label: string) {
+    println("checking rejection: " + label)
+    std::testing::assert(rejected_bytes(data, expected), "WebP rejects " + label)
+    println("rejected " + label)
+}
+
+fn le32(value: int) -> array {
+    [value % 256, (value / 256) % 256, (value / 65536) % 256, (value / 16777216) % 256]
+}
+
+fn le24(value: int) -> array {
+    [value % 256, (value / 256) % 256, (value / 65536) % 256]
+}
+
+fn riff_chunk(tag: array, data: array) -> array {
+    let size = len(data)
+    let with_header = std::array::concat(tag, le32(size))
+    let with_data = std::array::concat(with_header, data)
+    if size % 2 == 1 {
+        return std::array::concat(with_data, [0])
+    }
+    with_data
+}
+
+fn animated_frame(canvas_width: int, canvas_height: int, frame_x: int, frame_y: int, frame_width: int, frame_height: int, has_alpha: bool, frame_chunks: array) -> any {
+    let flags = if has_alpha { 18 } else { 2 }
+    let vp8x_data = std::array::concat([flags, 0, 0, 0], std::array::concat(le24(canvas_width - 1), le24(canvas_height - 1)))
+    let vp8x = riff_chunk([86, 80, 56, 88], vp8x_data)
+    let anim = riff_chunk([65, 78, 73, 77], [0, 0, 0, 0, 0, 0])
+    let frame_header = std::array::concat(le24(frame_x / 2), std::array::concat(le24(frame_y / 2), std::array::concat(le24(frame_width - 1), std::array::concat(le24(frame_height - 1), [100, 0, 0, 0]))))
+    let frame_data = std::array::concat(frame_header, frame_chunks)
+    let anmf = riff_chunk([65, 78, 77, 70], frame_data)
+    let body = std::array::concat(vp8x, std::array::concat(anim, anmf))
+    let header = std::array::concat([82, 73, 70, 70], le32(4 + len(body)))
+    std::bytes::from_array(std::array::concat(std::array::concat(header, [87, 69, 66, 80]), body))
+}
+
+fn webp_chunk(tag: array, data: array) -> any {
+    let size = len(data)
+    let riff_size = 12 + size + (size % 2)
+    let encoded = [82, 73, 70, 70, riff_size % 256, (riff_size / 256) % 256, (riff_size / 65536) % 256, (riff_size / 16777216) % 256, 87, 69, 66, 80]
+    let with_tag = std::array::concat(encoded, tag)
+    let with_size = std::array::concat(with_tag, le32(size))
+    let with_data = std::array::concat(with_size, data)
+    if size % 2 == 1 {
+        return std::bytes::from_array(std::array::concat(with_data, [0]))
+    }
+    std::bytes::from_array(with_data)
+}
+
+fn lossless_payload_with_alpha(width: int, height: int, has_alpha: bool, version: int, stream: array) -> array {
+    let alpha_bit = if has_alpha { 268435456 } else { 0 }
+    let packed = (width - 1) + (height - 1) * 16384 + alpha_bit + version * 536870912
+    let header = [47, packed % 256, (packed / 256) % 256, (packed / 65536) % 256, (packed / 16777216) % 256]
+    std::array::concat(header, stream)
+}
+
+fn lossless_payload(width: int, height: int, version: int, stream: array) -> array {
+    lossless_payload_with_alpha(width, height, false, version, stream)
+}
+
+fn webp_container(chunks: array) -> any {
+    let body = std::array::concat([87, 69, 66, 80], chunks)
+    let header = std::array::concat([82, 73, 70, 70], le32(len(body)))
+    std::bytes::from_array(std::array::concat(header, body))
+}
+
+fn print_webp_sample(image: int, x: int, y: int) {
+    let pixel = std::image::crop(image, x, y, 1, 1)
+    println(fingerprint(std::image::encode(pixel, "bmp")))
+    std::image::close(pixel)
+}
+
+fn check_large_opaque_webp(path: string, label: string) {
+    println("checking large opaque WebP RGB under the byte limit: " + label)
+    let image = std::image::load_bytes(std::fs::read_bytes(path))
+    std::testing::assert(std::image::width(image) == 8192 && std::image::height(image) == 2049, "large opaque WebP dimensions")
+    std::testing::assert(std::text::equals(std::image::color_type(image), "Rgb8"), "large opaque WebP remains RGB8")
+    println(std::image::width(image))
+    println(std::image::height(image))
+    println(std::image::color_type(image))
+    print_webp_sample(image, 0, 0)
+    print_webp_sample(image, 4096, 1024)
+    print_webp_sample(image, 8191, 2048)
+    std::image::close(image)
+}
+
+fn check_vp8x_alpha_flag_overrides_lossless_header() {
+    println("checking VP8X alpha flag against the embedded VP8L header")
+    // VP8X says RGB while the internal VP8L alpha-used bit is set. The
+    // reference decoder uses the VP8X flag and exposes an opaque RGB8 image.
+    // The five Huffman trees are single-symbol trees for opaque black.
+    let vp8x = riff_chunk([86, 80, 56, 88], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    let vp8l_payload = lossless_payload_with_alpha(1, 1, true, 0, [136, 136, 254, 7])
+    let vp8l = riff_chunk([86, 80, 56, 76], vp8l_payload)
+    let image = std::image::load_bytes(webp_container(std::array::concat(vp8x, vp8l)))
+    std::testing::assert(std::image::width(image) == 1 && std::image::height(image) == 1, "extended VP8L image dimensions")
+    std::testing::assert(std::text::equals(std::image::color_type(image), "Rgb8"), "VP8X false alpha flag controls the output color type")
+    show_image(image, "VP8X alpha flag overrides VP8L header")
+    std::image::close(image)
+}
+
+fn check_duplicate_simple_huffman_symbols() {
+    println("checking duplicate symbols in a simple VP8L Huffman tree")
+    // LSB-first stream after the 40-bit VP8L header: no transforms, cache, or
+    // meta groups; the green tree encodes the duplicate pair (0, 0), followed
+    // by single-symbol red/blue/alpha/distance trees and one green code bit.
+    // RFC 9649 permits this form, and image-webp decodes both entries as 0.
+    let payload = lossless_payload(1, 1, 0, [24, 128, 136, 254, 7])
+    let image = std::image::load_bytes(webp_chunk([86, 80, 56, 76], payload))
+    std::testing::assert(std::image::width(image) == 1 && std::image::height(image) == 1, "duplicate simple Huffman symbols decode a 1x1 VP8L image")
+    std::testing::assert(std::text::equals(std::image::color_type(image), "Rgb8"), "duplicate simple Huffman image remains opaque RGB8")
+    show_image(image, "VP8L duplicate simple Huffman symbols")
+    std::image::close(image)
+}
+
+fn check_composited_animation() {
+    println("checking displaced VP8L animation frame")
+    let lossless = std::bytes::to_array(std::fs::read_bytes("selfhost/native/image/testdata/webp-lossless-alpha.webp"))
+    let lossless_frame = riff_chunk([86, 80, 56, 76], std::array::slice(lossless, 20, len(lossless)))
+    let lossless_animation = animated_frame(5, 4, 2, 2, 3, 2, true, lossless_frame)
+    let lossless_handle = std::image::load_bytes(lossless_animation)
+    show_image(lossless_handle, "animación VP8L alfa desplazada")
+    std::image::close(lossless_handle)
+
+    println("checking displaced VP8 animation frame")
+    let lossy = std::bytes::to_array(std::fs::read_bytes("selfhost/native/image/testdata/webp-lossy-alpha.webp"))
+    let alpha = riff_chunk([65, 76, 80, 72], std::array::slice(lossy, 38, 45))
+    let vp8 = riff_chunk([86, 80, 56, 32], std::array::slice(lossy, 54, len(lossy)))
+    let lossy_frame = std::array::concat(alpha, vp8)
+    let lossy_animation = animated_frame(5, 4, 2, 2, 3, 2, true, lossy_frame)
+    let lossy_handle = std::image::load_bytes(lossy_animation)
+    show_image(lossy_handle, "animación VP8 alfa desplazada")
+    std::image::close(lossy_handle)
+}
+
+fn main() {
+    check_vp8x_alpha_flag_overrides_lossless_header()
+    check_duplicate_simple_huffman_symbols()
+    check_animation("selfhost/native/image/testdata/webp-animation.webp")
+    check_composited_animation()
+    check_large_opaque_webp("selfhost/native/image/testdata/webp-oversized-lossless-rgb.webp", "lossless VP8L")
+    check_large_opaque_webp("selfhost/native/image/testdata/webp-oversized-lossy-rgb.webp", "lossy VP8")
+    check_large_opaque_webp("selfhost/native/image/testdata/webp-oversized-animation-rgb.webp", "animated VP8L")
+    // image 0.25.10 propagates this WebP decoder EOF as a generic I/O message.
+    assert_rejected(std::bytes::from_array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80]), "failed to fill whole buffer", "WebP without an image")
+    // image-webp propagates declared-length and short read_exact calls as the
+    // generic I/O EOF message exposed by image 0.25.10.
+    assert_rejected(std::bytes::from_array([82, 73, 70, 70, 255, 255, 255, 255, 87, 69, 66, 80]), "failed to fill whole buffer", "out-of-range RIFF size")
+    assert_rejected(std::bytes::from_array([82, 73, 70, 70, 5, 0, 0, 0, 87, 69, 66, 80, 0]), "failed to fill whole buffer", "truncated chunk header")
+    // image-webp rejects an unsupported first FourCC before interpreting its declared size.
+    assert_rejected(std::bytes::from_array([82, 73, 70, 70, 12, 0, 0, 0, 87, 69, 66, 80, 84, 69, 83, 84, 255, 255, 255, 255]), "Invalid Chunk header: [54, 45, 53, 54]", "unknown first chunk with oversized size")
+    // The unsupported first FourCC is rejected before the decoder examines chunk padding.
+    assert_rejected(std::bytes::from_array([82, 73, 70, 70, 13, 0, 0, 0, 87, 69, 66, 80, 74, 85, 78, 75, 1, 0, 0, 0, 0]), "Invalid Chunk header: [4a, 55, 4e, 4b]", "unknown first chunk with missing padding")
+
+    // image-webp reports interframes with this feature error. The version and
+    // pixel-type bits are parsed rather than rejected; these short keyframe
+    // partitions then fail during bitstream decoding.
+    assert_rejected(webp_chunk([86, 80, 56, 32], [1, 0, 0, 157, 1, 42, 1, 0, 1, 0]), "Format error decoding WebP: Unsupported feature: Non-keyframe frames", "intermediate VP8 frame")
+    assert_rejected(webp_chunk([86, 80, 56, 32], [8, 0, 0, 157, 1, 42, 1, 0, 1, 0]), "Corrupt bitstream", "reserved VP8 version with empty first partition")
+    assert_rejected(webp_chunk([86, 80, 56, 32], [32, 0, 0, 157, 1, 42, 1, 0, 1, 0, 64]), "Corrupt bitstream", "truncated VP8 frame with clamp type set")
+
+    assert_rejected(webp_chunk([86, 80, 56, 76], [0, 0, 0, 0, 0]), "Format error decoding WebP: Invalid lossless signature: 0", "invalid VP8L signature")
+    assert_rejected(webp_chunk([86, 80, 56, 76], lossless_payload(1, 1, 1, [])), "Format error decoding WebP: Invalid lossless version number: 1", "unsupported VP8L version")
+    assert_rejected(webp_chunk([86, 80, 56, 76], lossless_payload(8193, 1, 0, [])), "Image size exceeds limit", "width above the limit")
+    // The VM parses the VP8L transform header before allocating pixels, so this
+    // malformed over-limit frame must report its actual bitstream error first.
+    assert_rejected(webp_chunk([86, 80, 56, 76], lossless_payload(8192, 2049, 0, [])), "Format error decoding WebP: Corrupt bitstream", "oversized VP8L header with truncated stream")
+    // These alpha images have the same dimensions as the accepted RGB fixtures,
+    // but their final RGBA8 output is 32 KiB above the 64 MiB limit.
+    let oversized_lossless = std::fs::read_bytes("selfhost/native/image/testdata/webp-oversized-lossless.webp")
+    assert_rejected(oversized_lossless, "Memory limit exceeded", "valid RGBA8 VP8L image above decoded byte limit")
+    let oversized_lossy_alpha = std::fs::read_bytes("selfhost/native/image/testdata/webp-oversized-lossy-alpha.webp")
+    assert_rejected(oversized_lossy_alpha, "Memory limit exceeded", "valid RGBA8 VP8 image above decoded byte limit")
+    assert_rejected(webp_chunk([86, 80, 56, 76], lossless_payload(1, 1, 0, [0, 18, 0])), "Format error decoding WebP: Invalid Huffman code", "incomplete Huffman tree")
+}

@@ -1,0 +1,1072 @@
+// std::progress: barras de progreso y spinners, como
+// crates/titan_stdlib/src/progress_mod.rs sobre indicatif 0.17.11 y
+// console 0.15.11 (código original en selfhost/fuentes/; notas en
+// native/progress/NOTAS.md).
+//
+// - Registro de hasta 64 barras activas; ids desde 1.
+// - Se dibuja en stderr solo si stderr es una terminal (Term::is_term, fijado
+//   al crear la barra); si no, nada se dibuja (como indicatif).
+// - Barras: se dibujan en el propio proceso, con los mismos limitadores de
+//   frecuencia (AtomicPosition 1 ms/10, RateLimiter 20 Hz/20).
+// - Spinners: indicatif usa un hilo que avanza el spinner cada 100 ms. El
+//   runtime no tiene hilos, así que (solo con terminal) ese trabajo lo hace un
+//   proceso hijo creado con fork: recibe los cambios por un socketpair,
+//   dibuja, y confirma cada orden con un byte, de modo que set_message/finish
+//   terminan de dibujar antes de volver (igual que con el cerrojo de Rust).
+//   El hijo muere si muere el padre (PR_SET_PDEATHSIG).
+// - Al terminar el programa (rt_finish/rt_fatal) las barras sin terminar se
+//   borran (finish_and_clear), como cleanup_runtime al soltar la VM.
+//
+// Diferencia inevitable y documentada: en Rust el primer tick del hilo
+// compite con el set_style que sigue a enable_steady_tick; aquí el primer
+// dibujo usa siempre el estilo final ("{spinner:.green} {msg}"), que es el
+// resultado habitual en Rust.
+//
+// Registro (globals + 2552): bloque con +0 next_id, +8 cantidad, +16.. 64
+// punteros a barras (en orden de creación).
+// Barra (rt_alloc 160):
+//   +0 id, +8 tipo (0 barra, 1 spinner), +16 len, +24 pos (u64),
+//   +32 tick, +40 started (ns monotónico), +48 estado (0 en curso,
+//   1 DoneVisible, 2 DoneHidden), +56 mensaje (bits de string retenido o 0),
+//   +64 is_tty, +72 rl_prev, +80 rl_capacity, +88 ap_start, +96 ap_prev,
+//   +104 ap_capacity, +112 last_line_count, +120 pid del hijo,
+//   +128 socket, +136 pendiente de flush (bits de string o 0).
+// Colores (globals + 2560): 0 sin calcular, 1 no, 2 sí.
+
+fn pg_now() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+fn pg_isatty(fd: int) -> bool {
+    let buf = rt_alloc(64)
+    let r = std::raw::syscall(16, fd, 21505, buf, 0, 0, 0)
+    rt_free_block(buf)
+    r == 0
+}
+
+// console::Term::size(): TIOCGWINSZ si es terminal y filas, columnas > 0;
+// si no, (24, 80).
+fn pg_size() -> (int, int) {
+    if !pg_isatty(2) {
+        return (24, 80)
+    }
+    let buf = rt_alloc(16)
+    std::raw::store(buf, 0)
+    std::raw::syscall(16, 2, 21523, buf, 0, 0, 0)
+    let rows = std::raw::load8(buf) | std::raw::shl(std::raw::load8(buf + 1), 8)
+    let cols = std::raw::load8(buf + 2) | std::raw::shl(std::raw::load8(buf + 3), 8)
+    rt_free_block(buf)
+    if rows > 0 && cols > 0 {
+        return (rows, cols)
+    }
+    return (24, 80)
+}
+
+fn pg_env_is(name: string, value: string) -> bool {
+    let v = std__env__get(name)
+    if std::raw::tag(v) == 0 {
+        return false
+    }
+    rt_str_eq(v, value)
+}
+
+fn pg_env_set(name: string) -> bool {
+    std::raw::tag(std__env__get(name)) != 0
+}
+
+// console::colors_enabled() (para STDOUT; se calcula una vez).
+fn pg_colors() -> bool {
+    let g = std::raw::globals() + 2560
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur == 2
+    }
+    let mut supported = false
+    if pg_isatty(1) && !pg_env_set("NO_COLOR") && pg_env_set("TERM") {
+        supported = !pg_env_is("TERM", "dumb")
+    }
+    let mut on = supported && !pg_env_is("CLICOLOR", "0")
+    if pg_env_set("CLICOLOR_FORCE") && !pg_env_is("CLICOLOR_FORCE", "0") {
+        on = true
+    }
+    let mut v = 1
+    if on {
+        v = 2
+    }
+    std::raw::store(g, v)
+    on
+}
+
+fn pg_reg() -> int {
+    let g = std::raw::globals() + 2552
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let r = rt_alloc(16 + 8 * 64)
+    std::raw::store(r, 1)
+    std::raw::store(r + 8, 0)
+    std::raw::store(g, r)
+    r
+}
+
+fn pg_find(id: int) -> int {
+    let r = pg_reg()
+    let n = std::raw::load(r + 8)
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load(r + 16 + 8 * i)
+        if std::raw::load(b) == id {
+            return b
+        }
+        i += 1
+    }
+    0
+}
+
+fn pg_remove(id: int) -> int {
+    let r = pg_reg()
+    let n = std::raw::load(r + 8)
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load(r + 16 + 8 * i)
+        if std::raw::load(b) == id {
+            let mut k = i
+            while k + 1 < n {
+                std::raw::store(r + 16 + 8 * k, std::raw::load(r + 24 + 8 * k))
+                k += 1
+            }
+            std::raw::store(r + 8, n - 1)
+            return b
+        }
+        i += 1
+    }
+    0
+}
+
+fn pg_validate(fname: string, msg: any) {
+    if rt_slen(msg) > 4096 {
+        rt_native_fail(fname, "progress message exceeds byte limit 4096")
+    }
+}
+
+// TabExpandedString: cada tabulador son 8 espacios.
+fn pg_set_message(b: int, msg: any) {
+    let old = std::raw::load(b + 56)
+    if old != 0 {
+        std::raw::release(5, old)
+    }
+    let e = std__text__replace(msg, "\t", "        ")
+    std::raw::store(b + 56, std::raw::keep(e))
+}
+
+fn pg_message(b: int) -> any {
+    let m = std::raw::load(b + 56)
+    if m == 0 {
+        return ""
+    }
+    std::raw::value(5, m)
+}
+
+fn pg_new(kind: int, total: int, fname: string) -> int {
+    let r = pg_reg()
+    let n = std::raw::load(r + 8)
+    if n >= 64 {
+        rt_native_fail(fname, "progress handle quota exceeded (limit 64)")
+    }
+    let id = std::raw::load(r)
+    if id == 9223372036854775807 {
+        rt_native_fail(fname, "progress handle space exhausted")
+    }
+    let now = pg_now()
+    let b = rt_alloc(160)
+    let mut k = 0
+    while k < 160 {
+        std::raw::store(b + k, 0)
+        k += 8
+    }
+    std::raw::store(b, id)
+    std::raw::store(b + 8, kind)
+    std::raw::store(b + 16, total)
+    std::raw::store(b + 40, now)
+    let mut tty = 0
+    if pg_isatty(2) {
+        tty = 1
+    }
+    std::raw::store(b + 64, tty)
+    std::raw::store(b + 72, now)
+    std::raw::store(b + 80, 20)
+    std::raw::store(b + 88, now)
+    std::raw::store(b + 104, 10)
+    std::raw::store(r, id + 1)
+    std::raw::store(r + 16 + 8 * n, b)
+    std::raw::store(r + 8, n + 1)
+    b
+}
+
+// ------------------------------------------------------------ limitadores
+
+// indicatif RateLimiter (20 Hz: intervalo 50 ms, ráfaga 20).
+fn pg_rl_allow(b: int, now: int) -> bool {
+    let prev = std::raw::load(b + 72)
+    let cap = std::raw::load(b + 80)
+    if now < prev {
+        return false
+    }
+    let elapsed = now - prev
+    if cap == 0 && elapsed < 50000000 {
+        return false
+    }
+    let add = (elapsed / 1000000) / 50
+    let rem = elapsed % 50000000
+    let mut c = cap + add - 1
+    if c > 20 {
+        c = 20
+    }
+    std::raw::store(b + 80, c)
+    std::raw::store(b + 72, now - rem)
+    true
+}
+
+// indicatif AtomicPosition::allow (1 ms, ráfaga 10).
+fn pg_ap_allow(b: int, now: int) -> bool {
+    let start = std::raw::load(b + 88)
+    if now < start {
+        return false
+    }
+    let cap = std::raw::load(b + 104)
+    let prev = std::raw::load(b + 96)
+    let elapsed = now - start
+    let mut diff = elapsed - prev
+    if diff < 0 {
+        diff = 0
+    }
+    if cap == 0 && diff < 1000000 {
+        return false
+    }
+    let add = diff / 1000000
+    let rem = diff % 1000000
+    let mut c = cap + add - 1
+    if c > 10 {
+        c = 10
+    }
+    std::raw::store(b + 104, c)
+    std::raw::store(b + 96, elapsed - rem)
+    true
+}
+
+// ------------------------------------------------------------ f32
+
+// Redondea un f64 positivo (normal en f32) a f32, al par más cercano.
+fn pg_f32(x: int) -> int {
+    if x == 0 {
+        return 0
+    }
+    let low = x & 536870911
+    let mut hi = std::raw::shr(x, 29)
+    if low > 268435456 || (low == 268435456 && (hi & 1) == 1) {
+        hi += 1
+    }
+    std::raw::shl(hi, 29)
+}
+
+// u64 -> f32 (un solo redondeo).
+fn pg_u64_f32(n: int) -> int {
+    if n >= 0 && n < 9007199254740992 {
+        return pg_f32(std::raw::ffromint(n))
+    }
+    let mut len = 64
+    if n >= 0 {
+        len = 0
+        let mut t = n
+        while t != 0 {
+            t = std::raw::shr(t, 1)
+            len += 1
+        }
+    }
+    let sh = len - 24
+    let mut q = std::raw::shr(n, sh)
+    let r = n & (std::raw::shl(1, sh) - 1)
+    let half = std::raw::shl(1, sh - 1)
+    if r > half || (r == half && (q & 1) == 1) {
+        q += 1
+    }
+    // q * 2^sh (exacto).
+    std::raw::fmul(std::raw::ffromint(q), std::raw::shl(1023 + sh, 52))
+}
+
+// ProgressState::fraction() como bits de f64 con valor f32.
+fn pg_fraction(b: int) -> int {
+    if std::raw::load(b + 8) == 1 {
+        return 0
+    }
+    let len = std::raw::load(b + 16)
+    let pos = std::raw::load(b + 24)
+    if len == 0 {
+        return 4607182418800017408
+    }
+    if pos == 0 {
+        return 0
+    }
+    let f = pg_f32(std::raw::fdiv(pg_u64_f32(pos), pg_u64_f32(len)))
+    if std::raw::fcmp(f, 4607182418800017408) > 0 {
+        return 4607182418800017408
+    }
+    f
+}
+
+// u64 en decimal.
+fn pg_u64_str(v: int) -> any {
+    if v >= 0 {
+        return rt_int_to_str(v)
+    }
+    let q = std::raw::shr(v, 1) / 5
+    let d = std::raw::wsub(v, std::raw::wmul(q, 10))
+    rt_concat(rt_int_to_str(q), rt_int_to_str(d))
+}
+
+// ------------------------------------------------------------ console
+
+fn pg_csi(sb: int, code: string) {
+    sb_byte(sb, 27)
+    sb_str(sb, code)
+}
+
+// Transición del autómata de console::ansi (0 Start, 1..11 S1..S11, 12 Trap).
+fn pg_ansi_next(s: int, c: int) -> int {
+    if c == 27 {
+        if s == 0 {
+            return 1
+        }
+        return 12
+    }
+    if c == 40 || c == 41 {
+        if s == 1 {
+            return 2
+        }
+        if s == 2 || s == 4 {
+            return 4
+        }
+        return 12
+    }
+    if c == 59 {
+        if s == 1 || s == 2 || s == 4 {
+            return 4
+        }
+        if s == 5 || s == 6 || s == 7 || s == 8 || s == 10 {
+            return 10
+        }
+        return 12
+    }
+    if c == 91 || c == 35 || c == 63 {
+        if s == 1 || s == 2 || s == 4 {
+            return 4
+        }
+        return 12
+    }
+    if c >= 48 && c <= 57 {
+        if s == 1 || s == 4 || s == 10 {
+            return 5
+        }
+        if s == 2 {
+            if c <= 50 {
+                return 3
+            }
+            return 5
+        }
+        if s == 5 {
+            return 6
+        }
+        if s == 6 {
+            return 7
+        }
+        if s == 7 {
+            return 8
+        }
+        if s == 8 {
+            return 9
+        }
+        return 12
+    }
+    let fin = (c >= 65 && c <= 80) || c == 82 || c == 90 || c == 99 || (c >= 102 && c <= 110) || c == 113 || c == 114 || c == 121 || c == 61 || c == 62 || c == 60
+    if fin {
+        if s == 1 || s == 2 || s == 4 || s == 5 || s == 6 || s == 7 || s == 8 || s == 10 {
+            return 11
+        }
+    }
+    12
+}
+
+fn pg_ansi_final(s: int) -> bool {
+    s == 3 || s == 5 || s == 6 || s == 7 || s == 8 || s == 9 || s == 11
+}
+
+// Longitud UTF-8 del carácter cuyo primer byte es c.
+fn pg_clen(c: int) -> int {
+    if c < 128 {
+        return 1
+    }
+    if c < 224 {
+        return 2
+    }
+    if c < 240 {
+        return 3
+    }
+    4
+}
+
+// console::measure_text_width: ancho de strip_ansi_codes(s).
+fn pg_measure(s: any) -> int {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s)
+    let sb = sb_new(n)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let cl = pg_clen(c)
+        let mut starts = c == 27
+        let i1 = i + 1
+        if c == 194 && i1 < n && std::raw::load8(p + i1) == 155 {
+            starts = true
+        }
+        let mut skipped = false
+        if starts {
+            let mut st = 1
+            let mut last = -1
+            let mut j = i + cl
+            while j < n {
+                let d = std::raw::load8(p + j)
+                if d >= 128 {
+                    st = 12
+                } else {
+                    st = pg_ansi_next(st, d)
+                }
+                if pg_ansi_final(st) {
+                    last = j
+                }
+                if st == 12 {
+                    j = n
+                } else {
+                    j += 1
+                }
+            }
+            if last >= 0 {
+                i = last + 1
+                skipped = true
+            }
+        }
+        if !skipped {
+            sb_raw(sb, p + i, cl)
+            i += cl
+        }
+    }
+    let n2 = sb_len(sb)
+    let data = std::raw::load(sb + 16)
+    let w = uw_str_width_bytes(data, n2)
+    rt_free_block(data)
+    rt_free_block(sb)
+    w
+}
+
+// ------------------------------------------------------------ formato
+
+fn pg_two(sb: int, v: int) {
+    if v < 10 {
+        sb_byte(sb, 48)
+    }
+    sb_str(sb, rt_int_to_str(v))
+}
+
+// {spinner}: tick_strings[tick % (n-1)], o el último si terminó.
+fn pg_tick_str(sb: int, b: int) {
+    let mut ticks = "⠁⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈⠈"
+    let mut n = 29
+    if std::raw::load(b + 8) == 1 {
+        ticks = "⠁⠂⠄⡀⢀⠠⠐⠈"
+        n = 8
+    }
+    if std::raw::load(b + 48) != 0 {
+        sb_byte(sb, 32)
+        return
+    }
+    let t = std::raw::load(b + 32)
+    let mut i = t % n
+    if t < 0 {
+        // tick es u64 (saturating_add): no llega a ser negativo en la práctica.
+        i = 0
+    }
+    sb_raw(sb, std::raw::bits(ticks) + 16 + 3 * i, 3)
+}
+
+fn pg_styled_tick(sb: int, b: int, colors: bool) {
+    if colors {
+        pg_csi(sb, "[32m")
+    }
+    pg_tick_str(sb, b)
+    if colors {
+        pg_csi(sb, "[0m")
+    }
+}
+
+// format_bar(fraction, 40, alt=blue) con progress_chars "=> ".
+fn pg_bar40(b: int, colors: bool) -> any {
+    let fill = pg_f32(std::raw::fmul(pg_fraction(b), 4630826316843712512))
+    let filled = std::raw::ftoint(fill)
+    let mut head = 0
+    if std::raw::fcmp(fill, 0) > 0 && filled < 40 {
+        head = 1
+    }
+    let sb = sb_new(64)
+    let mut i = 0
+    while i < filled {
+        sb_byte(sb, 61)
+        i += 1
+    }
+    if head == 1 {
+        sb_byte(sb, 62)
+    }
+    let mut bg = 40 - filled - head
+    if bg < 0 {
+        bg = 0
+    }
+    if colors {
+        pg_csi(sb, "[34m")
+    }
+    i = 0
+    while i < bg {
+        sb_byte(sb, 32)
+        i += 1
+    }
+    if colors {
+        pg_csi(sb, "[0m")
+    }
+    sb_finish(sb)
+}
+
+// ProgressStyle::format_state: la(s) línea(s) de la barra, unidas por '\n'.
+fn pg_format(b: int) -> any {
+    let colors = pg_colors()
+    let sb = sb_new(128)
+    pg_styled_tick(sb, b, colors)
+    if std::raw::load(b + 8) == 1 {
+        sb_byte(sb, 32)
+        sb_str(sb, pg_message(b))
+        return sb_finish(sb)
+    }
+    sb_str(sb, " [")
+    let mut t = (pg_now() - std::raw::load(b + 40)) / 1000000000
+    let sec = t % 60
+    t = t / 60
+    let min = t % 60
+    t = t / 60
+    let hours = t % 24
+    t = t / 24
+    if t > 0 {
+        sb_str(sb, rt_int_to_str(t))
+        sb_str(sb, "d ")
+    }
+    pg_two(sb, hours)
+    sb_byte(sb, 58)
+    pg_two(sb, min)
+    sb_byte(sb, 58)
+    pg_two(sb, sec)
+    sb_str(sb, "] [")
+    let bar = pg_bar40(b, colors)
+    if colors {
+        pg_csi(sb, "[36m")
+    }
+    sb_str(sb, bar)
+    let cols = pg_measure(bar)
+    let mut pad = 40 - cols
+    while pad > 0 {
+        sb_byte(sb, 32)
+        pad -= 1
+    }
+    if colors {
+        pg_csi(sb, "[0m")
+    }
+    sb_str(sb, "] ")
+    sb_str(sb, pg_u64_str(std::raw::load(b + 24)))
+    sb_byte(sb, 47)
+    sb_str(sb, pg_u64_str(std::raw::load(b + 16)))
+    sb_byte(sb, 32)
+    sb_str(sb, pg_message(b))
+    sb_finish(sb)
+}
+
+// ------------------------------------------------------------ dibujo
+
+fn pg_write_all(fd: int, p: int, n: int) -> bool {
+    let mut off = 0
+    while off < n {
+        let r = std::raw::syscall(1, fd, p + off, n - off, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            return false
+        } else {
+            off += r
+        }
+    }
+    true
+}
+
+// Term::flush: un write_all del búfer; si falla, el búfer se conserva.
+fn pg_flush(b: int, sb: int) {
+    let old = std::raw::load(b + 136)
+    let out = sb_new(sb_len(sb) + 16)
+    if old != 0 {
+        sb_str(out, std::raw::value(5, old))
+        std::raw::release(5, old)
+        std::raw::store(b + 136, 0)
+    }
+    sb_raw(out, std::raw::load(sb + 16), sb_len(sb))
+    rt_free_block(std::raw::load(sb + 16))
+    rt_free_block(sb)
+    let n = sb_len(out)
+    if n == 0 {
+        rt_free_block(std::raw::load(out + 16))
+        rt_free_block(out)
+        return
+    }
+    if !pg_write_all(2, std::raw::load(out + 16), n) {
+        std::raw::store(b + 136, std::raw::keep(sb_finish(out)))
+        return
+    }
+    rt_free_block(std::raw::load(out + 16))
+    rt_free_block(out)
+}
+
+fn pg_move(sb: int, n: int, dir: int) {
+    if n > 0 {
+        sb_byte(sb, 27)
+        sb_byte(sb, 91)
+        sb_str(sb, rt_int_to_str(n))
+        sb_byte(sb, dir)
+    }
+}
+
+// DrawState::draw_to_term (move_cursor false, alineación Top).
+fn pg_draw_to_term(b: int, text: any, has_lines: bool) {
+    let sb = sb_new(256)
+    let n = std::raw::load(b + 112)
+    pg_move(sb, n - 1, 65)
+    let mut i = 0
+    while i < n {
+        sb_byte(sb, 13)
+        pg_csi(sb, "[2K")
+        if i + 1 != n {
+            pg_move(sb, 1, 66)
+        }
+        i += 1
+    }
+    pg_move(sb, n - 1, 65)
+    let (rows, width) = pg_size()
+    let mut real = 0
+    if has_lines {
+        let p = std::raw::bits(text) + 16
+        let len = rt_slen(text)
+        let mut start = 0
+        let mut idx = 0
+        let mut done = false
+        while !done {
+            let mut e = start
+            while e < len && std::raw::load8(p + e) != 10 {
+                e += 1
+            }
+            let last = e >= len
+            let line = rt_substr_bytes(text, start, e)
+            let cw = pg_measure(line)
+            let mut h = (cw + width - 1) / width
+            if h < 1 {
+                h = 1
+            }
+            let need = real + h
+            if need > rows {
+                done = true
+            }
+            if !done {
+                real += h
+                if idx != 0 {
+                    sb_byte(sb, 10)
+                }
+                sb_str(sb, line)
+                if last {
+                    let mut filler = h * width - cw
+                    while filler > 0 {
+                        sb_byte(sb, 32)
+                        filler -= 1
+                    }
+                    done = true
+                }
+                idx += 1
+                start = e + 1
+            }
+        }
+    }
+    pg_flush(b, sb)
+    std::raw::store(b + 112, real)
+}
+
+// BarState::draw(force, now).
+fn pg_draw(b: int, force0: bool, now: int) {
+    let force = force0 || std::raw::load(b + 48) != 0
+    if std::raw::load(b + 64) == 0 {
+        return
+    }
+    if !(force || pg_rl_allow(b, now)) {
+        return
+    }
+    if std::raw::load(b + 48) == 2 {
+        pg_draw_to_term(b, "", false)
+        return
+    }
+    pg_draw_to_term(b, pg_format(b), true)
+}
+
+fn pg_tick(b: int, now: int) {
+    let t = std::raw::load(b + 32)
+    if t != 9223372036854775807 {
+        std::raw::store(b + 32, t + 1)
+    }
+    pg_draw(b, false, now)
+}
+
+// finish_using_style: modo 0 AndLeave, 1 WithMessage, 2 AndClear.
+fn pg_finish_local(b: int, mode: int, msg: any) {
+    std::raw::store(b + 48, 1)
+    if std::raw::load(b + 8) == 0 {
+        std::raw::store(b + 24, std::raw::load(b + 16))
+    }
+    if mode == 1 {
+        pg_set_message(b, msg)
+    }
+    if mode == 2 {
+        std::raw::store(b + 48, 2)
+    }
+    pg_draw(b, true, pg_now())
+}
+
+// ------------------------------------------------------------ hijo del spinner
+
+fn pg_read_full(fd: int, p: int, n: int) -> bool {
+    let mut off = 0
+    while off < n {
+        let r = std::raw::syscall(0, fd, p + off, n - off, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            return false
+        } else {
+            off += r
+        }
+    }
+    true
+}
+
+fn pg_send_all(fd: int, p: int, n: int) -> bool {
+    let mut off = 0
+    while off < n {
+        // sendto(..., MSG_NOSIGNAL): sin SIGPIPE si el otro lado ya no está.
+        let r = std::raw::syscall(44, fd, p + off, n - off, 16384, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            return false
+        } else {
+            off += r
+        }
+    }
+    true
+}
+
+fn pg_child_exit() {
+    std::raw::syscall(60, 0, 0, 0, 0, 0, 0)
+}
+
+// Bucle del hijo: el hilo Ticker de indicatif (tick, espera 100 ms) más las
+// órdenes del padre: M mensaje, L finish(), F finish_with_message, C clear.
+fn pg_child(b: int, fd: int) {
+    let hdr = rt_alloc(16)
+    let pfd = rt_alloc(16)
+    let ts = rt_alloc(16)
+    pg_tick(b, pg_now())
+    let mut deadline = pg_now() + 100000000
+    while true {
+        let now = pg_now()
+        let left = deadline - now
+        if left <= 0 {
+            pg_tick(b, now)
+            deadline = pg_now() + 100000000
+        } else {
+            std::raw::store(pfd, fd | std::raw::shl(1, 32))
+            std::raw::store(ts, left / 1000000000)
+            std::raw::store(ts + 8, left % 1000000000)
+            let r = std::raw::syscall(271, pfd, 1, ts, 0, 8, 0)
+            if r > 0 {
+                if !pg_read_full(fd, hdr, 5) {
+                    pg_child_exit()
+                }
+                let op = std::raw::load8(hdr)
+                let n = std::raw::load8(hdr + 1) | std::raw::shl(std::raw::load8(hdr + 2), 8) | std::raw::shl(std::raw::load8(hdr + 3), 16) | std::raw::shl(std::raw::load8(hdr + 4), 24)
+                let s = rt_str_alloc(n)
+                if !pg_read_full(fd, s + 16, n) {
+                    pg_child_exit()
+                }
+                let msg = rt_sval(s)
+                if op == 77 {
+                    pg_set_message(b, msg)
+                    pg_draw(b, false, pg_now())
+                } else if op == 76 {
+                    pg_finish_local(b, 0, msg)
+                } else if op == 70 {
+                    pg_finish_local(b, 1, msg)
+                } else {
+                    pg_finish_local(b, 2, msg)
+                }
+                std::raw::store8(hdr, 1)
+                pg_send_all(fd, hdr, 1)
+                if op != 77 {
+                    pg_child_exit()
+                }
+            } else if r < 0 && r != -4 {
+                pg_child_exit()
+            }
+        }
+    }
+}
+
+// Cierra los descriptores del hijo salvo stderr (2) y el socket.
+fn pg_close_except(keep: int) {
+    std::raw::syscall(3, 0, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, 1, 0, 0, 0, 0, 0)
+    let mut ok = std::raw::syscall(436, 3, keep - 1, 0, 0, 0, 0) == 0
+    if keep == 3 {
+        ok = true
+    }
+    let ok2 = std::raw::syscall(436, keep + 1, 4294967295, 0, 0, 0, 0) == 0
+    if !ok || !ok2 {
+        // Núcleo sin close_range: uno a uno.
+        let mut f = 3
+        while f < 4096 {
+            if f != keep {
+                std::raw::syscall(3, f, 0, 0, 0, 0, 0)
+            }
+            f += 1
+        }
+    }
+}
+
+fn pg_start_child(b: int) {
+    let sv = rt_alloc(16)
+    std::raw::store(sv, 0)
+    // socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC)
+    if std::raw::syscall(53, 1, 1 | 524288, 0, sv, 0, 0) != 0 {
+        rt_free_block(sv)
+        return
+    }
+    let fds = std::raw::load(sv)
+    rt_free_block(sv)
+    let parent_fd = fds & 4294967295
+    let child_fd = std::raw::shr(fds, 32)
+    let parent_pid = std::raw::syscall(39, 0, 0, 0, 0, 0, 0)
+    pg_colors()
+    let pid = std::raw::syscall(57, 0, 0, 0, 0, 0, 0)
+    if pid == 0 {
+        // prctl(PR_SET_PDEATHSIG, SIGKILL)
+        std::raw::syscall(157, 1, 9, 0, 0, 0, 0)
+        if std::raw::syscall(110, 0, 0, 0, 0, 0, 0) != parent_pid {
+            pg_child_exit()
+        }
+        pg_close_except(child_fd)
+        pg_child(b, child_fd)
+        pg_child_exit()
+    }
+    std::raw::syscall(3, child_fd, 0, 0, 0, 0, 0)
+    if pid < 0 {
+        std::raw::syscall(3, parent_fd, 0, 0, 0, 0, 0)
+        return
+    }
+    std::raw::store(b + 120, pid)
+    std::raw::store(b + 128, parent_fd)
+}
+
+// Envía una orden al hijo y espera su confirmación.
+fn pg_order(b: int, op: int, msg: any) {
+    let fd = std::raw::load(b + 128)
+    let n = rt_slen(msg)
+    let buf = rt_alloc(n + 8)
+    std::raw::store8(buf, op)
+    std::raw::store8(buf + 1, n & 255)
+    std::raw::store8(buf + 2, std::raw::shr(n, 8) & 255)
+    std::raw::store8(buf + 3, std::raw::shr(n, 16) & 255)
+    std::raw::store8(buf + 4, std::raw::shr(n, 24) & 255)
+    rt_copy(buf + 5, std::raw::bits(msg) + 16, n)
+    if pg_send_all(fd, buf, n + 5) {
+        pg_read_full(fd, buf, 1)
+    }
+    rt_free_block(buf)
+}
+
+fn pg_end_child(b: int, op: int, msg: any) {
+    pg_order(b, op, msg)
+    std::raw::syscall(3, std::raw::load(b + 128), 0, 0, 0, 0, 0)
+    let st = rt_alloc(16)
+    let pid = std::raw::load(b + 120)
+    let mut w = std::raw::syscall(61, pid, st, 0, 0, 0, 0)
+    while w == -4 {
+        w = std::raw::syscall(61, pid, st, 0, 0, 0, 0)
+    }
+    rt_free_block(st)
+}
+
+fn pg_free(b: int) {
+    let m = std::raw::load(b + 56)
+    if m != 0 {
+        std::raw::release(5, m)
+    }
+    let pend = std::raw::load(b + 136)
+    if pend != 0 {
+        std::raw::release(5, pend)
+    }
+    rt_free_block(b)
+}
+
+// Termina una barra ya sacada del registro (modo como pg_finish_local).
+fn pg_finish_bar(b: int, mode: int, msg: any) {
+    if std::raw::load(b + 8) == 1 {
+        if std::raw::load(b + 120) != 0 {
+            let mut op = 76
+            if mode == 1 {
+                op = 70
+            }
+            if mode == 2 {
+                op = 67
+            }
+            pg_end_child(b, op, msg)
+        }
+    } else {
+        pg_finish_local(b, mode, msg)
+    }
+    pg_free(b)
+}
+
+// Al terminar el programa: finish_and_clear de las barras que queden.
+fn pg_cleanup() {
+    let r = std::raw::load(std::raw::globals() + 2552)
+    if r == 0 {
+        return
+    }
+    while std::raw::load(r + 8) > 0 {
+        let b = std::raw::load(r + 16)
+        pg_remove(std::raw::load(b))
+        pg_finish_bar(b, 2, "")
+    }
+}
+
+// ------------------------------------------------------------ nativas
+
+fn std__progress__bar_new(total: any) -> any {
+    rt_expect_int(total, "std::progress::bar_new")
+    let t = std::raw::bits(total)
+    if t < 0 {
+        rt_native_fail("std::progress::bar_new", "total must be nonnegative")
+    }
+    let b = pg_new(0, t, "std::progress::bar_new")
+    std::raw::load(b)
+}
+
+fn std__progress__spinner_new() -> any {
+    let b = pg_new(1, 0, "std::progress::spinner_new")
+    if std::raw::load(b + 64) == 1 {
+        pg_start_child(b)
+    }
+    std::raw::load(b)
+}
+
+fn std__progress__set_message(id: any, message: any) -> any {
+    rt_expect_int(id, "std::progress::set_message")
+    rt_expect_str(message, "std::progress::set_message")
+    pg_validate("std::progress::set_message", message)
+    let b = pg_find(std::raw::bits(id))
+    if b != 0 {
+        if std::raw::load(b + 8) == 1 {
+            if std::raw::load(b + 120) != 0 {
+                pg_order(b, 77, message)
+            }
+        } else {
+            pg_set_message(b, message)
+            pg_draw(b, false, pg_now())
+        }
+    }
+    nil
+}
+
+// Avance de la posición (inc/set_position): con spinner (tiene Ticker) no se
+// dibuja; en una barra, si AtomicPosition lo permite, tick y dibujo.
+fn pg_moved(b: int) {
+    if std::raw::load(b + 8) == 0 {
+        let now = pg_now()
+        if pg_ap_allow(b, now) {
+            pg_tick(b, now)
+        }
+    }
+}
+
+fn std__progress__set_position(id: any, position: any) -> any {
+    rt_expect_int(id, "std::progress::set_position")
+    rt_expect_int(position, "std::progress::set_position")
+    let p = std::raw::bits(position)
+    if p < 0 {
+        rt_native_fail("std::progress::set_position", "position must be nonnegative")
+    }
+    let b = pg_find(std::raw::bits(id))
+    if b != 0 {
+        std::raw::store(b + 24, p)
+        pg_moved(b)
+    }
+    nil
+}
+
+fn std__progress__increment(id: any, delta: any) -> any {
+    rt_expect_int(id, "std::progress::increment")
+    rt_expect_int(delta, "std::progress::increment")
+    let d = std::raw::bits(delta)
+    if d < 0 {
+        rt_native_fail("std::progress::increment", "delta must be nonnegative")
+    }
+    let b = pg_find(std::raw::bits(id))
+    if b != 0 {
+        std::raw::store(b + 24, std::raw::wadd(std::raw::load(b + 24), d))
+        pg_moved(b)
+    }
+    nil
+}
+
+fn std__progress__finish(id: any, message: any) -> any {
+    rt_expect_int(id, "std::progress::finish")
+    rt_expect_str(message, "std::progress::finish")
+    pg_validate("std::progress::finish", message)
+    let b = pg_remove(std::raw::bits(id))
+    if b != 0 {
+        let mut mode = 1
+        if rt_slen(message) == 0 {
+            mode = 0
+        }
+        pg_finish_bar(b, mode, message)
+    }
+    nil
+}
+
+fn std__progress__abandon(id: any) -> any {
+    rt_expect_int(id, "std::progress::abandon")
+    let b = pg_remove(std::raw::bits(id))
+    if b != 0 {
+        pg_finish_bar(b, 2, "")
+    }
+    nil
+}

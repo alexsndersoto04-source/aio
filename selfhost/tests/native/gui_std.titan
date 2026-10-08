@@ -1,0 +1,33 @@
+// Pruebas funcionales del estado y el rasterizador Titan de std::gui.
+// No se simulan clics: sin eventos de una ventana real no hay activaciones.
+fn main() {
+    std::testing::assert(std::gui::init(), "GUI initializes")
+    let root = std::gui::create_container("A", 64, 48)
+    std::testing::assert(root > 0, "container receives a live handle")
+    let button = std::gui::add_button(root, "O", 5, 25, 20, 12)
+    let label = std::gui::add_label(root, "ready", 2, 40)
+    std::testing::assert(button > 0 && label > 0, "button and label are created")
+    std::testing::assert(std::gui::child_count(root) == 2, "child count follows the tree")
+
+    std::testing::assert(std::gui::get_text(label) == "ready", "widget text is stored")
+    std::testing::assert(std::gui::set_text(label, "active"), "widget text can be updated")
+    std::testing::assert(std::gui::get_text(label) == "active", "updated text is returned")
+    std::testing::assert(!std::gui::trigger_click(button), "a press is not fabricated")
+    std::testing::assert(!std::gui::is_clicked(button), "no physical release means no click")
+
+    let rgba = std::gui::render(root)
+    std::testing::assert(std::bytes::length(rgba) == 64 * 48 * 4, "render returns the full RGBA frame")
+    std::testing::assert(std::bytes::read_u32_le(rgba, 0) == 4285554778, "container border is rasterized")
+    std::testing::assert(std::bytes::read_u32_le(rgba, (7 * 64 + 9) * 4) == 4294504171, "bitmap-font title pixels are rendered")
+    std::testing::assert(std::bytes::read_u32_le(rgba, (26 * 64 + 6) * 4) == 4290675270, "button fill is rasterized")
+    std::testing::assert(std::bytes::read_u32_le(rgba, (27 * 64 + 13) * 4) == 4294967295, "button glyph pixels are rendered")
+    std::testing::assert(std::gui::render(button) == nil, "non-container handles do not render")
+
+    let old_root = root
+    std::testing::assert(std::gui::shutdown(), "GUI shuts down")
+    std::testing::assert(std::gui::get_text(label) == "", "shutdown invalidates stale widget handles")
+    std::testing::assert(std::gui::init(), "GUI can initialize again")
+    let fresh_root = std::gui::create_container("fresh", 8, 8)
+    std::testing::assert(fresh_root > old_root, "widget handles stay monotonic across shutdown")
+    std::testing::assert(std::gui::shutdown(), "second shutdown succeeds")
+}

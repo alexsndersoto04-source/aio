@@ -1,0 +1,163 @@
+// Genera selfhost/native/unicode_case.titan: cómo pasa el Titan actual cada
+// carácter a mayúsculas y minúsculas (std::text::uppercase / lowercase,
+// que usan las tablas Unicode de Rust), preguntándoselo carácter por
+// carácter. También las dos propiedades que usa la regla de la sigma final
+// (Σ → ς al final de palabra): "ignorable" (Case_Ignorable) y "con caso y no
+// ignorable" (Cased y no Case_Ignorable), deducidas de cómo se escribe Σ.
+// Se regenera con:
+//   zett run selfhost/native/gen_unicode_case.titan > selfhost/native/unicode_case.titan
+//
+// Tablas (listas de enteros "a,b,c,..."):
+//   simples: corridas "inicio,fin,paso,delta+2000000": para c en
+//            inicio..=fin con (c - inicio) % paso == 0, c pasa a c + delta.
+//   múltiples: "c,n,x1,x2,x3": c pasa a n caracteres (x1..xn; 0 si sobra).
+//   rangos: "inicio,fin" (inclusive), como unicode.titan.
+
+fn is_char(c: int) -> bool {
+    c < 55296 || c > 57343
+}
+
+fn codes(s: string) -> array {
+    let mut out = []
+    for ch in std::text::chars(s) {
+        out = std::array::push(out, std::text::char_code(ch))
+    }
+    out
+}
+
+// Mapeos de un carácter: [c, destino] (simples) y [c, n, x1, x2, x3] (múltiples).
+fn mappings(upper: bool) -> (array, array) {
+    let mut simple = []
+    let mut multi = []
+    let mut c = 0
+    while c < 1114112 {
+        if is_char(c) {
+            let s = std::text::from_char_code(c) + ""
+            let mut m = ""
+            if upper {
+                m = std::text::uppercase(s)
+            } else {
+                m = std::text::lowercase(s)
+            }
+            if m != s {
+                let cs = codes(m)
+                if len(cs) == 1 {
+                    simple = std::array::push(simple, [c, cs[0]])
+                } else {
+                    let mut entry = [c, len(cs)]
+                    let mut k = 0
+                    while k < 3 {
+                        if k < len(cs) {
+                            entry = std::array::push(entry, cs[k])
+                        } else {
+                            entry = std::array::push(entry, 0)
+                        }
+                        k += 1
+                    }
+                    multi = std::array::concat(multi, entry)
+                }
+            }
+        }
+        c += 1
+    }
+    return (simple, multi)
+}
+
+// Agrupa los mapeos simples en corridas con el mismo paso y el mismo delta.
+fn runs(simple: array) -> array {
+    let mut out = []
+    let n = len(simple)
+    let mut i = 0
+    while i < n {
+        let start = simple[i][0]
+        let delta = simple[i][1] - start
+        let mut end = start
+        let mut step = 1
+        let mut j = i + 1
+        if j < n && simple[j][1] - simple[j][0] == delta {
+            let s = simple[j][0] - start
+            if s == 1 || s == 2 {
+                step = s
+                end = simple[j][0]
+                j += 1
+                while j < n && simple[j][0] == end + step && simple[j][1] - simple[j][0] == delta {
+                    end = simple[j][0]
+                    j += 1
+                }
+            }
+        }
+        out = std::array::concat(out, [start, end, step, delta + 2000000])
+        i = j
+    }
+    out
+}
+
+fn lower_ends_final(s: string) -> bool {
+    std::text::ends_with(std::text::lowercase(s), "ς")
+}
+
+// kind 0: Case_Ignorable; kind 1: Cased y no Case_Ignorable.
+//   p1 = lowercase(c + "Σ") acaba en ς  ⇔  c es cased y no ignorable
+//   p2 = lowercase("A" + c + "Σ") acaba en ς  ⇔  c ignorable, o p1
+fn prop_ranges(kind: int) -> array {
+    let mut out = []
+    let mut start = -1
+    let mut c = 0
+    while c <= 1114112 {
+        let mut yes = false
+        if c < 1114112 && is_char(c) {
+            let s = std::text::from_char_code(c) + ""
+            let p1 = lower_ends_final(s + "Σ")
+            if kind == 1 {
+                yes = p1
+            } else {
+                yes = !p1 && lower_ends_final("A" + s + "Σ")
+            }
+        }
+        if yes && start < 0 {
+            start = c
+        }
+        let surrogate = c >= 55296 && c <= 57343
+        if !yes && start >= 0 && !surrogate {
+            out = std::array::concat(out, [start, c - 1])
+            start = -1
+        }
+        c += 1
+    }
+    out
+}
+
+fn emit(name: string, note: string, values: array) {
+    print("")
+    print("// " + note)
+    print("fn " + name + "() -> string {")
+    let mut line = "    return \""
+    let mut i = 0
+    for v in values {
+        line += "{v},"
+        i += 1
+        if i % 16 == 0 {
+            print(line + "\" +")
+            line = "        \""
+        }
+    }
+    print(line + "\"")
+    print("}")
+}
+
+fn main() {
+    print("// GENERADO por selfhost/native/gen_unicode_case.titan a partir de")
+    print("// std::text::uppercase/lowercase del Titan actual. No editar a mano.")
+    let (us, um) = mappings(true)
+    let (ls, lm) = mappings(false)
+    let ur = runs(us)
+    let lr = runs(ls)
+    let nus = len(us)
+    let nls = len(ls)
+    emit("uni_upper_simple", "mayúsculas de un carácter ({nus}), en corridas inicio,fin,paso,delta+2000000", ur)
+    emit("uni_upper_multi", "mayúsculas de varios caracteres: c,n,x1,x2,x3", um)
+    emit("uni_lower_simple", "minúsculas de un carácter ({nls}), en corridas inicio,fin,paso,delta+2000000", lr)
+    emit("uni_lower_multi", "minúsculas de varios caracteres: c,n,x1,x2,x3", lm)
+    emit("uni_case_ignorable", "Case_Ignorable: rangos inicio,fin", prop_ranges(0))
+    emit("uni_cased_strict", "Cased y no Case_Ignorable: rangos inicio,fin", prop_ranges(1))
+}

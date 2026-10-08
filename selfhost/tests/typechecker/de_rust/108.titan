@@ -1,0 +1,1 @@
+fn main() { let map: fn(int, int) -> int = |left, right| left + right map("bad", 2) }

@@ -1,0 +1,123 @@
+// Compilador de PRUEBAS: igual que build.titan, pero enlaza el runtime de
+// prueba selfhost/native/prueba_runtime.titan (el runtime real + funciones
+// std::prueba::* que exponen funciones internas) para poder comprobarlas desde
+// un programa de prueba. No se usa para compilar programas normales.
+// Uso: zett run selfhost/prueba_interna.titan PRUEBA.titan SALIDA
+
+import args
+import loader
+import codegen
+import native::backend
+
+// Funciones internas expuestas (implementadas en native/prueba_runtime.titan).
+fn prueba_signatures() -> array {
+    return [
+        "std::prueba::uw_str_width String -> Int",
+        "std::prueba::uw_char_width Int -> Int",
+        "std::prueba::uw_cps_width Array -> Int",
+        "std::prueba::rx_check String -> String",
+        "std::prueba::rx_check_hir String -> String",
+    ]
+}
+
+// Firmas de las operaciones de bajo nivel, solo para el runtime.
+fn raw_signatures() -> array {
+    return [
+        "std::raw::load Int -> Int",
+        "std::raw::store Int,Int -> Nil",
+        "std::raw::load8 Int -> Int",
+        "std::raw::store8 Int,Int -> Nil",
+        "std::raw::tag Any -> Int",
+        "std::raw::bits Any -> Int",
+        "std::raw::value Int,Int -> Any",
+        "std::raw::adopt Int,Int -> Any",
+        "std::raw::keep Any -> Int",
+        "std::raw::retain Int,Int -> Nil",
+        "std::raw::release Int,Int -> Nil",
+        "std::raw::fadd Int,Int -> Int",
+        "std::raw::fsub Int,Int -> Int",
+        "std::raw::fmul Int,Int -> Int",
+        "std::raw::fdiv Int,Int -> Int",
+        "std::raw::fcmp Int,Int -> Int",
+        "std::raw::ffromint Int -> Int",
+        "std::raw::fsqrt Int -> Int",
+        "std::raw::ftoint Int -> Int",
+        "std::raw::ffma Int,Int,Int -> Int",
+        "std::raw::cpuid Int,Int -> Int",
+        "std::raw::xgetbv  -> Int",
+        "std::raw::wadd Int,Int -> Int",
+        "std::raw::wsub Int,Int -> Int",
+        "std::raw::wmul Int,Int -> Int",
+        "std::raw::shl Int,Int -> Int",
+        "std::raw::shr Int,Int -> Int",
+        "std::raw::sar Int,Int -> Int",
+        "std::raw::syscall Int,Int,Int,Int,Int,Int,Int -> Int",
+        "std::raw::svc Int,Int,Int,Int,Int,Int,Int -> Int",
+        "std::raw::arch  -> Int",
+        "std::raw::globals  -> Int",
+        "std::raw::fail String -> Never",
+        "std::raw::throw Any -> Never",
+    ]
+}
+
+fn diag_line(d: Diag) -> string {
+    let sp = d.span
+    if sp != nil && sp.line > 0 && sp.col > 0 {
+        let l = sp.line
+        let c = sp.col
+        if d.file != nil {
+            return d.file + ":{l}:{c}: " + d.msg
+        }
+        return "{l}:{c}: " + d.msg
+    }
+    d.msg
+}
+
+// Cargar + revisar + generar bytecode.
+fn front(path: string, natives: array) -> Result {
+    let items = ld_load(path)?
+    let diags = check_program_with(items, natives)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_line(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    let mut names = std::map::new()
+    for line in natives {
+        names = std::map::insert(names, split_on(line, ' ')[0], true)
+    }
+    cg_compile_program(cg_new(names), items)
+}
+
+fn build(program: string, runtime: string) -> Result {
+    let gu = front(program, std::array::concat(native_table(), prueba_signatures()))?
+    let rt_natives = std::array::concat(std::array::concat(native_table(), prueba_signatures()), raw_signatures())
+    let gr = match front(runtime, rt_natives) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            return Result::Err("native runtime: " + message)
+        },
+    }
+    bk_build(gu, gr)
+}
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 2 {
+        print("uso: titan run selfhost/prueba_interna.titan PRUEBA.titan SALIDA")
+        return
+    }
+    let here = std::path::parent(std::path::canonical(ar_program()))
+    let runtime = std::path::join(std::path::join(here, "native"), "prueba_runtime.titan")
+    match build(args[0], runtime) {
+        Result::Ok(built) => {
+            let (bytes, symbols) = built
+            el_write_executable(args[1], bytes)
+        },
+        Result::Err(message) => {
+            print("error: " + message)
+        },
+    }
+}

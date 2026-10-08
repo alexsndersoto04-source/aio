@@ -1,0 +1,48 @@
+// Arrays, mapas y textos grandes que se crean, se copian y se sueltan una y
+// otra vez: el runtime nativo reutiliza sus bloques grandes de memoria
+// (listas por tamaño); el contenido nunca debe verse afectado.
+fn build(n: int, seed: int) -> array {
+    let mut a = []
+    for i in 0..n {
+        a = std::array::push(a, i * seed)
+    }
+    a
+}
+
+fn sum(a: array) -> int {
+    let mut t = 0
+    for x in a {
+        t = t + x
+    }
+    t
+}
+
+fn main() {
+    let mut total = 0
+    for round in 0..6 {
+        let a = build(3000 + round * 700, round + 1)
+        let b = a
+        let c = std::array::push(b, 7)
+        let d = std::array::concat(a, c)
+        total = total + sum(d) + len(d)
+        let e = std::array::slice(d, 10, len(d) - 10)
+        total = total + len(e) + e[0] + e[len(e) - 1]
+    }
+    print(total)
+    let mut m = std::map::new()
+    for i in 0..2500 {
+        m = std::map::insert(m, "k{i}", i)
+    }
+    let m2 = std::map::insert(m, "extra", -1)
+    print(len(m) + len(m2))
+    print(std::map::get(m2, "k2499") + std::map::get(m, "k7"))
+    let mut s = ""
+    for i in 0..4000 {
+        s = s + "ab"
+    }
+    let s2 = s + "!"
+    print(len(s) + len(s2))
+    let big = build(20000, 3)
+    let big2 = std::array::set(big, 19999, 0)
+    print(big[19999] + big2[19999] + sum(big2))
+}

@@ -1,0 +1,2249 @@
+// std::datetime escrito en Titan, con el comportamiento de la VM (chrono
+// 0.4.45): calendario gregoriano proléptico, formatos `%…` (StrftimeItems),
+// lectura de fechas con el mismo algoritmo de `Parsed` y los mismos errores,
+// RFC 3339 / RFC 2822, y la aritmética de datetime_ext_mod.
+//
+// Las fechas válidas van del -262143-01-01 al 262142-12-31 (UTC).
+// Pendiente: to_timezone y timezone_offset_seconds (necesitan la base de
+// datos de zonas horarias de IANA).
+
+fn dt_min_ts() -> int { -8334601228800 }
+fn dt_max_ts() -> int { 8210266876799 }
+
+// ---------------------------------------------------------------- aritmética
+
+fn dt_fdiv(a: int, b: int) -> int {
+    let q = a / b
+    if (a % b != 0) && ((a < 0) != (b < 0)) {
+        return q - 1
+    }
+    q
+}
+
+fn dt_fmod(a: int, b: int) -> int {
+    a - b * dt_fdiv(a, b)
+}
+
+// `as i32` y `as u32` de Rust (se quedan con los 32 bits bajos).
+fn dt_i32(v: int) -> int {
+    let low = v & 4294967295
+    if low >= 2147483648 {
+        return low - 4294967296
+    }
+    low
+}
+
+fn dt_u32(v: int) -> int {
+    v & 4294967295
+}
+
+fn dt_sat_add(a: int, b: int) -> int {
+    let s = std::raw::wadd(a, b)
+    if a >= 0 && b >= 0 && s < 0 {
+        return 9223372036854775807
+    }
+    if a < 0 && b < 0 && s >= 0 {
+        return -9223372036854775807 - 1
+    }
+    s
+}
+
+fn dt_sat_mul(a: int, b: int) -> int {
+    if a == 0 || b == 0 {
+        return 0
+    }
+    let p = std::raw::wmul(a, b)
+    if p / b != a || (a == -1 && b == -9223372036854775807 - 1) || (b == -1 && a == -9223372036854775807 - 1) {
+        if (a < 0) != (b < 0) {
+            return -9223372036854775807 - 1
+        }
+        return 9223372036854775807
+    }
+    p
+}
+
+// ---------------------------------------------------------------- calendario
+
+fn dt_leap(y: int) -> bool {
+    return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn dt_mdays(y: int, m: int) -> int {
+    if m == 2 {
+        if dt_leap(y) {
+            return 29
+        }
+        return 28
+    }
+    if m == 4 || m == 6 || m == 9 || m == 11 {
+        return 30
+    }
+    31
+}
+
+fn dt_ndays(y: int) -> int {
+    if dt_leap(y) {
+        return 366
+    }
+    365
+}
+
+fn dt_year_ok(y: int) -> bool {
+    y >= -262143 && y <= 262142
+}
+
+fn dt_ymd_ok(y: int, m: int, d: int) -> bool {
+    dt_year_ok(y) && m >= 1 && m <= 12 && d >= 1 && d <= dt_mdays(y, m)
+}
+
+// Días desde 1970-01-01 (algoritmo de Howard Hinnant).
+fn dt_days(y0: int, m: int, d: int) -> int {
+    let mut y = y0
+    if m <= 2 {
+        y -= 1
+    }
+    let era = dt_fdiv(y, 400)
+    let yoe = y - era * 400
+    let mut mp = m - 3
+    if m <= 2 {
+        mp = m + 9
+    }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+// Fecha de un número de días: devuelve (año, mes, día).
+fn dt_civil(z0: int) -> (int, int, int) {
+    let z = z0 + 719468
+    let era = dt_fdiv(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let mut m = mp + 3
+    if mp >= 10 {
+        m = mp - 9
+    }
+    let mut y = yoe + era * 400
+    if m <= 2 {
+        y += 1
+    }
+    return (y, m, d)
+}
+
+// Día de la semana contando desde el lunes (0) hasta el domingo (6).
+fn dt_wday(days: int) -> int {
+    dt_fmod(days + 3, 7)
+}
+
+fn dt_ordinal(y: int, m: int, d: int) -> int {
+    dt_days(y, m, d) - dt_days(y, 1, 1) + 1
+}
+
+fn dt_nisoweeks(y: int) -> int {
+    let j = dt_wday(dt_days(y, 1, 1))
+    if j == 3 || (j == 2 && dt_leap(y)) {
+        return 53
+    }
+    52
+}
+
+// Semana ISO: devuelve (año ISO, semana).
+fn dt_isoweek(y: int, m: int, d: int) -> (int, int) {
+    let days = dt_days(y, m, d)
+    let wd = dt_wday(days)
+    let week = (dt_ordinal(y, m, d) - (wd + 1) + 10) / 7
+    if week < 1 {
+        return (y - 1, dt_nisoweeks(y - 1))
+    }
+    if week > dt_nisoweeks(y) {
+        return (y + 1, 1)
+    }
+    return (y, week)
+}
+
+// weeks_from de chrono: start es 6 para domingo y 0 para lunes.
+fn dt_weeks_from(y: int, m: int, d: int, start: int) -> int {
+    let since = dt_fmod(dt_wday(dt_days(y, m, d)) - start, 7)
+    return (dt_ordinal(y, m, d) - since + 6) / 7
+}
+
+fn dt_ts_ok(ts: int) -> bool {
+    ts >= dt_min_ts() && ts <= dt_max_ts()
+}
+
+// to_dt de datetime_ext_mod: un instante fuera de rango se toma como 0.
+fn dt_fallback(ts: int) -> int {
+    if dt_ts_ok(ts) {
+        return ts
+    }
+    0
+}
+
+fn dt_mnames(i: int, long: bool) -> string {
+    let short = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    let full = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    if long {
+        return full[i]
+    }
+    short[i]
+}
+
+// Nombres de los días empezando por el domingo.
+fn dt_wnames(i: int, long: bool) -> string {
+    let short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    let full = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    if long {
+        return full[i]
+    }
+    short[i]
+}
+
+// ---------------------------------------------------------------- elementos del formato
+// Cada elemento es una tupla (tipo, especificador, relleno, texto):
+// tipo 0 literal, 1 espacio, 2 numérico, 3 fijo, 4 error.
+// Numéricos: 1 Year, 2 YearDiv100, 3 YearMod100, 4 IsoYear, 6 IsoYearMod100,
+// 7 Quarter, 8 Month, 9 Day, 10 WeekFromSun, 11 WeekFromMon, 12 IsoWeek,
+// 13 NumDaysFromSun, 14 WeekdayFromMon, 15 Ordinal, 16 Hour, 17 Hour12,
+// 18 Minute, 19 Second, 20 Nanosecond, 21 Timestamp.
+// Relleno: 0 ninguno, 1 ceros, 2 espacios.
+// Fijos: 1 ShortMonthName, 2 LongMonthName, 3 ShortWeekdayName,
+// 4 LongWeekdayName, 5 LowerAmPm, 6 UpperAmPm, 7 Nanosecond, 8 Nanosecond3,
+// 9 Nanosecond6, 10 Nanosecond9, 11-13 sin punto (3/6/9), 14 TimezoneName,
+// 15 TimezoneOffset, 16 …Colon, 17 …DoubleColon, 18 …TripleColon,
+// 19 TimezoneOffsetPermissive (solo lectura), 20 RFC3339.
+
+fn dt_item(kind: int, spec: int, pad: int, text: any) -> any {
+    let t = rt_tuple_new(4)
+    rt_seq_put(rt_seq_data(t), 0, kind)
+    rt_seq_put(rt_seq_data(t), 1, spec)
+    rt_seq_put(rt_seq_data(t), 2, pad)
+    rt_seq_put(rt_seq_data(t), 3, text)
+    t
+}
+
+fn dt_num(spec: int, pad: int) -> any { dt_item(2, spec, pad, "") }
+fn dt_fix(spec: int) -> any { dt_item(3, spec, 0, "") }
+fn dt_lit(s: string) -> any { dt_item(0, 0, 0, s) }
+fn dt_sp(s: string) -> any { dt_item(1, 0, 0, s) }
+
+fn dt_ikind(it: any) -> int { std::raw::bits(rt_seq_get(it, 0)) }
+fn dt_ispec(it: any) -> int { std::raw::bits(rt_seq_get(it, 1)) }
+fn dt_ipad(it: any) -> int { std::raw::bits(rt_seq_get(it, 2)) }
+fn dt_itext(it: any) -> any { rt_seq_get(it, 3) }
+
+fn dt_is_space_at(s: any, i: int) -> bool {
+    rt_unicode_has(3, rt_char_at(s, i))
+}
+
+fn dt_width_at(s: any, i: int) -> int {
+    rt_utf8_width(std::raw::load8(std::raw::bits(s) + 16 + i))
+}
+
+fn dt_byte(s: any, i: int) -> int {
+    std::raw::load8(std::raw::bits(s) + 16 + i)
+}
+
+// Convierte el formato en elementos (StrftimeItems::new). Se detiene en el
+// primer error: lo que viene detrás nunca se usa.
+fn dt_items(f: any) -> any {
+    let n = rt_slen(f)
+    let mut out: any = rt_array_new(0)
+    let mut i = 0
+    while i < n {
+        let c = rt_char_at(f, i)
+        if c != 37 {
+            let space = dt_is_space_at(f, i)
+            let mut j = i
+            while j < n && dt_is_space_at(f, j) == space && (space || dt_byte(f, j) != 37) {
+                j += dt_width_at(f, j)
+            }
+            if space {
+                out = std::array::push(out, dt_sp(rt_substr_bytes(f, i, j)))
+            } else {
+                out = std::array::push(out, dt_lit(rt_substr_bytes(f, i, j)))
+            }
+            i = j
+            continue
+        }
+        let mut j = i + 1
+        if j >= n {
+            return std::array::push(out, dt_item(4, 0, 0, ""))
+        }
+        let mut spec = rt_char_at(f, j)
+        j += dt_width_at(f, j)
+        let mut pad = -1
+        if spec == 45 {
+            pad = 0
+        }
+        if spec == 48 {
+            pad = 1
+        }
+        if spec == 95 {
+            pad = 2
+        }
+        let alternate = spec == 35
+        if pad >= 0 || alternate {
+            if j >= n {
+                return std::array::push(out, dt_item(4, 0, 0, ""))
+            }
+            spec = rt_char_at(f, j)
+            j += dt_width_at(f, j)
+        }
+        if alternate && spec != 122 {
+            return std::array::push(out, dt_item(4, 0, 0, ""))
+        }
+        let mut group: any = rt_array_new(0)
+        let mut bad = false
+        if spec == 65 { group = [dt_fix(4)] }
+        else if spec == 66 { group = [dt_fix(2)] }
+        else if spec == 67 { group = [dt_num(2, 1)] }
+        else if spec == 68 { group = [dt_num(8, 1), dt_lit("/"), dt_num(9, 1), dt_lit("/"), dt_num(3, 1)] }
+        else if spec == 70 { group = [dt_num(1, 1), dt_lit("-"), dt_num(8, 1), dt_lit("-"), dt_num(9, 1)] }
+        else if spec == 71 { group = [dt_num(4, 1)] }
+        else if spec == 72 { group = [dt_num(16, 1)] }
+        else if spec == 73 { group = [dt_num(17, 1)] }
+        else if spec == 77 { group = [dt_num(18, 1)] }
+        else if spec == 80 { group = [dt_fix(5)] }
+        else if spec == 82 { group = [dt_num(16, 1), dt_lit(":"), dt_num(18, 1)] }
+        else if spec == 83 { group = [dt_num(19, 1)] }
+        else if spec == 84 || spec == 88 { group = [dt_num(16, 1), dt_lit(":"), dt_num(18, 1), dt_lit(":"), dt_num(19, 1)] }
+        else if spec == 85 { group = [dt_num(10, 1)] }
+        else if spec == 86 { group = [dt_num(12, 1)] }
+        else if spec == 87 { group = [dt_num(11, 1)] }
+        else if spec == 89 { group = [dt_num(1, 1)] }
+        else if spec == 90 { group = [dt_fix(14)] }
+        else if spec == 97 { group = [dt_fix(3)] }
+        else if spec == 98 || spec == 104 { group = [dt_fix(1)] }
+        else if spec == 99 { group = [dt_fix(3), dt_sp(" "), dt_fix(1), dt_sp(" "), dt_num(9, 2), dt_sp(" "), dt_num(16, 1), dt_lit(":"), dt_num(18, 1), dt_lit(":"), dt_num(19, 1), dt_sp(" "), dt_num(1, 1)] }
+        else if spec == 100 { group = [dt_num(9, 1)] }
+        else if spec == 101 { group = [dt_num(9, 2)] }
+        else if spec == 102 { group = [dt_num(20, 1)] }
+        else if spec == 103 { group = [dt_num(6, 1)] }
+        else if spec == 106 { group = [dt_num(15, 1)] }
+        else if spec == 107 { group = [dt_num(16, 2)] }
+        else if spec == 108 { group = [dt_num(17, 2)] }
+        else if spec == 109 { group = [dt_num(8, 1)] }
+        else if spec == 110 { group = [dt_sp("\n")] }
+        else if spec == 112 { group = [dt_fix(6)] }
+        else if spec == 113 { group = [dt_num(7, 0)] }
+        else if spec == 114 { group = [dt_num(17, 1), dt_lit(":"), dt_num(18, 1), dt_lit(":"), dt_num(19, 1), dt_sp(" "), dt_fix(6)] }
+        else if spec == 115 { group = [dt_num(21, 0)] }
+        else if spec == 116 { group = [dt_sp("\t")] }
+        else if spec == 117 { group = [dt_num(14, 0)] }
+        else if spec == 118 { group = [dt_num(9, 2), dt_lit("-"), dt_fix(1), dt_lit("-"), dt_num(1, 1)] }
+        else if spec == 119 { group = [dt_num(13, 0)] }
+        else if spec == 120 { group = [dt_num(8, 1), dt_lit("/"), dt_num(9, 1), dt_lit("/"), dt_num(3, 1)] }
+        else if spec == 121 { group = [dt_num(3, 1)] }
+        else if spec == 122 {
+            if alternate {
+                group = [dt_fix(19)]
+            } else {
+                group = [dt_fix(15)]
+            }
+        }
+        else if spec == 43 { group = [dt_fix(20)] }
+        else if spec == 58 {
+            let rest = n - j
+            if rest >= 3 && dt_byte(f, j) == 58 && dt_byte(f, j + 1) == 58 && dt_byte(f, j + 2) == 122 {
+                j += 3
+                group = [dt_fix(18)]
+            } else if rest >= 2 && dt_byte(f, j) == 58 && dt_byte(f, j + 1) == 122 {
+                j += 2
+                group = [dt_fix(17)]
+            } else if rest >= 1 && dt_byte(f, j) == 122 {
+                j += 1
+                group = [dt_fix(16)]
+            } else {
+                bad = true
+            }
+        }
+        else if spec == 46 || spec == 51 || spec == 54 || spec == 57 {
+            let mut digit = spec
+            if spec == 46 {
+                if j >= n {
+                    return std::array::push(out, dt_item(4, 0, 0, ""))
+                }
+                digit = rt_char_at(f, j)
+                j += dt_width_at(f, j)
+            }
+            if spec == 46 && digit == 102 {
+                group = [dt_fix(7)]
+            } else if digit == 51 || digit == 54 || digit == 57 {
+                if j >= n {
+                    return std::array::push(out, dt_item(4, 0, 0, ""))
+                }
+                let fc = rt_char_at(f, j)
+                j += dt_width_at(f, j)
+                if fc != 102 {
+                    bad = true
+                } else {
+                    let mut code = 8
+                    if digit == 54 {
+                        code = 9
+                    }
+                    if digit == 57 {
+                        code = 10
+                    }
+                    if spec != 46 {
+                        code += 3
+                    }
+                    group = [dt_fix(code)]
+                }
+            } else {
+                bad = true
+            }
+        }
+        else if spec == 37 { group = [dt_lit("%")] }
+        else { bad = true }
+        if bad {
+            return std::array::push(out, dt_item(4, 0, 0, ""))
+        }
+        if pad >= 0 {
+            let first = rt_seq_get(group, 0)
+            if rt_seq_len(group) != 1 || dt_ikind(first) != 2 {
+                return std::array::push(out, dt_item(4, 0, 0, ""))
+            }
+            group = [dt_num(dt_ispec(first), pad)]
+        }
+        let g = rt_seq_len(group)
+        let mut k = 0
+        while k < g {
+            out = std::array::push(out, rt_seq_get(group, k))
+            k += 1
+        }
+        i = j
+    }
+    out
+}
+
+// ---------------------------------------------------------------- escritura
+
+fn dt_digits(b: int, v: int, width: int, pad: int, plus: bool) {
+    // Número con el formato de Rust: {v}, {v:0w$}, {v:w$} y con signo +.
+    let neg = v < 0
+    let body = sb_new(24)
+    if v == -9223372036854775807 - 1 {
+        sb_str(body, "9223372036854775808")
+    } else {
+        let mut a = v
+        if neg {
+            a = 0 - v
+        }
+        sb_str(body, rt_int_to_str(a))
+    }
+    let digits = sb_finish(body)
+    let mut sign = ""
+    if neg {
+        sign = "-"
+    } else if plus {
+        sign = "+"
+    }
+    let used = rt_slen(sign) + rt_slen(digits)
+    let mut fill = width - used
+    if pad == 0 || fill < 0 {
+        fill = 0
+    }
+    if pad == 2 {
+        while fill > 0 {
+            sb_byte(b, 32)
+            fill -= 1
+        }
+    }
+    sb_str(b, sign)
+    while fill > 0 {
+        sb_byte(b, 48)
+        fill -= 1
+    }
+    sb_str(b, digits)
+}
+
+// write_two de chrono (el valor pasa por `as u8`).
+fn dt_two(b: int, x: int, pad: int) {
+    let v = x & 255
+    let tens = v / 10
+    if tens == 0 {
+        if pad == 2 {
+            sb_byte(b, 32)
+        } else if pad == 1 {
+            sb_byte(b, 48)
+        }
+    } else {
+        sb_byte(b, 48 + tens)
+    }
+    sb_byte(b, 48 + v % 10)
+}
+
+fn dt_hundreds(b: int, v: int) {
+    sb_byte(b, 48 + v / 10)
+    sb_byte(b, 48 + v % 10)
+}
+
+fn dt_year(b: int, y: int, pad: int) {
+    if y >= 1000 && y <= 9999 {
+        dt_hundreds(b, y / 100)
+        dt_hundreds(b, y % 100)
+        return nil
+    }
+    dt_digits(b, y, 4 + (if y < 0 || y >= 10000 { 1 } else { 0 }), pad, y < 0 || y >= 10000)
+}
+
+// OffsetFormat::format. precision: 0 horas, 1 minutos, 2 segundos.
+fn dt_offset(b: int, off0: int, precision: int, colons: bool, zulu: bool) {
+    if zulu && off0 == 0 {
+        sb_byte(b, 90)
+        return nil
+    }
+    let mut off = off0
+    let mut sign = 43
+    if off < 0 {
+        sign = 45
+        off = 0 - off
+    }
+    let mut hours = 0
+    let mut mins = 0
+    let mut secs = 0
+    if precision == 0 {
+        hours = off / 3600
+    } else if precision == 1 {
+        let minutes = (off + 30) / 60
+        mins = minutes % 60
+        hours = minutes / 60
+    } else {
+        let minutes = off / 60
+        secs = off % 60
+        mins = minutes % 60
+        hours = minutes / 60
+    }
+    sb_byte(b, sign)
+    if hours < 10 {
+        sb_byte(b, 48)
+        sb_byte(b, 48 + hours)
+    } else {
+        dt_hundreds(b, hours)
+    }
+    if precision >= 1 {
+        if colons {
+            sb_byte(b, 58)
+        }
+        dt_hundreds(b, mins)
+    }
+    if precision == 2 {
+        if colons {
+            sb_byte(b, 58)
+        }
+        dt_hundreds(b, secs)
+    }
+}
+
+// Fracción de segundo automática (".123", ".123456", ".123456789" o nada).
+fn dt_nanos_auto(b: int, nano: int) {
+    if nano == 0 {
+        return nil
+    }
+    sb_byte(b, 46)
+    if nano % 1000000 == 0 {
+        dt_digits(b, nano / 1000000, 3, 1, false)
+    } else if nano % 1000 == 0 {
+        dt_digits(b, nano / 1000, 6, 1, false)
+    } else {
+        dt_digits(b, nano, 9, 1, false)
+    }
+}
+
+// write_rfc3339 de chrono sobre la hora local.
+fn dt_rfc3339(b: int, days: int, sod: int, nano: int, off: int) {
+    let (y, m, d) = dt_civil(days)
+    if y >= 0 && y <= 9999 {
+        dt_hundreds(b, y / 100)
+        dt_hundreds(b, y % 100)
+    } else {
+        dt_digits(b, y, 5, 1, true)
+    }
+    sb_byte(b, 45)
+    dt_hundreds(b, m)
+    sb_byte(b, 45)
+    dt_hundreds(b, d)
+    sb_byte(b, 84)
+    dt_hundreds(b, sod / 3600)
+    sb_byte(b, 58)
+    dt_hundreds(b, sod / 60 % 60)
+    sb_byte(b, 58)
+    dt_hundreds(b, sod % 60)
+    dt_nanos_auto(b, nano)
+    dt_offset(b, off, 1, true, false)
+}
+
+// Aplica los elementos a una hora local. Devuelve nil si el formato falla
+// (elemento de error o `%#z`, que solo sirve para leer).
+fn dt_format_items(items: any, days: int, sod: int, off: int, tzname: any) -> any {
+    let (y, m, d) = dt_civil(days)
+    let wd = dt_wday(days)
+    let sun = (wd + 1) % 7
+    let hour = sod / 3600
+    let minute = sod / 60 % 60
+    let second = sod % 60
+    let mut h12 = hour % 12
+    if h12 == 0 {
+        h12 = 12
+    }
+    let b = sb_new(64)
+    let n = rt_seq_len(items)
+    let mut i = 0
+    while i < n {
+        let it = rt_seq_get(items, i)
+        let kind = dt_ikind(it)
+        let spec = dt_ispec(it)
+        let pad = dt_ipad(it)
+        if kind == 0 || kind == 1 {
+            sb_str(b, dt_itext(it))
+        } else if kind == 2 {
+            if spec == 1 {
+                dt_year(b, y, pad)
+            } else if spec == 2 {
+                dt_two(b, dt_fdiv(y, 100), pad)
+            } else if spec == 3 {
+                dt_two(b, dt_fmod(y, 100), pad)
+            } else if spec == 4 || spec == 6 || spec == 12 {
+                let (iy, iw) = dt_isoweek(y, m, d)
+                if spec == 4 {
+                    dt_year(b, iy, pad)
+                } else if spec == 6 {
+                    dt_two(b, dt_fmod(iy, 100), pad)
+                } else {
+                    dt_two(b, iw, pad)
+                }
+            } else if spec == 7 {
+                sb_byte(b, 48 + (m - 1) / 3 + 1)
+            } else if spec == 8 {
+                dt_two(b, m, pad)
+            } else if spec == 9 {
+                dt_two(b, d, pad)
+            } else if spec == 10 {
+                dt_two(b, dt_weeks_from(y, m, d, 6), pad)
+            } else if spec == 11 {
+                dt_two(b, dt_weeks_from(y, m, d, 0), pad)
+            } else if spec == 13 {
+                sb_byte(b, 48 + sun)
+            } else if spec == 14 {
+                sb_byte(b, 49 + wd)
+            } else if spec == 15 {
+                dt_digits(b, dt_ordinal(y, m, d), 3, pad, false)
+            } else if spec == 16 {
+                dt_two(b, hour, pad)
+            } else if spec == 17 {
+                dt_two(b, h12, pad)
+            } else if spec == 18 {
+                dt_two(b, minute, pad)
+            } else if spec == 19 {
+                dt_two(b, second, pad)
+            } else if spec == 20 {
+                dt_digits(b, 0, 9, pad, false)
+            } else {
+                dt_digits(b, days * 86400 + sod - off, 9, pad, false)
+            }
+        } else if kind == 3 {
+            if spec == 1 || spec == 2 {
+                sb_str(b, dt_mnames(m - 1, spec == 2))
+            } else if spec == 3 || spec == 4 {
+                sb_str(b, dt_wnames(sun, spec == 4))
+            } else if spec == 5 || spec == 6 {
+                if hour >= 12 {
+                    if spec == 5 {
+                        sb_str(b, "pm")
+                    } else {
+                        sb_str(b, "PM")
+                    }
+                } else if spec == 5 {
+                    sb_str(b, "am")
+                } else {
+                    sb_str(b, "AM")
+                }
+            } else if spec == 7 {
+                // sin fracción: nada
+            } else if spec == 8 {
+                sb_str(b, ".000")
+            } else if spec == 9 {
+                sb_str(b, ".000000")
+            } else if spec == 10 {
+                sb_str(b, ".000000000")
+            } else if spec == 11 {
+                sb_str(b, "000")
+            } else if spec == 12 {
+                sb_str(b, "000000")
+            } else if spec == 13 {
+                sb_str(b, "000000000")
+            } else if spec == 14 {
+                sb_str(b, tzname)
+            } else if spec == 15 {
+                dt_offset(b, off, 1, false, false)
+            } else if spec == 16 {
+                dt_offset(b, off, 1, true, false)
+            } else if spec == 17 {
+                dt_offset(b, off, 2, true, false)
+            } else if spec == 18 {
+                dt_offset(b, off, 0, false, false)
+            } else if spec == 20 {
+                dt_rfc3339(b, days, sod, 0, off)
+            } else {
+                sb_finish(b)
+                return nil
+            }
+        } else {
+            sb_finish(b)
+            return nil
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn dt_ts_error(function: string, ts: int) {
+    rt_native_fail(function, rt_concat("invalid timestamp ", rt_int_to_str(ts)))
+}
+
+fn dt_format_error(function: string, f: any) {
+    rt_native_fail(function, rt_concat(rt_concat("invalid format string '", f), "': bad or unsupported format string"))
+}
+
+// ---------------------------------------------------------------- lectura
+// Estado (368 bytes): +0 datos del texto, +8 longitud, +16 posición,
+// +24 valor leído; +32 + 16*i campo i de `Parsed` (bandera, valor):
+// 0 year, 1 year_div_100, 2 year_mod_100, 3 isoyear, 4 isoyear_div_100,
+// 5 isoyear_mod_100, 6 quarter, 7 month, 8 week_from_sun, 9 week_from_mon,
+// 10 isoweek, 11 weekday (0 = lunes), 12 ordinal, 13 day, 14 hour_div_12,
+// 15 hour_mod_12, 16 minute, 17 second, 18 nanosecond, 19 timestamp,
+// 20 offset.
+// Códigos: 0 bien, 1 fuera de rango, 2 imposible, 3 insuficiente,
+// 4 caracteres inválidos, 5 fin prematuro, 6 sobra texto, 7 formato malo.
+
+fn dt_err_text(code: int) -> string {
+    if code == 1 {
+        return "input is out of range"
+    }
+    if code == 2 {
+        return "no possible date and time matching input"
+    }
+    if code == 3 {
+        return "input is not enough for unique date and time"
+    }
+    if code == 4 {
+        return "input contains invalid characters"
+    }
+    if code == 5 {
+        return "premature end of input"
+    }
+    if code == 6 {
+        return "trailing input"
+    }
+    "bad or unsupported format string"
+}
+
+fn dt_state(s: any) -> int {
+    let p = rt_alloc(368)
+    let mut i = 0
+    while i < 46 {
+        std::raw::store(p + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(p, std::raw::bits(s) + 16)
+    std::raw::store(p + 8, rt_slen(s))
+    p
+}
+
+fn dt_rest(p: int) -> int { std::raw::load(p + 8) - std::raw::load(p + 16) }
+fn dt_at(p: int, k: int) -> int { std::raw::load8(std::raw::load(p) + std::raw::load(p + 16) + k) }
+fn dt_adv(p: int, k: int) { std::raw::store(p + 16, std::raw::load(p + 16) + k) }
+fn dt_val(p: int) -> int { std::raw::load(p + 24) }
+
+fn dt_has(p: int, f: int) -> bool { std::raw::load(p + 32 + 16 * f) == 1 }
+fn dt_get(p: int, f: int) -> int { std::raw::load(p + 40 + 16 * f) }
+
+fn dt_set(p: int, f: int, v: int) -> int {
+    if dt_has(p, f) && dt_get(p, f) != v {
+        return 2
+    }
+    std::raw::store(p + 32 + 16 * f, 1)
+    std::raw::store(p + 40 + 16 * f, v)
+    0
+}
+
+// Carácter (código) en la posición actual y su ancho.
+fn dt_cp(p: int) -> int {
+    let base = std::raw::load(p) + std::raw::load(p + 16)
+    let b = std::raw::load8(base)
+    if b < 128 {
+        return b
+    }
+    if b < 224 {
+        return (b & 31) * 64 + (std::raw::load8(base + 1) & 63)
+    }
+    if b < 240 {
+        return (b & 15) * 4096 + (std::raw::load8(base + 1) & 63) * 64 + (std::raw::load8(base + 2) & 63)
+    }
+    return (b & 7) * 262144 + (std::raw::load8(base + 1) & 63) * 4096 + (std::raw::load8(base + 2) & 63) * 64 + (std::raw::load8(base + 3) & 63)
+}
+
+fn dt_trim(p: int) {
+    while dt_rest(p) > 0 && rt_unicode_has(3, dt_cp(p)) {
+        dt_adv(p, rt_utf8_width(dt_at(p, 0)))
+    }
+}
+
+// scan::number(s, min, max); el valor queda en +24.
+fn dt_number(p: int, min: int, max: int) -> int {
+    let r = dt_rest(p)
+    if r < min {
+        return 5
+    }
+    let mut v = 0
+    let mut i = 0
+    while i < max && i < r {
+        let c = dt_at(p, i)
+        if c < 48 || c > 57 {
+            if i < min {
+                return 4
+            }
+            std::raw::store(p + 24, v)
+            dt_adv(p, i)
+            return 0
+        }
+        let dgt = c - 48
+        if v > (9223372036854775807 - dgt) / 10 {
+            return 1
+        }
+        v = v * 10 + dgt
+        i += 1
+    }
+    std::raw::store(p + 24, v)
+    if max < r {
+        dt_adv(p, max)
+    } else {
+        dt_adv(p, r)
+    }
+    0
+}
+
+fn dt_scale(k: int) -> int {
+    let s = [0, 100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10, 1]
+    s[k]
+}
+
+fn dt_nanosecond(p: int) -> int {
+    let before = dt_rest(p)
+    let e = dt_number(p, 1, 9)
+    if e != 0 {
+        return e
+    }
+    let used = before - dt_rest(p)
+    std::raw::store(p + 24, dt_val(p) * dt_scale(used))
+    while dt_rest(p) > 0 && dt_at(p, 0) >= 48 && dt_at(p, 0) <= 57 {
+        dt_adv(p, 1)
+    }
+    0
+}
+
+fn dt_nanosecond_fixed(p: int, digits: int) -> int {
+    let e = dt_number(p, digits, digits)
+    if e != 0 {
+        return e
+    }
+    std::raw::store(p + 24, dt_val(p) * dt_scale(digits))
+    0
+}
+
+fn dt_lower(p: int, k: int) -> int {
+    dt_at(p, k) | 32
+}
+
+// Mes (0-11) por sus tres primeras letras.
+fn dt_short_month(p: int) -> int {
+    if dt_rest(p) < 3 {
+        return 5
+    }
+    let key = rt_concat(rt_concat(rt_char_to_str(dt_lower(p, 0)), rt_char_to_str(dt_lower(p, 1))), rt_char_to_str(dt_lower(p, 2)))
+    let names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    let mut i = 0
+    while i < 12 {
+        if rt_str_eq(key, names[i]) {
+            std::raw::store(p + 24, i)
+            dt_adv(p, 3)
+            return 0
+        }
+        i += 1
+    }
+    4
+}
+
+// Día (0 = lunes) por sus tres primeras letras.
+fn dt_short_weekday(p: int) -> int {
+    if dt_rest(p) < 3 {
+        return 5
+    }
+    let key = rt_concat(rt_concat(rt_char_to_str(dt_lower(p, 0)), rt_char_to_str(dt_lower(p, 1))), rt_char_to_str(dt_lower(p, 2)))
+    let names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    let mut i = 0
+    while i < 7 {
+        if rt_str_eq(key, names[i]) {
+            std::raw::store(p + 24, i)
+            dt_adv(p, 3)
+            return 0
+        }
+        i += 1
+    }
+    4
+}
+
+// Consume el sufijo (sin distinguir mayúsculas ASCII) si está.
+fn dt_suffix(p: int, suffix: string) {
+    let n = rt_slen(suffix)
+    if dt_rest(p) < n {
+        return nil
+    }
+    let mut i = 0
+    while i < n {
+        let a = dt_at(p, i)
+        let b = dt_byte(suffix, i)
+        let mut la = a
+        if a >= 65 && a <= 90 {
+            la = a + 32
+        }
+        if la != b {
+            return nil
+        }
+        i += 1
+    }
+    dt_adv(p, n)
+}
+
+// scan::timezone_offset; colon: 0 dos puntos o espacios opcionales,
+// 1 dos puntos obligatorios.
+fn dt_tz_offset(p: int, colon: int, zulu: bool, missing: bool, minus: bool) -> int {
+    if zulu && dt_rest(p) > 0 && (dt_at(p, 0) == 90 || dt_at(p, 0) == 122) {
+        dt_adv(p, 1)
+        std::raw::store(p + 24, 0)
+        return 0
+    }
+    if dt_rest(p) == 0 {
+        return 5
+    }
+    let c = dt_cp(p)
+    let mut negative = false
+    if c == 43 {
+        dt_adv(p, 1)
+    } else if c == 45 {
+        dt_adv(p, 1)
+        negative = true
+    } else if c == 8722 {
+        if !minus {
+            return 4
+        }
+        dt_adv(p, 3)
+        negative = true
+    } else {
+        return 4
+    }
+    if dt_rest(p) < 2 {
+        return 5
+    }
+    let h1 = dt_at(p, 0)
+    let h2 = dt_at(p, 1)
+    if h1 < 48 || h1 > 57 || h2 < 48 || h2 > 57 {
+        return 4
+    }
+    let hours = (h1 - 48) * 10 + (h2 - 48)
+    dt_adv(p, 2)
+    if colon == 0 {
+        while dt_rest(p) > 0 && (dt_at(p, 0) == 58 || rt_unicode_has(3, dt_cp(p))) {
+            dt_adv(p, rt_utf8_width(dt_at(p, 0)))
+        }
+    } else {
+        if dt_rest(p) == 0 {
+            return 5
+        }
+        if dt_at(p, 0) != 58 {
+            return 4
+        }
+        dt_adv(p, 1)
+    }
+    let mut minutes = 0
+    if dt_rest(p) >= 2 {
+        let m1 = dt_at(p, 0)
+        let m2 = dt_at(p, 1)
+        if m1 >= 48 && m1 <= 53 && m2 >= 48 && m2 <= 57 {
+            minutes = (m1 - 48) * 10 + (m2 - 48)
+        } else if m1 >= 54 && m1 <= 57 && m2 >= 48 && m2 <= 57 {
+            return 1
+        } else {
+            return 4
+        }
+    } else if !missing {
+        return 5
+    }
+    let r = dt_rest(p)
+    if r >= 2 {
+        dt_adv(p, 2)
+    } else if r != 0 {
+        return 5
+    }
+    let mut seconds = hours * 3600 + minutes * 60
+    if negative {
+        seconds = 0 - seconds
+    }
+    std::raw::store(p + 24, seconds)
+    0
+}
+
+fn dt_i32_ok(v: int) -> bool {
+    v >= -2147483648 && v <= 2147483647
+}
+
+// Los set_* de Parsed.
+fn dt_setter(p: int, spec: int, v: int) -> int {
+    if spec == 1 || spec == 4 {
+        if !dt_i32_ok(v) {
+            return 1
+        }
+        let mut f = 0
+        if spec == 4 {
+            f = 3
+        }
+        return dt_set(p, f, v)
+    }
+    if spec == 2 || spec == 5 {
+        if v < 0 || v > 2147483647 {
+            return 1
+        }
+        let mut f = 1
+        if spec == 5 {
+            f = 4
+        }
+        return dt_set(p, f, v)
+    }
+    if spec == 3 || spec == 6 {
+        if v < 0 || v > 99 {
+            return 1
+        }
+        let mut f = 2
+        if spec == 6 {
+            f = 5
+        }
+        return dt_set(p, f, v)
+    }
+    if spec == 7 {
+        if v < 1 || v > 4 {
+            return 1
+        }
+        return dt_set(p, 6, v)
+    }
+    if spec == 8 {
+        if v < 1 || v > 12 {
+            return 1
+        }
+        return dt_set(p, 7, v)
+    }
+    if spec == 9 {
+        if v < 1 || v > 31 {
+            return 1
+        }
+        return dt_set(p, 13, v)
+    }
+    if spec == 10 || spec == 11 {
+        if v < 0 || v > 53 {
+            return 1
+        }
+        let mut f = 8
+        if spec == 11 {
+            f = 9
+        }
+        return dt_set(p, f, v)
+    }
+    if spec == 12 {
+        if v < 1 || v > 53 {
+            return 1
+        }
+        return dt_set(p, 10, v)
+    }
+    if spec == 13 {
+        if v < 0 || v > 6 {
+            return 1
+        }
+        return dt_set(p, 11, (v + 6) % 7)
+    }
+    if spec == 14 {
+        if v < 1 || v > 7 {
+            return 1
+        }
+        return dt_set(p, 11, v - 1)
+    }
+    if spec == 15 {
+        if v < 1 || v > 366 {
+            return 1
+        }
+        return dt_set(p, 12, v)
+    }
+    if spec == 16 {
+        if v < 0 || v > 23 {
+            return 1
+        }
+        let e = dt_set(p, 14, v / 12)
+        if e != 0 {
+            return e
+        }
+        return dt_set(p, 15, v % 12)
+    }
+    if spec == 17 {
+        if v < 1 || v > 12 {
+            return 1
+        }
+        return dt_set(p, 15, v % 12)
+    }
+    if spec == 18 {
+        if v < 0 || v > 59 {
+            return 1
+        }
+        return dt_set(p, 16, v)
+    }
+    if spec == 19 {
+        if v < 0 || v > 60 {
+            return 1
+        }
+        return dt_set(p, 17, v)
+    }
+    if spec == 20 {
+        if v < 0 || v > 999999999 {
+            return 1
+        }
+        return dt_set(p, 18, v)
+    }
+    dt_set(p, 19, v)
+}
+
+fn dt_num_width(spec: int) -> int {
+    if spec == 1 || spec == 4 {
+        return 4
+    }
+    if spec == 7 || spec == 13 || spec == 14 {
+        return 1
+    }
+    if spec == 15 {
+        return 3
+    }
+    if spec == 20 {
+        return 9
+    }
+    if spec == 21 {
+        return 9223372036854775807
+    }
+    2
+}
+
+fn dt_rfc3339_relaxed(p: int) -> int {
+    let date = [dt_num(1, 1), dt_sp(""), dt_lit("-"), dt_num(8, 1), dt_sp(""), dt_lit("-"), dt_num(9, 1)]
+    let time = [dt_num(16, 1), dt_sp(""), dt_lit(":"), dt_num(18, 1), dt_sp(""), dt_lit(":"), dt_num(19, 1), dt_fix(7), dt_sp("")]
+    let mut e = dt_parse_items(p, date)
+    if e != 0 {
+        return e
+    }
+    if dt_rest(p) == 0 {
+        return 5
+    }
+    let c = dt_at(p, 0)
+    if c != 116 && c != 84 && c != 32 {
+        return 4
+    }
+    dt_adv(p, 1)
+    e = dt_parse_items(p, time)
+    if e != 0 {
+        return e
+    }
+    dt_trim(p)
+    if dt_rest(p) >= 3 && (dt_at(p, 0) | 32) == 117 && (dt_at(p, 1) | 32) == 116 && (dt_at(p, 2) | 32) == 99 {
+        dt_adv(p, 3)
+        std::raw::store(p + 24, 0)
+    } else {
+        e = dt_tz_offset(p, 0, true, false, true)
+        if e != 0 {
+            return e
+        }
+    }
+    let off = dt_val(p)
+    if !dt_i32_ok(off) {
+        return 1
+    }
+    dt_set(p, 20, off)
+}
+
+// parse_internal: aplica los elementos al texto (sin exigir que se acabe).
+fn dt_parse_items(p: int, items: any) -> int {
+    let n = rt_seq_len(items)
+    let mut i = 0
+    while i < n {
+        let it = rt_seq_get(items, i)
+        let kind = dt_ikind(it)
+        let spec = dt_ispec(it)
+        let mut e = 0
+        if kind == 0 {
+            let lit = dt_itext(it)
+            let len = rt_slen(lit)
+            if dt_rest(p) < len {
+                return 5
+            }
+            let mut k = 0
+            while k < len {
+                if dt_at(p, k) != dt_byte(lit, k) {
+                    return 4
+                }
+                k += 1
+            }
+            dt_adv(p, len)
+        } else if kind == 1 {
+            dt_trim(p)
+        } else if kind == 2 {
+            dt_trim(p)
+            let signed = spec == 1 || spec == 4
+            if signed && dt_rest(p) > 0 && dt_at(p, 0) == 45 {
+                dt_adv(p, 1)
+                e = dt_number(p, 1, 9223372036854775807)
+                if e != 0 {
+                    return e
+                }
+                std::raw::store(p + 24, 0 - dt_val(p))
+            } else if signed && dt_rest(p) > 0 && dt_at(p, 0) == 43 {
+                dt_adv(p, 1)
+                e = dt_number(p, 1, 9223372036854775807)
+            } else {
+                e = dt_number(p, 1, dt_num_width(spec))
+            }
+            if e != 0 {
+                return e
+            }
+            e = dt_setter(p, spec, dt_val(p))
+        } else if kind == 3 {
+            if spec == 1 || spec == 2 {
+                e = dt_short_month(p)
+                if e != 0 {
+                    return e
+                }
+                let m0 = dt_val(p)
+                if spec == 2 {
+                    let suffixes = ["uary", "ruary", "ch", "il", "", "e", "y", "ust", "tember", "ober", "ember", "ember"]
+                    dt_suffix(p, suffixes[m0])
+                }
+                e = dt_setter(p, 8, m0 + 1)
+            } else if spec == 3 || spec == 4 {
+                e = dt_short_weekday(p)
+                if e != 0 {
+                    return e
+                }
+                let w = dt_val(p)
+                if spec == 4 {
+                    let suffixes = ["day", "sday", "nesday", "rsday", "day", "urday", "day"]
+                    dt_suffix(p, suffixes[w])
+                }
+                e = dt_set(p, 11, w)
+            } else if spec == 5 || spec == 6 {
+                if dt_rest(p) < 2 {
+                    return 5
+                }
+                let a = dt_at(p, 0) | 32
+                let b = dt_at(p, 1) | 32
+                let mut pm = -1
+                if a == 97 && b == 109 {
+                    pm = 0
+                }
+                if a == 112 && b == 109 {
+                    pm = 1
+                }
+                if pm < 0 {
+                    return 4
+                }
+                e = dt_set(p, 14, pm)
+                if e == 0 {
+                    dt_adv(p, 2)
+                }
+            } else if spec == 7 {
+                if dt_rest(p) > 0 && dt_at(p, 0) == 46 {
+                    dt_adv(p, 1)
+                    e = dt_nanosecond(p)
+                    if e != 0 {
+                        return e
+                    }
+                    e = dt_setter(p, 20, dt_val(p))
+                }
+            } else if spec >= 8 && spec <= 10 {
+                if dt_rest(p) > 0 && dt_at(p, 0) == 46 {
+                    dt_adv(p, 1)
+                    e = dt_nanosecond_fixed(p, 3 * (spec - 7))
+                    if e != 0 {
+                        return e
+                    }
+                    e = dt_setter(p, 20, dt_val(p))
+                }
+            } else if spec >= 11 && spec <= 13 {
+                let digits = 3 * (spec - 10)
+                if dt_rest(p) < digits {
+                    return 5
+                }
+                e = dt_nanosecond_fixed(p, digits)
+                if e != 0 {
+                    return e
+                }
+                e = dt_setter(p, 20, dt_val(p))
+            } else if spec == 14 {
+                while dt_rest(p) > 0 && !rt_unicode_has(3, dt_cp(p)) {
+                    dt_adv(p, rt_utf8_width(dt_at(p, 0)))
+                }
+            } else if spec >= 15 && spec <= 19 {
+                dt_trim(p)
+                e = dt_tz_offset(p, 0, spec == 19, spec == 19, true)
+                if e != 0 {
+                    return e
+                }
+                e = dt_set(p, 20, dt_val(p))
+            } else {
+                e = dt_rfc3339_relaxed(p)
+            }
+        } else {
+            return 7
+        }
+        if e != 0 {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+// resolve_year de Parsed. Devuelve (código, hay año, año).
+fn dt_resolve_year(p: int, fy: int, fq: int, fr: int) -> (int, bool, int) {
+    let hy = dt_has(p, fy)
+    let hq = dt_has(p, fq)
+    let hr = dt_has(p, fr)
+    let y = dt_get(p, fy)
+    let q = dt_get(p, fq)
+    let r = dt_get(p, fr)
+    if !hq && !hr {
+        return (0, hy, y)
+    }
+    if hy && (!hr || (r >= 0 && r <= 99)) {
+        if y < 0 {
+            return (2, false, 0)
+        }
+        if (!hq || q == y / 100) && (!hr || r == y % 100) {
+            return (0, true, y)
+        }
+        return (2, false, 0)
+    }
+    if !hy && hq && hr && r >= 0 && r <= 99 {
+        if q < 0 {
+            return (2, false, 0)
+        }
+        let full = q * 100 + r
+        if full > 2147483647 {
+            return (1, false, 0)
+        }
+        return (0, true, full)
+    }
+    if !hy && !hq && hr && r >= 0 && r <= 99 {
+        if r < 70 {
+            return (0, true, r + 2000)
+        }
+        return (0, true, r + 1900)
+    }
+    if !hy && hq && !hr {
+        return (3, false, 0)
+    }
+    return (1, false, 0)
+}
+
+fn dt_verify_ymd(p: int, days: int) -> bool {
+    let (y, m, d) = dt_civil(days)
+    if dt_has(p, 0) && dt_get(p, 0) != y {
+        return false
+    }
+    if y >= 0 {
+        if dt_has(p, 1) && dt_get(p, 1) != y / 100 {
+            return false
+        }
+        if dt_has(p, 2) && dt_get(p, 2) != y % 100 {
+            return false
+        }
+    } else if dt_has(p, 1) || dt_has(p, 2) {
+        return false
+    }
+    if dt_has(p, 7) && dt_get(p, 7) != m {
+        return false
+    }
+    !(dt_has(p, 13) && dt_get(p, 13) != d)
+}
+
+fn dt_verify_isoweek(p: int, days: int) -> bool {
+    let (y, m, d) = dt_civil(days)
+    let (iy, iw) = dt_isoweek(y, m, d)
+    if dt_has(p, 3) && dt_get(p, 3) != iy {
+        return false
+    }
+    if iy >= 0 {
+        if dt_has(p, 4) && dt_get(p, 4) != iy / 100 {
+            return false
+        }
+        if dt_has(p, 5) && dt_get(p, 5) != iy % 100 {
+            return false
+        }
+    } else if dt_has(p, 4) || dt_has(p, 5) {
+        return false
+    }
+    if dt_has(p, 10) && dt_get(p, 10) != iw {
+        return false
+    }
+    !(dt_has(p, 11) && dt_get(p, 11) != dt_wday(days))
+}
+
+fn dt_verify_ordinal(p: int, days: int) -> bool {
+    let (y, m, d) = dt_civil(days)
+    if dt_has(p, 12) && dt_get(p, 12) != dt_ordinal(y, m, d) {
+        return false
+    }
+    if dt_has(p, 8) && dt_get(p, 8) != dt_weeks_from(y, m, d, 6) {
+        return false
+    }
+    !(dt_has(p, 9) && dt_get(p, 9) != dt_weeks_from(y, m, d, 0))
+}
+
+// resolve_week_date. start: 6 domingo, 0 lunes. Devuelve (código, días).
+fn dt_week_date(year: int, week: int, weekday: int, start: int) -> (int, int) {
+    if week > 53 {
+        return (1, 0)
+    }
+    if !dt_year_ok(year) {
+        return (1, 0)
+    }
+    let first = dt_days(year, 1, 1)
+    let first_week_start = 1 + dt_fmod(start - dt_wday(first), 7)
+    let wd = dt_fmod(weekday - start, 7)
+    let ordinal = first_week_start + (week - 1) * 7 + wd
+    if ordinal <= 0 || ordinal > dt_ndays(year) {
+        return (2, 0)
+    }
+    return (0, first + ordinal - 1)
+}
+
+// to_naive_date. Devuelve (código, días).
+fn dt_to_date(p: int) -> (int, int) {
+    let (e1, hy, year) = dt_resolve_year(p, 0, 1, 2)
+    if e1 != 0 {
+        return (e1, 0)
+    }
+    let (e2, hiy, isoyear) = dt_resolve_year(p, 3, 4, 5)
+    if e2 != 0 {
+        return (e2, 0)
+    }
+    let mut days = 0
+    let mut ok = false
+    if hy && dt_has(p, 7) && dt_has(p, 13) {
+        if !dt_ymd_ok(year, dt_get(p, 7), dt_get(p, 13)) {
+            return (1, 0)
+        }
+        days = dt_days(year, dt_get(p, 7), dt_get(p, 13))
+        ok = dt_verify_isoweek(p, days) && dt_verify_ordinal(p, days)
+    } else if hy && dt_has(p, 12) {
+        let o = dt_get(p, 12)
+        if !dt_year_ok(year) || o > dt_ndays(year) {
+            return (1, 0)
+        }
+        days = dt_days(year, 1, 1) + o - 1
+        ok = dt_verify_ymd(p, days) && dt_verify_isoweek(p, days) && dt_verify_ordinal(p, days)
+    } else if hy && dt_has(p, 8) && dt_has(p, 11) {
+        let (e, dd) = dt_week_date(year, dt_get(p, 8), dt_get(p, 11), 6)
+        if e != 0 {
+            return (e, 0)
+        }
+        days = dd
+        ok = dt_verify_ymd(p, days) && dt_verify_isoweek(p, days) && dt_verify_ordinal(p, days)
+    } else if hy && dt_has(p, 9) && dt_has(p, 11) {
+        let (e, dd) = dt_week_date(year, dt_get(p, 9), dt_get(p, 11), 0)
+        if e != 0 {
+            return (e, 0)
+        }
+        days = dd
+        ok = dt_verify_ymd(p, days) && dt_verify_isoweek(p, days) && dt_verify_ordinal(p, days)
+    } else if hiy && dt_has(p, 10) && dt_has(p, 11) {
+        let week = dt_get(p, 10)
+        if !dt_year_ok(isoyear) || week < 1 || week > dt_nisoweeks(isoyear) {
+            return (1, 0)
+        }
+        let jan4 = dt_days(isoyear, 1, 4)
+        days = jan4 - dt_wday(jan4) + (week - 1) * 7 + dt_get(p, 11)
+        let (cy, cm, cd) = dt_civil(days)
+        if !dt_year_ok(cy) {
+            return (1, 0)
+        }
+        ok = dt_verify_ymd(p, days) && dt_verify_ordinal(p, days)
+    } else {
+        return (3, 0)
+    }
+    if !ok {
+        return (2, 0)
+    }
+    if dt_has(p, 6) {
+        let (y, m, d) = dt_civil(days)
+        if dt_get(p, 6) != (m - 1) / 3 + 1 {
+            return (2, 0)
+        }
+    }
+    return (0, days)
+}
+
+// to_naive_time. Devuelve (código, segundo del día, segundo intercalar).
+fn dt_to_time(p: int) -> (int, int, bool) {
+    if !dt_has(p, 14) {
+        return (3, 0, false)
+    }
+    let div = dt_get(p, 14)
+    if div > 1 {
+        return (1, 0, false)
+    }
+    if !dt_has(p, 15) {
+        return (3, 0, false)
+    }
+    let hour = div * 12 + dt_get(p, 15)
+    if !dt_has(p, 16) {
+        return (3, 0, false)
+    }
+    let minute = dt_get(p, 16)
+    let mut second = 0
+    if dt_has(p, 17) {
+        second = dt_get(p, 17)
+    }
+    let mut leap = false
+    if second == 60 {
+        second = 59
+        leap = true
+    }
+    if dt_has(p, 18) && !dt_has(p, 17) {
+        return (3, 0, false)
+    }
+    return (0, hour * 3600 + minute * 60 + second, leap)
+}
+
+// to_naive_datetime_with_offset(0). Devuelve (código, instante).
+fn dt_resolve(p: int) -> (int, int) {
+    let (ed, days) = dt_to_date(p)
+    let (et, sod, leap) = dt_to_time(p)
+    if ed == 0 && et == 0 {
+        let ts = days * 86400 + sod
+        if dt_has(p, 19) {
+            let given = dt_get(p, 19)
+            if given != ts && !(leap && given == ts + 1) {
+                return (2, 0)
+            }
+        }
+        return (0, ts)
+    }
+    if dt_has(p, 19) {
+        if ed == 1 || et == 1 {
+            return (1, 0)
+        }
+        if ed == 2 || et == 2 {
+            return (2, 0)
+        }
+        let mut ts = dt_get(p, 19)
+        if !dt_ts_ok(ts) {
+            return (1, 0)
+        }
+        let mut sec = dt_fmod(ts, 60)
+        if dt_has(p, 17) && dt_get(p, 17) == 60 {
+            if sec == 0 {
+                ts -= 1
+            } else if sec != 59 {
+                return (2, 0)
+            }
+        } else {
+            let e = dt_set(p, 17, sec)
+            if e != 0 {
+                return (e, 0)
+            }
+        }
+        let dd = dt_fdiv(ts, 86400)
+        let s2 = dt_fmod(ts, 86400)
+        let (y, m, d) = dt_civil(dd)
+        let mut e = dt_setter(p, 1, y)
+        if e == 0 {
+            e = dt_setter(p, 15, dt_ordinal(y, m, d))
+        }
+        if e == 0 {
+            e = dt_setter(p, 16, s2 / 3600)
+        }
+        if e == 0 {
+            e = dt_setter(p, 18, s2 / 60 % 60)
+        }
+        if e != 0 {
+            return (e, 0)
+        }
+        let (ed2, days2) = dt_to_date(p)
+        if ed2 != 0 {
+            return (ed2, 0)
+        }
+        let (et2, sod2, leap2) = dt_to_time(p)
+        if et2 != 0 {
+            return (et2, 0)
+        }
+        return (0, days2 * 86400 + sod2)
+    }
+    if ed != 0 {
+        return (ed, 0)
+    }
+    return (et, 0)
+}
+
+// parse_rfc3339 estricto de chrono. Devuelve (código, instante UTC).
+fn dt_parse_rfc3339(s: any) -> (int, int) {
+    let n = rt_slen(s)
+    if n < 19 {
+        return (5, 0)
+    }
+    let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+    let seps = [4, 7, 10, 13, 16]
+    let mut v = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    // Se comprueba en el mismo orden que chrono: dígitos del año, '-', mes…
+    let order = [0, 1, 2, 3, -4, 5, 6, -7, 8, 9, -99, -10, 11, 12, -13, 14, 15, -16, 17, 18]
+    let mut year = 0
+    let mut month = 0
+    let mut day = 0
+    let mut k = 0
+    let mut di = 0
+    while k < 20 {
+        let pos = order[k]
+        if pos == -99 {
+            year = v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3]
+            month = v[4] * 10 + v[5]
+            day = v[6] * 10 + v[7]
+            if !dt_ymd_ok(year, month, day) {
+                return (1, 0)
+            }
+        } else if pos < 0 {
+            let c = dt_byte(s, 0 - pos)
+            if pos == -10 {
+                if c != 116 && c != 84 && c != 32 {
+                    return (4, 0)
+                }
+            } else if pos == -13 || pos == -16 {
+                if c != 58 {
+                    return (4, 0)
+                }
+            } else if c != 45 {
+                return (4, 0)
+            }
+        } else {
+            let c = dt_byte(s, pos)
+            if c < 48 || c > 57 {
+                return (4, 0)
+            }
+            v = std::array::set(v, di, c - 48)
+            di += 1
+        }
+        k += 1
+    }
+    let hour = v[8] * 10 + v[9]
+    let minute = v[10] * 10 + v[11]
+    let mut sec = v[12] * 10 + v[13]
+    let mut extra = 0
+    if sec == 60 {
+        sec = 59
+        extra = 1000000000
+    }
+    let p = dt_state(s)
+    std::raw::store(p + 16, 19)
+    let mut nano = extra
+    if n > 19 && dt_byte(s, 19) == 46 {
+        dt_adv(p, 1)
+        let e = dt_nanosecond(p)
+        if e != 0 {
+            rt_free_block(p)
+            return (e, 0)
+        }
+        nano = extra + dt_val(p)
+    }
+    if hour >= 24 || minute >= 60 || sec >= 60 || nano >= 2000000000 || (nano >= 1000000000 && sec != 59) {
+        rt_free_block(p)
+        return (1, 0)
+    }
+    let e = dt_tz_offset(p, 1, true, false, true)
+    if e != 0 {
+        rt_free_block(p)
+        return (e, 0)
+    }
+    let off = dt_val(p)
+    if dt_rest(p) != 0 {
+        rt_free_block(p)
+        return (6, 0)
+    }
+    rt_free_block(p)
+    if off <= -86400 || off >= 86400 {
+        return (1, 0)
+    }
+    return (0, dt_days(year, month, day) * 86400 + hour * 3600 + minute * 60 + sec - off)
+}
+
+// ---------------------------------------------------------------- nativas: datetime_mod
+
+fn std__datetime__now() -> any {
+    let (s, ns) = rt_clock(0)
+    s
+}
+
+fn std__datetime__now_iso() -> any {
+    let (s, ns) = rt_clock(0)
+    let b = sb_new(40)
+    dt_rfc3339(b, dt_fdiv(s, 86400), dt_fmod(s, 86400), ns, 0)
+    sb_finish(b)
+}
+
+fn dt_expect_ts(v: any, function: string) -> int {
+    rt_expect_int(v, function)
+    std::raw::bits(v)
+}
+
+fn std__datetime__format(tsv: any, f: any) -> any {
+    let fname = "std::datetime::format"
+    let ts = dt_expect_ts(tsv, fname)
+    rt_expect_str(f, fname)
+    if !dt_ts_ok(ts) {
+        dt_ts_error(fname, ts)
+    }
+    let out = dt_format_items(dt_items(f), dt_fdiv(ts, 86400), dt_fmod(ts, 86400), 0, "UTC")
+    if std::raw::tag(out) == 0 {
+        dt_format_error(fname, f)
+    }
+    out
+}
+
+fn std__datetime__format_offset(tsv: any, f: any, minutes: any) -> any {
+    let fname = "std::datetime::format_offset"
+    let ts = dt_expect_ts(tsv, fname)
+    rt_expect_str(f, fname)
+    rt_expect_int(minutes, fname)
+    let mins = std::raw::bits(minutes)
+    if !dt_i32_ok(mins) {
+        rt_native_fail(fname, "offset minutes out of range")
+    }
+    let mut secs = mins * 60
+    if secs > 2147483647 {
+        secs = 2147483647
+    }
+    if secs < -2147483648 {
+        secs = -2147483648
+    }
+    if secs <= -86400 || secs >= 86400 {
+        rt_native_fail(fname, rt_concat(rt_concat("unsupported timezone '", rt_int_to_str(mins)), " minutes' (only 'UTC' and fixed offsets like '-04:00' work today)"))
+    }
+    if !dt_ts_ok(ts) {
+        dt_ts_error(fname, ts)
+    }
+    // Nombre de la zona como el Display de FixedOffset: "+HH:MM".
+    let nb = sb_new(8)
+    dt_offset(nb, secs, 1, true, false)
+    let name = sb_finish(nb)
+    let local = ts + secs
+    let out = dt_format_items(dt_items(f), dt_fdiv(local, 86400), dt_fmod(local, 86400), secs, name)
+    if std::raw::tag(out) == 0 {
+        dt_format_error(fname, f)
+    }
+    out
+}
+
+fn std__datetime__to_rfc3339(tsv: any) -> any {
+    let fname = "std::datetime::to_rfc3339"
+    let ts = dt_expect_ts(tsv, fname)
+    if !dt_ts_ok(ts) {
+        dt_ts_error(fname, ts)
+    }
+    let b = sb_new(32)
+    dt_rfc3339(b, dt_fdiv(ts, 86400), dt_fmod(ts, 86400), 0, 0)
+    sb_finish(b)
+}
+
+fn std__datetime__to_rfc2822(tsv: any) -> any {
+    let fname = "std::datetime::to_rfc2822"
+    let ts = dt_expect_ts(tsv, fname)
+    if !dt_ts_ok(ts) {
+        dt_ts_error(fname, ts)
+    }
+    let days = dt_fdiv(ts, 86400)
+    let sod = dt_fmod(ts, 86400)
+    let (y, m, d) = dt_civil(days)
+    if y < 0 || y > 9999 {
+        rt_native_fail(fname, rt_concat(rt_concat("timestamp ", rt_int_to_str(ts)), " cannot be represented by RFC 2822 (years 0 to 9999 only)"))
+    }
+    let b = sb_new(32)
+    sb_str(b, dt_wnames((dt_wday(days) + 1) % 7, false))
+    sb_str(b, ", ")
+    if d < 10 {
+        sb_byte(b, 48 + d)
+    } else {
+        dt_hundreds(b, d)
+    }
+    sb_byte(b, 32)
+    sb_str(b, dt_mnames(m - 1, false))
+    sb_byte(b, 32)
+    dt_hundreds(b, y / 100)
+    dt_hundreds(b, y % 100)
+    sb_byte(b, 32)
+    dt_hundreds(b, sod / 3600)
+    sb_byte(b, 58)
+    dt_hundreds(b, sod / 60 % 60)
+    sb_byte(b, 58)
+    dt_hundreds(b, sod % 60)
+    sb_str(b, " +0000")
+    sb_finish(b)
+}
+
+fn std__datetime__parse_rfc3339(text: any) -> any {
+    let fname = "std::datetime::parse_rfc3339"
+    rt_expect_str(text, fname)
+    let (e, ts) = dt_parse_rfc3339(text)
+    if e != 0 {
+        rt_native_fail(fname, rt_concat(rt_concat(rt_concat("could not parse '", text), "' with format 'RFC 3339': "), dt_err_text(e)))
+    }
+    ts
+}
+
+fn std__datetime__parse(text: any, f: any) -> any {
+    let fname = "std::datetime::parse"
+    rt_expect_str(text, fname)
+    rt_expect_str(f, fname)
+    let p = dt_state(text)
+    let mut e = dt_parse_items(p, dt_items(f))
+    if e == 0 && dt_rest(p) != 0 {
+        e = 6
+    }
+    let mut ts = 0
+    if e == 0 {
+        let (e2, t2) = dt_resolve(p)
+        e = e2
+        ts = t2
+    }
+    rt_free_block(p)
+    if e != 0 {
+        rt_native_fail(fname, rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("could not parse '", text), "' with format '"), f), "': "), dt_err_text(e)))
+    }
+    ts
+}
+
+fn dt_u32_arg(v: any, function: string, message: string) -> int {
+    rt_expect_int(v, function)
+    let x = std::raw::bits(v)
+    if x < 0 || x > 4294967295 {
+        rt_native_fail(function, message)
+    }
+    x
+}
+
+fn std__datetime__utc_ymd_hms(yv: any, mv: any, dv: any, hv: any, miv: any, sv: any) -> any {
+    let fname = "std::datetime::utc_ymd_hms"
+    rt_expect_int(yv, fname)
+    let y = std::raw::bits(yv)
+    if !dt_i32_ok(y) {
+        rt_native_fail(fname, "year out of range")
+    }
+    let m = dt_u32_arg(mv, fname, "month out of range")
+    let d = dt_u32_arg(dv, fname, "day out of range")
+    let h = dt_u32_arg(hv, fname, "hour out of range")
+    let mi = dt_u32_arg(miv, fname, "minute out of range")
+    let s = dt_u32_arg(sv, fname, "second out of range")
+    if !dt_ymd_ok(y, m, d) || h >= 24 || mi >= 60 || s >= 60 {
+        return 0
+    }
+    dt_days(y, m, d) * 86400 + h * 3600 + mi * 60 + s
+}
+
+fn std__datetime__add_days(tsv: any, nv: any) -> any {
+    let fname = "std::datetime::add_days"
+    let ts = dt_expect_ts(tsv, fname)
+    rt_expect_int(nv, fname)
+    dt_sat_add(ts, dt_sat_mul(std::raw::bits(nv), 86400))
+}
+
+fn std__datetime__weekday(tsv: any) -> any {
+    let fname = "std::datetime::weekday"
+    let ts = dt_expect_ts(tsv, fname)
+    if !dt_ts_ok(ts) {
+        dt_ts_error(fname, ts)
+    }
+    dt_wday(dt_fdiv(ts, 86400))
+}
+
+// ---------------------------------------------------------------- nativas: datetime_ext_mod
+
+fn dt_ext_parts(tsv: any, function: string) -> (int, int, int, int) {
+    let ts = dt_fallback(dt_expect_ts(tsv, function))
+    let days = dt_fdiv(ts, 86400)
+    let (y, m, d) = dt_civil(days)
+    return (days, y, m, d)
+}
+
+fn std__datetime__year(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::year")
+    y
+}
+
+fn std__datetime__month(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::month")
+    m
+}
+
+fn std__datetime__day(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::day")
+    d
+}
+
+fn std__datetime__hour(t: any) -> any {
+    dt_fmod(dt_fallback(dt_expect_ts(t, "std::datetime::hour")), 86400) / 3600
+}
+
+fn std__datetime__minute(t: any) -> any {
+    dt_fmod(dt_fallback(dt_expect_ts(t, "std::datetime::minute")), 86400) / 60 % 60
+}
+
+fn std__datetime__second(t: any) -> any {
+    dt_fmod(dt_fallback(dt_expect_ts(t, "std::datetime::second")), 60)
+}
+
+fn std__datetime__day_of_week(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::day_of_week")
+    dt_wday(days)
+}
+
+fn std__datetime__day_of_year(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::day_of_year")
+    dt_ordinal(y, m, d)
+}
+
+fn std__datetime__week_of_year(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::week_of_year")
+    let (iy, iw) = dt_isoweek(y, m, d)
+    iw
+}
+
+fn std__datetime__quarter(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::quarter")
+    return (m - 1) / 3 + 1
+}
+
+fn std__datetime__is_leap_year(yv: any) -> any {
+    rt_expect_int(yv, "std::datetime::is_leap_year")
+    dt_leap(std::raw::bits(yv))
+}
+
+fn dt_days_in_month(y: int, m: int) -> int {
+    if m < 1 || m > 12 {
+        return 0
+    }
+    let yi = dt_i32(y)
+    if !dt_ymd_ok(yi, m, 1) {
+        return 0
+    }
+    if m == 12 && !dt_year_ok(dt_i32(yi + 1)) {
+        return 0
+    }
+    dt_mdays(yi, m)
+}
+
+fn std__datetime__days_in_month(yv: any, mv: any) -> any {
+    let fname = "std::datetime::days_in_month"
+    rt_expect_int(yv, fname)
+    rt_expect_int(mv, fname)
+    dt_days_in_month(std::raw::bits(yv), std::raw::bits(mv))
+}
+
+fn dt_two_ints(a: any, b: any, function: string) -> (int, int) {
+    rt_expect_int(a, function)
+    rt_expect_int(b, function)
+    return (std::raw::bits(a), std::raw::bits(b))
+}
+
+fn std__datetime__add_seconds(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_seconds")
+    std::raw::wadd(ts, n)
+}
+
+fn std__datetime__add_minutes(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_minutes")
+    std::raw::wadd(ts, std::raw::wmul(n, 60))
+}
+
+fn std__datetime__add_hours(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_hours")
+    std::raw::wadd(ts, std::raw::wmul(n, 3600))
+}
+
+fn std__datetime__add_days_ext(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_days_ext")
+    std::raw::wadd(ts, std::raw::wmul(n, 86400))
+}
+
+fn std__datetime__add_weeks(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_weeks")
+    std::raw::wadd(ts, std::raw::wmul(n, 604800))
+}
+
+fn dt_add_months(ts: int, n: int) -> int {
+    let base = dt_fallback(ts)
+    let days = dt_fdiv(base, 86400)
+    let sod = dt_fmod(base, 86400)
+    let (y0, m0, d) = dt_civil(days)
+    // Igual que los bucles de Rust (restar o sumar 12 y mover el año), sin
+    // desbordes: mes final en 1..=12 y k años de diferencia.
+    let total = std::raw::wadd(m0, n)
+    let mut k = total / 12
+    let mut m = total % 12
+    if m < 0 {
+        m += 12
+        k -= 1
+    }
+    if m == 0 {
+        m = 12
+        k -= 1
+    }
+    let y = dt_i32(std::raw::wadd(y0, k))
+    let max_d = dt_days_in_month(y, m)
+    let mut clamped = d
+    if max_d < clamped {
+        clamped = max_d
+    }
+    if !dt_ymd_ok(y, m, clamped) {
+        return ts
+    }
+    dt_days(y, m, clamped) * 86400 + sod
+}
+
+fn std__datetime__add_months(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_months")
+    dt_add_months(ts, n)
+}
+
+fn std__datetime__add_years(a: any, b: any) -> any {
+    let (ts, n) = dt_two_ints(a, b, "std::datetime::add_years")
+    dt_add_months(ts, std::raw::wmul(n, 12))
+}
+
+fn std__datetime__diff_seconds(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::diff_seconds")
+    std::raw::wsub(x, y)
+}
+
+fn std__datetime__diff_minutes(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::diff_minutes")
+    std::raw::wsub(x, y) / 60
+}
+
+fn std__datetime__diff_hours(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::diff_hours")
+    std::raw::wsub(x, y) / 3600
+}
+
+fn std__datetime__diff_days(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::diff_days")
+    std::raw::wsub(x, y) / 86400
+}
+
+fn std__datetime__is_before(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::is_before")
+    x < y
+}
+
+fn std__datetime__is_after(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::is_after")
+    x > y
+}
+
+fn std__datetime__is_same_day(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::is_same_day")
+    dt_fdiv(dt_fallback(x), 86400) == dt_fdiv(dt_fallback(y), 86400)
+}
+
+fn std__datetime__common_timezones() -> any {
+    ["UTC", "America/Caracas", "America/Argentina/Buenos_Aires", "America/Mexico_City", "America/Bogota", "America/Lima", "America/Santiago", "America/Sao_Paulo", "America/New_York", "America/Los_Angeles", "America/Chicago", "Europe/Madrid", "Europe/London", "Europe/Berlin", "Europe/Paris", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata", "Asia/Dubai", "Australia/Sydney", "Africa/Cairo", "Pacific/Auckland"]
+}
+
+fn std__datetime__to_iso(t: any) -> any {
+    let ts = dt_fallback(dt_expect_ts(t, "std::datetime::to_iso"))
+    let b = sb_new(32)
+    dt_rfc3339(b, dt_fdiv(ts, 86400), dt_fmod(ts, 86400), 0, 0)
+    sb_finish(b)
+}
+
+fn std__datetime__from_iso(text: any) -> any {
+    let fname = "std::datetime::from_iso"
+    rt_expect_str(text, fname)
+    let (e, ts) = dt_parse_rfc3339(text)
+    if e != 0 {
+        rt_native_fail(fname, dt_err_text(e))
+    }
+    ts
+}
+
+fn std__datetime__humanize(a: any, b: any) -> any {
+    let (ts, now) = dt_two_ints(a, b, "std::datetime::humanize")
+    let delta = std::raw::wsub(ts, now)
+    let ago = delta < 0
+    let mut abs = delta
+    if delta < 0 {
+        abs = std::raw::wsub(0, delta)
+    }
+    let mut n = abs
+    let mut unit = "segundo"
+    if abs < 60 {
+        n = abs
+    } else if abs < 3600 {
+        n = abs / 60
+        unit = "minuto"
+    } else if abs < 86400 {
+        n = abs / 3600
+        unit = "hora"
+    } else if abs < 604800 {
+        n = abs / 86400
+        unit = "dia"
+    } else if abs < 2592000 {
+        n = abs / 604800
+        unit = "semana"
+    } else if abs < 31536000 {
+        n = abs / 2592000
+        unit = "mes"
+    } else {
+        n = abs / 31536000
+        unit = "año"
+    }
+    if abs < 5 {
+        return "ahora"
+    }
+    let mut plural = "s"
+    if n == 1 {
+        plural = ""
+    }
+    let text = rt_concat(rt_concat(rt_concat(rt_int_to_str(n), " "), unit), plural)
+    if ago {
+        return rt_concat("hace ", text)
+    }
+    rt_concat("en ", text)
+}
+
+fn std__datetime__is_weekend(t: any) -> any {
+    let (days, y, m, d) = dt_ext_parts(t, "std::datetime::is_weekend")
+    dt_wday(days) >= 5
+}
+
+// Días laborables (lunes a viernes) en [desde, desde + total).
+fn dt_workdays(first: int, total: int) -> int {
+    let weeks = total / 7
+    let mut count = weeks * 5
+    let mut day = first + weeks * 7
+    let mut k = weeks * 7
+    while k < total {
+        if dt_wday(day) < 5 {
+            count += 1
+        }
+        day += 1
+        k += 1
+    }
+    count
+}
+
+fn std__datetime__business_days_between(a: any, b: any) -> any {
+    let (x, y) = dt_two_ints(a, b, "std::datetime::business_days_between")
+    let mut start = x
+    let mut end = y
+    if x > y {
+        start = y
+        end = x
+    }
+    let sd = dt_fdiv(dt_fallback(start), 86400)
+    let ed = dt_fdiv(dt_fallback(end), 86400)
+    let total = ed - sd + 1
+    if total <= 0 {
+        return 0
+    }
+    dt_workdays(sd, total)
+}
+
+fn std__datetime__next_weekday(a: any, b: any) -> any {
+    let (ts, target) = dt_two_ints(a, b, "std::datetime::next_weekday")
+    let cur = dt_wday(dt_fdiv(dt_fallback(ts), 86400))
+    let mut diff = std::raw::wsub(target, cur)
+    if diff <= 0 {
+        diff = std::raw::wadd(diff, 7)
+    }
+    std::raw::wadd(ts, std::raw::wmul(diff, 86400))
+}
+
+fn std__datetime__from_ymd(yv: any, mv: any, dv: any) -> any {
+    let fname = "std::datetime::from_ymd"
+    rt_expect_int(yv, fname)
+    rt_expect_int(mv, fname)
+    rt_expect_int(dv, fname)
+    let y = std::raw::bits(yv)
+    let m = std::raw::bits(mv)
+    let d = std::raw::bits(dv)
+    let yi = dt_i32(y)
+    let mu = dt_u32(m)
+    let du = dt_u32(d)
+    if !dt_ymd_ok(yi, mu, du) {
+        rt_native_fail(fname, rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("invalid date ", rt_int_to_str(y)), "-"), rt_int_to_str(m)), "-"), rt_int_to_str(d)))
+    }
+    dt_days(yi, mu, du) * 86400
+}
+
+fn std__datetime__from_ymd_hms(yv: any, mv: any, dv: any, hv: any, miv: any, sv: any) -> any {
+    let fname = "std::datetime::from_ymd_hms"
+    rt_expect_int(yv, fname)
+    rt_expect_int(mv, fname)
+    rt_expect_int(dv, fname)
+    rt_expect_int(hv, fname)
+    rt_expect_int(miv, fname)
+    rt_expect_int(sv, fname)
+    let y = std::raw::bits(yv)
+    let m = std::raw::bits(mv)
+    let d = std::raw::bits(dv)
+    let h = std::raw::bits(hv)
+    let mi = std::raw::bits(miv)
+    let s = std::raw::bits(sv)
+    let yi = dt_i32(y)
+    let mu = dt_u32(m)
+    let du = dt_u32(d)
+    let hu = dt_u32(h)
+    let miu = dt_u32(mi)
+    let su = dt_u32(s)
+    if !dt_ymd_ok(yi, mu, du) || hu >= 24 || miu >= 60 || su >= 60 {
+        let mut msg = rt_concat("invalid datetime ", rt_int_to_str(y))
+        msg = rt_concat(rt_concat(msg, "-"), rt_int_to_str(m))
+        msg = rt_concat(rt_concat(msg, "-"), rt_int_to_str(d))
+        msg = rt_concat(rt_concat(msg, " "), rt_int_to_str(h))
+        msg = rt_concat(rt_concat(msg, ":"), rt_int_to_str(mi))
+        msg = rt_concat(rt_concat(msg, ":"), rt_int_to_str(s))
+        rt_native_fail(fname, msg)
+    }
+    dt_days(yi, mu, du) * 86400 + hu * 3600 + miu * 60 + su
+}
+
+fn std__datetime__range_ext(a: any, b: any, c: any) -> any {
+    let fname = "std::datetime::range_ext"
+    rt_expect_int(a, fname)
+    rt_expect_int(b, fname)
+    rt_expect_int(c, fname)
+    let start = std::raw::bits(a)
+    let end = std::raw::bits(b)
+    let step = std::raw::bits(c)
+    let mut out: any = rt_array_new(0)
+    if step <= 0 {
+        return out
+    }
+    let mut cur = start
+    while cur < end {
+        out = std::array::push(out, cur)
+        cur = std::raw::wadd(cur, step)
+    }
+    out
+}

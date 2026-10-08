@@ -1,0 +1,4 @@
+// Instante fuera del rango de fechas.
+fn main() {
+    print(std::datetime::weekday(-8334601228801))
+}

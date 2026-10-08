@@ -1,0 +1,16 @@
+// Pasa cada patrón (en hexadecimal, uno por línea) por std::regex en la VM y
+// escribe "OK" o el mensaje de error en hexadecimal. Lo usa fuzz_parse.py.
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let p = std::encoding::utf8_decode(std::encoding::hex_decode(ls[i]))
+        let r = std::try::catch(|| { std::regex::is_match(p, "") })
+        match r {
+            Result::Ok(v) => println("OK"),
+            Result::Err(e) => println(std::encoding::hex_encode(std::encoding::utf8_encode(e))),
+        }
+        i += 1
+    }
+}

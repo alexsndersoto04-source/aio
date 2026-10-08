@@ -1,0 +1,64 @@
+// Números decimales: leer texto, escribirlos (los dígitos más cortos, como Rust),
+// aritmética, comparaciones (NaN nunca es igual ni ordenado) y extremos.
+fn lcg(s: int) -> int {
+    (s * 1103515245 + 12345) % 2147483648
+}
+
+fn main() {
+    let fixed = ["0", "-0", "1", "1.0", "0.1", "0.2", "0.3", "1e20", "1e21", "1e-7", "123.456", "5e-324", "2.2250738585072014e-308", "2.2250738585072011e-308", "1.7976931348623157e308", "1.8e308", "4.9e-324", "2.4e-324", "2.5e-324", "inf", "-Infinity", "NaN", "nan", "  3.5  ", "1_0", "abc", "1e", ".5", "5.", "+7", "1e400", "1e-400", "9007199254740993", "9007199254740992", "0.000001", "100", "12345678901234567890123", "3.141592653589793", "2.718281828459045", "0.1e1", "1.5e-310", "e5", "."]
+    for t in fixed {
+        let r = std::text::parse_float(t)
+        match r {
+            Option::Some(v) => print("{t} -> {v}"),
+            Option::None => print("{t} -> none"),
+        }
+    }
+    let a = 0.1
+    let b = 0.2
+    let c = a + b
+    print("{c}")
+    let d = 1.0 / 3.0
+    print("{d}")
+    let e = -d
+    print("{e}")
+    print(a < b)
+    print(a == 0.1)
+    print(c == 0.3)
+    print(2.5 * 4.0)
+    print(10.0 - 0.5)
+    let nan = std::text::parse_float("nan")
+    match nan {
+        Option::Some(n) => {
+            print(n == n)
+            print(n < 1.0)
+            print(n >= 1.0)
+            print(n != n)
+        }
+        Option::None => print("?"),
+    }
+    let mut s = 12345
+    let mut i = 0
+    let mut prev = 1.0
+    while i < 800 {
+        s = lcg(s)
+        let mant = s % 100000000
+        s = lcg(s)
+        let ex = s % 660 - 335
+        s = lcg(s)
+        let mant2 = s % 1000000000
+        let txt = "{mant}{mant2}e{ex}"
+        match std::text::parse_float(txt) {
+            Option::Some(v) => {
+                let p = v * prev
+                let q = v / 7.0
+                let w = q + prev
+                print("{txt} {v} {p} {q} {w}")
+                if v != 0.0 {
+                    prev = v
+                }
+            }
+            Option::None => print("{txt} none"),
+        }
+        i += 1
+    }
+}

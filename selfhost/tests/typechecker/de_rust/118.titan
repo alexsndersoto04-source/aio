@@ -1,0 +1,1 @@
+fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| value - 1 } } fn main() { let callback = choose(true) let result: int = callback(41) }

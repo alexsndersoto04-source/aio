@@ -1,0 +1,19 @@
+// Lee 40 teclas en modo crudo (enable_raw y disable_raw dos veces: la
+// segunda no hace nada). Las teclea selfhost/native/term/pty_keys.py.
+fn main() {
+    std::term::enable_raw()
+    std::term::enable_raw()
+    print("LISTO")
+    let mut i = 0
+    while i < 40 {
+        let k = std::term::read_key(1500)
+        print("[" + k + "]")
+        if k == "q" {
+            break
+        }
+        i += 1
+    }
+    std::term::disable_raw()
+    std::term::disable_raw()
+    print("FIN")
+}

@@ -1,0 +1,1 @@
+fn main() { let invalid: fn(string) -> int = |value| value * 2 invalid("x") }

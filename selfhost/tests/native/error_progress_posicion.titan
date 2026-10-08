@@ -1,0 +1,4 @@
+fn main() {
+    let b = std::progress::bar_new(5)
+    std::progress::set_position(b, -3)
+}

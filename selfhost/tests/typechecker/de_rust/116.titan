@@ -1,0 +1,1 @@
+fn main() { let loose = |value| value * 2 let invalid: fn(string) -> int = loose }
