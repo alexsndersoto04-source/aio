@@ -1,0 +1,63 @@
+// Pasada de última lectura del optimizador (opt.titan): los valores se
+// entregan sin copiar cuando la variable ya no se vuelve a leer. Nada de eso
+// debe cambiar lo que el programa ve.
+struct Buf {
+    items: array,
+    name: string,
+}
+
+fn grow(b: Buf, x: int) -> Buf {
+    let name = b.name
+    let items = b.items
+    Buf { name: name, items: std::array::push(items, x) }
+}
+
+fn twice(a: array) -> array {
+    std::array::concat(a, a)
+}
+
+fn main() {
+    let mut b = Buf { items: [], name: "b" }
+    for i in 0..6 {
+        b = grow(b, i)
+    }
+    let keep = b
+    b = grow(b, 99)
+    print(keep.items)
+    print(b.items)
+    let a = [1, 2, 3]
+    let c = std::array::push(a, 4)
+    print(a)
+    print(c)
+    print(twice(a))
+    let mut total = 0
+    let base = [10, 20]
+    for i in 0..3 {
+        let x = std::array::push(base, i)
+        total = total + len(x) + x[2]
+    }
+    print(total)
+    print(base)
+    let s = "hola"
+    let f = |t: string| t + s
+    let s2 = s + "!"
+    print(f("a"))
+    print(s2)
+    print(s)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "a", 1)
+    let m2 = std::map::insert(m, "b", 2)
+    print(len(m))
+    print(len(m2))
+    let mut acc = []
+    let mut j = 0
+    while j < 4 {
+        let prev = acc
+        acc = std::array::push(acc, j)
+        if j == 2 {
+            print(prev)
+        }
+        j += 1
+    }
+    print(acc)
+}

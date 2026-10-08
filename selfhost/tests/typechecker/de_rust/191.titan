@@ -1,0 +1,1 @@
+fn halt() -> ! { (loop {}).len() } fn main() {}

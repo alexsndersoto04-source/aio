@@ -1,0 +1,1 @@
+fn main() { for 1 in [1, 2] { print("x") } }

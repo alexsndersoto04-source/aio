@@ -1,0 +1,1 @@
+fn main() { let values: [string] = [1, 2].map(|value| value + 1) }

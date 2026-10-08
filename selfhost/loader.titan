@@ -1,0 +1,290 @@
+// Cargador de proyectos escrito en Titan: traducción de
+// crates/titan_pkg/src/project.rs (SourceProject::load, Loader::visit,
+// resolve_import, resolve_stdlib_module, assign_source_files, parse_file).
+//
+// Resuelve los `import`, lee cada archivo una sola vez, detecta ciclos y
+// devuelve todos los elementos del programa en el mismo orden que Rust:
+// primero los módulos importados (en orden de aparición) y después los
+// elementos propios del archivo, sin las líneas `import`.
+//
+// Pendiente (anotado en selfhost/ESTADO.md): proyectos con Titan.toml
+// (manifiesto y dependencias). Hoy el cargador los rechaza con un error
+// explícito en lugar de comportarse distinto a Rust sin avisar; en el
+// repositorio no hay ningún Titan.toml.
+//
+// Todas las funciones usan el prefijo `ld_` porque `import` junta todos los
+// nombres en un solo espacio.
+
+import parser
+
+struct Ld {
+    source_root: string,
+    stack: array,
+    visited: map,
+    items: array,
+}
+
+// Result::Ok(elementos) o Result::Err(mensaje con el texto de ProjectError).
+fn ld_load(requested: string) -> Result {
+    if !std::fs::exists(requested) {
+        return Result::Err("entry source not found: " + requested)
+    }
+    let entry = std::path::canonical(requested)
+    let mut root = std::path::parent(entry)
+    let found = ld_find_project_root(entry)
+    if found != nil {
+        root = found
+    }
+    if std::fs::is_file(std::path::join(root, "Titan.toml")) {
+        return Result::Err("selfhost: projects with Titan.toml (manifest and dependencies) are not supported yet by the Titan loader: " + std::path::join(root, "Titan.toml"))
+    }
+    let ld = Ld { source_root: std::path::canonical(root), stack: [], visited: std::map::new(), items: [] }
+    let done = ld_visit(ld, entry)?
+    Result::Ok(done.items)
+}
+
+// find_project_root: el directorio más cercano (hacia arriba) con Titan.toml.
+fn ld_find_project_root(path: string) -> any {
+    let absolute = std::path::canonical(path)
+    let mut dir = absolute
+    if !std::fs::is_dir(absolute) {
+        dir = std::path::parent(absolute)
+    }
+    while true {
+        if std::fs::is_file(std::path::join(dir, "Titan.toml")) {
+            return dir
+        }
+        let up: any = std::path::parent(dir)
+        if up == nil {
+            return nil
+        }
+        dir = up
+    }
+    nil
+}
+
+// Path::starts_with compara por componentes, no por caracteres.
+fn ld_path_starts_with(path: string, root: string) -> bool {
+    if path == root {
+        return true
+    }
+    if root == "/" {
+        return std::text::starts_with(path, "/")
+    }
+    std::text::starts_with(path, root + "/")
+}
+
+// relative_display: la ruta sin el prefijo de la raíz (o entera si no cuelga de ella).
+fn ld_relative_display(path: string, root: string) -> string {
+    if path == root {
+        return ""
+    }
+    if ld_path_starts_with(path, root) {
+        let skip = len(root) + 1
+        if root == "/" {
+            return std::text::substring(path, 1, len(path))
+        }
+        return std::text::substring(path, skip, len(path))
+    }
+    path
+}
+
+fn ld_visit(ld0: Ld, raw_path: string) -> Result {
+    let path = std::path::canonical(raw_path)
+    let mut position = -1
+    let mut i = 0
+    while i < len(ld0.stack) {
+        if ld0.stack[i] == path {
+            position = i
+            break
+        }
+        i += 1
+    }
+    if position >= 0 {
+        let mut chain = []
+        let mut j = position
+        while j < len(ld0.stack) {
+            chain = std::array::push(chain, ld_relative_display(ld0.stack[j], ld0.source_root))
+            j += 1
+        }
+        chain = std::array::push(chain, ld_relative_display(path, ld0.source_root))
+        return Result::Err("circular import: " + ld_join(chain, " -> "))
+    }
+    if std::map::contains(ld0.visited, path) {
+        return Result::Ok(ld0)
+    }
+    let source = std::fs::read_text(path)
+    let parsed = ld_parse_file(path, source)?
+    let items = ld_assign_source_files(parsed, path)
+    let mut ld = Ld { source_root: ld0.source_root, stack: std::array::push(ld0.stack, path), visited: ld0.visited, items: ld0.items }
+    for item in items {
+        if item.kind != "import" {
+            continue
+        }
+        let segments = ld_split_path(item.text)
+        if segments[0] == "std" {
+            // Módulos de la stdlib escritos en Titan; si no existe el
+            // archivo se ignora (las funciones nativas no necesitan cargarse).
+            let candidate = ld_resolve_stdlib_module(segments)
+            if candidate != nil {
+                ld = ld_visit(ld, candidate)?
+            }
+            continue
+        }
+        let imported = ld_resolve_import(ld, segments, path)?
+        ld = ld_visit(ld, imported)?
+    }
+    let mut own = ld.items
+    for item in items {
+        if item.kind != "import" {
+            own = std::array::push(own, item)
+        }
+    }
+    let stack = std::array::slice(ld.stack, 0, len(ld.stack) - 1)
+    Result::Ok(Ld { source_root: ld.source_root, stack: stack, visited: std::map::insert(ld.visited, path, true), items: own })
+}
+
+// "a::b::c" -> ["a", "b", "c"] (los segmentos son identificadores, nunca vacíos).
+fn ld_split_path(path: string) -> array {
+    let mut parts = []
+    let mut cur = ""
+    for c in path {
+        if c == ':' {
+            if cur != "" {
+                parts = std::array::push(parts, cur)
+            }
+            cur = ""
+        } else {
+            cur += c
+        }
+    }
+    if cur != "" {
+        parts = std::array::push(parts, cur)
+    }
+    parts
+}
+
+fn ld_join(parts: array, sep: string) -> string {
+    let mut out = ""
+    let mut first = true
+    for p in parts {
+        if !first {
+            out += sep
+        }
+        out += p
+        first = false
+    }
+    out
+}
+
+// parse_file: errores léxicos o de sintaxis con el mismo texto que Rust.
+fn ld_parse_file(path: string, source: string) -> Result {
+    let (tokens, lex_errors) = tokenize(source)
+    if len(lex_errors) > 0 {
+        return Result::Err("lexical errors in " + path + ": " + ld_join(lex_errors, "\n"))
+    }
+    let (items, parse_errors) = parse_program(tokens)
+    if len(parse_errors) > 0 {
+        return Result::Err("parse errors in " + path + ": " + ld_join(parse_errors, "\n"))
+    }
+    Result::Ok(items)
+}
+
+// Sin dependencias, la única raíz permitida es la raíz de fuentes.
+fn ld_resolve_import(ld: Ld, segments: array, from: string) -> Result {
+    let display = ld_join(segments, "::")
+    let base = ld.source_root
+    let mut length = len(segments)
+    while length >= 1 {
+        let relative = ld_join(std::array::slice(segments, 0, length), "/")
+        let candidates = [std::path::join(base, relative + ".titan"), std::path::join(std::path::join(base, relative), "mod.titan")]
+        for candidate in candidates {
+            if std::fs::is_file(candidate) {
+                let canonical = std::path::canonical(candidate)
+                if !ld_path_starts_with(canonical, ld.source_root) {
+                    return Result::Err("import '" + display + "' resolves outside source root " + base)
+                }
+                return Result::Ok(canonical)
+            }
+        }
+        length -= 1
+    }
+    Result::Err("cannot resolve import '" + display + "' from " + from)
+}
+
+// resolve_stdlib_module: $ZETT_STDLIB_DIR, junto al ejecutable
+// (../share/zett/stdlib y stdlib), el primer `stdlib/` subiendo hasta 5
+// niveles desde el ejecutable y, por último, ./stdlib.
+fn ld_resolve_stdlib_module(segments: array) -> any {
+    if len(segments) < 2 {
+        return nil
+    }
+    let relative = ld_join(std::array::slice(segments, 1, len(segments)), "/")
+    let mut roots = []
+    let from_env = std::env::get("ZETT_STDLIB_DIR")
+    if from_env != nil {
+        roots = std::array::push(roots, from_env)
+    }
+    // El ejecutable del proceso actual (lo que Rust obtiene con current_exe).
+    if std::fs::exists("/proc/self/exe") {
+        let exe_dir = std::path::parent(std::path::canonical("/proc/self/exe"))
+        roots = std::array::push(roots, std::path::join(std::path::join(std::path::join(std::path::join(exe_dir, ".."), "share"), "zett"), "stdlib"))
+        roots = std::array::push(roots, std::path::join(exe_dir, "stdlib"))
+        let mut probe = exe_dir
+        let mut level = 0
+        while level < 5 {
+            let candidate = std::path::join(probe, "stdlib")
+            if std::fs::is_dir(candidate) {
+                roots = std::array::push(roots, candidate)
+                break
+            }
+            let up: any = std::path::parent(probe)
+            if up == nil {
+                break
+            }
+            probe = up
+            level += 1
+        }
+    }
+    roots = std::array::push(roots, std::path::join(std::env::current_dir(), "stdlib"))
+    for root in roots {
+        let candidates = [std::path::join(root, relative + ".titan"), std::path::join(std::path::join(root, relative), "mod.titan")]
+        for candidate in candidates {
+            if std::fs::is_file(candidate) {
+                return std::path::canonical(candidate)
+            }
+        }
+    }
+    nil
+}
+
+// assign_source_files: la ruta del archivo en cada función y método
+// (campo `text2` del nodo, que el parser deja vacío).
+fn ld_assign_source_files(items: array, file: string) -> array {
+    let mut out = []
+    for item in items {
+        let k = item.kind
+        if k == "fn" {
+            out = std::array::push(out, ld_with_file(item, file))
+            continue
+        }
+        if k == "impl" {
+            let mut methods = []
+            for m in item.list {
+                methods = std::array::push(methods, ld_with_file(m, file))
+            }
+            out = std::array::push(out, Node { kind: k, text: item.text, text2: item.text2, flag: item.flag, a: item.a, b: item.b, c: item.c, list: methods, list2: item.list2, span: item.span })
+            continue
+        }
+        if k == "module" {
+            out = std::array::push(out, Node { kind: k, text: item.text, text2: item.text2, flag: item.flag, a: item.a, b: item.b, c: item.c, list: ld_assign_source_files(item.list, file), list2: item.list2, span: item.span })
+            continue
+        }
+        out = std::array::push(out, item)
+    }
+    out
+}
+
+fn ld_with_file(n: Node, file: string) -> Node {
+    Node { kind: n.kind, text: n.text, text2: file, flag: n.flag, a: n.a, b: n.b, c: n.c, list: n.list, list2: n.list2, span: n.span }
+}

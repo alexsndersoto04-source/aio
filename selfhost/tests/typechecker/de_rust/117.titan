@@ -1,0 +1,1 @@
+fn apply(callback: fn(int) -> int) -> int { callback(1) } fn main() { let loose = |value| value * 2 apply(loose) }

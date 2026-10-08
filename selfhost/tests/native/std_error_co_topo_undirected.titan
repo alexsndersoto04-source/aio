@@ -1,0 +1,4 @@
+fn main() {
+    let g = std::collections::graph_new(false)
+    print(std::collections::graph_topological_sort(g))
+}

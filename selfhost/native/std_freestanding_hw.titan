@@ -1,0 +1,825 @@
+// std::freestanding_memory / std::freestanding_cpu / std::freestanding_mmio.
+//
+// En un programa sin sistema operativo (objetivo aarch64-none,
+// std::raw::bare() == 1) son de verdad:
+//   - map_page / translate_page escriben y recorren las tablas de páginas
+//     del procesador (TTBR0_EL1, páginas de 4 KiB, direcciones de 39 bits);
+//   - init_exception_table copia la tabla de vectores real (lv_vectors, que
+//     escribe llvm.titan) a la dirección pedida y la pone en VBAR_EL1; las
+//     excepciones de verdad llegan a rt_bare_exception, que llama a las
+//     funciones Titan registradas; invoke_syscall ejecuta `svc #0`;
+//   - read/write_mmio_u32 son accesos volátiles de 32 bits y serial_init /
+//     serial_write_str programan un UART PL011 de verdad.
+// En un programa con sistema operativo (y en la VM de Rust) esas
+// operaciones dan el error honesto fh_bare_only(): el sistema es el dueño
+// de las tablas de páginas, de los vectores y de los registros. El reparto
+// de marcos físicos y la lista de regiones MMIO son contabilidad y
+// funcionan igual en los dos casos (como crates/titan_stdlib/src/
+// freestanding_{memory,cpu,mmio}.rs).
+//
+// Estado (globales):
+//   + 3024 dirección de lv_vectors (la pone el arranque sin sistema)
+//   + 3032 bloque de memoria: [0] iniciado [1] base [2] marcos [3] siguiente
+//          [4] nº asignados [5] lista asignados [6] nº reciclados
+//          [7] pila reciclados [8] nº páginas mapeadas [9] lista páginas
+//   + 3040 bloque de CPU: [0] iniciado [1] vbar [2..5] manejadores de los
+//          vectores 0..3 (closure o 0) [6] nº llamadas [7] lista (número,
+//          closure) de las llamadas al sistema
+//   + 3048 bloque MMIO: [0] iniciado [1] nº regiones [2] lista (base,
+//          tamaño) [3] UART (o -1) [4] bytes enviados [5] búfer
+//   + 3056 excepciones (no svc) atendidas; + 3064 último FAR válido
+// Prefijo `fh_`.
+
+fn fh_bare_only() -> string {
+    "requires a bare-metal program (build with target aarch64-none): a hosted program cannot use page tables, exception vectors or hardware registers"
+}
+
+fn fh_hosted_fail(function: string) {
+    if std::raw::bare() != 1 {
+        rt_native_fail(function, fh_bare_only())
+    }
+}
+
+fn fh_int_arg(v: any, function: string) -> int {
+    rt_expect_int(v, function)
+    std::raw::bits(v)
+}
+
+fn fh_nonneg(v: int, what: string, function: string) {
+    if v < 0 {
+        rt_native_fail(function, what + " must be nonnegative, got " + rt_int_to_str(v))
+    }
+}
+
+// Bloque de `n` palabras a cero (se queda para siempre, como el estado de Rust).
+fn fh_block(slot: int, n: int) -> int {
+    let g = std::raw::globals()
+    let mut p = std::raw::load(g + slot)
+    if p == 0 {
+        p = rt_alloc(8 * n)
+        let mut i = 0
+        while i < n {
+            std::raw::store(p + 8 * i, 0)
+            i += 1
+        }
+        std::raw::store(g + slot, p)
+    }
+    p
+}
+
+// ------------------------------------------------------------ memoria
+
+fn fh_mem() -> int {
+    fh_block(3032, 10)
+}
+
+fn fh_max_frames() -> int {
+    16384
+}
+
+fn fh_list(m: int, k: int) -> int {
+    let mut p = std::raw::load(m + 8 * k)
+    if p == 0 {
+        p = rt_alloc(8 * fh_max_frames())
+        std::raw::store(m + 8 * k, p)
+    }
+    p
+}
+
+fn std__freestanding_memory__init_frame_allocator(base: any, size: any) -> any {
+    let f = "std::freestanding_memory::init_frame_allocator"
+    let b = fh_int_arg(base, f)
+    let s = fh_int_arg(size, f)
+    fh_nonneg(b, "base address", f)
+    fh_nonneg(s, "size", f)
+    let max = 9223372036854775807
+    if b > max - 4095 {
+        return false
+    }
+    let aligned = (b + 4095) & (0 - 4096)
+    let frames = s / 4096
+    if frames == 0 {
+        return false
+    }
+    if frames - 1 > max / 4096 {
+        return false
+    }
+    let last = (frames - 1) * 4096
+    if aligned > max - last {
+        return false
+    }
+    let m = fh_mem()
+    std::raw::store(m + 8, aligned)
+    std::raw::store(m + 16, frames)
+    std::raw::store(m + 24, 0)
+    std::raw::store(m + 32, 0)
+    std::raw::store(m + 48, 0)
+    std::raw::store(m, 1)
+    true
+}
+
+fn std__freestanding_memory__allocate_frame() -> any {
+    let m = fh_mem()
+    let count = std::raw::load(m + 32)
+    if std::raw::load(m) == 0 || count >= fh_max_frames() {
+        return 0
+    }
+    let mut frame = 0
+    let nrec = std::raw::load(m + 48)
+    if nrec > 0 {
+        frame = std::raw::load(fh_list(m, 7) + 8 * (nrec - 1))
+        std::raw::store(m + 48, nrec - 1)
+    } else {
+        let next = std::raw::load(m + 24)
+        if next >= std::raw::load(m + 16) {
+            return 0
+        }
+        frame = std::raw::load(m + 8) + next * 4096
+        std::raw::store(m + 24, next + 1)
+    }
+    std::raw::store(fh_list(m, 5) + 8 * count, frame)
+    std::raw::store(m + 32, count + 1)
+    frame
+}
+
+fn std__freestanding_memory__deallocate_frame(paddr: any) -> any {
+    let p = fh_int_arg(paddr, "std::freestanding_memory::deallocate_frame")
+    let m = fh_mem()
+    if std::raw::load(m) == 0 || p % 4096 != 0 {
+        return false
+    }
+    let count = std::raw::load(m + 32)
+    let list = fh_list(m, 5)
+    let mut i = 0
+    while i < count {
+        if std::raw::load(list + 8 * i) == p {
+            std::raw::store(list + 8 * i, std::raw::load(list + 8 * (count - 1)))
+            std::raw::store(m + 32, count - 1)
+            let nrec = std::raw::load(m + 48)
+            std::raw::store(fh_list(m, 7) + 8 * nrec, p)
+            std::raw::store(m + 48, nrec + 1)
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn std__freestanding_memory__free_frames_count() -> any {
+    let m = fh_mem()
+    if std::raw::load(m) == 0 {
+        return 0
+    }
+    let free = std::raw::load(m + 16) - std::raw::load(m + 32)
+    if free < 0 {
+        return 0
+    }
+    free
+}
+
+fn std__freestanding_memory__shutdown() -> any {
+    let m = fh_mem()
+    std::raw::store(m + 48, 0)
+    std::raw::store(m + 32, 0)
+    std::raw::store(m + 24, 0)
+    std::raw::store(m, 0)
+    true
+}
+
+// Tablas de páginas (formato de AArch64 con gránulo de 4 KiB):
+//   bits 1:0 = 01 bloque (niveles 1 y 2), 11 tabla (niveles 1 y 2) o página
+//   (nivel 3); bits 2-11 y 52-54 = atributos (AttrIdx, AP, SH, AF, PXN, UXN).
+fn fh_pa_mask() -> int {
+    281474976706560
+}
+
+fn fh_attr_mask() -> int {
+    4092 | 31525197391593472
+}
+
+// Tabla nueva de 4 KiB, alineada y con `n` entradas `first + i * step`.
+fn fh_new_table(first: int, step: int, filled: bool) -> int {
+    let raw = rt_alloc(8192)
+    let t = (raw + 4095) & (0 - 4096)
+    let mut i = 0
+    while i < 512 {
+        let mut e = 0
+        if filled {
+            e = first + i * step
+        }
+        std::raw::store(t + 8 * i, e)
+        i += 1
+    }
+    t
+}
+
+// Entrada `slot` (nivel con bloques de `size` bytes): devuelve la tabla del
+// nivel siguiente, creándola si hace falta (un bloque se parte en 512 trozos
+// con los mismos atributos: la traducción no cambia).
+fn fh_next_table(slot: int, size: int, last_level: bool) -> int {
+    let e = std::raw::load(slot)
+    if (e & 3) == 3 {
+        return e & fh_pa_mask()
+    }
+    let mut t = 0
+    if (e & 1) == 1 {
+        let mut kind = 1
+        if last_level {
+            kind = 3
+        }
+        let base = e & fh_pa_mask() & (0 - size)
+        t = fh_new_table(base | (e & fh_attr_mask()) | kind, size / 512, true)
+    } else {
+        t = fh_new_table(0, 0, false)
+    }
+    // La tabla nueva tiene que verse antes que la entrada que la apunta.
+    std::raw::set_sysreg(100, 0)
+    std::raw::store(slot, t | 3)
+    t
+}
+
+fn fh_mapped_index(m: int, v: int) -> int {
+    let n = std::raw::load(m + 64)
+    let list = fh_list(m, 9)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(list + 8 * i) == v {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn std__freestanding_memory__map_page(vaddr: any, paddr: any, flags: any) -> any {
+    let f = "std::freestanding_memory::map_page"
+    let v = fh_int_arg(vaddr, f)
+    let p = fh_int_arg(paddr, f)
+    let fl = fh_int_arg(flags, f)
+    fh_hosted_fail(f)
+    let m = fh_mem()
+    if std::raw::load(m) == 0 || v < 0 || p < 0 || v % 4096 != 0 || p % 4096 != 0 {
+        return false
+    }
+    // 39 bits de dirección virtual (T0SZ = 25) y 48 de física.
+    if v >= 549755813888 || p >= 281474976710656 || fl < 0 || fl > 15 {
+        return false
+    }
+    let known = fh_mapped_index(m, v) >= 0
+    let n = std::raw::load(m + 64)
+    if !known && n >= fh_max_frames() {
+        return false
+    }
+    let l1 = std::raw::sysreg(9) & fh_pa_mask()
+    let l2 = fh_next_table(l1 + 8 * (std::raw::shr(v, 30) & 511), 1073741824, false)
+    let l3 = fh_next_table(l2 + 8 * (std::raw::shr(v, 21) & 511), 2097152, true)
+    // Página: AF, compartible (inner), AttrIdx 1 = memoria normal o 0 =
+    // dispositivo, AP[2] = solo lectura, AP[1] = accesible desde EL0,
+    // PXN/UXN = no ejecutable.
+    let mut e = p | 3 | 1024 | 768
+    if (fl & 8) == 0 {
+        e = e | 4
+    }
+    if (fl & 1) == 0 {
+        e = e | 128
+    }
+    if (fl & 4) != 0 {
+        e = e | 64
+    }
+    if (fl & 2) == 0 {
+        e = e | 27021597764222976
+    }
+    std::raw::store(l3 + 8 * (std::raw::shr(v, 12) & 511), e)
+    std::raw::set_sysreg(100, 0)
+    if !known {
+        std::raw::store(fh_list(m, 9) + 8 * n, v)
+        std::raw::store(m + 64, n + 1)
+    }
+    true
+}
+
+fn std__freestanding_memory__translate_page(vaddr: any) -> any {
+    let f = "std::freestanding_memory::translate_page"
+    let v = fh_int_arg(vaddr, f)
+    fh_hosted_fail(f)
+    if v < 0 || v >= 549755813888 {
+        return 0
+    }
+    let mut t = std::raw::sysreg(9) & fh_pa_mask()
+    let mut shift = 30
+    while shift >= 12 {
+        let e = std::raw::load(t + 8 * (std::raw::shr(v, shift) & 511))
+        if (e & 1) == 0 {
+            return 0
+        }
+        let size = std::raw::shl(1, shift)
+        if shift == 12 || (e & 3) == 1 {
+            if shift == 12 && (e & 3) != 3 {
+                return 0
+            }
+            return (e & fh_pa_mask() & (0 - size)) + (v & (size - 1))
+        }
+        t = e & fh_pa_mask()
+        shift -= 9
+    }
+    0
+}
+
+// ------------------------------------------------------------ CPU
+
+fn fh_cpu() -> int {
+    fh_block(3040, 8)
+}
+
+fn fh_max_syscalls() -> int {
+    1024
+}
+
+fn fh_sys_list(c: int) -> int {
+    let mut p = std::raw::load(c + 56)
+    if p == 0 {
+        p = rt_alloc(16 * fh_max_syscalls())
+        std::raw::store(c + 56, p)
+    }
+    p
+}
+
+fn fh_sys_index(c: int, num: int) -> int {
+    let n = std::raw::load(c + 48)
+    let list = fh_sys_list(c)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(list + 16 * i) == num {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn fh_is_closure(h: any, arity: int) -> bool {
+    std::raw::tag(h) == 12 && std::raw::load(std::raw::bits(h) + 24) == arity
+}
+
+// Guarda la closure en `slot` (soltando la anterior).
+fn fh_set_closure(slot: int, h: any) {
+    let old = std::raw::load(slot)
+    std::raw::store(slot, std::raw::keep(h))
+    if old != 0 {
+        std::raw::release(12, old)
+    }
+}
+
+fn fh_clear_closure(slot: int) {
+    let old = std::raw::load(slot)
+    std::raw::store(slot, 0)
+    if old != 0 {
+        std::raw::release(12, old)
+    }
+}
+
+fn fh_int_result(v: any, what: string) -> int {
+    if std::raw::tag(v) != 1 {
+        rt_fatal(what + " must return an int")
+    }
+    std::raw::bits(v)
+}
+
+fn fh_call2(h: int, a: int, b: int, what: string) -> int {
+    let f: any = std::raw::value(12, h)
+    fh_int_result(f(a, b), what)
+}
+
+fn fh_call3(h: int, a: int, b: int, c: int, what: string) -> int {
+    let f: any = std::raw::value(12, h)
+    fh_int_result(f(a, b, c), what)
+}
+
+fn std__freestanding_cpu__init_exception_table(vbar: any) -> any {
+    let f = "std::freestanding_cpu::init_exception_table"
+    let v = fh_int_arg(vbar, f)
+    fh_hosted_fail(f)
+    // VBAR_EL1: bits [10:0] a cero (2 KiB).
+    if v <= 0 || v % 2048 != 0 {
+        return false
+    }
+    let g = std::raw::globals()
+    let src = std::raw::load(g + 3024)
+    if v != src {
+        let mut i = 0
+        while i < 2048 {
+            std::raw::store(v + i, std::raw::load(src + i))
+            i += 8
+        }
+    }
+    // Código recién escrito: caché de datos a memoria, caché de
+    // instrucciones invalidada, y la tabla en VBAR_EL1.
+    let mut line = 0
+    while line < 2048 {
+        std::raw::set_sysreg(101, v + line)
+        line += 64
+    }
+    std::raw::set_sysreg(102, 0)
+    std::raw::set_sysreg(3, v)
+    let c = fh_cpu()
+    let mut k = 0
+    while k < 4 {
+        fh_clear_closure(c + 16 + 8 * k)
+        k += 1
+    }
+    fh_clear_syscalls(c)
+    std::raw::store(g + 3064, 0)
+    std::raw::store(c + 8, v)
+    std::raw::store(c, 1)
+    true
+}
+
+fn fh_clear_syscalls(c: int) {
+    let n = std::raw::load(c + 48)
+    let list = fh_sys_list(c)
+    let mut i = 0
+    while i < n {
+        std::raw::release(12, std::raw::load(list + 16 * i + 8))
+        i += 1
+    }
+    std::raw::store(c + 48, 0)
+}
+
+fn std__freestanding_cpu__register_exception_handler(vector: any, handler: any) -> any {
+    let f = "std::freestanding_cpu::register_exception_handler"
+    let k = fh_int_arg(vector, f)
+    fh_hosted_fail(f)
+    let c = fh_cpu()
+    if std::raw::load(c) == 0 || k < 0 || k > 3 || !fh_is_closure(handler, 2) {
+        return false
+    }
+    fh_set_closure(c + 16 + 8 * k, handler)
+    true
+}
+
+fn std__freestanding_cpu__dispatch_exception(vector: any, fault: any, code: any) -> any {
+    let f = "std::freestanding_cpu::dispatch_exception"
+    let k = fh_int_arg(vector, f)
+    let fa = fh_int_arg(fault, f)
+    let esr = fh_int_arg(code, f)
+    fh_hosted_fail(f)
+    let c = fh_cpu()
+    if std::raw::load(c) == 0 {
+        return 0
+    }
+    std::raw::store(std::raw::globals() + 3064, fa)
+    if k < 0 || k > 3 {
+        return 0
+    }
+    let h = std::raw::load(c + 16 + 8 * k)
+    if h == 0 {
+        return 0
+    }
+    fh_call2(h, fa, esr, "exception handler")
+}
+
+fn std__freestanding_cpu__register_syscall_handler(num: any, handler: any) -> any {
+    let f = "std::freestanding_cpu::register_syscall_handler"
+    let n = fh_int_arg(num, f)
+    fh_hosted_fail(f)
+    let c = fh_cpu()
+    if std::raw::load(c) == 0 || n < 0 || n > 4294967295 || !fh_is_closure(handler, 3) {
+        return false
+    }
+    let i = fh_sys_index(c, n)
+    if i >= 0 {
+        fh_set_closure(fh_sys_list(c) + 16 * i + 8, handler)
+        return true
+    }
+    let count = std::raw::load(c + 48)
+    if count >= fh_max_syscalls() {
+        return false
+    }
+    let list = fh_sys_list(c)
+    std::raw::store(list + 16 * count, n)
+    std::raw::store(list + 16 * count + 8, 0)
+    fh_set_closure(list + 16 * count + 8, handler)
+    std::raw::store(c + 48, count + 1)
+    true
+}
+
+// Llamada al sistema de verdad: `svc #0` con el número en x8 y los
+// argumentos en x0-x2; la atiende rt_bare_exception.
+fn std__freestanding_cpu__invoke_syscall(num: any, a0: any, a1: any, a2: any) -> any {
+    let f = "std::freestanding_cpu::invoke_syscall"
+    let n = fh_int_arg(num, f)
+    let x0 = fh_int_arg(a0, f)
+    let x1 = fh_int_arg(a1, f)
+    let x2 = fh_int_arg(a2, f)
+    fh_hosted_fail(f)
+    if std::raw::load(fh_cpu()) == 0 {
+        return 0
+    }
+    std::raw::svc(n, x0, x1, x2, 0, 0, 0)
+}
+
+fn std__freestanding_cpu__get_last_fault_addr() -> any {
+    if std::raw::bare() != 1 || std::raw::load(fh_cpu()) == 0 {
+        return 0
+    }
+    std::raw::load(std::raw::globals() + 3064)
+}
+
+fn std__freestanding_cpu__shutdown() -> any {
+    if std::raw::bare() != 1 {
+        return true
+    }
+    let c = fh_cpu()
+    let mut k = 0
+    while k < 4 {
+        fh_clear_closure(c + 16 + 8 * k)
+        k += 1
+    }
+    fh_clear_syscalls(c)
+    std::raw::store(c + 8, 0)
+    std::raw::store(c, 0)
+    // Vuelve la tabla del arranque (errores honestos, nunca VBAR a cero).
+    std::raw::set_sysreg(3, std::raw::load(std::raw::globals() + 3024))
+    true
+}
+
+// FAR solo vale algo en las excepciones de acceso (ESR.EC): instrucción o
+// datos abortados, PC desalineado y puntos de observación.
+fn fh_far_valid(ec: int) -> bool {
+    ec == 32 || ec == 33 || ec == 34 || ec == 36 || ec == 37 || ec == 52 || ec == 53
+}
+
+// Entrada de todas las excepciones reales (desde lv_exception). `k` es la
+// entrada de la tabla (0-15; k & 3 = síncrona, IRQ, FIQ, SError), `frame`
+// los registros guardados (x0 en +0 ... x8 en +64). Devuelve dónde seguir.
+fn rt_bare_exception(k: int, esr: int, far: int, elr: int, frame: int) -> int {
+    let g = std::raw::globals()
+    let ec = std::raw::shr(esr, 26) & 63
+    let c = std::raw::load(g + 3040)
+    let kind = k & 3
+    if kind == 0 && ec == 21 {
+        // svc: std::freestanding_cpu::invoke_syscall.
+        let mut r = -38
+        if c != 0 && std::raw::load(c) != 0 {
+            let i = fh_sys_index(c, std::raw::load(frame + 64))
+            if i >= 0 {
+                let h = std::raw::load(fh_sys_list(c) + 16 * i + 8)
+                r = fh_call3(h, std::raw::load(frame), std::raw::load(frame + 8), std::raw::load(frame + 16), "syscall handler")
+            }
+        }
+        std::raw::store(frame, r)
+        return elr
+    }
+    let mut fa = 0
+    if fh_far_valid(ec) {
+        fa = far
+    }
+    std::raw::store(g + 3056, std::raw::load(g + 3056) + 1)
+    std::raw::store(g + 3064, fa)
+    if c != 0 && std::raw::load(c) != 0 {
+        let h = std::raw::load(c + 16 + 8 * kind)
+        if h != 0 {
+            if fh_call2(h, fa, esr, "exception handler") != 0 {
+                if kind == 0 {
+                    return elr + 4
+                }
+                return elr
+            }
+        }
+    }
+    let mut msg = "unhandled CPU exception (vector " + rt_int_to_str(k) + "): ESR=0x" + fs_hex(esr)
+    if fh_far_valid(ec) {
+        msg = msg + " FAR=0x" + fs_hex(far)
+    }
+    rt_fatal(msg + " ELR=0x" + fs_hex(elr))
+    elr
+}
+
+// ------------------------------------------------------------ MMIO
+
+fn fh_io() -> int {
+    let p = fh_block(3048, 6)
+    if std::raw::load(p + 16) == 0 {
+        std::raw::store(p + 16, rt_alloc(16 * 256))
+        std::raw::store(p + 24, -1)
+    }
+    p
+}
+
+fn fh_max_buffer() -> int {
+    262144
+}
+
+fn fh_buffer(io: int) -> int {
+    let mut p = std::raw::load(io + 40)
+    if p == 0 {
+        p = rt_alloc(fh_max_buffer())
+        std::raw::store(io + 40, p)
+    }
+    p
+}
+
+fn fh_in_region(io: int, p: int) -> bool {
+    let n = std::raw::load(io + 8)
+    let list = std::raw::load(io + 16)
+    let mut i = 0
+    while i < n {
+        let base = std::raw::load(list + 16 * i)
+        let size = std::raw::load(list + 16 * i + 8)
+        if p >= base && p - base < size {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn fh_has_region(io: int, base: int, size: int) -> bool {
+    let n = std::raw::load(io + 8)
+    let list = std::raw::load(io + 16)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(list + 16 * i) == base && std::raw::load(list + 16 * i + 8) == size {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn fh_add_region(io: int, base: int, size: int) {
+    let n = std::raw::load(io + 8)
+    let list = std::raw::load(io + 16)
+    std::raw::store(list + 16 * n, base)
+    std::raw::store(list + 16 * n + 8, size)
+    std::raw::store(io + 8, n + 1)
+}
+
+fn std__freestanding_mmio__init_mmio_region(base: any, size: any) -> any {
+    let f = "std::freestanding_mmio::init_mmio_region"
+    let b = fh_int_arg(base, f)
+    let s = fh_int_arg(size, f)
+    fh_nonneg(b, "base address", f)
+    fh_nonneg(s, "size", f)
+    let io = fh_io()
+    if s == 0 || b > 9223372036854775807 - s || std::raw::load(io + 8) >= 256 {
+        return false
+    }
+    fh_add_region(io, b, s)
+    std::raw::store(io, 1)
+    true
+}
+
+fn fh_faults() -> int {
+    std::raw::load(std::raw::globals() + 3056)
+}
+
+fn std__freestanding_mmio__read_mmio_u32(paddr: any) -> any {
+    let f = "std::freestanding_mmio::read_mmio_u32"
+    let p = fh_int_arg(paddr, f)
+    fh_hosted_fail(f)
+    let io = fh_io()
+    if std::raw::load(io) == 0 || p % 4 != 0 || !fh_in_region(io, p) {
+        return 0
+    }
+    // Si el acceso falla y un manejador lo salta, el valor no existe: 0.
+    let before = fh_faults()
+    let v = std::raw::mmio_load32(p)
+    if fh_faults() != before {
+        return 0
+    }
+    v
+}
+
+fn fh_buffer_push(io: int, byte: int) -> bool {
+    let n = std::raw::load(io + 32)
+    if n >= fh_max_buffer() {
+        return false
+    }
+    std::raw::store8(fh_buffer(io) + n, byte)
+    std::raw::store(io + 32, n + 1)
+    true
+}
+
+fn std__freestanding_mmio__write_mmio_u32(paddr: any, value: any) -> any {
+    let f = "std::freestanding_mmio::write_mmio_u32"
+    let p = fh_int_arg(paddr, f)
+    let v = fh_int_arg(value, f)
+    fh_hosted_fail(f)
+    let io = fh_io()
+    if std::raw::load(io) == 0 || p % 4 != 0 || v < 0 || v > 4294967295 || !fh_in_region(io, p) {
+        return false
+    }
+    let uart = std::raw::load(io + 24)
+    if p == uart && std::raw::load(io + 32) >= fh_max_buffer() {
+        return false
+    }
+    let before = fh_faults()
+    std::raw::mmio_store32(p, v)
+    if fh_faults() != before {
+        return false
+    }
+    if p == uart {
+        fh_buffer_push(io, v & 255)
+    }
+    true
+}
+
+// UART PL011 (reloj de referencia de 24 MHz, el de la máquina virt):
+// DR +0x00, FR +0x18 (bit 3 ocupado, bit 5 cola llena), IBRD +0x24,
+// FBRD +0x28, LCRH +0x2C, CR +0x30.
+fn std__freestanding_mmio__serial_init(base: any, baud: any) -> any {
+    let f = "std::freestanding_mmio::serial_init"
+    let b = fh_int_arg(base, f)
+    let rate = fh_int_arg(baud, f)
+    fh_hosted_fail(f)
+    let io = fh_io()
+    if b < 0 || b % 4 != 0 || b > 9223372036854775807 - 4096 || rate <= 0 || rate > 4294967295 {
+        return false
+    }
+    let known = fh_has_region(io, b, 4096)
+    if !known && std::raw::load(io + 8) >= 256 {
+        return false
+    }
+    let div = (96000000 + rate / 2) / rate
+    let ibrd = std::raw::shr(div, 6)
+    if ibrd < 1 || ibrd > 65535 {
+        return false
+    }
+    let before = fh_faults()
+    std::raw::mmio_store32(b + 48, 0)
+    while (std::raw::mmio_load32(b + 24) & 8) != 0 && fh_faults() == before {
+    }
+    std::raw::mmio_store32(b + 44, 0)
+    std::raw::mmio_store32(b + 36, ibrd)
+    std::raw::mmio_store32(b + 40, div & 63)
+    std::raw::mmio_store32(b + 44, 112)
+    std::raw::mmio_store32(b + 48, 769)
+    if fh_faults() != before {
+        return false
+    }
+    if !known {
+        fh_add_region(io, b, 4096)
+    }
+    std::raw::store(io + 24, b)
+    std::raw::store(io + 32, 0)
+    std::raw::store(io, 1)
+    true
+}
+
+fn std__freestanding_mmio__serial_write_str(text: any) -> any {
+    let f = "std::freestanding_mmio::serial_write_str"
+    rt_expect_str(text, f)
+    fh_hosted_fail(f)
+    let io = fh_io()
+    let uart = std::raw::load(io + 24)
+    let n = rt_slen(text)
+    if std::raw::load(io) == 0 || uart < 0 || std::raw::load(io + 32) + n > fh_max_buffer() {
+        return 0
+    }
+    let src = std::raw::bits(text) + 16
+    let before = fh_faults()
+    let mut i = 0
+    while i < n {
+        while (std::raw::mmio_load32(uart + 24) & 32) != 0 && fh_faults() == before {
+        }
+        if fh_faults() != before {
+            return i
+        }
+        let byte = std::raw::load8(src + i)
+        std::raw::mmio_store32(uart, byte)
+        fh_buffer_push(io, byte)
+        i += 1
+    }
+    n
+}
+
+// Los bytes tal cual se enviaron (UTF-8 inválido → U+FFFD, como
+// String::from_utf8_lossy).
+fn std__freestanding_mmio__serial_get_buffer() -> any {
+    if std::raw::bare() != 1 {
+        return ""
+    }
+    let io = fh_io()
+    let n = std::raw::load(io + 32)
+    if std::raw::load(io) == 0 || n == 0 {
+        return ""
+    }
+    let b = sb_new(n)
+    let src = fh_buffer(io)
+    let mut i = 0
+    while i < n {
+        sb_byte(b, std::raw::load8(src + i))
+        i += 1
+    }
+    dr_lossy(sb_finish(b))
+}
+
+fn std__freestanding_mmio__shutdown() -> any {
+    let io = fh_io()
+    std::raw::store(io + 8, 0)
+    std::raw::store(io + 24, -1)
+    std::raw::store(io + 32, 0)
+    std::raw::store(io, 0)
+    true
+}

@@ -1,0 +1,1 @@
+fn literal() -> int { if false { true + 1 } else { 1 } }

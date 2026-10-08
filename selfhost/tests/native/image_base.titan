@@ -1,0 +1,25 @@
+fn main() {
+    let h = std::image::from_rgba(3, 2, std::bytes::from_array([255,0,0,255,0,255,0,127,0,0,255,0,12,34,56,78,90,123,145,167,189,210,231,255]))
+    println(h)
+    println(std::image::width(h))
+    println(std::image::height(h))
+    println(std::image::color_type(h))
+    let handles = [std::image::rotate90(h), std::image::rotate180(h), std::image::rotate270(h), std::image::flip_horizontal(h), std::image::flip_vertical(h), std::image::grayscale(h), std::image::brighten(h, 20), std::image::crop(h, 1, 0, 2, 1)]
+    let mut i = 0
+    while i < len(handles) {
+        let v = handles[i]
+        println(v)
+        println(std::image::width(v))
+        println(std::image::height(v))
+        println(std::image::color_type(v))
+        std::image::close(v)
+        i += 1
+    }
+    std::image::close(h)
+    std::image::close(h)
+    let closed_rejected = match std::try::catch(|| std::image::width(h)) {
+        Result::Ok(_) => false,
+        Result::Err(_) => true,
+    }
+    std::testing::assert(closed_rejected, "closed image handle is rejected")
+}

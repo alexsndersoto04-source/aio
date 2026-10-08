@@ -1,0 +1,1 @@
+type Nope = ! fn halt() -> Nope { loop {} } fn main() { let impossible: ! = halt() }

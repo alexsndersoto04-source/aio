@@ -1,0 +1,587 @@
+// std::readline: edición real de líneas con la terminal de Titan.
+// Usa el lector de teclas de std::term; no lanza otro programa ni muestra
+// los caracteres escritos al pedir una clave secreta.
+
+fn rl_fail(function: string, message: string) {
+    rt_native_fail(function, message)
+}
+
+fn rl_esc() -> any {
+    "" + std::text::from_char_code(27)
+}
+
+fn rl_insert(line: any, cursor: int, text: any) -> any {
+    std::text::substring(line, 0, cursor) + text + std::text::substring(line, cursor, std::text::length(line))
+}
+
+fn rl_delete_before(line: any, cursor: int) -> any {
+    std::text::substring(line, 0, cursor - 1) + std::text::substring(line, cursor, std::text::length(line))
+}
+
+fn rl_delete_at(line: any, cursor: int) -> any {
+    std::text::substring(line, 0, cursor) + std::text::substring(line, cursor + 1, std::text::length(line))
+}
+
+fn rl_render(prompt: any, line: any, cursor: int) {
+    let esc = rl_esc()
+    print("\r" + prompt + line + esc + "[K")
+    let after = std::text::substring(line, cursor, std::text::length(line))
+    let back = uw_str_width(after)
+    if back > 0 {
+        print(esc + "[" + rt_int_to_str(back) + "D")
+    }
+}
+
+fn rl_draw_search(query: any, found: any) {
+    print("\r(reverse-i-search)`" + query + "': " + found + rl_esc() + "[K")
+}
+
+fn rl_find_history(history: any, query: any, before: int) -> (int, any) {
+    let mut i = before - 1
+    while i >= 0 {
+        if std::text::contains(history[i], query) {
+            return (i, history[i])
+        }
+        i -= 1
+    }
+    return (-1, "")
+}
+
+// Devuelve (texto, cursor, estado): 1 = coincidencia aceptada,
+// 0 = búsqueda cancelada, -1 = interrupción.
+fn rl_search(history: any, original: any, original_cursor: int) -> (any, int, int) {
+    let mut query = ""
+    let mut found = ""
+    let mut found_at = len(history)
+    let mut found_index = -1
+    let mut searching = true
+    let mut state = 0
+    rl_draw_search(query, found)
+    while searching {
+        let key = std::term::read_key(2147483647)
+        if key == "" {
+            continue
+        }
+        if key == "Ctrl+c" {
+            state = -1
+            searching = false
+        }
+        if key == "Enter" {
+            searching = false
+            if found_index >= 0 {
+                state = 1
+            }
+        }
+        if key == "Escape" {
+            searching = false
+        }
+        if key == "Ctrl+g" {
+            searching = false
+        }
+        if key == "Ctrl+r" {
+            let (index, value) = rl_find_history(history, query, found_at)
+            found_index = index
+            found = value
+            if index >= 0 {
+                found_at = index
+            }
+            rl_draw_search(query, found)
+        }
+        if key == "Backspace" || key == "Ctrl+h" {
+            let qlen = std::text::length(query)
+            if qlen > 0 {
+                query = std::text::substring(query, 0, qlen - 1)
+                let (index, value) = rl_find_history(history, query, len(history))
+                found_index = index
+                found = value
+                found_at = if index >= 0 { index } else { len(history) }
+                rl_draw_search(query, found)
+            }
+        }
+        if std::text::length(key) == 1 && !std::text::starts_with(key, "Ctrl+") && !std::text::starts_with(key, "Alt+") {
+            query = query + key
+            let (index, value) = rl_find_history(history, query, len(history))
+            found_index = index
+            found = value
+            found_at = if index >= 0 { index } else { len(history) }
+            rl_draw_search(query, found)
+        }
+    }
+    if state == 1 {
+        return (found, std::text::length(found), state)
+    }
+    return (original, original_cursor, state)
+}
+
+fn rl_word_left(line: any, cursor: int) -> int {
+    let chars = std::text::chars(line)
+    let mut i = cursor
+    while i > 0 && std::text::is_whitespace(chars[i - 1]) {
+        i -= 1
+    }
+    while i > 0 && std::text::is_alphanumeric(chars[i - 1]) {
+        i -= 1
+    }
+    i
+}
+
+fn rl_word_right(line: any, cursor: int) -> int {
+    let chars = std::text::chars(line)
+    let n = len(chars)
+    let mut i = cursor
+    while i < n && std::text::is_alphanumeric(chars[i]) {
+        i += 1
+    }
+    while i < n && std::text::is_whitespace(chars[i]) {
+        i += 1
+    }
+    i
+}
+
+fn rl_add_history(history: any, line: any) -> any {
+    if line == "" {
+        return history
+    }
+    let n = len(history)
+    if n > 0 && history[n - 1] == line {
+        return history
+    }
+    let mut out = std::array::push(history, line)
+    if len(out) > 100 {
+        out = std::array::slice(out, len(out) - 100, len(out))
+    }
+    out
+}
+
+// Historial de prompt_with_history, compartido por llamadas dentro del mismo
+// ejecutable. El hueco global guarda una referencia propia al array.
+fn rl_history_should_add(history: any, line: any) -> bool {
+    if line == "" {
+        return false
+    }
+    let n = len(history)
+    n == 0 || history[n - 1] != line
+}
+
+fn rl_history_escape(line: any) -> any {
+    let chars = std::text::chars(line)
+    let b = sb_new(rt_slen(line))
+    let mut i = 0
+    while i < len(chars) {
+        // `chars[i]` is a tagged char; comparisons and sb_cp use integer scalars.
+        let c = std::text::char_code(chars[i])
+        if c == 92 {
+            sb_byte(b, 92)
+            sb_byte(b, 92)
+        } else if c == 10 {
+            sb_byte(b, 92)
+            sb_byte(b, 110)
+        } else {
+            sb_cp(b, c)
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+fn rl_history_unescape(line: any) -> any {
+    let chars = std::text::chars(line)
+    let n = len(chars)
+    let mut i = 0
+    while i < n {
+        let c = std::text::char_code(chars[i])
+        if c == 92 {
+            if i + 1 >= n {
+                return line
+            }
+            let next = std::text::char_code(chars[i + 1])
+            if next != 110 && next != 92 {
+                return line
+            }
+            i += 2
+        } else {
+            i += 1
+        }
+    }
+    let b = sb_new(rt_slen(line))
+    i = 0
+    while i < n {
+        let c = std::text::char_code(chars[i])
+        if c == 92 {
+            let next = std::text::char_code(chars[i + 1])
+            if next == 110 {
+                sb_byte(b, 10)
+            } else {
+                sb_byte(b, 92)
+            }
+            i += 2
+        } else {
+            sb_cp(b, c)
+            i += 1
+        }
+    }
+    sb_finish(b)
+}
+
+fn rl_memory_history_slot() -> int {
+    std::raw::globals() + 3144
+}
+
+fn rl_memory_history_take() -> any {
+    let slot = rl_memory_history_slot()
+    let bits = std::raw::load(slot)
+    if bits == 0 {
+        return []
+    }
+    std::raw::store(slot, 0)
+    std::raw::adopt(7, bits)
+}
+
+fn rl_memory_history_put(history: any) {
+    let slot = rl_memory_history_slot()
+    let old = std::raw::load(slot)
+    std::raw::store(slot, std::raw::keep(history))
+    if old != 0 {
+        std::raw::release(7, old)
+    }
+}
+
+fn rl_load_history(path: any) -> any {
+    if !std::fs::exists(path) {
+        return []
+    }
+    match std::try::catch(|| std::fs::read_text(path)) {
+        Result::Ok(text) => {
+            let source = std::text::lines(text)
+            let mut history: any = []
+            let mut i = 0
+            let mut version2 = false
+            if len(source) > 0 && source[0] == "#V2" {
+                i = 1
+                version2 = true
+            }
+            while i < len(source) {
+                if source[i] != "" {
+                    let entry = if version2 { rl_history_unescape(source[i]) } else { source[i] }
+                    history = rl_add_history(history, entry)
+                }
+                i += 1
+            }
+            history
+        },
+        Result::Err(_) => [],
+    }
+}
+
+fn rl_save_history(path: any, history: any) {
+    let mut text = "#V2\n"
+    let mut i = 0
+    while i < len(history) {
+        text = text + rl_history_escape(history[i]) + "\n"
+        i += 1
+    }
+    let _ = std::try::catch(|| std::fs::write_text(path, text))
+}
+
+fn rl_edit_loop(prompt: any, history: any, secret: bool) -> (bool, any) {
+    let mut line = ""
+    let mut cursor = 0
+    let mut history_at = len(history)
+    let mut draft = ""
+    let mut killed = ""
+    if secret {
+        print(prompt)
+    } else {
+        rl_render(prompt, line, cursor)
+    }
+
+    loop {
+        let key = std::term::read_key(2147483647)
+        if key == "" {
+            continue
+        }
+
+        if secret {
+            if key == "Enter" {
+                print("\r\n")
+                return (true, line)
+            }
+            if key == "Ctrl+c" {
+                print("\r\n")
+                return (false, "interrupted (Ctrl-C)")
+            }
+            if key == "Ctrl+d" && line == "" {
+                print("\r\n")
+                return (false, "end of file (Ctrl-D)")
+            }
+            if key == "Backspace" || key == "Ctrl+h" {
+                let n = std::text::length(line)
+                if n > 0 {
+                    line = std::text::substring(line, 0, n - 1)
+                }
+            } else if std::text::length(key) == 1 && !std::text::starts_with(key, "Ctrl+") && !std::text::starts_with(key, "Alt+") {
+                line = line + key
+            }
+            continue
+        }
+
+        let mut redraw = false
+        let mut history_move = false
+        if key == "Enter" {
+            print("\r\n")
+            return (true, line)
+        }
+        if key == "Ctrl+c" {
+            print("\r\n")
+            return (false, "interrupted (Ctrl-C)")
+        }
+        if key == "Ctrl+d" {
+            if line == "" {
+                print("\r\n")
+                return (false, "end of file (Ctrl-D)")
+            }
+            if cursor < std::text::length(line) {
+                line = rl_delete_at(line, cursor)
+                redraw = true
+            }
+        } else if key == "Left" || key == "Ctrl+b" {
+            history_move = true
+            if cursor > 0 {
+                cursor -= 1
+                redraw = true
+            }
+        } else if key == "Right" || key == "Ctrl+f" {
+            history_move = true
+            if cursor < std::text::length(line) {
+                cursor += 1
+                redraw = true
+            }
+        } else if key == "Home" || key == "Ctrl+a" {
+            history_move = true
+            cursor = 0
+            redraw = true
+        } else if key == "End" || key == "Ctrl+e" {
+            history_move = true
+            cursor = std::text::length(line)
+            redraw = true
+        } else if key == "Backspace" || key == "Ctrl+h" {
+            if cursor > 0 {
+                line = rl_delete_before(line, cursor)
+                cursor -= 1
+                redraw = true
+            }
+        } else if key == "Delete" {
+            if cursor < std::text::length(line) {
+                line = rl_delete_at(line, cursor)
+                redraw = true
+            }
+        } else if key == "Ctrl+k" {
+            killed = std::text::substring(line, cursor, std::text::length(line))
+            line = std::text::substring(line, 0, cursor)
+            redraw = true
+        } else if key == "Ctrl+u" {
+            killed = std::text::substring(line, 0, cursor)
+            line = std::text::substring(line, cursor, std::text::length(line))
+            cursor = 0
+            redraw = true
+        } else if key == "Ctrl+w" || key == "Alt+Backspace" {
+            let at = rl_word_left(line, cursor)
+            killed = std::text::substring(line, at, cursor)
+            line = std::text::substring(line, 0, at) + std::text::substring(line, cursor, std::text::length(line))
+            cursor = at
+            redraw = true
+        } else if key == "Ctrl+y" {
+            if killed != "" {
+                line = rl_insert(line, cursor, killed)
+                cursor += std::text::length(killed)
+                redraw = true
+            }
+        } else if key == "Alt+b" || key == "Alt+Left" {
+            history_move = true
+            cursor = rl_word_left(line, cursor)
+            redraw = true
+        } else if key == "Alt+f" || key == "Alt+Right" {
+            history_move = true
+            cursor = rl_word_right(line, cursor)
+            redraw = true
+        } else if key == "Alt+d" {
+            let at = rl_word_right(line, cursor)
+            killed = std::text::substring(line, cursor, at)
+            line = std::text::substring(line, 0, cursor) + std::text::substring(line, at, std::text::length(line))
+            redraw = true
+        } else if key == "Ctrl+t" {
+            let n = std::text::length(line)
+            if n > 1 {
+                let at = if cursor == n { n - 2 } else if cursor > 0 { cursor - 1 } else { -1 }
+                if at >= 0 {
+                    let chars = std::text::chars(line)
+                    let first = chars[at]
+                    let second = chars[at + 1]
+                    line = std::text::substring(line, 0, at) + second + first + std::text::substring(line, at + 2, n)
+                    if cursor < n { cursor += 1 }
+                    redraw = true
+                }
+            }
+        } else if key == "Up" || key == "Ctrl+p" {
+            history_move = true
+            if history_at == len(history) {
+                draft = line
+            }
+            if history_at > 0 {
+                history_at -= 1
+                line = history[history_at]
+                cursor = std::text::length(line)
+                redraw = true
+            }
+        } else if key == "Down" || key == "Ctrl+n" {
+            history_move = true
+            if history_at < len(history) {
+                history_at += 1
+                if history_at == len(history) {
+                    line = draft
+                } else {
+                    line = history[history_at]
+                }
+                cursor = std::text::length(line)
+                redraw = true
+            }
+        } else if key == "Ctrl+r" {
+            let (searched, new_cursor, state) = rl_search(history, line, cursor)
+            line = searched
+            cursor = new_cursor
+            if state < 0 {
+                print("\r\n")
+                return (false, "interrupted (Ctrl-C)")
+            }
+            if state == 1 {
+                print("\r\n")
+                return (true, line)
+            }
+            redraw = true
+        } else if key == "Ctrl+l" {
+            history_move = true
+            print(rl_esc() + "[2J" + rl_esc() + "[H")
+            redraw = true
+        } else if key == "Tab" {
+            print("" + std::text::from_char_code(7))
+        } else if std::text::length(key) == 1 && !std::text::starts_with(key, "Ctrl+") && !std::text::starts_with(key, "Alt+") {
+            line = rl_insert(line, cursor, key)
+            cursor += std::text::length(key)
+            redraw = true
+        }
+
+        if redraw {
+            rl_render(prompt, line, cursor)
+            if !history_move {
+                history_at = len(history)
+            }
+        }
+    }
+    return (true, line)
+}
+
+fn rl_read_fallback(prompt: any) -> (bool, any) {
+    print(prompt)
+    let buffer = sb_new(128)
+    let byte = rt_alloc(1)
+    loop {
+        let got = std::raw::syscall(0, 0, byte, 1, 0, 0, 0)
+        if got == 0 {
+            rt_free_block(byte)
+            if sb_len(buffer) == 0 {
+                return (false, "end of file (Ctrl-D)")
+            }
+            break
+        }
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            rt_free_block(byte)
+            return (false, "readline error: " + rt_os_error(0 - got))
+        }
+        let c = std::raw::load8(byte)
+        if c == 10 || c == 13 {
+            rt_free_block(byte)
+            break
+        }
+        sb_byte(buffer, c)
+    }
+    let bytes = sb_finish_bytes(buffer)
+    match std::try::catch(|| std::encoding::utf8_decode(bytes)) {
+        Result::Ok(text) => (true, text),
+        Result::Err(_) => (false, "readline error: input was not valid UTF-8"),
+    }
+}
+
+fn rl_prompt(prompt: any, history: any, secret: bool, function: string) -> any {
+    rt_expect_str(prompt, function)
+    let raw_result = std::try::catch(|| std::term::enable_raw())
+    match raw_result {
+        Result::Err(message) => {
+            if secret {
+                rl_fail(function, "readline error: " + message)
+            }
+            let (ok, value) = rl_read_fallback(prompt)
+            if ok {
+                return value
+            }
+            rl_fail(function, value)
+        },
+        Result::Ok(_) => {
+            let edit_result = std::try::catch(|| rl_edit_loop(prompt, history, secret))
+            let restore_result = std::try::catch(|| std::term::disable_raw())
+            match restore_result {
+                Result::Err(message) => rl_fail(function, "readline error: " + message),
+                Result::Ok(_) => nil,
+            }
+            match edit_result {
+                Result::Err(message) => rl_fail(function, "readline error: " + message),
+                Result::Ok(result) => {
+                    let (ok, value) = result
+                    if !ok {
+                        rl_fail(function, value)
+                    }
+                    value
+                },
+            }
+        },
+    }
+}
+
+fn std__readline__prompt(prompt: any) -> any {
+    rl_prompt(prompt, [], false, "std::readline::prompt")
+}
+
+fn std__readline__prompt_with_history(prompt: any) -> any {
+    let function = "std::readline::prompt_with_history"
+    let history = rl_memory_history_take()
+    let editor_history = std::array::slice(history, 0, len(history))
+    match std::try::catch(|| rl_prompt(prompt, editor_history, false, function)) {
+        Result::Err(message) => {
+            rl_memory_history_put(history)
+            rt_native_fail(function, message)
+        },
+        Result::Ok(line) => {
+            let updated = rl_add_history(history, line)
+            rl_memory_history_put(updated)
+            line
+        },
+    }
+}
+
+fn std__readline__prompt_persistent(prompt: any, path: any) -> any {
+    rt_expect_str(path, "std::readline::prompt_persistent")
+    let history = rl_load_history(path)
+    let line = rl_prompt(prompt, history, false, "std::readline::prompt_persistent")
+    let added = rl_history_should_add(history, line)
+    let updated = rl_add_history(history, line)
+    if added {
+        rl_save_history(path, updated)
+    }
+    line
+}
+
+fn std__readline__prompt_secret(prompt: any) -> any {
+    rl_prompt(prompt, [], true, "std::readline::prompt_secret")
+}

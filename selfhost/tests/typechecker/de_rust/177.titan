@@ -1,0 +1,1 @@
+fn halt() -> int { loop {} } fn main() {}

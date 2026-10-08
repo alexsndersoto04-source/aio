@@ -1,0 +1,4 @@
+// Texto que no es RFC 3339.
+fn main() {
+    print(std::datetime::parse_rfc3339("2024-01-02T03:04:05+04"))
+}

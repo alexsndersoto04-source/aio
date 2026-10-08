@@ -1,0 +1,558 @@
+// Escritor JPEG baseline 8-bit compatible con image 0.25.10.
+// La FDCT es un port Titan adaptado de jfdctint; ver IJG-NOTICE.txt.
+fn im_jpeg_write_be16(out: int, value: int) {
+    sb_byte(out, std::raw::shr(value, 8) & 255)
+    sb_byte(out, value & 255)
+}
+
+fn im_jpeg_write_segment_start(out: int, marker: int, payload_size: int) {
+    sb_byte(out, 255)
+    sb_byte(out, marker)
+    im_jpeg_write_be16(out, payload_size + 2)
+}
+
+fn im_jpeg_write_marker(out: int, marker: int) {
+    sb_byte(out, 255)
+    sb_byte(out, marker)
+}
+
+fn im_jpeg_encoder_make_huff(counts: array, values: array, table: int) {
+    let mut code = 0
+    let mut value_index = 0
+    let mut size = 1
+    while size <= 16 {
+        let count = counts[size - 1]
+        let mut i = 0
+        while i < count {
+            let symbol = values[value_index]
+            std::raw::store(table + symbol * 16, code)
+            std::raw::store(table + symbol * 16 + 8, size)
+            code += 1
+            value_index += 1
+            i += 1
+        }
+        code *= 2
+        size += 1
+    }
+}
+
+fn im_jpeg_encoder_write_huff(state: int, table: int, symbol: int) {
+    let slot = table + symbol * 16
+    im_jpeg_encoder_write_bits(state, std::raw::load(slot), std::raw::load(slot + 8))
+}
+
+fn im_jpeg_encoder_flush_byte(state: int, value: int) {
+    let out = std::raw::load(state)
+    sb_byte(out, value)
+    if value == 255 { sb_byte(out, 0) }
+}
+
+fn im_jpeg_encoder_write_bits(state: int, value: int, count: int) {
+    let mut i = count - 1
+    while i >= 0 {
+        let bit = std::raw::shr(value, i) & 1
+        let current = std::raw::load(state + 8) * 2 + bit
+        let bits = std::raw::load(state + 16) + 1
+        if bits == 8 {
+            im_jpeg_encoder_flush_byte(state, current)
+            std::raw::store(state + 8, 0)
+            std::raw::store(state + 16, 0)
+        } else {
+            std::raw::store(state + 8, current)
+            std::raw::store(state + 16, bits)
+        }
+        i -= 1
+    }
+}
+
+fn im_jpeg_encoder_category(value: int) -> int {
+    let mut magnitude = value
+    if magnitude < 0 { magnitude = 0 - magnitude }
+    let mut size = 0
+    while magnitude > 0 {
+        magnitude = std::raw::shr(magnitude, 1)
+        size += 1
+    }
+    size
+}
+
+fn im_jpeg_encoder_value(value: int, size: int) -> int {
+    if size == 0 { return 0 }
+    let mask = std::raw::shl(1, size) - 1
+    if value < 0 { return (value - 1) & mask }
+    value & mask
+}
+
+fn im_jpeg_encoder_write_block(state: int, coeff: int, previous_dc: int, dc_table: int, ac_table: int, zigzag: array) -> int {
+    let dc = std::raw::load(coeff)
+    let difference = dc - previous_dc
+    let category = im_jpeg_encoder_category(difference)
+    im_jpeg_encoder_write_huff(state, dc_table, category)
+    im_jpeg_encoder_write_bits(state, im_jpeg_encoder_value(difference, category), category)
+
+    let mut zero_run = 0
+    let mut k = 1
+    while k < 64 {
+        let value = std::raw::load(coeff + 8 * zigzag[k])
+        if value == 0 {
+            zero_run += 1
+        } else {
+            while zero_run > 15 {
+                im_jpeg_encoder_write_huff(state, ac_table, 240)
+                zero_run -= 16
+            }
+            let size = im_jpeg_encoder_category(value)
+            let symbol = zero_run * 16 + size
+            im_jpeg_encoder_write_huff(state, ac_table, symbol)
+            im_jpeg_encoder_write_bits(state, im_jpeg_encoder_value(value, size), size)
+            zero_run = 0
+        }
+        k += 1
+    }
+    if std::raw::load(coeff + 8 * zigzag[63]) == 0 {
+        im_jpeg_encoder_write_huff(state, ac_table, 0)
+    }
+    dc
+}
+
+fn im_jpeg_encoder_quantize(coeff: int, qtable: int) {
+    let mut k = 0
+    while k < 64 {
+        let raw = std::raw::load(coeff + 8 * k)
+        let mut scaled = raw / 8
+        if raw < 0 { scaled = 0 - ((0 - raw) / 8) }
+        let q = std::raw::load(qtable + 8 * k)
+        let mut value = 0
+        if scaled >= 0 {
+            value = (scaled + q / 2) / q
+        } else {
+            value = 0 - ((0 - scaled + q / 2) / q)
+        }
+        std::raw::store(coeff + 8 * k, value)
+        k += 1
+    }
+}
+
+// FDCT entero de dos pasadas y escala de image/src/codecs/jpeg/transform.rs.
+fn im_jpeg_encoder_fdct(samples: int, coeff: int) {
+    let mut y = 0
+    while y < 8 {
+        let row = y * 8
+        let t0 = std::raw::load8(samples + row) + std::raw::load8(samples + row + 7)
+        let t1 = std::raw::load8(samples + row + 1) + std::raw::load8(samples + row + 6)
+        let t2 = std::raw::load8(samples + row + 2) + std::raw::load8(samples + row + 5)
+        let t3 = std::raw::load8(samples + row + 3) + std::raw::load8(samples + row + 4)
+        let t10 = t0 + t3
+        let t12 = t0 - t3
+        let t11 = t1 + t2
+        let t13 = t1 - t2
+        let d0 = std::raw::load8(samples + row) - std::raw::load8(samples + row + 7)
+        let d1 = std::raw::load8(samples + row + 1) - std::raw::load8(samples + row + 6)
+        let d2 = std::raw::load8(samples + row + 2) - std::raw::load8(samples + row + 5)
+        let d3 = std::raw::load8(samples + row + 3) - std::raw::load8(samples + row + 4)
+        std::raw::store(coeff + 8 * row, (t10 + t11 - 1024) * 4)
+        std::raw::store(coeff + 8 * (row + 4), (t10 - t11) * 4)
+
+        let z1 = (t12 + t13) * 4433 + 1024
+        std::raw::store(coeff + 8 * (row + 2), std::raw::sar(z1 + t12 * 6270, 11))
+        std::raw::store(coeff + 8 * (row + 6), std::raw::sar(z1 - t13 * 15137, 11))
+
+        let o12 = d0 + d2
+        let o13 = d1 + d3
+        let mut oz1 = (o12 + o13) * 9633 + 1024
+        let mut ot12 = o12 * -3196 + oz1
+        let mut ot13 = o13 * -16069 + oz1
+        oz1 = (d0 + d3) * -7373
+        let mut od0 = d0 * 12299
+        let mut od3 = d3 * 2446
+        od0 += oz1 + ot12
+        od3 += oz1 + ot13
+        oz1 = (d1 + d2) * -20995
+        let mut od1 = d1 * 25172
+        let mut od2 = d2 * 16819
+        od1 += oz1 + ot13
+        od2 += oz1 + ot12
+        std::raw::store(coeff + 8 * (row + 1), std::raw::sar(od0, 11))
+        std::raw::store(coeff + 8 * (row + 3), std::raw::sar(od1, 11))
+        std::raw::store(coeff + 8 * (row + 5), std::raw::sar(od2, 11))
+        std::raw::store(coeff + 8 * (row + 7), std::raw::sar(od3, 11))
+        y += 1
+    }
+
+    let mut x = 0
+    while x < 8 {
+        let t0 = std::raw::load(coeff + 8 * x) + std::raw::load(coeff + 8 * (x + 56))
+        let t1 = std::raw::load(coeff + 8 * (x + 8)) + std::raw::load(coeff + 8 * (x + 48))
+        let t2 = std::raw::load(coeff + 8 * (x + 16)) + std::raw::load(coeff + 8 * (x + 40))
+        let t3 = std::raw::load(coeff + 8 * (x + 24)) + std::raw::load(coeff + 8 * (x + 32))
+        let t10 = t0 + t3 + 2
+        let t12 = t0 - t3
+        let t11 = t1 + t2
+        let t13 = t1 - t2
+        let d0 = std::raw::load(coeff + 8 * x) - std::raw::load(coeff + 8 * (x + 56))
+        let d1 = std::raw::load(coeff + 8 * (x + 8)) - std::raw::load(coeff + 8 * (x + 48))
+        let d2 = std::raw::load(coeff + 8 * (x + 16)) - std::raw::load(coeff + 8 * (x + 40))
+        let d3 = std::raw::load(coeff + 8 * (x + 24)) - std::raw::load(coeff + 8 * (x + 32))
+        std::raw::store(coeff + 8 * x, std::raw::sar(t10 + t11, 2))
+        std::raw::store(coeff + 8 * (x + 32), std::raw::sar(t10 - t11, 2))
+
+        let z1 = (t12 + t13) * 4433 + 16384
+        std::raw::store(coeff + 8 * (x + 16), std::raw::sar(z1 + t12 * 6270, 15))
+        std::raw::store(coeff + 8 * (x + 48), std::raw::sar(z1 - t13 * 15137, 15))
+
+        let o12 = d0 + d2
+        let o13 = d1 + d3
+        let mut oz1 = (o12 + o13) * 9633 + 1024
+        let mut ot12 = o12 * -3196 + oz1
+        let mut ot13 = o13 * -16069 + oz1
+        oz1 = (d0 + d3) * -7373
+        let mut od0 = d0 * 12299
+        let mut od3 = d3 * 2446
+        od0 += oz1 + ot12
+        od3 += oz1 + ot13
+        oz1 = (d1 + d2) * -20995
+        let mut od1 = d1 * 25172
+        let mut od2 = d2 * 16819
+        od1 += oz1 + ot13
+        od2 += oz1 + ot12
+        std::raw::store(coeff + 8 * (x + 8), std::raw::sar(od0, 15))
+        std::raw::store(coeff + 8 * (x + 24), std::raw::sar(od1, 15))
+        std::raw::store(coeff + 8 * (x + 40), std::raw::sar(od2, 15))
+        std::raw::store(coeff + 8 * (x + 56), std::raw::sar(od3, 15))
+        x += 1
+    }
+}
+
+fn im_jpeg_encoder_ycbcr(r: int, g: int, b: int, out: int) {
+    let y = std::raw::sar(19595 * r + 38469 * g + 7471 * b + 32767, 16)
+    let cb = std::raw::sar(-11059 * r - 21709 * g + 32768 * b + 8421375, 16)
+    let cr = std::raw::sar(32768 * r - 27439 * g - 5329 * b + 8421375, 16)
+    std::raw::store(out, y)
+    std::raw::store(out + 8, cb)
+    std::raw::store(out + 16, cr)
+}
+
+fn im_jpeg_encoder_fill_gray(e: int, samples: int, x0: int, y0: int) {
+    let width = std::raw::load(e + 8)
+    let height = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    let channels = im_channels(color)
+    let source = std::raw::load(e + 32)
+    let mut y = 0
+    while y < 8 {
+        let sy0 = y0 + y
+        let sy = if sy0 >= height { height - 1 } else { sy0 }
+        let mut x = 0
+        while x < 8 {
+            let sx0 = x0 + x
+            let sx = if sx0 >= width { width - 1 } else { sx0 }
+            let value = std::raw::load8(source + (sy * width + sx) * channels)
+            std::raw::store8(samples + y * 8 + x, value)
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_jpeg_encoder_fill_rgb(e: int, yblock: int, cbblock: int, crblock: int, x0: int, y0: int, convert: int) {
+    let width = std::raw::load(e + 8)
+    let height = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    let channels = im_channels(color)
+    let source = std::raw::load(e + 32)
+    let mut y = 0
+    while y < 8 {
+        let sy0 = y0 + y
+        let sy = if sy0 >= height { height - 1 } else { sy0 }
+        let mut x = 0
+        while x < 8 {
+            let sx0 = x0 + x
+            let sx = if sx0 >= width { width - 1 } else { sx0 }
+            let pixel = source + (sy * width + sx) * channels
+            let r = std::raw::load8(pixel)
+            let g = std::raw::load8(pixel + 1)
+            let b = std::raw::load8(pixel + 2)
+            im_jpeg_encoder_ycbcr(r, g, b, convert)
+            let offset = y * 8 + x
+            std::raw::store8(yblock + offset, std::raw::load(convert))
+            std::raw::store8(cbblock + offset, std::raw::load(convert + 8))
+            std::raw::store8(crblock + offset, std::raw::load(convert + 16))
+            x += 1
+        }
+        y += 1
+    }
+}
+
+fn im_jpeg_encoder_emit_dht(out: int, class: int, destination: int, counts: array, values: array) {
+    im_jpeg_write_segment_start(out, 196, 17 + len(values))
+    sb_byte(out, class * 16 + destination)
+    let mut i = 0
+    while i < 16 {
+        sb_byte(out, counts[i])
+        i += 1
+    }
+    i = 0
+    while i < len(values) {
+        sb_byte(out, values[i])
+        i += 1
+    }
+}
+
+fn im_jpeg_encode(function: string, e: int) -> any {
+    let width = std::raw::load(e + 8)
+    let height = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    if color >= 5 && color <= 8 {
+        let source_channels = im_channels(color)
+        let output_color = if color == 5 || color == 6 { 1 } else { 3 }
+        let output_channels = im_channels(output_color)
+        let converted = rt_alloc(width * height * output_channels)
+        let source = std::raw::load(e + 32)
+        let mut pixel = 0
+        while pixel < width * height {
+            let mut channel = 0
+            while channel < output_channels {
+                let value = im_sample_get(source + 2 * (pixel * source_channels + channel), 2)
+                std::raw::store8(converted + pixel * output_channels + channel, (value + 128) / 257)
+                channel += 1
+            }
+            pixel += 1
+        }
+        let temporary = rt_alloc(40)
+        std::raw::store(temporary, std::raw::load(e))
+        std::raw::store(temporary + 8, width)
+        std::raw::store(temporary + 16, height)
+        std::raw::store(temporary + 24, output_color)
+        std::raw::store(temporary + 32, converted)
+        let result = im_jpeg_encode(function, temporary)
+        rt_free_block(converted)
+        rt_free_block(temporary)
+        return result
+    }
+    if color < 1 || color > 4 {
+        im_img_err(function, "UnsupportedError: JPEG encoder accepts only 8-bit grayscale or RGB images")
+    }
+    if width < 1 || height < 1 || width > 65535 || height > 65535 {
+        im_img_err(function, "EncodingError: JPEG dimensions must be between 1 and 65535")
+    }
+    let components = if color == 1 || color == 2 { 1 } else { 3 }
+    let zigzag = [
+        0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+        12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+        35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+        58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63
+    ]
+    let q_luma = [
+        16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55,
+        14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+        18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,
+        49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99
+    ]
+    let q_chroma = [
+        17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99,
+        24, 26, 56, 99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99
+    ]
+    let luma_dc_counts = [
+        0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let luma_dc_values = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+    ]
+    let chroma_dc_counts = [
+        0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0
+    ]
+    let chroma_dc_values = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+    ]
+    let luma_ac_counts = [
+        0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125
+    ]
+    let luma_ac_values = [
+        1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7,
+        34, 113, 20, 50, 129, 145, 161, 8, 35, 66, 177, 193, 21, 82, 209, 240,
+        36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25, 26, 37, 38, 39, 40,
+        41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73,
+        74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105,
+        106, 115, 116, 117, 118, 119, 120, 121, 122, 131, 132, 133, 134, 135, 136, 137,
+        138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167,
+        168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195, 196, 197,
+        198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225, 226,
+        227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248,
+        249, 250
+    ]
+    let chroma_ac_counts = [
+        0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119
+    ]
+    let chroma_ac_values = [
+        0, 1, 2, 3, 17, 4, 5, 33, 49, 6, 18, 65, 81, 7, 97, 113,
+        19, 34, 50, 129, 8, 20, 66, 145, 161, 177, 193, 9, 35, 51, 82, 240,
+        21, 98, 114, 209, 10, 22, 36, 52, 225, 37, 241, 23, 24, 25, 26, 38,
+        39, 40, 41, 42, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72,
+        73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104,
+        105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 130, 131, 132, 133, 134, 135,
+        136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165,
+        166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195,
+        196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218,
+        226, 227, 228, 229, 230, 231, 232, 233, 234, 242, 243, 244, 245, 246, 247, 248,
+        249, 250
+    ]
+    let out = sb_new(4096)
+    im_jpeg_write_marker(out, 216)
+    im_jpeg_write_segment_start(out, 224, 14)
+    sb_byte(out, 74)
+    sb_byte(out, 70)
+    sb_byte(out, 73)
+    sb_byte(out, 70)
+    sb_byte(out, 0)
+    sb_byte(out, 1)
+    sb_byte(out, 2)
+    sb_byte(out, 0)
+    im_jpeg_write_be16(out, 1)
+    im_jpeg_write_be16(out, 1)
+    sb_byte(out, 0)
+    sb_byte(out, 0)
+
+    im_jpeg_write_segment_start(out, 192, 6 + 3 * components)
+    sb_byte(out, 8)
+    im_jpeg_write_be16(out, height)
+    im_jpeg_write_be16(out, width)
+    sb_byte(out, components)
+    sb_byte(out, 1)
+    sb_byte(out, 17)
+    sb_byte(out, 0)
+    if components == 3 {
+        sb_byte(out, 2)
+        sb_byte(out, 17)
+        sb_byte(out, 1)
+        sb_byte(out, 3)
+        sb_byte(out, 17)
+        sb_byte(out, 1)
+    }
+
+    let q0 = rt_alloc_zero(64 * 8)
+    let q1 = rt_alloc_zero(64 * 8)
+    let scale = 50
+    let mut i = 0
+    while i < 64 {
+        let mut v0 = (q_luma[i] * scale + 50) / 100
+        let mut v1 = (q_chroma[i] * scale + 50) / 100
+        if v0 < 1 { v0 = 1 }
+        if v0 > 255 { v0 = 255 }
+        if v1 < 1 { v1 = 1 }
+        if v1 > 255 { v1 = 255 }
+        std::raw::store(q0 + 8 * i, v0)
+        std::raw::store(q1 + 8 * i, v1)
+        i += 1
+    }
+    im_jpeg_write_segment_start(out, 219, 65)
+    sb_byte(out, 0)
+    i = 0
+    while i < 64 {
+        sb_byte(out, std::raw::load(q0 + 8 * zigzag[i]))
+        i += 1
+    }
+    if components == 3 {
+        im_jpeg_write_segment_start(out, 219, 65)
+        sb_byte(out, 1)
+        i = 0
+        while i < 64 {
+            sb_byte(out, std::raw::load(q1 + 8 * zigzag[i]))
+            i += 1
+        }
+    }
+
+    let huff = rt_alloc_zero(4 * 4096)
+    im_jpeg_encoder_make_huff(luma_dc_counts, luma_dc_values, huff)
+    im_jpeg_encoder_make_huff(luma_ac_counts, luma_ac_values, huff + 4096)
+    im_jpeg_encoder_make_huff(chroma_dc_counts, chroma_dc_values, huff + 8192)
+    im_jpeg_encoder_make_huff(chroma_ac_counts, chroma_ac_values, huff + 12288)
+    im_jpeg_encoder_emit_dht(out, 0, 0, luma_dc_counts, luma_dc_values)
+    im_jpeg_encoder_emit_dht(out, 1, 0, luma_ac_counts, luma_ac_values)
+    if components == 3 {
+        im_jpeg_encoder_emit_dht(out, 0, 1, chroma_dc_counts, chroma_dc_values)
+        im_jpeg_encoder_emit_dht(out, 1, 1, chroma_ac_counts, chroma_ac_values)
+    }
+
+    im_jpeg_write_segment_start(out, 218, 1 + 2 * components + 3)
+    sb_byte(out, components)
+    sb_byte(out, 1)
+    sb_byte(out, 0)
+    if components == 3 {
+        sb_byte(out, 2)
+        sb_byte(out, 17)
+        sb_byte(out, 3)
+        sb_byte(out, 17)
+    }
+    sb_byte(out, 0)
+    sb_byte(out, 63)
+    sb_byte(out, 0)
+
+    let state = rt_alloc_zero(24)
+    std::raw::store(state, out)
+    let yblock = rt_alloc(64)
+    let cbblock = rt_alloc(64)
+    let crblock = rt_alloc(64)
+    let convert = rt_alloc(24)
+    let ycoeff = rt_alloc(64 * 8)
+    let cbcoeff = rt_alloc(64 * 8)
+    let crcoeff = rt_alloc(64 * 8)
+    let luma_dc = huff
+    let luma_ac = huff + 4096
+    let chroma_dc = huff + 8192
+    let chroma_ac = huff + 12288
+    let mut prev_y = 0
+    let mut prev_cb = 0
+    let mut prev_cr = 0
+    let mut y = 0
+    while y < height {
+        let mut x = 0
+        while x < width {
+            if components == 1 {
+                im_jpeg_encoder_fill_gray(e, yblock, x, y)
+                im_jpeg_encoder_fdct(yblock, ycoeff)
+                im_jpeg_encoder_quantize(ycoeff, q0)
+                prev_y = im_jpeg_encoder_write_block(state, ycoeff, prev_y, luma_dc, luma_ac, zigzag)
+            } else {
+                im_jpeg_encoder_fill_rgb(e, yblock, cbblock, crblock, x, y, convert)
+                im_jpeg_encoder_fdct(yblock, ycoeff)
+                im_jpeg_encoder_fdct(cbblock, cbcoeff)
+                im_jpeg_encoder_fdct(crblock, crcoeff)
+                im_jpeg_encoder_quantize(ycoeff, q0)
+                im_jpeg_encoder_quantize(cbcoeff, q1)
+                im_jpeg_encoder_quantize(crcoeff, q1)
+                prev_y = im_jpeg_encoder_write_block(state, ycoeff, prev_y, luma_dc, luma_ac, zigzag)
+                prev_cb = im_jpeg_encoder_write_block(state, cbcoeff, prev_cb, chroma_dc, chroma_ac, zigzag)
+                prev_cr = im_jpeg_encoder_write_block(state, crcoeff, prev_cr, chroma_dc, chroma_ac, zigzag)
+            }
+            x += 8
+        }
+        y += 8
+    }
+
+    let pending = std::raw::load(state + 16)
+    if pending > 0 {
+        let mut value = std::raw::load(state + 8)
+        let mut n = pending
+        while n < 8 {
+            value = value * 2 + 1
+            n += 1
+        }
+        im_jpeg_encoder_flush_byte(state, value)
+    }
+    im_jpeg_write_marker(out, 217)
+
+    rt_free_block(yblock)
+    rt_free_block(cbblock)
+    rt_free_block(crblock)
+    rt_free_block(convert)
+    rt_free_block(ycoeff)
+    rt_free_block(cbcoeff)
+    rt_free_block(crcoeff)
+    rt_free_block(state)
+    rt_free_block(huff)
+    rt_free_block(q0)
+    rt_free_block(q1)
+    sb_finish_bytes(out)
+}

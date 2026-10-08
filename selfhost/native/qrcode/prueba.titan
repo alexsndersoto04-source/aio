@@ -1,0 +1,20 @@
+// Harness: lee /tmp/qr_in.txt y /tmp/qr_lv.txt y escribe CRC de cada formato.
+fn main() {
+    let t = std::fs::read_text("/tmp/qr_in.txt")
+    let lv = std::fs::read_text("/tmp/qr_lv.txt")
+    let r = std::try::catch(|| {
+        let a = std::qrcode::to_ascii(t, lv, "#", " ")
+        let u = std::qrcode::to_unicode(t, lv)
+        let s = std::qrcode::to_svg(t, lv, 64)
+        let p = std::qrcode::to_png(t, lv, 64)
+        println("A " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(a))))
+        println("U " + std::json::stringify(std::checksum::crc32(std::encoding::utf8_encode(u))))
+        println("S " + std::json::stringify(std::checksum::crc32(s)))
+        println("P " + std::json::stringify(std::checksum::crc32(p)))
+        println("L " + std::json::stringify(std::bytes::length(p)))
+    })
+    match r {
+        Result::Ok(_) => nil,
+        Result::Err(e) => println("E " + e),
+    }
+}

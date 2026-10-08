@@ -1,0 +1,1952 @@
+// Analizador de expresiones regulares escrito en Titan: traducción de
+// regex-syntax 0.8.11 (ast/parse.rs, ast/mod.rs, ast/visitor.rs y error.rs;
+// selfhost/fuentes/regex-syntax-0.8.11.crate) con la configuración que usa
+// regex 1.13.0: nest_limit 250, octal desactivado, ignore_whitespace falso.
+//
+// Las posiciones se guardan solo como desplazamiento en bytes; la línea y la
+// columna (que la crate lleva a la vez) se calculan al mostrar un error, que
+// es lo único que las usa.
+//
+// Estado del analizador (bloque P, 160 bytes):
+//   +0 puntero a los bytes del patrón, +8 longitud, +16 desplazamiento
+//   actual, +24 capture_index, +32 ignore_whitespace, +40 pila de grupos,
+//   +48 pila de clases, +56 nombres de captura (ordenados), +64 bloques
+//   reservados, +72 error (0 = ninguno), +80/+88 su span, +96 hay span
+//   auxiliar, +104/+112 span auxiliar, +120 vectores reservados,
+//   +128 texto de trabajo (scratch, vector de códigos), +136 tabla de
+//   plegado de mayúsculas (std_regex_hir.titan), +144 flags de la
+//   traducción, +152 el patrón (valor string, prestado).
+//
+// Nodos (bloques): +0 tipo, +8 inicio del span, +16 fin del span y:
+//   1 Empty
+//   2 Flags (SetFlags)        +24 vector de elementos (tipo, inicio, fin)
+//   3 Literal                 +24 carácter, +32 tipo de literal
+//   4 Dot
+//   5 Assertion               +24 tipo
+//   6 ClassUnicode            +24 negada, +32 tipo (0 una letra, 1 nombre,
+//                             2 nombre y valor), +40 letra o vector nombre,
+//                             +48 vector valor, +56 op (0 =, 1 :, 2 !=)
+//   7 ClassPerl               +24 tipo (0 \d, 1 \s, 2 \w), +32 negada
+//   8 ClassBracketed          +24 negada, +32 conjunto (elemento o BinaryOp)
+//   9 Repetition              +24/+32 span del operador, +40 tipo (0 ?, 1 *,
+//                             2 +, 3 {n}, 4 {n,}, 5 {n,m}), +48 min, +56 max,
+//                             +64 greedy, +72 expresión
+//   10 Group                  +24 tipo (0 índice, 1 nombre, 2 sin captura),
+//                             +32 índice, +40/+48 nombre (bytes del patrón),
+//                             +56 flags (vector), +64 expresión,
+//                             +72 starts_with_p
+//   11 Alternation            +24 vector
+//   12 Concat                 +24 vector
+//   Elementos de clase: 20 Empty, 22 Range (+24 literal inicio, +32 fin),
+//   23 Ascii (+24 tipo, +32 negada), 27 Union (+24 vector),
+//   28 BinaryOp (+24 tipo: 0 &&, 1 --, 2 ~~; +32 izquierda, +40 derecha);
+//   Literal, Perl, Unicode y Bracketed usan los tipos 3, 7, 6 y 8.
+//
+// Tipos de literal: 0 Verbatim, 1 Meta, 2 Superfluous, 3 Octal,
+// 4/5/6 HexFixed x/u/U, 7/8/9 HexBrace x/u/U, 10 Special.
+// Aserciones: 0 ^, 1 $, 2 \A, 3 \z, 4 \b, 5 \B, 6 \b{start}, 7 \b{end},
+// 8 \b{start-half}, 9 \b{end-half}, 10 \<, 11 \>.
+// Flags: 0 negación, 1 i, 2 m, 3 s, 4 U, 5 u, 6 R, 7 x.
+
+// ------------------------------------------------------------ errores
+
+fn rp_error_text(k: int) -> string {
+    if k == 1 {
+        return "exceeded the maximum number of capturing groups (4294967295)"
+    }
+    if k == 2 {
+        return "invalid escape sequence found in character class"
+    }
+    if k == 3 {
+        return "invalid character class range, the start must be <= the end"
+    }
+    if k == 4 {
+        return "invalid range boundary, must be a literal"
+    }
+    if k == 5 {
+        return "unclosed character class"
+    }
+    if k == 6 {
+        return "decimal literal empty"
+    }
+    if k == 7 {
+        return "decimal literal invalid"
+    }
+    if k == 8 {
+        return "hexadecimal literal empty"
+    }
+    if k == 9 {
+        return "hexadecimal literal is not a Unicode scalar value"
+    }
+    if k == 10 {
+        return "invalid hexadecimal digit"
+    }
+    if k == 11 {
+        return "incomplete escape sequence, reached end of pattern prematurely"
+    }
+    if k == 12 {
+        return "unrecognized escape sequence"
+    }
+    if k == 13 {
+        return "dangling flag negation operator"
+    }
+    if k == 14 {
+        return "duplicate flag"
+    }
+    if k == 15 {
+        return "flag negation operator repeated"
+    }
+    if k == 16 {
+        return "expected flag but got end of regex"
+    }
+    if k == 17 {
+        return "unrecognized flag"
+    }
+    if k == 18 {
+        return "duplicate capture group name"
+    }
+    if k == 19 {
+        return "empty capture group name"
+    }
+    if k == 20 {
+        return "invalid capture group character"
+    }
+    if k == 21 {
+        return "unclosed capture group name"
+    }
+    if k == 22 {
+        return "unclosed group"
+    }
+    if k == 23 {
+        return "unopened group"
+    }
+    if k == 24 {
+        return "exceed the maximum number of nested parentheses/brackets (250)"
+    }
+    if k == 25 {
+        return "invalid repetition count range, the start must be <= the end"
+    }
+    if k == 26 {
+        return "repetition quantifier expects a valid decimal"
+    }
+    if k == 27 {
+        return "unclosed counted repetition"
+    }
+    if k == 28 {
+        return "repetition operator missing expression"
+    }
+    if k == 29 {
+        return "special word boundary assertion is either unclosed or contains an invalid character"
+    }
+    if k == 30 {
+        return "unrecognized special word boundary assertion, valid choices are: start, end, start-half or end-half"
+    }
+    if k == 31 {
+        return "found either the beginning of a special word boundary or a bounded repetition on a \\b with an opening brace, but no closing brace"
+    }
+    if k == 32 {
+        return "invalid Unicode character class"
+    }
+    if k == 33 {
+        return "backreferences are not supported"
+    }
+    return "look-around, including look-ahead and look-behind, is not supported"
+}
+
+fn rp_err(p: int, k: int, s: int, e: int) -> int {
+    std::raw::store(p + 72, k)
+    std::raw::store(p + 80, s)
+    std::raw::store(p + 88, e)
+    std::raw::store(p + 96, 0)
+    0
+}
+
+fn rp_err_aux(p: int, k: int, s: int, e: int, a: int, b: int) -> int {
+    rp_err(p, k, s, e)
+    std::raw::store(p + 96, 1)
+    std::raw::store(p + 104, a)
+    std::raw::store(p + 112, b)
+    0
+}
+
+// Error "unclosed character class" con el span de la clase abierta más
+// interna (unclosed_class_error).
+fn rp_unclosed_class(p: int) -> int {
+    let st = std::raw::load(p + 48)
+    let mut i = iv_len(st) - 1
+    while i >= 0 {
+        let s = iv_get(st, i)
+        if std::raw::load(s) == 0 {
+            let set = std::raw::load(s + 16)
+            return rp_err(p, 5, std::raw::load(set + 8), std::raw::load(set + 16))
+        }
+        i -= 1
+    }
+    0
+}
+
+// ------------------------------------------------------------ memoria
+
+fn rp_node(p: int, kind: int, words: int) -> int {
+    let b = rt_alloc(8 * words)
+    let mut i = 0
+    while i < words {
+        std::raw::store(b + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(b, kind)
+    iv_push(std::raw::load(p + 64), b)
+    b
+}
+
+fn rp_node_span(p: int, kind: int, words: int, s: int, e: int) -> int {
+    let b = rp_node(p, kind, words)
+    std::raw::store(b + 8, s)
+    std::raw::store(b + 16, e)
+    b
+}
+
+fn rp_vec(p: int) -> int {
+    let v = iv_new(4)
+    iv_push(std::raw::load(p + 120), v)
+    v
+}
+
+fn rp_new(pat: any) -> int {
+    let p = rt_alloc(256)
+    let mut i = 0
+    while i < 32 {
+        std::raw::store(p + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(p, std::raw::bits(pat) + 16)
+    std::raw::store(p + 152, std::raw::bits(pat))
+    std::raw::store(p + 8, rt_slen(pat))
+    std::raw::store(p + 64, iv_new(32))
+    std::raw::store(p + 120, iv_new(8))
+    std::raw::store(p + 40, rp_vec(p))
+    std::raw::store(p + 48, rp_vec(p))
+    std::raw::store(p + 56, rp_vec(p))
+    std::raw::store(p + 128, rp_vec(p))
+    p
+}
+
+// Libera el estado y todos los nodos y vectores reservados.
+fn rp_free(p: int) {
+    let bl = std::raw::load(p + 64)
+    let mut i = 0
+    while i < iv_len(bl) {
+        rt_free_block(iv_get(bl, i))
+        i += 1
+    }
+    iv_free(bl)
+    let vs = std::raw::load(p + 120)
+    i = 0
+    while i < iv_len(vs) {
+        iv_free(iv_get(vs, i))
+        i += 1
+    }
+    iv_free(vs)
+    rt_free_block(p)
+}
+
+// ------------------------------------------------------------ posición
+
+fn rp_off(p: int) -> int {
+    std::raw::load(p + 16)
+}
+
+fn rp_setoff(p: int, o: int) {
+    std::raw::store(p + 16, o)
+}
+
+fn rp_eof(p: int) -> bool {
+    std::raw::load(p + 16) == std::raw::load(p + 8)
+}
+
+fn rp_char(p: int) -> int {
+    tx_decode(std::raw::load(p) + std::raw::load(p + 16))
+}
+
+fn rp_clen(c: int) -> int {
+    if c < 128 {
+        return 1
+    }
+    if c < 2048 {
+        return 2
+    }
+    if c < 65536 {
+        return 3
+    }
+    4
+}
+
+// Fin del span del carácter actual (span_char().end).
+fn rp_cend(p: int) -> int {
+    rp_off(p) + rp_clen(rp_char(p))
+}
+
+fn rp_bump(p: int) -> bool {
+    if rp_eof(p) {
+        return false
+    }
+    rp_setoff(p, rp_cend(p))
+    !rp_eof(p)
+}
+
+// bump_if con un prefijo ASCII.
+fn rp_bump_if(p: int, prefix: string) -> bool {
+    let n = rt_slen(prefix)
+    let o = rp_off(p)
+    if o + n > std::raw::load(p + 8) {
+        return false
+    }
+    let a = std::raw::load(p) + o
+    let b = std::raw::bits(prefix) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(a + i) != std::raw::load8(b + i) {
+            return false
+        }
+        i += 1
+    }
+    rp_setoff(p, o + n)
+    true
+}
+
+fn rp_is_space(c: int) -> bool {
+    rt_unicode_has(3, c)
+}
+
+fn rp_ignore_ws(p: int) -> bool {
+    std::raw::load(p + 32) != 0
+}
+
+fn rp_bump_space(p: int) {
+    if !rp_ignore_ws(p) {
+        return
+    }
+    while !rp_eof(p) {
+        let c = rp_char(p)
+        if rp_is_space(c) {
+            rp_bump(p)
+        } else if c == 35 {
+            rp_bump(p)
+            while !rp_eof(p) {
+                let d = rp_char(p)
+                rp_bump(p)
+                if d == 10 {
+                    break
+                }
+            }
+        } else {
+            break
+        }
+    }
+}
+
+fn rp_bump_and_bump_space(p: int) -> bool {
+    if !rp_bump(p) {
+        return false
+    }
+    rp_bump_space(p)
+    !rp_eof(p)
+}
+
+// Siguiente carácter (-1 si no hay).
+fn rp_peek(p: int) -> int {
+    if rp_eof(p) {
+        return -1
+    }
+    let o = rp_cend(p)
+    if o >= std::raw::load(p + 8) {
+        return -1
+    }
+    tx_decode(std::raw::load(p) + o)
+}
+
+// peek_space, incluido su comportamiento cuando solo quedan espacios y
+// comentarios (devuelve el carácter siguiente sin saltar nada).
+fn rp_peek_space(p: int) -> int {
+    if !rp_ignore_ws(p) {
+        return rp_peek(p)
+    }
+    if rp_eof(p) {
+        return -1
+    }
+    let n = std::raw::load(p + 8)
+    let base = std::raw::load(p)
+    let first = rp_cend(p)
+    let mut start = first
+    let mut i = first
+    let mut in_comment = false
+    while i < n {
+        let c = tx_decode(base + i)
+        if rp_is_space(c) {
+            i += rp_clen(c)
+        } else if !in_comment && c == 35 {
+            in_comment = true
+            i += 1
+        } else if in_comment && c == 10 {
+            in_comment = false
+            i += 1
+        } else {
+            start = i
+            break
+        }
+    }
+    if start >= n {
+        return -1
+    }
+    tx_decode(base + start)
+}
+
+// ------------------------------------------------------------ nodos
+
+fn rp_s(x: int) -> int {
+    std::raw::load(x + 8)
+}
+
+fn rp_e(x: int) -> int {
+    std::raw::load(x + 16)
+}
+
+fn rp_set_s(x: int, v: int) {
+    std::raw::store(x + 8, v)
+}
+
+fn rp_set_e(x: int, v: int) {
+    std::raw::store(x + 16, v)
+}
+
+fn rp_kind(x: int) -> int {
+    std::raw::load(x)
+}
+
+fn rp_items(x: int) -> int {
+    std::raw::load(x + 24)
+}
+
+fn rp_concat_new(p: int) -> int {
+    let c = rp_node_span(p, 12, 4, rp_off(p), rp_off(p))
+    std::raw::store(c + 24, rp_vec(p))
+    c
+}
+
+// Concat/Alternation::into_ast: 0 elementos -> Empty, 1 -> el elemento.
+fn rp_into_ast(p: int, c: int) -> int {
+    let v = rp_items(c)
+    if iv_len(v) == 0 {
+        return rp_node_span(p, 1, 3, rp_s(c), rp_e(c))
+    }
+    if iv_len(v) == 1 {
+        return iv_get(v, 0)
+    }
+    c
+}
+
+fn rp_union_new(p: int) -> int {
+    let u = rp_node_span(p, 27, 4, rp_off(p), rp_off(p))
+    std::raw::store(u + 24, rp_vec(p))
+    u
+}
+
+fn rp_union_push(u: int, item: int) {
+    let v = rp_items(u)
+    if iv_len(v) == 0 {
+        rp_set_s(u, rp_s(item))
+    }
+    rp_set_e(u, rp_e(item))
+    iv_push(v, item)
+}
+
+// ClassSetUnion::into_item.
+fn rp_union_item(p: int, u: int) -> int {
+    let v = rp_items(u)
+    if iv_len(v) == 0 {
+        return rp_node_span(p, 20, 3, rp_s(u), rp_e(u))
+    }
+    if iv_len(v) == 1 {
+        return iv_get(v, 0)
+    }
+    u
+}
+
+fn rp_literal(p: int, s: int, e: int, c: int, lk: int) -> int {
+    let n = rp_node_span(p, 3, 5, s, e)
+    std::raw::store(n + 24, c)
+    std::raw::store(n + 32, lk)
+    n
+}
+
+fn rp_assertion(p: int, s: int, e: int, k: int) -> int {
+    let n = rp_node_span(p, 5, 4, s, e)
+    std::raw::store(n + 24, k)
+    n
+}
+
+// flag_state: -1 si el flag no aparece, 1 activado, 0 desactivado.
+fn rp_flag_state(flags: int, f: int) -> int {
+    let mut negated = false
+    let mut i = 0
+    while i < iv_len(flags) {
+        let k = iv_get(flags, i)
+        if k == 0 {
+            negated = true
+        } else if k == f {
+            if negated {
+                return 0
+            }
+            return 1
+        }
+        i += 3
+    }
+    -1
+}
+
+// ------------------------------------------------------------ grupos
+
+fn rp_push_alternate(p: int, concat: int) -> int {
+    rp_set_e(concat, rp_off(p))
+    let st = std::raw::load(p + 40)
+    let n = iv_len(st)
+    if n > 0 && std::raw::load(iv_get(st, n - 1)) == 1 {
+        let alt = std::raw::load(iv_get(st, n - 1) + 8)
+        iv_push(rp_items(alt), rp_into_ast(p, concat))
+    } else {
+        let alt = rp_node_span(p, 11, 4, rp_s(concat), rp_off(p))
+        std::raw::store(alt + 24, rp_vec(p))
+        iv_push(rp_items(alt), rp_into_ast(p, concat))
+        let gs = rp_node(p, 1, 4)
+        std::raw::store(gs + 8, alt)
+        iv_push(st, gs)
+    }
+    rp_bump(p)
+    rp_concat_new(p)
+}
+
+fn rp_push_group(p: int, concat: int) -> int {
+    let r = rp_parse_group(p)
+    if r == 0 {
+        return 0
+    }
+    if rp_kind(r) == 2 {
+        let v = rp_flag_state(rp_items(r), 7)
+        if v >= 0 {
+            std::raw::store(p + 32, v)
+        }
+        iv_push(rp_items(concat), r)
+        return concat
+    }
+    let old = std::raw::load(p + 32)
+    let mut new = old
+    if std::raw::load(r + 24) == 2 {
+        let v = rp_flag_state(std::raw::load(r + 56), 7)
+        if v >= 0 {
+            new = v
+        }
+    }
+    let gs = rp_node(p, 0, 4)
+    std::raw::store(gs + 8, concat)
+    std::raw::store(gs + 16, r)
+    std::raw::store(gs + 24, old)
+    iv_push(std::raw::load(p + 40), gs)
+    std::raw::store(p + 32, new)
+    rp_concat_new(p)
+}
+
+fn rp_pop_group(p: int, group_concat: int) -> int {
+    let st = std::raw::load(p + 40)
+    let n = iv_len(st)
+    if n == 0 {
+        return rp_err(p, 23, rp_off(p), rp_cend(p))
+    }
+    let mut top = iv_get(st, n - 1)
+    iv_trunc(st, n - 1)
+    let mut alt = 0
+    if std::raw::load(top) == 1 {
+        alt = std::raw::load(top + 8)
+        if n < 2 {
+            return rp_err(p, 23, rp_off(p), rp_cend(p))
+        }
+        top = iv_get(st, n - 2)
+        iv_trunc(st, n - 2)
+        if std::raw::load(top) == 1 {
+            return rp_err(p, 23, rp_off(p), rp_cend(p))
+        }
+    }
+    let prior = std::raw::load(top + 8)
+    let group = std::raw::load(top + 16)
+    std::raw::store(p + 32, std::raw::load(top + 24))
+    rp_set_e(group_concat, rp_off(p))
+    rp_bump(p)
+    rp_set_e(group, rp_off(p))
+    if alt != 0 {
+        rp_set_e(alt, rp_e(group_concat))
+        iv_push(rp_items(alt), rp_into_ast(p, group_concat))
+        std::raw::store(group + 64, rp_into_ast(p, alt))
+    } else {
+        std::raw::store(group + 64, rp_into_ast(p, group_concat))
+    }
+    iv_push(rp_items(prior), group)
+    prior
+}
+
+fn rp_pop_group_end(p: int, concat: int) -> int {
+    rp_set_e(concat, rp_off(p))
+    let st = std::raw::load(p + 40)
+    let n = iv_len(st)
+    if n == 0 {
+        return rp_into_ast(p, concat)
+    }
+    let top = iv_get(st, n - 1)
+    if std::raw::load(top) == 0 {
+        let g = std::raw::load(top + 16)
+        return rp_err(p, 22, rp_s(g), rp_e(g))
+    }
+    let alt = std::raw::load(top + 8)
+    rp_set_e(alt, rp_off(p))
+    iv_push(rp_items(alt), rp_into_ast(p, concat))
+    if n >= 2 {
+        let g = std::raw::load(iv_get(st, n - 2) + 16)
+        return rp_err(p, 22, rp_s(g), rp_e(g))
+    }
+    alt
+}
+
+// ------------------------------------------------------------ clases (pila)
+
+fn rp_push_class_open(p: int, parent_union: int) -> int {
+    let r = rp_parse_set_class_open(p)
+    if r == 0 {
+        return 0
+    }
+    let cs = rp_node(p, 0, 3)
+    std::raw::store(cs + 8, parent_union)
+    std::raw::store(cs + 16, std::raw::load(r + 8))
+    iv_push(std::raw::load(p + 48), cs)
+    std::raw::load(r + 16)
+}
+
+fn rp_pop_class_op(p: int, rhs: int) -> int {
+    let st = std::raw::load(p + 48)
+    let n = iv_len(st)
+    let top = iv_get(st, n - 1)
+    if std::raw::load(top) == 0 {
+        return rhs
+    }
+    iv_trunc(st, n - 1)
+    let lhs = std::raw::load(top + 16)
+    let op = rp_node_span(p, 28, 6, rp_s(lhs), rp_e(rhs))
+    std::raw::store(op + 24, std::raw::load(top + 8))
+    std::raw::store(op + 32, lhs)
+    std::raw::store(op + 40, rhs)
+    op
+}
+
+fn rp_push_class_op(p: int, kind: int, next_union: int) -> int {
+    let item = rp_union_item(p, next_union)
+    let new_lhs = rp_pop_class_op(p, item)
+    let cs = rp_node(p, 1, 3)
+    std::raw::store(cs + 8, kind)
+    std::raw::store(cs + 16, new_lhs)
+    iv_push(std::raw::load(p + 48), cs)
+    rp_union_new(p)
+}
+
+// pop_class: devuelve la unión padre (clase anidada) o, en +0 del
+// resultado, el tipo 8 (la clase completa ya cerrada).
+fn rp_pop_class(p: int, nested_union: int) -> int {
+    let item = rp_union_item(p, nested_union)
+    let prevset = rp_pop_class_op(p, item)
+    let st = std::raw::load(p + 48)
+    let n = iv_len(st)
+    let top = iv_get(st, n - 1)
+    iv_trunc(st, n - 1)
+    let union = std::raw::load(top + 8)
+    let set = std::raw::load(top + 16)
+    rp_bump(p)
+    rp_set_e(set, rp_off(p))
+    std::raw::store(set + 32, prevset)
+    if n == 1 {
+        return set
+    }
+    rp_union_push(union, set)
+    union
+}
+
+// ------------------------------------------------------------ análisis
+
+// Devuelve el AST o 0 (error en P).
+fn rp_parse(p: int) -> int {
+    let mut concat = rp_concat_new(p)
+    while true {
+        rp_bump_space(p)
+        if rp_eof(p) {
+            break
+        }
+        let c = rp_char(p)
+        if c == 40 {
+            concat = rp_push_group(p, concat)
+        } else if c == 41 {
+            concat = rp_pop_group(p, concat)
+        } else if c == 124 {
+            concat = rp_push_alternate(p, concat)
+        } else if c == 91 {
+            let cls = rp_parse_set_class(p)
+            if cls == 0 {
+                return 0
+            }
+            iv_push(rp_items(concat), cls)
+        } else if c == 63 {
+            concat = rp_parse_uncounted_repetition(p, concat, 0)
+        } else if c == 42 {
+            concat = rp_parse_uncounted_repetition(p, concat, 1)
+        } else if c == 43 {
+            concat = rp_parse_uncounted_repetition(p, concat, 2)
+        } else if c == 123 {
+            concat = rp_parse_counted_repetition(p, concat)
+        } else {
+            let prim = rp_parse_primitive(p)
+            if prim == 0 {
+                return 0
+            }
+            iv_push(rp_items(concat), prim)
+        }
+        if concat == 0 {
+            return 0
+        }
+    }
+    let ast = rp_pop_group_end(p, concat)
+    if ast == 0 {
+        return 0
+    }
+    if rp_nest(p, ast, 0) != 0 {
+        return 0
+    }
+    ast
+}
+
+// Quita el último elemento de la concatenación para repetirlo (0 si no hay
+// o no se puede: RepetitionMissing).
+fn rp_pop_repeatable(p: int, concat: int) -> int {
+    let v = rp_items(concat)
+    let n = iv_len(v)
+    if n == 0 {
+        return rp_err(p, 28, rp_off(p), rp_off(p))
+    }
+    let ast = iv_get(v, n - 1)
+    iv_trunc(v, n - 1)
+    if rp_kind(ast) == 1 || rp_kind(ast) == 2 {
+        return rp_err(p, 28, rp_off(p), rp_off(p))
+    }
+    ast
+}
+
+fn rp_repetition(p: int, ast: int, os: int, oe: int, k: int, mn: int, mx: int, greedy: bool) -> int {
+    let r = rp_node_span(p, 9, 10, rp_s(ast), rp_off(p))
+    std::raw::store(r + 24, os)
+    std::raw::store(r + 32, oe)
+    std::raw::store(r + 40, k)
+    std::raw::store(r + 48, mn)
+    std::raw::store(r + 56, mx)
+    if greedy {
+        std::raw::store(r + 64, 1)
+    }
+    std::raw::store(r + 72, ast)
+    r
+}
+
+fn rp_parse_uncounted_repetition(p: int, concat: int, k: int) -> int {
+    let op_start = rp_off(p)
+    let ast = rp_pop_repeatable(p, concat)
+    if ast == 0 {
+        return 0
+    }
+    let mut greedy = true
+    if rp_bump(p) && rp_char(p) == 63 {
+        greedy = false
+        rp_bump(p)
+    }
+    iv_push(rp_items(concat), rp_repetition(p, ast, op_start, rp_off(p), k, 0, 0, greedy))
+    concat
+}
+
+// parse_decimal: el número, o -1 con el error en P.
+fn rp_parse_decimal(p: int) -> int {
+    while !rp_eof(p) && rp_is_space(rp_char(p)) {
+        rp_bump(p)
+    }
+    let start = rp_off(p)
+    let mut v = 0
+    let mut digits = 0
+    let mut big = false
+    while !rp_eof(p) && rp_char(p) >= 48 && rp_char(p) <= 57 {
+        v = v * 10 + (rp_char(p) - 48)
+        if v > 4294967295 {
+            big = true
+            v = 0
+        }
+        digits += 1
+        rp_bump_and_bump_space(p)
+    }
+    let end = rp_off(p)
+    while !rp_eof(p) && rp_is_space(rp_char(p)) {
+        rp_bump_and_bump_space(p)
+    }
+    if digits == 0 {
+        rp_err(p, 6, start, end)
+        return -1
+    }
+    if big {
+        rp_err(p, 7, start, end)
+        return -1
+    }
+    v
+}
+
+// parse_decimal con DecimalEmpty cambiado a RepetitionCountDecimalEmpty.
+fn rp_parse_count(p: int) -> int {
+    let v = rp_parse_decimal(p)
+    if v < 0 && std::raw::load(p + 72) == 6 {
+        std::raw::store(p + 72, 26)
+    }
+    v
+}
+
+fn rp_parse_counted_repetition(p: int, concat: int) -> int {
+    let start = rp_off(p)
+    let ast = rp_pop_repeatable(p, concat)
+    if ast == 0 {
+        return 0
+    }
+    if !rp_bump_and_bump_space(p) {
+        return rp_err(p, 27, start, rp_off(p))
+    }
+    let count_start = rp_parse_count(p)
+    // El error de count_start se guarda: la crate lo devuelve más tarde.
+    let ek = std::raw::load(p + 72)
+    let es = std::raw::load(p + 80)
+    let ee = std::raw::load(p + 88)
+    std::raw::store(p + 72, 0)
+    if rp_eof(p) {
+        return rp_err(p, 27, start, rp_off(p))
+    }
+    let mut k = 3
+    let mut mn = count_start
+    let mut mx = count_start
+    if rp_char(p) == 44 {
+        if !rp_bump_and_bump_space(p) {
+            return rp_err(p, 27, start, rp_off(p))
+        }
+        if count_start < 0 {
+            return rp_err(p, ek, es, ee)
+        }
+        if rp_char(p) != 125 {
+            let count_end = rp_parse_count(p)
+            if count_end < 0 {
+                return 0
+            }
+            k = 5
+            mx = count_end
+        } else {
+            k = 4
+        }
+    } else if count_start < 0 {
+        return rp_err(p, ek, es, ee)
+    }
+    if rp_eof(p) || rp_char(p) != 125 {
+        return rp_err(p, 27, start, rp_off(p))
+    }
+    let mut greedy = true
+    if rp_bump_and_bump_space(p) && rp_char(p) == 63 {
+        greedy = false
+        rp_bump(p)
+    }
+    let op_end = rp_off(p)
+    if k == 5 && mn > mx {
+        return rp_err(p, 25, start, op_end)
+    }
+    iv_push(rp_items(concat), rp_repetition(p, ast, start, op_end, k, mn, mx, greedy))
+    concat
+}
+
+fn rp_is_lookaround_prefix(p: int) -> bool {
+    rp_bump_if(p, "?=") || rp_bump_if(p, "?!") || rp_bump_if(p, "?<=") || rp_bump_if(p, "?<!")
+}
+
+// parse_group: un nodo Flags (SetFlags) o Group, o 0.
+fn rp_parse_group(p: int) -> int {
+    let os = rp_off(p)
+    let oe = rp_cend(p)
+    rp_bump(p)
+    rp_bump_space(p)
+    if rp_is_lookaround_prefix(p) {
+        return rp_err(p, 34, os, rp_off(p))
+    }
+    let inner = rp_off(p)
+    let mut starts_with_p = true
+    let mut named = rp_bump_if(p, "?P<")
+    if !named {
+        starts_with_p = false
+        named = rp_bump_if(p, "?<")
+    }
+    if named {
+        let idx = std::raw::load(p + 24) + 1
+        std::raw::store(p + 24, idx)
+        let g = rp_node_span(p, 10, 10, os, oe)
+        std::raw::store(g + 24, 1)
+        std::raw::store(g + 32, idx)
+        if starts_with_p {
+            std::raw::store(g + 72, 1)
+        }
+        if !rp_parse_capture_name(p, g) {
+            return 0
+        }
+        std::raw::store(g + 64, rp_node_span(p, 1, 3, rp_off(p), rp_off(p)))
+        return g
+    }
+    if rp_bump_if(p, "?") {
+        if rp_eof(p) {
+            return rp_err(p, 22, os, oe)
+        }
+        let flags = rp_parse_flags(p)
+        if flags == 0 {
+            return 0
+        }
+        let char_end = rp_char(p)
+        rp_bump(p)
+        if char_end == 41 {
+            if iv_len(flags) == 0 {
+                return rp_err(p, 28, inner, inner)
+            }
+            let sf = rp_node_span(p, 2, 4, os, rp_off(p))
+            std::raw::store(sf + 24, flags)
+            return sf
+        }
+        let g = rp_node_span(p, 10, 10, os, oe)
+        std::raw::store(g + 24, 2)
+        std::raw::store(g + 56, flags)
+        std::raw::store(g + 64, rp_node_span(p, 1, 3, rp_off(p), rp_off(p)))
+        return g
+    }
+    let idx = std::raw::load(p + 24) + 1
+    std::raw::store(p + 24, idx)
+    let g = rp_node_span(p, 10, 10, os, oe)
+    std::raw::store(g + 32, idx)
+    std::raw::store(g + 64, rp_node_span(p, 1, 3, rp_off(p), rp_off(p)))
+    g
+}
+
+fn rp_is_capture_char(c: int, first: bool) -> bool {
+    if c == 95 {
+        return true
+    }
+    if first {
+        return rt_unicode_has(0, c)
+    }
+    c == 46 || c == 91 || c == 93 || rt_unicode_has(1, c)
+}
+
+// Compara dos trozos del patrón (como str): <0, 0, >0.
+fn rp_cmp_slice(p: int, a0: int, a1: int, b0: int, b1: int) -> int {
+    let base = std::raw::load(p)
+    let mut i = 0
+    while a0 + i < a1 && b0 + i < b1 {
+        let x = std::raw::load8(base + a0 + i)
+        let y = std::raw::load8(base + b0 + i)
+        if x != y {
+            return x - y
+        }
+        i += 1
+    }
+    return (a1 - a0) - (b1 - b0)
+}
+
+fn rp_parse_capture_name(p: int, g: int) -> bool {
+    if rp_eof(p) {
+        rp_err(p, 21, rp_off(p), rp_off(p))
+        return false
+    }
+    let start = rp_off(p)
+    while true {
+        if rp_char(p) == 62 {
+            break
+        }
+        if !rp_is_capture_char(rp_char(p), rp_off(p) == start) {
+            rp_err(p, 20, rp_off(p), rp_cend(p))
+            return false
+        }
+        if !rp_bump(p) {
+            break
+        }
+    }
+    let end = rp_off(p)
+    if rp_eof(p) {
+        rp_err(p, 21, rp_off(p), rp_off(p))
+        return false
+    }
+    rp_bump(p)
+    if end == start {
+        rp_err(p, 19, start, start)
+        return false
+    }
+    std::raw::store(g + 40, start)
+    std::raw::store(g + 48, end)
+    // Nombres ordenados; entradas: bloque (inicio, fin).
+    let names = std::raw::load(p + 56)
+    let mut lo = 0
+    let mut hi = iv_len(names)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let m = iv_get(names, mid)
+        let c = rp_cmp_slice(p, std::raw::load(m), std::raw::load(m + 8), start, end)
+        if c == 0 {
+            rp_err_aux(p, 18, start, end, std::raw::load(m), std::raw::load(m + 8))
+            return false
+        }
+        if c < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    let e = rp_node(p, start, 2)
+    std::raw::store(e + 8, end)
+    iv_insert(names, lo, e)
+    true
+}
+
+// parse_flags: vector de (tipo, inicio, fin) o 0.
+fn rp_parse_flags(p: int) -> int {
+    let flags = rp_vec(p)
+    let mut dangling = -1
+    while rp_char(p) != 58 && rp_char(p) != 41 {
+        let s = rp_off(p)
+        let e = rp_cend(p)
+        let mut k = 0
+        if rp_char(p) == 45 {
+            dangling = s
+        } else {
+            dangling = -1
+            k = rp_parse_flag(p)
+            if k == 0 {
+                return 0
+            }
+        }
+        let mut i = 0
+        while i < iv_len(flags) {
+            if iv_get(flags, i) == k {
+                if k == 0 {
+                    return rp_err_aux(p, 15, s, e, iv_get(flags, i + 1), iv_get(flags, i + 2))
+                }
+                return rp_err_aux(p, 14, s, e, iv_get(flags, i + 1), iv_get(flags, i + 2))
+            }
+            i += 3
+        }
+        iv_push(flags, k)
+        iv_push(flags, s)
+        iv_push(flags, e)
+        if !rp_bump(p) {
+            return rp_err(p, 16, rp_off(p), rp_off(p))
+        }
+    }
+    if dangling >= 0 {
+        return rp_err(p, 13, dangling, dangling + 1)
+    }
+    flags
+}
+
+fn rp_parse_flag(p: int) -> int {
+    let c = rp_char(p)
+    if c == 105 {
+        return 1
+    }
+    if c == 109 {
+        return 2
+    }
+    if c == 115 {
+        return 3
+    }
+    if c == 85 {
+        return 4
+    }
+    if c == 117 {
+        return 5
+    }
+    if c == 82 {
+        return 6
+    }
+    if c == 120 {
+        return 7
+    }
+    rp_err(p, 17, rp_off(p), rp_cend(p))
+}
+
+fn rp_parse_primitive(p: int) -> int {
+    let c = rp_char(p)
+    if c == 92 {
+        return rp_parse_escape(p)
+    }
+    let s = rp_off(p)
+    let e = rp_cend(p)
+    rp_bump(p)
+    if c == 46 {
+        return rp_node_span(p, 4, 3, s, e)
+    }
+    if c == 94 {
+        return rp_assertion(p, s, e, 0)
+    }
+    if c == 36 {
+        return rp_assertion(p, s, e, 1)
+    }
+    rp_literal(p, s, e, c, 0)
+}
+
+fn rp_is_meta(c: int) -> bool {
+    c == 92 || c == 46 || c == 43 || c == 42 || c == 63 || c == 40 || c == 41 || c == 124 || c == 91 || c == 93 || c == 123 || c == 125 || c == 94 || c == 36 || c == 35 || c == 38 || c == 45 || c == 126
+}
+
+fn rp_is_escapeable(c: int) -> bool {
+    if rp_is_meta(c) {
+        return true
+    }
+    if c >= 128 {
+        return false
+    }
+    if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+        return false
+    }
+    if c == 60 || c == 62 {
+        return false
+    }
+    true
+}
+
+fn rp_parse_escape(p: int) -> int {
+    let start = rp_off(p)
+    if !rp_bump(p) {
+        return rp_err(p, 11, start, rp_off(p))
+    }
+    let c = rp_char(p)
+    if c >= 48 && c <= 57 {
+        return rp_err(p, 33, start, rp_cend(p))
+    }
+    if c == 120 || c == 117 || c == 85 {
+        let lit = rp_parse_hex(p)
+        if lit != 0 {
+            rp_set_s(lit, start)
+        }
+        return lit
+    }
+    if c == 112 || c == 80 {
+        let cls = rp_parse_unicode_class(p)
+        if cls != 0 {
+            rp_set_s(cls, start)
+        }
+        return cls
+    }
+    if c == 100 || c == 115 || c == 119 || c == 68 || c == 83 || c == 87 {
+        let cls = rp_node_span(p, 7, 5, start, rp_cend(p))
+        rp_bump(p)
+        if c == 68 || c == 83 || c == 87 {
+            std::raw::store(cls + 32, 1)
+        }
+        if c == 115 || c == 83 {
+            std::raw::store(cls + 24, 1)
+        } else if c == 119 || c == 87 {
+            std::raw::store(cls + 24, 2)
+        }
+        return cls
+    }
+    rp_bump(p)
+    let end = rp_off(p)
+    if rp_is_meta(c) {
+        return rp_literal(p, start, end, c, 1)
+    }
+    if rp_is_escapeable(c) {
+        return rp_literal(p, start, end, c, 2)
+    }
+    if c == 97 {
+        return rp_literal(p, start, end, 7, 10)
+    }
+    if c == 102 {
+        return rp_literal(p, start, end, 12, 10)
+    }
+    if c == 116 {
+        return rp_literal(p, start, end, 9, 10)
+    }
+    if c == 110 {
+        return rp_literal(p, start, end, 10, 10)
+    }
+    if c == 114 {
+        return rp_literal(p, start, end, 13, 10)
+    }
+    if c == 118 {
+        return rp_literal(p, start, end, 11, 10)
+    }
+    if c == 65 {
+        return rp_assertion(p, start, end, 2)
+    }
+    if c == 122 {
+        return rp_assertion(p, start, end, 3)
+    }
+    if c == 98 {
+        let wb = rp_assertion(p, start, end, 4)
+        if !rp_eof(p) && rp_char(p) == 123 {
+            let k = rp_maybe_special_word_boundary(p, start)
+            if k == 0 {
+                return 0
+            }
+            if k > 0 {
+                std::raw::store(wb + 24, k)
+                rp_set_e(wb, rp_off(p))
+            }
+        }
+        return wb
+    }
+    if c == 66 {
+        return rp_assertion(p, start, end, 5)
+    }
+    if c == 60 {
+        return rp_assertion(p, start, end, 10)
+    }
+    if c == 62 {
+        return rp_assertion(p, start, end, 11)
+    }
+    rp_err(p, 12, start, end)
+}
+
+// Devuelve el tipo de aserción (6-9), -1 si no es un \b{...} especial, o 0
+// si hay error.
+fn rp_maybe_special_word_boundary(p: int, wb_start: int) -> int {
+    let start = rp_off(p)
+    if !rp_bump_and_bump_space(p) {
+        return rp_err(p, 31, wb_start, rp_off(p))
+    }
+    let start_contents = rp_off(p)
+    if !rp_wb_char(rp_char(p)) {
+        rp_setoff(p, start)
+        return -1
+    }
+    let sc = std::raw::load(p + 128)
+    iv_trunc(sc, 0)
+    while !rp_eof(p) && rp_wb_char(rp_char(p)) {
+        iv_push(sc, rp_char(p))
+        rp_bump_and_bump_space(p)
+    }
+    if rp_eof(p) || rp_char(p) != 125 {
+        return rp_err(p, 29, start, rp_off(p))
+    }
+    let end = rp_off(p)
+    rp_bump(p)
+    if rp_iv_is(sc, "start") {
+        return 6
+    }
+    if rp_iv_is(sc, "end") {
+        return 7
+    }
+    if rp_iv_is(sc, "start-half") {
+        return 8
+    }
+    if rp_iv_is(sc, "end-half") {
+        return 9
+    }
+    rp_err(p, 30, start_contents, end)
+}
+
+fn rp_wb_char(c: int) -> bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45
+}
+
+// ¿El vector de códigos es igual al texto ASCII s?
+fn rp_iv_is(v: int, s: string) -> bool {
+    let n = rt_slen(s)
+    if iv_len(v) != n {
+        return false
+    }
+    let b = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        if iv_get(v, i) != std::raw::load8(b + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn rp_is_hex(c: int) -> bool {
+    return (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
+}
+
+fn rp_hex_val(c: int) -> int {
+    if c <= 57 {
+        return c - 48
+    }
+    if c <= 70 {
+        return c - 55
+    }
+    c - 87
+}
+
+fn rp_is_scalar(v: int) -> bool {
+    v >= 0 && v <= 1114111 && (v < 55296 || v > 57343)
+}
+
+fn rp_parse_hex(p: int) -> int {
+    let c = rp_char(p)
+    let mut kind = 0
+    let mut digits = 2
+    if c == 117 {
+        kind = 1
+        digits = 4
+    } else if c == 85 {
+        kind = 2
+        digits = 8
+    }
+    if !rp_bump_and_bump_space(p) {
+        return rp_err(p, 11, rp_off(p), rp_off(p))
+    }
+    if rp_char(p) == 123 {
+        return rp_parse_hex_brace(p, kind)
+    }
+    let start = rp_off(p)
+    let mut v = 0
+    let mut i = 0
+    while i < digits {
+        if i > 0 && !rp_bump_and_bump_space(p) {
+            return rp_err(p, 11, rp_off(p), rp_off(p))
+        }
+        if !rp_is_hex(rp_char(p)) {
+            return rp_err(p, 10, rp_off(p), rp_cend(p))
+        }
+        v = v * 16 + rp_hex_val(rp_char(p))
+        i += 1
+    }
+    rp_bump_and_bump_space(p)
+    let end = rp_off(p)
+    if !rp_is_scalar(v) {
+        return rp_err(p, 9, start, end)
+    }
+    rp_literal(p, start, end, v, 4 + kind)
+}
+
+fn rp_parse_hex_brace(p: int, kind: int) -> int {
+    let brace_pos = rp_off(p)
+    let start = rp_cend(p)
+    let mut v = 0
+    let mut n = 0
+    let mut big = false
+    while rp_bump_and_bump_space(p) && rp_char(p) != 125 {
+        if !rp_is_hex(rp_char(p)) {
+            return rp_err(p, 10, rp_off(p), rp_cend(p))
+        }
+        v = v * 16 + rp_hex_val(rp_char(p))
+        if v > 4294967295 {
+            big = true
+            v = 0
+        }
+        n += 1
+    }
+    if rp_eof(p) {
+        return rp_err(p, 11, brace_pos, rp_off(p))
+    }
+    let end = rp_off(p)
+    rp_bump_and_bump_space(p)
+    if n == 0 {
+        return rp_err(p, 8, brace_pos, rp_off(p))
+    }
+    if big || !rp_is_scalar(v) {
+        return rp_err(p, 9, start, end)
+    }
+    rp_literal(p, start, rp_off(p), v, 7 + kind)
+}
+
+// ------------------------------------------------------------ clases
+
+// parse_set_class: la clase (nodo 8) o 0.
+fn rp_parse_set_class(p: int) -> int {
+    let mut union = rp_union_new(p)
+    while true {
+        rp_bump_space(p)
+        if rp_eof(p) {
+            return rp_unclosed_class(p)
+        }
+        let c = rp_char(p)
+        if c == 91 {
+            let mut done = false
+            if iv_len(std::raw::load(p + 48)) > 0 {
+                let cls = rp_maybe_parse_ascii_class(p)
+                if cls != 0 {
+                    rp_union_push(union, cls)
+                    done = true
+                }
+            }
+            if !done {
+                union = rp_push_class_open(p, union)
+                if union == 0 {
+                    return 0
+                }
+            }
+            union = union
+        } else if c == 93 {
+            let r = rp_pop_class(p, union)
+            if rp_kind(r) == 8 {
+                return r
+            }
+            union = r
+        } else if c == 38 && rp_peek(p) == 38 {
+            rp_bump_if(p, "&&")
+            union = rp_push_class_op(p, 0, union)
+        } else if c == 45 && rp_peek(p) == 45 {
+            rp_bump_if(p, "--")
+            union = rp_push_class_op(p, 1, union)
+        } else if c == 126 && rp_peek(p) == 126 {
+            rp_bump_if(p, "~~")
+            union = rp_push_class_op(p, 2, union)
+        } else {
+            let item = rp_parse_set_class_range(p)
+            if item == 0 {
+                return 0
+            }
+            rp_union_push(union, item)
+            union = union
+        }
+    }
+    0
+}
+
+// into_class_set_item: Literal, Perl y Unicode valen; lo demás es
+// ClassEscapeInvalid.
+fn rp_class_set_item(p: int, prim: int) -> int {
+    let k = rp_kind(prim)
+    if k == 3 || k == 6 || k == 7 {
+        return prim
+    }
+    rp_err(p, 2, rp_s(prim), rp_e(prim))
+}
+
+fn rp_parse_set_class_range(p: int) -> int {
+    let prim1 = rp_parse_set_class_item(p)
+    if prim1 == 0 {
+        return 0
+    }
+    rp_bump_space(p)
+    if rp_eof(p) {
+        return rp_unclosed_class(p)
+    }
+    if rp_char(p) != 45 || rp_peek_space(p) == 93 || rp_peek_space(p) == 45 {
+        return rp_class_set_item(p, prim1)
+    }
+    if !rp_bump_and_bump_space(p) {
+        return rp_unclosed_class(p)
+    }
+    let prim2 = rp_parse_set_class_item(p)
+    if prim2 == 0 {
+        return 0
+    }
+    let s = rp_s(prim1)
+    let e = rp_e(prim2)
+    if rp_kind(prim1) != 3 {
+        return rp_err(p, 4, rp_s(prim1), rp_e(prim1))
+    }
+    if rp_kind(prim2) != 3 {
+        return rp_err(p, 4, rp_s(prim2), rp_e(prim2))
+    }
+    if std::raw::load(prim1 + 24) > std::raw::load(prim2 + 24) {
+        return rp_err(p, 3, s, e)
+    }
+    let r = rp_node_span(p, 22, 5, s, e)
+    std::raw::store(r + 24, prim1)
+    std::raw::store(r + 32, prim2)
+    r
+}
+
+fn rp_parse_set_class_item(p: int) -> int {
+    if rp_char(p) == 92 {
+        return rp_parse_escape(p)
+    }
+    let s = rp_off(p)
+    let e = rp_cend(p)
+    let c = rp_char(p)
+    rp_bump(p)
+    rp_literal(p, s, e, c, 0)
+}
+
+// parse_set_class_open: bloque (clase, unión) o 0.
+fn rp_parse_set_class_open(p: int) -> int {
+    let start = rp_off(p)
+    if !rp_bump_and_bump_space(p) {
+        return rp_err(p, 5, start, rp_off(p))
+    }
+    let mut negated = 0
+    if rp_char(p) == 94 {
+        if !rp_bump_and_bump_space(p) {
+            return rp_err(p, 5, start, rp_off(p))
+        }
+        negated = 1
+    }
+    let union = rp_union_new(p)
+    while rp_char(p) == 45 {
+        rp_union_push(union, rp_literal(p, rp_off(p), rp_cend(p), 45, 0))
+        if !rp_bump_and_bump_space(p) {
+            return rp_err(p, 5, start, start)
+        }
+    }
+    if iv_len(rp_items(union)) == 0 && rp_char(p) == 93 {
+        rp_union_push(union, rp_literal(p, rp_off(p), rp_cend(p), 93, 0))
+        if !rp_bump_and_bump_space(p) {
+            return rp_err(p, 5, start, rp_off(p))
+        }
+    }
+    let set = rp_node_span(p, 8, 5, start, rp_off(p))
+    std::raw::store(set + 24, negated)
+    let r = rp_node(p, 0, 3)
+    std::raw::store(r + 8, set)
+    std::raw::store(r + 16, union)
+    r
+}
+
+fn rp_ascii_kind(p: int, a: int, b: int) -> int {
+    let names = ["alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "word", "xdigit"]
+    let base = std::raw::load(p)
+    let mut k = 0
+    while k < 14 {
+        let s = names[k]
+        let n = rt_slen(s)
+        if n == b - a {
+            let sb = std::raw::bits(s) + 16
+            let mut i = 0
+            while i < n && std::raw::load8(sb + i) == std::raw::load8(base + a + i) {
+                i += 1
+            }
+            if i == n {
+                return k
+            }
+        }
+        k += 1
+    }
+    -1
+}
+
+fn rp_maybe_parse_ascii_class(p: int) -> int {
+    let start = rp_off(p)
+    let mut negated = 0
+    if !rp_bump(p) || rp_char(p) != 58 {
+        rp_setoff(p, start)
+        return 0
+    }
+    if !rp_bump(p) {
+        rp_setoff(p, start)
+        return 0
+    }
+    if rp_char(p) == 94 {
+        negated = 1
+        if !rp_bump(p) {
+            rp_setoff(p, start)
+            return 0
+        }
+    }
+    let name_start = rp_off(p)
+    while rp_char(p) != 58 && rp_bump(p) {
+    }
+    if rp_eof(p) {
+        rp_setoff(p, start)
+        return 0
+    }
+    let name_end = rp_off(p)
+    if !rp_bump_if(p, ":]") {
+        rp_setoff(p, start)
+        return 0
+    }
+    let k = rp_ascii_kind(p, name_start, name_end)
+    if k < 0 {
+        rp_setoff(p, start)
+        return 0
+    }
+    let n = rp_node_span(p, 23, 5, start, rp_off(p))
+    std::raw::store(n + 24, k)
+    std::raw::store(n + 32, negated)
+    n
+}
+
+// Busca el texto ASCII s en el vector de códigos v a partir de 0; -1 si no.
+fn rp_iv_find(v: int, s: string) -> int {
+    let n = rt_slen(s)
+    let b = std::raw::bits(s) + 16
+    let mut i = 0
+    while i + n <= iv_len(v) {
+        let mut j = 0
+        while j < n && iv_get(v, i + j) == std::raw::load8(b + j) {
+            j += 1
+        }
+        if j == n {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn rp_iv_slice(p: int, v: int, a: int, b: int) -> int {
+    let r = rp_vec(p)
+    let mut i = a
+    while i < b {
+        iv_push(r, iv_get(v, i))
+        i += 1
+    }
+    r
+}
+
+fn rp_parse_unicode_class(p: int) -> int {
+    let mut negated = 0
+    if rp_char(p) == 80 {
+        negated = 1
+    }
+    if !rp_bump_and_bump_space(p) {
+        return rp_err(p, 11, rp_off(p), rp_off(p))
+    }
+    if rp_char(p) == 123 {
+        let start = rp_cend(p)
+        let sc = rp_vec(p)
+        while rp_bump_and_bump_space(p) && rp_char(p) != 125 {
+            iv_push(sc, rp_char(p))
+        }
+        if rp_eof(p) {
+            return rp_err(p, 11, rp_off(p), rp_off(p))
+        }
+        rp_bump(p)
+        let n = rp_node_span(p, 6, 8, start, rp_off(p))
+        std::raw::store(n + 24, negated)
+        let mut i = rp_iv_find(sc, "!=")
+        let mut op = 2
+        let mut skip = 2
+        if i < 0 {
+            i = rp_iv_find(sc, ":")
+            op = 1
+            skip = 1
+        }
+        if i < 0 {
+            i = rp_iv_find(sc, "=")
+            op = 0
+        }
+        if i < 0 {
+            std::raw::store(n + 32, 1)
+            std::raw::store(n + 40, sc)
+        } else {
+            std::raw::store(n + 32, 2)
+            std::raw::store(n + 40, rp_iv_slice(p, sc, 0, i))
+            std::raw::store(n + 48, rp_iv_slice(p, sc, i + skip, iv_len(sc)))
+            std::raw::store(n + 56, op)
+        }
+        return n
+    }
+    let start = rp_off(p)
+    let c = rp_char(p)
+    if c == 92 {
+        return rp_err(p, 32, rp_off(p), rp_cend(p))
+    }
+    rp_bump_and_bump_space(p)
+    let n = rp_node_span(p, 6, 8, start, rp_off(p))
+    std::raw::store(n + 24, negated)
+    std::raw::store(n + 40, c)
+    n
+}
+
+// ------------------------------------------------------------ anidamiento
+
+// NestLimiter: recorrido en preorden; error en el primer nodo que pasa de
+// 250 niveles. Devuelve 0 si está bien.
+fn rp_nest_inc(p: int, x: int, depth: int) -> int {
+    if depth + 1 > 250 {
+        rp_err(p, 24, rp_s(x), rp_e(x))
+        return 1
+    }
+    0
+}
+
+fn rp_nest(p: int, x: int, depth: int) -> int {
+    let k = rp_kind(x)
+    if k == 8 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        return rp_nest_class(p, std::raw::load(x + 32), depth + 1)
+    }
+    if k == 9 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        return rp_nest(p, std::raw::load(x + 72), depth + 1)
+    }
+    if k == 10 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        return rp_nest(p, std::raw::load(x + 64), depth + 1)
+    }
+    if k == 11 || k == 12 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        let v = rp_items(x)
+        let mut i = 0
+        while i < iv_len(v) {
+            if rp_nest(p, iv_get(v, i), depth + 1) != 0 {
+                return 1
+            }
+            i += 1
+        }
+    }
+    0
+}
+
+fn rp_nest_class(p: int, x: int, depth: int) -> int {
+    let k = rp_kind(x)
+    if k == 8 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        return rp_nest_class(p, std::raw::load(x + 32), depth + 1)
+    }
+    if k == 27 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        let v = rp_items(x)
+        let mut i = 0
+        while i < iv_len(v) {
+            if rp_nest_class(p, iv_get(v, i), depth + 1) != 0 {
+                return 1
+            }
+            i += 1
+        }
+        return 0
+    }
+    if k == 28 {
+        if rp_nest_inc(p, x, depth) != 0 {
+            return 1
+        }
+        if rp_nest_class(p, std::raw::load(x + 32), depth + 1) != 0 {
+            return 1
+        }
+        return rp_nest_class(p, std::raw::load(x + 40), depth + 1)
+    }
+    0
+}
+
+// ------------------------------------------------------------ formato
+
+// Línea (1..) del desplazamiento o.
+fn rx_line_of(base: int, o: int) -> int {
+    let mut line = 1
+    let mut i = 0
+    while i < o {
+        if std::raw::load8(base + i) == 10 {
+            line += 1
+        }
+        i += 1
+    }
+    line
+}
+
+// Columna (1.., en caracteres) del desplazamiento o.
+fn rx_col_of(base: int, o: int) -> int {
+    let mut i = o
+    while i > 0 && std::raw::load8(base + i - 1) != 10 {
+        i -= 1
+    }
+    let mut col = 1
+    while i < o {
+        if (std::raw::load8(base + i) & 192) != 128 {
+            col += 1
+        }
+        i += 1
+    }
+    col
+}
+
+fn rx_spaces(b: int, n: int) {
+    let mut i = 0
+    while i < n {
+        sb_byte(b, 32)
+        i += 1
+    }
+}
+
+// Texto de un error de regex-syntax (error::Formatter): patrón con el span
+// marcado y el mensaje. has_aux: hay span auxiliar (a, bb).
+fn rx_format_error(pat: any, msg: string, s: int, e: int, has_aux: bool, a: int, bb: int) -> any {
+    let base = std::raw::bits(pat) + 16
+    let n = rt_slen(pat)
+    let mut multi = false
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(base + i) == 10 {
+            multi = true
+        }
+        i += 1
+    }
+    // Líneas de str::lines(): cortes en \n, sin el \r final de cada una.
+    let starts = iv_new(8)
+    let ends = iv_new(8)
+    i = 0
+    while i < n {
+        let mut j = i
+        while j < n && std::raw::load8(base + j) != 10 {
+            j += 1
+        }
+        let mut k = j
+        if j < n && k > i && std::raw::load8(base + k - 1) == 13 {
+            k -= 1
+        }
+        iv_push(starts, i)
+        iv_push(ends, k)
+        i = j + 1
+    }
+    let mut line_count = iv_len(starts)
+    if n > 0 && std::raw::load8(base + n - 1) == 10 {
+        line_count += 1
+    }
+    let mut width = 0
+    if line_count > 1 {
+        width = rt_slen(rt_int_to_str(line_count))
+    }
+    // Spans (inicio, fin) ordenados; los de varias líneas aparte.
+    let mut s1 = s
+    let mut e1 = e
+    let mut s2 = a
+    let mut e2 = bb
+    let mut two = has_aux
+    if two && (s2 < s1 || (s2 == s1 && e2 < e1)) {
+        s1 = a
+        e1 = bb
+        s2 = s
+        e2 = e
+    }
+    let b = sb_new(64)
+    sb_str(b, "regex parse error:\n")
+    let divider = sb_new(80)
+    i = 0
+    while i < 79 {
+        sb_byte(divider, 126)
+        i += 1
+    }
+    sb_byte(divider, 10)
+    let div = sb_finish(divider)
+    if multi {
+        sb_str(b, div)
+    }
+    let mut ln = 0
+    while ln < iv_len(starts) {
+        if width > 0 {
+            let num = rt_int_to_str(ln + 1)
+            rx_spaces(b, width - rt_slen(num))
+            sb_str(b, num)
+            sb_str(b, ": ")
+        } else {
+            sb_str(b, "    ")
+        }
+        sb_raw(b, base + iv_get(starts, ln), iv_get(ends, ln) - iv_get(starts, ln))
+        sb_byte(b, 10)
+        let mut any_span = false
+        let mut pos = 0
+        let mut t = 0
+        while t < 2 {
+            let mut ss = s1
+            let mut ee = e1
+            if t == 1 {
+                ss = s2
+                ee = e2
+            }
+            if t == 0 || two {
+                let l1 = rx_line_of(base, ss)
+                if l1 == rx_line_of(base, ee) && l1 == ln + 1 {
+                    if !any_span {
+                        any_span = true
+                        if width == 0 {
+                            rx_spaces(b, 4)
+                        } else {
+                            rx_spaces(b, 2 + width)
+                        }
+                    }
+                    let c1 = rx_col_of(base, ss)
+                    let c2 = rx_col_of(base, ee)
+                    while pos < c1 - 1 {
+                        sb_byte(b, 32)
+                        pos += 1
+                    }
+                    let mut note = c2 - c1
+                    if note < 1 {
+                        note = 1
+                    }
+                    let mut q = 0
+                    while q < note {
+                        sb_byte(b, 94)
+                        pos += 1
+                        q += 1
+                    }
+                }
+            }
+            t += 1
+        }
+        if any_span {
+            sb_byte(b, 10)
+        }
+        ln += 1
+    }
+    if multi {
+        sb_str(b, div)
+        let mut first = true
+        let mut t = 0
+        while t < 2 {
+            let mut ss = s1
+            let mut ee = e1
+            if t == 1 {
+                ss = s2
+                ee = e2
+            }
+            if t == 0 || two {
+                let l1 = rx_line_of(base, ss)
+                let l2 = rx_line_of(base, ee)
+                if l1 != l2 {
+                    if !first {
+                        sb_byte(b, 10)
+                    }
+                    first = false
+                    sb_str(b, "on line ")
+                    sb_str(b, rt_int_to_str(l1))
+                    sb_str(b, " (column ")
+                    sb_str(b, rt_int_to_str(rx_col_of(base, ss)))
+                    sb_str(b, ") through line ")
+                    sb_str(b, rt_int_to_str(l2))
+                    sb_str(b, " (column ")
+                    sb_str(b, rt_int_to_str(rx_col_of(base, ee) - 1))
+                    sb_str(b, ")")
+                }
+            }
+            t += 1
+        }
+        if !first {
+            sb_byte(b, 10)
+        }
+    }
+    iv_free(starts)
+    iv_free(ends)
+    sb_str(b, "error: ")
+    sb_str(b, msg)
+    sb_finish(b)
+}
+
+// Analiza el patrón: devuelve "" si es válido o el texto del error.
+fn rp_check(pat: any) -> any {
+    let p = rp_new(pat)
+    let ast = rp_parse(p)
+    let mut out = ""
+    if ast == 0 {
+        out = rx_format_error(pat, rp_error_text(std::raw::load(p + 72)), std::raw::load(p + 80), std::raw::load(p + 88), std::raw::load(p + 96) != 0, std::raw::load(p + 104), std::raw::load(p + 112))
+    }
+    rp_free(p)
+    out
+}

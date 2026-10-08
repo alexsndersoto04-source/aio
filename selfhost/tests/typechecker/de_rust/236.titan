@@ -1,0 +1,1 @@
+fn wrong_contract() -> int { let value = Result::Ok(1)? value } fn main() {}

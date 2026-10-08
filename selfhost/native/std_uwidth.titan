@@ -1,0 +1,506 @@
+// Ancho de texto en columnas de terminal: unicode-width 0.2.2, modo sin CJK
+// (UnicodeWidthStr::width y UnicodeWidthChar::width), traducido de
+// src/tables.rs del crate original (selfhost/fuentes/unicode-width-0.2.2.crate).
+// Las tablas están en std_uwidth_tab.titan (generadas por uwidth/gen_uwidth.py
+// copiando los mismos bytes).
+//
+// WidthInfo (u16) con los mismos valores que en Rust:
+fn uw_default() -> int { 0 }
+fn uw_line_feed() -> int { 1 }
+fn uw_emoji_modifier() -> int { 2 }
+fn uw_regional_indicator() -> int { 3 }
+fn uw_several_regional_indicator() -> int { 4 }
+fn uw_emoji_presentation() -> int { 5 }
+fn uw_zwj_emoji_presentation() -> int { 4102 }
+fn uw_vs16_zwj_emoji_presentation() -> int { 36870 }
+fn uw_keycap_zwj_emoji_presentation() -> int { 4103 }
+fn uw_vs16_keycap_zwj_emoji_presentation() -> int { 36871 }
+fn uw_regional_indicator_zwj_presentation() -> int { 9 }
+fn uw_even_regional_indicator_zwj_presentation() -> int { 10 }
+fn uw_odd_regional_indicator_zwj_presentation() -> int { 11 }
+fn uw_tag_end() -> int { 16 }
+fn uw_tag_d1() -> int { 17 }
+fn uw_tag_d2() -> int { 18 }
+fn uw_tag_d3() -> int { 19 }
+fn uw_tag_a1() -> int { 25 }
+fn uw_tag_a2() -> int { 26 }
+fn uw_tag_a3() -> int { 27 }
+fn uw_tag_a4() -> int { 28 }
+fn uw_tag_a5() -> int { 29 }
+fn uw_tag_a6() -> int { 30 }
+fn uw_kirat_e() -> int { 32 }
+fn uw_kirat_ai() -> int { 33 }
+fn uw_vs123() -> int { 512 }
+fn uw_vs15() -> int { 16384 }
+fn uw_vs16() -> int { 32768 }
+fn uw_joining_group_alef() -> int { 12543 }
+fn uw_hebrew_lamed() -> int { 14336 }
+fn uw_zwj_hebrew_lamed() -> int { 15360 }
+fn uw_buginese_ya() -> int { 14337 }
+fn uw_zwj_buginese_ya() -> int { 15361 }
+fn uw_buginese_i_zwj_ya() -> int { 15362 }
+fn uw_tifinagh() -> int { 14339 }
+fn uw_zwj_tifinagh() -> int { 15363 }
+fn uw_tifinagh_joiner() -> int { 15364 }
+fn uw_lisu() -> int { 15365 }
+fn uw_old_turkic_i() -> int { 14342 }
+fn uw_zwj_old_turkic_i() -> int { 15366 }
+fn uw_khmer_coeng() -> int { 15367 }
+
+// LIGATURE_TRANSPARENT_MASK
+fn uw_lt_mask() -> int { 8192 }
+
+fn uw_is_ligature_transparent_info(i: int) -> bool { (i & 2048) == 2048 }
+fn uw_set_zwj_bit(i: int) -> int { i | 1024 }
+fn uw_is_emoji_presentation_info(i: int) -> bool { (i & 32768) == 32768 }
+fn uw_is_zwj_emoji_presentation(i: int) -> bool { (i & 45056) == 36864 }
+
+fn uw_set_emoji_presentation(i: int) -> int {
+    if (i & 8192) == 8192 || (i & 36864) == 4096 {
+        // self.0 | VS16 & !VS15 & !VS123  (el & va antes que el |)
+        return i | (32768 & (65535 - 16384) & (65535 - 512))
+    }
+    32768
+}
+
+fn uw_unset_emoji_presentation(i: int) -> int {
+    if (i & 8192) == 8192 {
+        return i & (65535 - 32768)
+    }
+    0
+}
+
+fn uw_is_text_presentation(i: int) -> bool { (i & 16384) == 16384 }
+
+fn uw_set_text_presentation(i: int) -> int {
+    if (i & 8192) == 8192 {
+        return i | (16384 & (65535 - 32768) & (65535 - 512))
+    }
+    16384
+}
+
+fn uw_unset_text_presentation(i: int) -> int { i & (65535 - 16384) }
+fn uw_is_vs123(i: int) -> bool { (i & 512) == 512 }
+
+fn uw_set_vs123(i: int) -> int {
+    if (i & 8192) == 8192 {
+        return i | (512 & (65535 - 16384) & (65535 - 32768))
+    }
+    512
+}
+
+fn uw_unset_vs123(i: int) -> int { i & (65535 - 512) }
+
+// Puntero a los bytes de la cadena hexadecimal de tablas (se guarda una vez).
+fn uw_tab() -> int {
+    let g = std::raw::globals() + 2544
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let p = std::raw::keep(uw_tab_hex()) + 16
+    std::raw::store(g, p)
+    p
+}
+
+fn uw_hexv(c: int) -> int {
+    if c >= 97 {
+        return c - 87
+    }
+    c - 48
+}
+
+fn uw_byte(t: int, i: int) -> int {
+    std::raw::shl(uw_hexv(std::raw::load8(t + 2 * i)), 4) | uw_hexv(std::raw::load8(t + 2 * i + 1))
+}
+
+// lookup_width(c) -> (ancho, WidthInfo)
+fn uw_lookup(cp: int) -> (int, int) {
+    let t = uw_tab()
+    let t1 = uw_byte(t, uw_off_root() + std::raw::shr(cp, 13))
+    let t2 = uw_byte(t, uw_off_middle() + 64 * t1 + (std::raw::shr(cp, 7) & 63))
+    let packed = uw_byte(t, uw_off_leaves() + 32 * t2 + (std::raw::shr(cp, 2) & 31))
+    let w = std::raw::shr(packed, 2 * (cp & 3)) & 3
+    if w < 3 {
+        return (w, 0)
+    }
+    if cp == 10 {
+        return (1, uw_line_feed())
+    }
+    if cp == 1500 {
+        return (1, uw_hebrew_lamed())
+    }
+    if cp >= 1570 && cp <= 2178 {
+        return (1, uw_joining_group_alef())
+    }
+    if cp >= 6016 && cp <= 6063 {
+        return (1, uw_khmer_coeng())
+    }
+    if cp == 6104 {
+        return (3, 0)
+    }
+    if cp == 6672 {
+        return (1, uw_buginese_ya())
+    }
+    if cp >= 11569 && cp <= 11631 {
+        return (1, uw_tifinagh())
+    }
+    if cp >= 42236 && cp <= 42237 {
+        return (1, uw_lisu())
+    }
+    if cp == 65025 {
+        return (0, uw_vs123())
+    }
+    if cp == 65038 {
+        return (0, uw_vs15())
+    }
+    if cp == 65039 {
+        return (0, uw_vs16())
+    }
+    if cp == 68611 {
+        return (1, uw_old_turkic_i())
+    }
+    if cp == 93543 {
+        return (1, uw_kirat_e())
+    }
+    if cp == 93544 {
+        return (1, uw_kirat_ai())
+    }
+    if cp >= 127462 && cp <= 127487 {
+        return (1, uw_regional_indicator())
+    }
+    if cp >= 127995 && cp <= 127999 {
+        return (2, uw_emoji_modifier())
+    }
+    return (2, uw_emoji_presentation())
+}
+
+// UnicodeWidthChar::width (sin CJK): None (-1) para controles.
+fn uw_char_width(cp: int) -> int {
+    if cp < 127 {
+        if cp >= 32 {
+            return 1
+        }
+        return -1
+    }
+    if cp >= 160 {
+        let (w, info) = uw_lookup(cp)
+        return w
+    }
+    -1
+}
+
+// Búsqueda en una lista ordenada de rangos (lo, hi) de 3 bytes little-endian.
+fn uw_in_ranges3(off: int, count: int, cp: int) -> bool {
+    let t = uw_tab()
+    let mut lo = 0
+    let mut hi = count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let e = off + 6 * mid
+        let a = uw_byte(t, e) | std::raw::shl(uw_byte(t, e + 1), 8) | std::raw::shl(uw_byte(t, e + 2), 16)
+        let b = uw_byte(t, e + 3) | std::raw::shl(uw_byte(t, e + 4), 8) | std::raw::shl(uw_byte(t, e + 5), 16)
+        if cp < a {
+            hi = mid
+        } else if cp > b {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+// Búsqueda en una hoja de rangos (lo, hi) de 1 byte.
+fn uw_in_ranges1(off: int, count: int, v: int) -> bool {
+    let t = uw_tab()
+    let mut lo = 0
+    let mut hi = count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let a = uw_byte(t, off + 2 * mid)
+        let b = uw_byte(t, off + 2 * mid + 1)
+        if v < a {
+            hi = mid
+        } else if v > b {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+fn uw_is_transparent_zero_width(cp: int) -> bool {
+    let (w, info) = uw_lookup(cp)
+    if w != 0 {
+        return false
+    }
+    !uw_in_ranges3(uw_off_ntz(), 71, cp)
+}
+
+fn uw_is_ligature_transparent(c: int) -> bool {
+    c == 847 || (c >= 6068 && c <= 6069) || (c >= 6155 && c <= 6157) || c == 6159 || c == 8205 || (c >= 65024 && c <= 65039) || (c >= 917760 && c <= 917999)
+}
+
+fn uw_starts_emoji_presentation_seq(cp: int) -> bool {
+    let leaf = uw_emo_leaf(std::raw::shr(cp, 10))
+    if leaf < 0 {
+        return false
+    }
+    let b = uw_byte(uw_tab(), uw_off_emo() + 128 * leaf + (std::raw::shr(cp, 3) & 127))
+    return (std::raw::shr(b, cp & 7) & 1) == 1
+}
+
+fn uw_starts_text_presentation_seq(cp: int) -> bool {
+    let (off, count) = uw_text_leaf(std::raw::shr(cp, 8))
+    if off < 0 {
+        return false
+    }
+    uw_in_ranges1(off, count, cp & 255)
+}
+
+fn uw_is_emoji_modifier_base(cp: int) -> bool {
+    let (off, count) = uw_emod_leaf(std::raw::shr(cp, 8))
+    if off < 0 {
+        return false
+    }
+    uw_in_ranges1(off, count, cp & 255)
+}
+
+fn uw_is_ri(c: int) -> bool { c >= 127462 && c <= 127487 }
+fn uw_is_tag_letter(c: int) -> bool { c >= 917601 && c <= 917626 }
+fn uw_is_tag_digit(c: int) -> bool { c >= 917552 && c <= 917561 }
+
+// width_in_str(c, next_info) -> (suma, info)
+fn uw_width_in_str(c: int, next0: int) -> (int, int) {
+    let mut next = next0
+    if uw_is_emoji_presentation_info(next) {
+        if uw_starts_emoji_presentation_seq(c) {
+            let mut w = 2
+            if uw_is_zwj_emoji_presentation(next) {
+                w = 0
+            }
+            return (w, uw_emoji_presentation())
+        }
+        next = uw_unset_emoji_presentation(next)
+    }
+    if c <= 160 {
+        if c == 10 {
+            return (1, uw_line_feed())
+        }
+        if c == 13 && next == uw_line_feed() {
+            return (0, 0)
+        }
+        return (1, 0)
+    }
+    if next != 0 {
+        if c == 65039 {
+            return (0, uw_set_emoji_presentation(next))
+        }
+        if c == 65025 {
+            return (0, uw_set_vs123(next))
+        }
+        if c == 65038 {
+            return (0, uw_set_text_presentation(next))
+        }
+        if uw_is_text_presentation(next) {
+            if uw_starts_text_presentation_seq(c) {
+                return (1, 0)
+            }
+            next = uw_unset_text_presentation(next)
+        } else if uw_is_vs123(next) {
+            if c == 8216 || c == 8217 || c == 8220 || c == 8221 {
+                return (2, 0)
+            }
+            next = uw_unset_vs123(next)
+        }
+        if uw_is_ligature_transparent_info(next) {
+            if c == 8205 {
+                return (0, uw_set_zwj_bit(next))
+            } else if uw_is_ligature_transparent(c) {
+                return (0, next)
+            }
+        }
+        let (w, info) = uw_width_special(next, c)
+        if w != -100 {
+            return (w, info)
+        }
+    }
+    uw_lookup(c)
+}
+
+// El `match (next_info, c)` de width_in_str; -100 = ningún caso aplica.
+fn uw_width_special(n: int, c: int) -> (int, int) {
+    if n == uw_joining_group_alef() {
+        if c == 1604 || (c >= 1717 && c <= 1720) || c == 1898 || c == 2214 || c == 2247 {
+            return (0, 0)
+        }
+        if uw_is_transparent_zero_width(c) {
+            return (0, uw_joining_group_alef())
+        }
+    }
+    if n == uw_zwj_hebrew_lamed() && c == 1488 {
+        return (0, 0)
+    }
+    if n == uw_khmer_coeng() && c == 6098 {
+        return (-1, 0)
+    }
+    if n == uw_zwj_buginese_ya() && c == 6679 {
+        return (0, uw_buginese_i_zwj_ya())
+    }
+    if n == uw_buginese_i_zwj_ya() && c == 6677 {
+        return (0, 0)
+    }
+    let tif = (c >= 11569 && c <= 11621) || c == 11631
+    if (n == uw_tifinagh() || n == uw_zwj_tifinagh()) && c == 11647 {
+        return (1, uw_tifinagh_joiner())
+    }
+    if n == uw_zwj_tifinagh() && tif {
+        return (0, 0)
+    }
+    if n == uw_tifinagh_joiner() && tif {
+        return (-1, 0)
+    }
+    if n == uw_lisu() && c >= 42232 && c <= 42235 {
+        return (0, 0)
+    }
+    if n == uw_zwj_old_turkic_i() && c == 68658 {
+        return (0, 0)
+    }
+    if n == uw_emoji_modifier() && uw_is_emoji_modifier_base(c) {
+        return (0, uw_emoji_presentation())
+    }
+    if (n == uw_regional_indicator() || n == uw_several_regional_indicator()) && uw_is_ri(c) {
+        return (1, uw_several_regional_indicator())
+    }
+    if c == 8205 {
+        if n == uw_emoji_presentation() || n == uw_several_regional_indicator() || n == uw_even_regional_indicator_zwj_presentation() || n == uw_odd_regional_indicator_zwj_presentation() || n == uw_emoji_modifier() {
+            return (0, uw_zwj_emoji_presentation())
+        }
+    }
+    if n == uw_zwj_emoji_presentation() && c == 8419 {
+        return (0, uw_keycap_zwj_emoji_presentation())
+    }
+    if n == uw_vs16_zwj_emoji_presentation() && uw_starts_emoji_presentation_seq(c) {
+        return (0, uw_emoji_presentation())
+    }
+    if n == uw_vs16_keycap_zwj_emoji_presentation() {
+        if (c >= 48 && c <= 57) || c == 35 || c == 42 {
+            return (0, uw_emoji_presentation())
+        }
+    }
+    if n == uw_zwj_emoji_presentation() && uw_is_ri(c) {
+        return (1, uw_regional_indicator_zwj_presentation())
+    }
+    if (n == uw_regional_indicator_zwj_presentation() || n == uw_odd_regional_indicator_zwj_presentation()) && uw_is_ri(c) {
+        return (-1, uw_even_regional_indicator_zwj_presentation())
+    }
+    if n == uw_even_regional_indicator_zwj_presentation() && uw_is_ri(c) {
+        return (3, uw_odd_regional_indicator_zwj_presentation())
+    }
+    if n == uw_zwj_emoji_presentation() && c >= 127995 && c <= 127999 {
+        return (0, uw_emoji_modifier())
+    }
+    if n == uw_zwj_emoji_presentation() && c == 917631 {
+        return (0, uw_tag_end())
+    }
+    if uw_is_tag_letter(c) {
+        if n == uw_tag_end() {
+            return (0, uw_tag_a1())
+        }
+        if n == uw_tag_a1() {
+            return (0, uw_tag_a2())
+        }
+        if n == uw_tag_a2() {
+            return (0, uw_tag_a3())
+        }
+        if n == uw_tag_a3() {
+            return (0, uw_tag_a4())
+        }
+        if n == uw_tag_a4() {
+            return (0, uw_tag_a5())
+        }
+        if n == uw_tag_a5() {
+            return (0, uw_tag_a6())
+        }
+    }
+    if uw_is_tag_digit(c) {
+        if n == uw_tag_end() || n == uw_tag_a1() || n == uw_tag_a2() || n == uw_tag_a3() || n == uw_tag_a4() {
+            return (0, uw_tag_d1())
+        }
+        if n == uw_tag_d1() {
+            return (0, uw_tag_d2())
+        }
+        if n == uw_tag_d2() {
+            return (0, uw_tag_d3())
+        }
+    }
+    if c == 127988 {
+        if n == uw_tag_a3() || n == uw_tag_a4() || n == uw_tag_a5() || n == uw_tag_a6() || n == uw_tag_d3() {
+            return (0, uw_emoji_presentation())
+        }
+    }
+    if n == uw_zwj_emoji_presentation() {
+        let (w, info) = uw_lookup(c)
+        if info == uw_emoji_presentation() {
+            return (0, uw_emoji_presentation())
+        }
+    }
+    if n == uw_kirat_e() {
+        if c == 93539 {
+            return (0, 0)
+        }
+        if c == 93543 {
+            return (0, uw_kirat_ai())
+        }
+        if c == 93544 {
+            return (1, uw_kirat_e())
+        }
+        if c == 93545 {
+            return (0, 0)
+        }
+    }
+    if n == uw_kirat_ai() && c == 93539 {
+        return (0, 0)
+    }
+    return (-100, 0)
+}
+
+// str_width: recorre los caracteres de atrás hacia adelante (rfold) con
+// suma envolvente (wrapping_add_signed). `p` apunta a bytes UTF-8 válidos.
+fn uw_str_width_bytes(p: int, n: int) -> int {
+    let mut sum = 0
+    let mut next = 0
+    let mut i = n
+    while i > 0 {
+        let mut s = i - 1
+        while s > 0 && (std::raw::load8(p + s) & 192) == 128 {
+            s -= 1
+        }
+        let cp = uw_decode(p, s)
+        let (add, info) = uw_width_in_str(cp, next)
+        sum = std::raw::wadd(sum, add)
+        next = info
+        i = s
+    }
+    sum
+}
+
+fn uw_decode(p: int, s: int) -> int {
+    let b0 = std::raw::load8(p + s)
+    if b0 < 128 {
+        return b0
+    }
+    if b0 < 224 {
+        return std::raw::shl(b0 & 31, 6) | (std::raw::load8(p + s + 1) & 63)
+    }
+    if b0 < 240 {
+        return std::raw::shl(b0 & 15, 12) | std::raw::shl(std::raw::load8(p + s + 1) & 63, 6) | (std::raw::load8(p + s + 2) & 63)
+    }
+    std::raw::shl(b0 & 7, 18) | std::raw::shl(std::raw::load8(p + s + 1) & 63, 12) | std::raw::shl(std::raw::load8(p + s + 2) & 63, 6) | (std::raw::load8(p + s + 3) & 63)
+}
+
+fn uw_str_width(s: any) -> int {
+    uw_str_width_bytes(std::raw::bits(s) + 16, rt_slen(s))
+}

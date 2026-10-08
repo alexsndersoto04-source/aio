@@ -1,0 +1,5 @@
+// move_to: la fila tiene que caber en u16.
+fn main() {
+    std::term::move_to(3, 65536)
+    print("no llega")
+}

@@ -1,0 +1,1 @@
+const INVALID: int = true fn main() {}

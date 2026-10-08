@@ -1,0 +1,4 @@
+// argmax de un vector vacío.
+fn main() {
+    print(std::vector::argmax([]))
+}

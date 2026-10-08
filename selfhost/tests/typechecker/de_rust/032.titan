@@ -1,0 +1,1 @@
+fn write(socket: WebSocket) { std::ws::send_binary(socket, "not bytes") } fn main() {}

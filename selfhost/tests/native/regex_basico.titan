@@ -1,0 +1,65 @@
+// std::regex: las 7 funciones con casos normales.
+
+fn im(p: string, t: string) {
+    let r = std::regex::is_match(p, t)
+    println("is_match {p} -> {r}")
+}
+
+fn fa(p: string, t: string) {
+    let r = std::regex::find_all(p, t)
+    println("find_all {p} -> {r}")
+}
+
+fn ca(p: string, t: string) {
+    let r = std::regex::captures(p, t)
+    println("captures {p} -> {r}")
+}
+
+fn sp(p: string, t: string) {
+    let r = std::regex::split(p, t)
+    println("split {p} -> {r}")
+}
+
+fn va(p: string) {
+    let r = std::regex::is_valid(p)
+    println("is_valid {p} -> {r}")
+}
+
+// Una llave de apertura: "{nombre}" dentro de un string es interpolación.
+fn lb() -> string {
+    let c: string = std::text::from_char_code(123)
+    c
+}
+
+fn main() {
+    let a = lb()
+    let t = "El pedido 1234 llegó el 2026-09-29 a Maracaibo; el 5678 salió el 2026-10-01."
+    im("\\d{4}-\\d{2}-\\d{2}", t)
+    im("^pedido", t)
+    println(std::regex::find("\\d+", t))
+    println(std::regex::find("xyz", t))
+    fa("\\d{4}", t)
+    ca("(\\d{4})-(\\d{2})-(?P<dia>\\d{2})", t)
+    ca("(a)|(b)", "b")
+    ca("nada", t)
+    println(std::regex::replace_all("(\\d{4})-(\\d{2})-(\\d{2})", t, "$3/$2/$1"))
+    println(std::regex::replace_all("(?P<y>\\d{4})", t, "[$" + a + "y}]"))
+    println(std::regex::replace_all("[aeiou]", t, "$$"))
+    println(std::regex::replace_all("", "abc", "-"))
+    println(std::regex::replace_all("x*", "axxb", "<$0>"))
+    sp("[,;]\\s*", "uno, dos;tres ,cuatro")
+    sp("", "abc")
+    sp("x", "")
+    va("a(b")
+    va("(?i)[[:word:]]+")
+    // Unicode: clases, mayúsculas/minúsculas y límites de palabra.
+    fa("\\w+", "año Ωμέγα naïve 東京 x_1")
+    fa("(?i)straße", "STRASSE Straße STRAẞE")
+    fa("\\bde\\b", "de dedo de-de ade de")
+    fa("(?-u:\\b)é", "é aé")
+    fa("\\p" + a + "Greek}+|\\p" + a + "Han}+", "abc αβγ 漢字 def")
+    fa("(?m)^\\w+$", "uno\ndos tres\ncuatro")
+    fa("(?s).", "a\nb")
+    fa("a+?", "aaa")
+    fa("(?U)a+", "aaa")
+}

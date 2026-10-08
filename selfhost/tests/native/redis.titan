@@ -1,0 +1,121 @@
+// End-to-end contract test against a real Redis server. The differential
+// runner starts one or accepts TITAN_TEST_REDIS_URL; missing configuration fails.
+fn error_text(result: any) -> string {
+    match result {
+        Result::Ok(_) => "<unexpected success>",
+        Result::Err(message) => message,
+        _ => "<unexpected result>",
+    }
+}
+
+fn main() {
+    let url = std::env::get("TITAN_TEST_REDIS_URL")
+    std::testing::assert(url != "", "TITAN_TEST_REDIS_URL must identify a real Redis server")
+    let base = "titan:selfhost:redis:" + std::encoding::hex_encode(std::random::bytes(8)) + ":"
+    let text_key = base + "text"
+    let unicode_key = base + "unicode"
+    let ttl_key = base + "ttl"
+    let counter_key = base + "counter"
+    let list_key = base + "list"
+    let hash_key = base + "hash"
+    let handle = std::redis::connect(url)
+    std::testing::assert_eq(std::redis::ping(handle), "PONG", "PING reaches Redis over TCP")
+    let bad_url = std::env::get("TITAN_TEST_REDIS_BAD_URL")
+    if bad_url != "" {
+        let auth_error = error_text(std::try::catch(|| std::redis::connect(bad_url)))
+        std::testing::assert_eq(auth_error, "native function 'std::redis::connect' failed: Redis server error: WRONGPASS invalid username-password pair or user is disabled.", "failed AUTH returns the server error and releases its temporary socket")
+        std::testing::assert_eq(std::redis::ping(handle), "PONG", "failed AUTH leaves existing handles intact")
+    }
+    let secondary = std::redis::connect(url)
+    let tertiary = std::redis::connect(url)
+    std::testing::assert_eq(std::redis::ping(secondary), "PONG", "a second authenticated socket works")
+    std::testing::assert_eq(std::redis::ping(tertiary), "PONG", "a third authenticated socket works")
+    std::redis::close(secondary)
+    std::testing::assert_eq(std::redis::ping(tertiary), "PONG", "closing a middle handle preserves the others")
+    std::redis::close(tertiary)
+    std::testing::assert_eq(std::redis::ping(handle), "PONG", "closing the other handles preserves the first")
+    std::redis::set(handle, text_key, "real-resp-value")
+    std::testing::assert_eq(std::redis::get(handle, text_key), "real-resp-value", "SET and GET use the server")
+    std::redis::set(handle, unicode_key, "Titan en Maracaibo: ñandú 🌵")
+    std::testing::assert_eq(std::redis::get(handle, unicode_key), "Titan en Maracaibo: ñandú 🌵", "bulk responses preserve UTF-8")
+    std::testing::assert(std::redis::expire(handle, unicode_key, 60), "UTF-8 key cleanup expiry succeeds")
+    std::testing::assert(std::redis::exists(handle, text_key), "EXISTS sees a stored key")
+    std::testing::assert_eq(std::redis::ttl(handle, text_key), -1, "non-expiring key has TTL -1")
+    let missing_key = base + "missing"
+    std::testing::assert_eq(std::redis::get(handle, missing_key), nil, "GET of an absent key is nil")
+    std::testing::assert(!std::redis::exists(handle, missing_key), "EXISTS is false for an absent key")
+    std::testing::assert_eq(std::redis::del(handle, missing_key), 0, "DEL of an absent key returns zero")
+
+    std::redis::set_ex(handle, ttl_key, "expires-later", 60)
+    let ttl = std::redis::ttl(handle, ttl_key)
+    std::testing::assert(ttl > 0 && ttl <= 60, "SETEX stores a real expiration")
+    std::testing::assert(std::redis::expire(handle, text_key, 60), "EXPIRE succeeds")
+
+    std::testing::assert_eq(std::redis::incr(handle, counter_key, 2), 2, "INCRBY creates the counter")
+    std::testing::assert_eq(std::redis::incr(handle, counter_key, 3), 5, "INCRBY updates the counter")
+    std::testing::assert(std::redis::expire(handle, counter_key, 60), "counter cleanup expiry succeeds")
+
+    std::testing::assert_eq(std::redis::rpush(handle, list_key, "a"), 1, "RPUSH creates a list")
+    std::testing::assert_eq(std::redis::lpush(handle, list_key, "z"), 2, "LPUSH updates list length")
+    std::testing::assert_eq(std::redis::llen(handle, list_key), 2, "LLEN returns current list length")
+    std::testing::assert(std::redis::expire(handle, list_key, 60), "list cleanup expiry succeeds")
+    let list = std::redis::lrange(handle, list_key, 0 - 2, -1)
+    std::testing::assert_eq(list, ["z", "a"], "LRANGE normalizes negative indexes")
+
+    std::redis::hset(handle, hash_key, "name", "Titan")
+    std::redis::hset(handle, hash_key, "kind", "language")
+    std::testing::assert(std::redis::expire(handle, hash_key, 60), "hash cleanup expiry succeeds")
+    std::testing::assert_eq(std::redis::hget(handle, hash_key, "name"), "Titan", "HGET reads a field")
+    std::testing::assert_eq(std::redis::hget(handle, hash_key, "missing"), nil, "HGET of an absent field is nil")
+    let pairs = std::redis::hgetall(handle, hash_key)
+    std::testing::assert_eq(len(pairs), 2, "HGETALL returns all fields")
+    let mut saw_name = false
+    let mut saw_kind = false
+    for pair in pairs {
+        if pair[0] == "name" && pair[1] == "Titan" { saw_name = true }
+        if pair[0] == "kind" && pair[1] == "language" { saw_kind = true }
+    }
+    std::testing::assert(saw_name && saw_kind, "HGETALL preserves each field/value pair")
+    std::redis::hset(handle, hash_key, "name", "Titan 2")
+    std::testing::assert_eq(std::redis::hget(handle, hash_key, "name"), "Titan 2", "HSET updates an existing field")
+    std::testing::assert(std::redis::hdel(handle, hash_key, "kind") == 1, "HDEL removes one field")
+    std::testing::assert_eq(std::redis::hget(handle, hash_key, "kind"), nil, "deleted field is nil")
+
+    let mut sort_keys: any = []
+    let mut sort_index = 0
+    while sort_index < 48 {
+        let sort_key = base + "sort:" + std::encoding::hex_encode(std::random::bytes(8))
+        std::redis::set(handle, sort_key, sort_key)
+        sort_keys = std::array::push(sort_keys, sort_key)
+        sort_index += 1
+    }
+    let keys = std::redis::keys(handle, base + "*")
+    std::testing::assert_eq(len(keys), 54, "bounded SCAN returns every test key exactly once")
+    let mut key_index = 1
+    while key_index < len(keys) {
+        std::testing::assert(keys[key_index - 1] <= keys[key_index], "SCAN results are sorted")
+        key_index += 1
+    }
+    std::testing::assert_eq(std::redis::raw(handle, "PING"), "\"PONG\"", "raw PING renders RESP replies")
+    std::testing::assert_eq(std::redis::raw(handle, "GET " + text_key), "\"real-resp-value\"", "raw GET renders bulk replies")
+    let server_error = error_text(std::try::catch(|| std::redis::raw(handle, "HGET " + text_key + " name")))
+    std::testing::assert_eq(server_error, "native function 'std::redis::raw' failed: Redis server error: WRONGTYPE Operation against a key holding the wrong kind of value", "RESP error replies retain the connection")
+    std::testing::assert_eq(std::redis::ping(handle), "PONG", "the socket remains usable after a Redis error reply")
+    let forbidden = error_text(std::try::catch(|| std::redis::raw(handle, "FLUSHDB")))
+    std::testing::assert_eq(forbidden, "native function 'std::redis::raw' failed: invalid Redis argument: raw Redis command is not in the safe allowlist", "raw administrative commands are rejected")
+
+    let removed = std::redis::del(handle, text_key)
+    std::testing::assert_eq(removed, 1, "DEL removes the stored key")
+    std::testing::assert(!std::redis::exists(handle, text_key), "deleted key is absent")
+    let _ = std::redis::del(handle, unicode_key)
+    let _ = std::redis::del(handle, ttl_key)
+    let _ = std::redis::del(handle, counter_key)
+    let _ = std::redis::del(handle, list_key)
+    let _ = std::redis::del(handle, hash_key)
+    for sort_key in sort_keys { let _ = std::redis::del(handle, sort_key) }
+    std::redis::close(handle)
+    std::redis::close(handle)
+    let closed_error = error_text(std::try::catch(|| std::redis::ping(handle)))
+    std::testing::assert_eq(closed_error, "native function 'std::redis::ping' failed: unknown connection handle 1", "closed handle is rejected")
+    println("real Redis RESP2 operations ok")
+}

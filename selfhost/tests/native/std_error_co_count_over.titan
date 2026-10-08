@@ -1,0 +1,4 @@
+fn main() {
+    let c = std::collections::counter_from(["a"])
+    std::collections::counter_add(c, "a", 9223372036854775807)
+}

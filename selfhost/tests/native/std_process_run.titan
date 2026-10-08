@@ -1,0 +1,46 @@
+// std::process::run / run_with_input / shell: partir el comando (comillas,
+// espacios Unicode), códigos de salida, stderr, bytes no UTF-8, entrada.
+fn mostrar(r: map) {
+    print(r["stdout"], "|", r["stderr"], "|", r["exit_code"])
+}
+
+fn main() {
+    mostrar(std::process::run("echo hola   \"a  b\" 'c  d' '' \"\" x'y z'w"))
+    mostrar(std::process::run("  echo\ttab　ideo"))
+    mostrar(std::process::run("echo 'dentro \"doble\"' \"dentro 'simple'\""))
+    mostrar(std::process::run("printf a\\nb"))
+    mostrar(std::process::run("sh -c 'exit 42'"))
+    mostrar(std::process::run("sh -c 'echo al_error >&2'"))
+    mostrar(std::process::run("printf '\\377\\376ok\\342\\202'"))
+    mostrar(std::process::run("sh -c 'kill -9 $$'"))
+    mostrar(std::process::run("/bin/echo ruta absoluta"))
+    mostrar(std::process::run("echo ñandú €"))
+    mostrar(std::process::run_with_input("cat", std::encoding::utf8_encode("línea 1\nlínea 2\n")))
+    mostrar(std::process::run_with_input("wc -c", std::encoding::utf8_encode("")))
+    mostrar(std::process::run_with_input("tr a-z A-Z", "string también vale"))
+    let mut grande = "0123456789abcdef"
+    let mut i = 0
+    while i < 16 {
+        grande = grande + grande
+        i += 1
+    }
+    let r = std::process::run_with_input("wc -c", std::encoding::utf8_encode(grande))
+    print(r["stdout"])
+    let eco = std::process::run_with_input("cat", std::encoding::utf8_encode(grande))
+    print(len(eco["stdout"]), eco["stdout"] == grande)
+    mostrar(std::process::shell("echo uno | tr a-z A-Z; echo dos >&2; exit 3"))
+    mostrar(std::process::shell("for x in 1 2 3; do printf $x; done"))
+    mostrar(std::process::shell("cat"))
+    std::process::env_set("TITAN_HIJO", "visible")
+    mostrar(std::process::shell("echo $TITAN_HIJO"))
+    std::process::env_unset("TITAN_HIJO")
+    mostrar(std::process::shell("echo [${TITAN_HIJO-no}]"))
+    std::process::set_working_dir("/tmp")
+    mostrar(std::process::run("pwd"))
+    std::process::env_set("PATH", "/no_existe_titan::/usr/bin:/bin")
+    mostrar(std::process::run("echo con PATH cambiado"))
+    std::process::shell("printf '#!/bin/sh\\necho script propio\\n' > /tmp/titan_script.sh; chmod +x /tmp/titan_script.sh")
+    mostrar(std::process::run("/tmp/titan_script.sh"))
+    std::process::env_set("PATH", "/tmp")
+    mostrar(std::process::run("titan_script.sh"))
+}

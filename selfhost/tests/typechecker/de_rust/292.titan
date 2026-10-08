@@ -1,0 +1,1 @@
+trait First { fn label(self) -> string { "first" } } trait Second { fn label(self) -> string { "second" } } struct Item { value: int } impl First for Item {} impl Second for Item {} fn main() {}

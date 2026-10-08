@@ -1,0 +1,1 @@
+fn main() { let mixed = [1, "bad"] let values: [int] = mixed }

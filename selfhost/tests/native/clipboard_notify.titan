@@ -1,0 +1,35 @@
+fn main() {
+    let require_clipboard = match std::process::env_get("TITAN_REQUIRE_SYSTEM_CLIPBOARD") {
+        Option::Some(flag) => flag == "1",
+        Option::None => false,
+    }
+    let require_notification = match std::process::env_get("TITAN_REQUIRE_SYSTEM_NOTIFICATION") {
+        Option::Some(flag) => flag == "1",
+        Option::None => false,
+    }
+    if !require_clipboard && !require_notification {
+        println("real clipboard/notification checks run in selfhost/native/clipboard/verificar.sh")
+        return
+    }
+
+    let text = "Titan clipboard: áé; line one\nline two"
+    println("starting clipboard write")
+    let wrote = std::clipboard::set_text(text)
+    println("clipboard write", wrote)
+    println("starting clipboard read")
+    let read_back = std::clipboard::get_text()
+    let round_trip = read_back == text
+    println("clipboard round-trip", round_trip)
+
+    // Quotes, dollar signs and parentheses must survive as literal argv data.
+    println("starting notification")
+    let notified = std::notify::send("Titan's \"alert\"", "body with $() and spaces")
+    println("notification delivered", notified)
+
+    // Emit the observed results before asserting so CI retains the failing
+    // boundary in its check annotation even when native assertions exit early.
+    std::testing::assert(!require_clipboard || wrote, "X11 integration must write to the system clipboard")
+    std::testing::assert(!require_clipboard || round_trip, "X11 integration must read back the system clipboard")
+    std::testing::assert(!wrote || round_trip, "clipboard data round-trips when a write succeeds")
+    std::testing::assert(!require_notification || notified, "D-Bus integration must deliver a real desktop notification")
+}

@@ -1,0 +1,268 @@
+// Escritor GIF de un cuadro. Conserva los colores exactos hasta 256 entradas;
+// para imágenes mayores usa NeuQuant y la transparencia binaria de GIF.
+fn im_gif_hash(key: int) -> int {
+    (key ^ std::raw::shr(key, 11) ^ std::raw::shr(key, 19)) & 1023
+}
+
+fn im_gif_source_key(source: int, color: int, pixel: int, transparent_key: int) -> int {
+    let mut r = 0
+    let mut g = 0
+    let mut b = 0
+    let mut a = 255
+    if color == 3 {
+        let p = source + 3 * pixel
+        r = std::raw::load8(p)
+        g = std::raw::load8(p + 1)
+        b = std::raw::load8(p + 2)
+    } else {
+        let p = source + 4 * pixel
+        r = std::raw::load8(p)
+        g = std::raw::load8(p + 1)
+        b = std::raw::load8(p + 2)
+        a = std::raw::load8(p + 3)
+        if a == 0 { return transparent_key }
+        a = 255
+    }
+    r * 16777216 + g * 65536 + b * 256 + a
+}
+
+fn im_gif_lookup_index(key: int, keys: int, values: int) -> int {
+    let target = key + 1
+    let mut slot = im_gif_hash(key)
+    let mut attempts = 0
+    while attempts < 1024 {
+        let found = std::raw::load(keys + 8 * slot)
+        if found == 0 { return -1 }
+        if found == target { return std::raw::load(values + 8 * slot) }
+        slot = (slot + 1) & 1023
+        attempts += 1
+    }
+    -1
+}
+
+fn im_gif_emit_code(out: int, block: int, state: int, code: int, code_bits: int) {
+    let mut bit_buffer = std::raw::load(state)
+    let mut bit_count = std::raw::load(state + 8)
+    let mut block_len = std::raw::load(state + 16)
+    bit_buffer += std::raw::shl(code, bit_count)
+    bit_count += code_bits
+    while bit_count >= 8 {
+        std::raw::store8(block + block_len, bit_buffer & 255)
+        block_len += 1
+        bit_buffer = std::raw::shr(bit_buffer, 8)
+        bit_count -= 8
+        if block_len == 255 {
+            sb_byte(out, 255)
+            sb_raw(out, block, 255)
+            block_len = 0
+        }
+    }
+    std::raw::store(state, bit_buffer)
+    std::raw::store(state + 8, bit_count)
+    std::raw::store(state + 16, block_len)
+}
+
+fn im_gif_encode(function: string, e: int) -> any {
+    let width = std::raw::load(e + 8)
+    let height = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    if color != 3 && color != 4 {
+        im_img_err(function, "UnsupportedError: GIF encoding requires RGB8 or RGBA8 pixels")
+    }
+    if width > 65535 || height > 65535 { im_img_err(function, "ParameterError: GIF dimensions exceed 65535") }
+    let pixels = width * height
+    let source = std::raw::load(e + 32)
+    let mut has_transparent = false
+    let mut transparent_rgb = 0
+    if color == 4 {
+        let mut i = 0
+        while i < pixels && !has_transparent {
+            let p = source + 4 * i
+            if std::raw::load8(p + 3) == 0 {
+                transparent_rgb = std::raw::load8(p) * 65536 + std::raw::load8(p + 1) * 256 + std::raw::load8(p + 2)
+                has_transparent = true
+            }
+            i += 1
+        }
+    }
+    let transparent_key = transparent_rgb * 256
+    let exact_keys = rt_alloc_zero(1024 * 8)
+    let colors = rt_alloc_zero(256 * 8)
+    let mut color_count = 0
+    let mut quantized = false
+    let mut i = 0
+    while i < pixels && !quantized {
+        let key = im_gif_source_key(source, color, i, transparent_key)
+        let target = key + 1
+        let mut slot = im_gif_hash(key)
+        let mut attempts = 0
+        let mut inserted = false
+        while attempts < 1024 && !inserted {
+            let found = std::raw::load(exact_keys + 8 * slot)
+            if found == target {
+                inserted = true
+                0
+            } else if found == 0 {
+                if color_count >= 256 {
+                    quantized = true
+                    inserted = true
+                    0
+                } else {
+                    std::raw::store(exact_keys + 8 * slot, target)
+                    std::raw::store(colors + 8 * color_count, key)
+                    color_count += 1
+                    inserted = true
+                    0
+                }
+                0
+            } else {
+                slot = (slot + 1) & 1023
+                attempts += 1
+                0
+            }
+        }
+        if !inserted { quantized = true }
+        i += 1
+    }
+
+    let palette = rt_alloc_zero(256 * 3)
+    let mut palette_count = 0
+    let mut transparent_index = -1
+    let mut map_keys = 0
+    let mut map_values = 0
+    let mut quant_state = 0
+    if quantized {
+        palette_count = 256
+        quant_state = im_gif_nq_prepare(source, color, pixels, transparent_rgb, palette)
+        if has_transparent {
+            transparent_index = im_gif_nq_transparent_index(quant_state, transparent_rgb)
+        }
+        0
+    } else {
+        let mut a = 0
+        while a < color_count {
+            let mut smallest = a
+            let mut b = a + 1
+            while b < color_count {
+                if std::raw::load(colors + 8 * b) < std::raw::load(colors + 8 * smallest) {
+                    smallest = b
+                }
+                b += 1
+            }
+            if smallest != a {
+                let left = std::raw::load(colors + 8 * a)
+                let right = std::raw::load(colors + 8 * smallest)
+                std::raw::store(colors + 8 * a, right)
+                std::raw::store(colors + 8 * smallest, left)
+            }
+            a += 1
+        }
+        palette_count = color_count
+        map_keys = rt_alloc_zero(1024 * 8)
+        map_values = rt_alloc_zero(1024 * 8)
+        i = 0
+        while i < color_count {
+            let key = std::raw::load(colors + 8 * i)
+            let red = std::raw::shr(key, 24) & 255
+            let green = std::raw::shr(key, 16) & 255
+            let blue = std::raw::shr(key, 8) & 255
+            std::raw::store8(palette + 3 * i, red)
+            std::raw::store8(palette + 3 * i + 1, green)
+            std::raw::store8(palette + 3 * i + 2, blue)
+            if has_transparent && key == transparent_key { transparent_index = i }
+            let mut slot = im_gif_hash(key)
+            while std::raw::load(map_keys + 8 * slot) != 0 {
+                slot = (slot + 1) & 1023
+            }
+            std::raw::store(map_keys + 8 * slot, key + 1)
+            std::raw::store(map_values + 8 * slot, i)
+            i += 1
+        }
+        if color_count < 1 { im_gif_error(function, "empty palette") }
+        0
+    }
+
+    let mut table_bits = 1
+    let mut table_entries = 2
+    while table_entries < palette_count {
+        table_entries *= 2
+        table_bits += 1
+    }
+    if table_bits < 1 || table_bits > 8 { im_gif_error(function, "palette is too large") }
+    let min_code_size = if table_bits < 2 { 2 } else { table_bits }
+    let code_bits = min_code_size + 1
+    let code_count = 2 * pixels + 1
+    let compressed_bytes = (code_count * code_bits + 7) / 8
+    let subblock_bytes = (compressed_bytes + 254) / 255
+    let total_bytes = 13 + table_entries * 3 + (if has_transparent { 8 } else { 0 }) + 10 + 1 + compressed_bytes + subblock_bytes + 1 + 1
+    if total_bytes > 67108864 { im_lim(function, "encoded image output bytes", 67108864) }
+    let out = sb_new(total_bytes)
+    sb_byte(out, 71)
+    sb_byte(out, 73)
+    sb_byte(out, 70)
+    sb_byte(out, 56)
+    sb_byte(out, 57)
+    sb_byte(out, 97)
+    im_le16(out, width)
+    im_le16(out, height)
+    sb_byte(out, 240 + table_bits - 1)
+    sb_byte(out, 0)
+    sb_byte(out, 0)
+    i = 0
+    while i < table_entries * 3 {
+        sb_byte(out, std::raw::load8(palette + i))
+        i += 1
+    }
+    if has_transparent {
+        if transparent_index < 0 { im_gif_error(function, "transparent color is missing from the palette") }
+        sb_byte(out, 33)
+        sb_byte(out, 249)
+        sb_byte(out, 4)
+        sb_byte(out, 1)
+        im_le16(out, 0)
+        sb_byte(out, transparent_index)
+        sb_byte(out, 0)
+    }
+    sb_byte(out, 44)
+    im_le16(out, 0)
+    im_le16(out, 0)
+    im_le16(out, width)
+    im_le16(out, height)
+    sb_byte(out, 0)
+    sb_byte(out, min_code_size)
+    let block = rt_alloc_zero(255)
+    let state = rt_alloc_zero(24)
+    let clear_code = std::raw::shl(1, min_code_size)
+    im_gif_emit_code(out, block, state, clear_code, code_bits)
+    i = 0
+    while i < pixels {
+        if i > 0 { im_gif_emit_code(out, block, state, clear_code, code_bits) }
+        let key = im_gif_source_key(source, color, i, transparent_key)
+        let index = if quantized { im_gif_nq_index(quant_state, source, color, i, transparent_rgb) } else { im_gif_lookup_index(key, map_keys, map_values) }
+        if index < 0 || index >= palette_count { im_gif_error(function, "pixel is missing from the palette") }
+        im_gif_emit_code(out, block, state, index, code_bits)
+        i += 1
+    }
+    im_gif_emit_code(out, block, state, clear_code + 1, code_bits)
+    let block_len = std::raw::load(state + 16)
+    if std::raw::load(state + 8) > 0 {
+        std::raw::store8(block + block_len, std::raw::load(state) & 255)
+        std::raw::store(state + 16, block_len + 1)
+    }
+    let final_len = std::raw::load(state + 16)
+    if final_len > 0 {
+        sb_byte(out, final_len)
+        sb_raw(out, block, final_len)
+    }
+    sb_byte(out, 0)
+    sb_byte(out, 59)
+    rt_free_block(block)
+    rt_free_block(state)
+    if quant_state != 0 { im_gif_nq_free(quant_state) }
+    rt_free_block(palette)
+    rt_free_block(exact_keys)
+    rt_free_block(colors)
+    if map_keys != 0 { rt_free_block(map_keys) }
+    if map_values != 0 { rt_free_block(map_values) }
+    sb_finish_bytes(out)
+}

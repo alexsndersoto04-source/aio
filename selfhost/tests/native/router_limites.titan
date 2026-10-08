@@ -1,0 +1,95 @@
+// std::router: límites (64 routers, tamaños), identificadores desconocidos y
+// reutilización tras drop.
+
+fn show(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok({v})",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn rep(s: string, n: int) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out = out + s
+        i += 1
+    }
+    out
+}
+
+fn main() {
+    let mut hs: [int] = []
+    let mut i = 0
+    while i < 64 {
+        hs = std::array::push(hs, std::router::new())
+        i += 1
+    }
+    println("{hs}")
+    println(show(std::try::catch(|| { std::router::new() })))
+    std::router::drop(hs[10])
+    let n = std::router::new()
+    println("{n}")
+    std::router::drop(hs[10])
+    std::router::drop(999)
+    let r = hs[0]
+    println(show(std::try::catch(|| { std::router::insert(12345, "/a", "b") })))
+    println(show(std::try::catch(|| { std::router::at(12345, "/a") })))
+    println(show(std::try::catch(|| { std::router::matches(12345, "/a") })))
+    let largo = rep("abcdefgh", 1025)
+    println(show(std::try::catch(|| { std::router::insert(r, "/" + largo, "b") })))
+    println(show(std::try::catch(|| { std::router::insert(r, "/b", rep(largo, 8)) })))
+    println(show(std::try::catch(|| { std::router::insert(12345, "/" + largo, "b") })))
+    let camino = rep("/abcdefg", 8193)
+    println(show(std::try::catch(|| { std::router::at(r, camino) })))
+    println(show(std::try::catch(|| { std::router::matches(r, camino) })))
+    println(show(std::try::catch(|| { std::router::at(12345, camino) })))
+    // 1 MiB por router: rutas de ~64 KiB.
+    let v = rep("v", 65000)
+    let mut k = 0
+    let mut last = ""
+    while k < 20 {
+        let p = "/r{k}"
+        last = show(std::try::catch(|| { std::router::insert(r, p, v) }))
+        k += 1
+    }
+    println(last)
+    // 8 MiB entre todos los routers.
+    let mut j = 1
+    while j < 12 {
+        let h = hs[j]
+        let mut q = 0
+        while q < 16 {
+            let p = "/s{q}"
+            last = show(std::try::catch(|| { std::router::insert(h, p, v) }))
+            q += 1
+        }
+        j += 1
+    }
+    println(last)
+    // Las inserciones fallidas no cuentan.
+    let h2 = hs[20]
+    let mut e = 0
+    while e < 5000 {
+        let res = std::try::catch(|| { std::router::insert(h2, "/", "x") })
+        e += 1
+    }
+    let ok = std::router::matches(h2, "/")
+    println("{ok}")
+    let got = std::router::at(r, "/r3")
+    println(std::text::length("{got}"))
+    // 4096 rutas por router (antes se sueltan los routers llenos).
+    let mut d = 0
+    while d < 12 {
+        std::router::drop(hs[d])
+        d += 1
+    }
+    let h3 = hs[30]
+    let mut z = 0
+    while z < 4097 {
+        let p = "/z{z}"
+        last = show(std::try::catch(|| { std::router::insert(h3, p, "x") }))
+        z += 1
+    }
+    println(last)
+}

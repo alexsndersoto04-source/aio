@@ -1,0 +1,41 @@
+// Funciones de usuario, closures, variantes, métodos y asignaciones.
+struct P { x: int }
+
+enum Forma { Circulo(int), Punto }
+
+impl P {
+    fn get(self) -> int { self.x }
+    fn suma(self, n: int) -> int { self.x + n }
+}
+
+fn uno(a: int) -> int { a }
+
+fn main() {
+    let p = P { x: 1 }
+    let a = p.get(1)
+    let b = p.suma("x")
+    let c = p.suma()
+    let d = p.nope()
+    let e = uno()
+    let f = uno("x")
+    let g = Forma::Circulo()
+    let h = Forma::Circulo("r")
+    let i = Forma::Punto(1)
+    let j = 5(1)
+    let k = (|v: int| v)(1, 2)
+    let l = |a, a| a
+    let mut m = 1
+    m += "x"
+    m = "y"
+    m -= 1
+    let n = 2
+    n = 3
+    uno = 4
+    p.x = 5
+    no_existe = 6
+    let cierre = || { m = 7 }
+    let arr: [int] = ["a"]
+    let tup: (int, string) = (1, 2)
+    let fnv: fn(int) -> int = |v| "s"
+    print(a + b + c + e + f)
+}

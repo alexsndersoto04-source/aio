@@ -1,0 +1,4 @@
+// Mes que no cabe en u32.
+fn main() {
+    print(std::datetime::utc_ymd_hms(2024, -1, 1, 0, 0, 0))
+}

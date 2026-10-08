@@ -1,0 +1,1 @@
+fn choose(flag: bool) { let value = if flag { 1 } else { "no" } }

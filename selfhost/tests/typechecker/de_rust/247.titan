@@ -1,0 +1,1 @@
+fn main() { let operation = len operation([1, 2]) }

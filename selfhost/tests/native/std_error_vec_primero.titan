@@ -1,0 +1,5 @@
+// El error del primer vector va antes que la diferencia de longitud.
+fn main() {
+    let a: [any] = [1, "x"]
+    print(std::vector::add(a, [1]))
+}

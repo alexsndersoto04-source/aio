@@ -1,0 +1,163 @@
+// std::archive::zip_pack con más de 65535 entradas (EOCD64 y localizador)
+// y su lectura.
+// Generado por selfhost/native/archive/gen_tests.py.
+
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+
+fn entries_text(v: any) -> string {
+    let a: array = v
+    let mut out = ""
+    let mut i = 0
+    while i < len(a) {
+        let m = a[i]
+        let name: string = std::map::get(m, "name")
+        let data: bytes = std::map::get(m, "bytes")
+        if i > 0 {
+            out = out + ","
+        }
+        if len(data) <= 40 {
+            out = out + name + "=" + std::encoding::hex_encode(data)
+        } else {
+            let n = len(data)
+            let c = std::checksum::crc32(data)
+            out = out + name + "=len" + "{n}" + "crc" + "{c}"
+        }
+        i += 1
+    }
+    out
+}
+
+fn show_b(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let b: bytes = v
+            let n = len(b)
+            let c = std::checksum::crc32(b)
+            "Ok(len={n} crc={c})"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn show_e(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "Ok(" + entries_text(v) + ")",
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn show_n(r: Result) -> string {
+    match r {
+        Result::Ok(v) => {
+            let a: array = v
+            let mut out = ""
+            let mut i = 0
+            while i < len(a) {
+                let s: string = a[i]
+                if i > 0 {
+                    out = out + ","
+                }
+                out = out + s
+                i += 1
+            }
+            "Ok(" + out + ")"
+        }
+        Result::Err(e) => "Err(" + e + ")",
+    }
+}
+
+fn anyv(x: any) -> any {
+    x
+}
+
+fn entry(name: any, data: any) -> any {
+    let m = std::map::insert(std::map::new(), "name", name)
+    std::map::insert(m, "bytes", data)
+}
+
+fn parse_list(s: string) -> array {
+    let mut out = []
+    if s == "" {
+        return out
+    }
+    let items = std::text::lines(std::text::replace(s, ",", "\n"))
+    let mut i = 0
+    while i < len(items) {
+        let kv = std::text::lines(std::text::replace(items[i], ":", "\n"))
+        let name = std::encoding::utf8_decode(std::encoding::hex_decode(kv[0]))
+        let mut d = ""
+        if len(kv) > 1 {
+            d = kv[1]
+        }
+        if std::text::starts_with(d, "s") {
+            let h = std::text::replace(d, "s", "")
+            out = std::array::push(out, entry(name, std::encoding::utf8_decode(std::encoding::hex_decode(h))))
+        } else {
+            out = std::array::push(out, entry(name, std::encoding::hex_decode(d)))
+        }
+        i += 1
+    }
+    out
+}
+
+fn t(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_e(std::try::catch(|| { std::archive::tar_unpack(data) })))
+}
+
+fn z(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_e(std::try::catch(|| { std::archive::zip_unpack(data) })))
+}
+
+fn l(h: string) {
+    let data = std::encoding::hex_decode(h)
+    println(show_n(std::try::catch(|| { std::archive::zip_list(data) })))
+}
+
+fn tp(s: string) {
+    let e = parse_list(s)
+    let r = std::try::catch(|| { std::archive::tar_pack(e) })
+    println(show_b(r))
+    match r {
+        Result::Ok(v) => println(show_e(std::try::catch(|| { std::archive::tar_unpack(v) }))),
+        Result::Err(e) => println("-"),
+    }
+}
+
+fn zp(s: string) {
+    let e = parse_list(s)
+    let r = std::try::catch(|| { std::archive::zip_pack(e) })
+    println(show_b(r))
+    match r {
+        Result::Ok(v) => {
+            println(show_e(std::try::catch(|| { std::archive::zip_unpack(v) })))
+            println(show_n(std::try::catch(|| { std::archive::zip_list(v) })))
+        }
+        Result::Err(e) => println("-"),
+    }
+}
+
+fn many() {
+    let mut e = []
+    let mut i = 0
+    while i < 65540 {
+        e = std::array::push(e, entry("f{i}", ""))
+        i += 1
+    }
+    let b = std::archive::zip_pack(e)
+    println(show_b(Result::Ok(b)))
+    let n = std::archive::zip_list(b)
+    let k = len(n)
+    let last: string = n[k - 1]
+    println("{k} {last}")
+    let u = std::archive::zip_unpack(b)
+    let ku = len(u)
+    println("{ku}")
+}
+
+fn main() {
+    many()
+}

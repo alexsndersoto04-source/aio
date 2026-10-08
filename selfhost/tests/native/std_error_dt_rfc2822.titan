@@ -1,0 +1,4 @@
+// Bug 12: la VM de Rust hacía panic con años fuera de 0..=9999 en RFC 2822.
+fn main() {
+    print(std::datetime::to_rfc2822(253402300800))
+}

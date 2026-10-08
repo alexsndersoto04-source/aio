@@ -1,0 +1,1 @@
+fn choose(flag: bool) -> fn(int) -> int { if flag { |value| value + 1 } else { |value| "invalid" } } fn main() {}

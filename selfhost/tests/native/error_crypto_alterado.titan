@@ -1,0 +1,6 @@
+fn main() {
+    let k = std::encoding::hex_decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+    let mut s = std::bytes::to_array(std::crypto::chacha20_seal(k, "pago 100", ""))
+    s = std::array::set(s, 20, (s[20] + 1) % 256)
+    println(std::crypto::chacha20_open(k, std::bytes::from_array(s), ""))
+}

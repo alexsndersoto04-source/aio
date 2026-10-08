@@ -1,0 +1,45 @@
+// std::csv, std::uuid y std::stats.
+fn main() {
+    let textos = ["a,\"b\"\"c\",d\r\n1,2\n\n,x,", "", "\n", "a", "\"\"", "\"q\",", "x\r\ny\r", "ñ,\"é\n\",😀", "a,b,c\n1,2,3\n"]
+    for t in textos {
+        let filas = std::csv::parse(t)
+        print("{filas}")
+        print(len(filas))
+        print(std::csv::serialize(filas))
+    }
+    print(std::csv::serialize([]))
+    print(std::csv::serialize([[]]))
+    print(std::csv::serialize([["a", "b,c"], ["x\"y", ""], ["salto\nlínea", "cr\r"]]))
+    for u in ["{67E55044-10B1-426F-9247-BB680E5FE0C8}", "urn:uuid:67e55044-10b1-426f-9247-bb680e5fe0c8", "URN:uuid:67e55044-10b1-426f-9247-bb680e5fe0c8", "67e5504410b1426f9247bb680e5fe0c8", "67e55044-10b1-426f-9247-bb680e5fe0cz", "67e55044+10b1-426f-9247-bb680e5fe0c8", "", "(67e55044-10b1-426f-9247-bb680e5fe0c8)", "67E55044-10B1-426F-9247-BB680E5FE0C8"] {
+        let ok = std::uuid::is_valid(u)
+        print("[" + u + "] " + "{ok}" + " [" + std::uuid::normalize(u) + "]")
+    }
+    let a = std::uuid::v4()
+    print(std::uuid::is_valid(a) && len(a) == 36 && std::text::substring(a, 14, 15) == "4")
+    let mut prev = std::uuid::v7()
+    let mut ordenados = true
+    let mut i = 0
+    while i < 200 {
+        let x = std::uuid::v7()
+        if x <= prev || std::text::substring(x, 14, 15) != "7" {
+            ordenados = false
+        }
+        prev = x
+        i += 1
+    }
+    print(ordenados)
+    print(std::stats::mean([-0.0]))
+    print(std::stats::mean([1, 2, 4]))
+    print(std::stats::mean([0.1, 0.2, 0.3, 1e16, -1e16]))
+    print(std::stats::median([3, -0.0, 0.0, 1]))
+    print(std::stats::median([5]))
+    print(std::stats::median([9, 1, 8, 2, 7, 3, 6, 4, 5, 0, 0.5]))
+    for q in [0.0, 0.3, 0.5, 0.999, 1.0] {
+        print(std::stats::quantile([1.0, 2.0, 3.0, 4.0, -7.25], q))
+    }
+    print(std::stats::quantile([1, 2], 1))
+    print(std::stats::variance([1, 2, 3, 4]))
+    print(std::stats::variance([1e9, 1e9 + 1.0, 1e9 + 2.0]))
+    print(std::stats::stddev([2.0, 4.0]))
+    print(std::stats::stddev([0.1, 0.2, 0.7]))
+}

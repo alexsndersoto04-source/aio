@@ -1,0 +1,1 @@
+fn main() { select(42, 10) }

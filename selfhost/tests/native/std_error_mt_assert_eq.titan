@@ -1,0 +1,6 @@
+// assert_eq con valores distintos (1 y 1.0 no son iguales).
+fn main() {
+    let a: [any] = [1, "x", nil]
+    let b: [any] = [1.0, "x", nil]
+    std::testing::assert_eq(a, b, "listas")
+}

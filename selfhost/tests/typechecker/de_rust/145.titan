@@ -1,0 +1,1 @@
+fn main() { let render = 1 print("value={render(41)}") }

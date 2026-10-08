@@ -1,0 +1,1448 @@
+// std::jwt escrito en Titan, con el mismo comportamiento que jwt_mod.rs
+// (jsonwebtoken 9.3.1 sobre serde_json 1.0.150, base64 0.22.1, pem 3.0.6,
+// simple_asn1 0.6.4 y ring 0.17.14; las piezas criptográficas están en
+// std_rsa.titan).
+//
+// La cabecera y los claims se leen como lo hace serde: el mismo orden de
+// comprobaciones, los mismos mensajes y las mismas posiciones "line L
+// column C". Los errores "custom" (campo repetido o que falta, largo
+// incorrecto, Jwk sin variante) se posicionan después de cerrar el objeto o
+// la lista, igual que fix_position de serde_json. El Jwk se guarda primero
+// como Content y luego se reparte entre CommonParameters y el enum untagged
+// AlgorithmParameters (EC, RSA, oct, OKP), con las reglas de
+// ContentDeserializer (propio) y ContentRefDeserializer (prestado).
+//
+// Content: [tipo, a, b]. 0 null, 1 bool (a), 2 u64 (a texto, b valor: int o
+// float si no cabe en i64), 3 i64 (a texto), 4 f64 (a), 5 string (a),
+// 6 lista (a: contents), 7 mapa (a: pares [clave, content] en orden).
+
+fn jw_fail(function: string, msg: any) {
+    rt_native_fail(function, rt_concat("JWT error: ", msg))
+}
+
+fn jw_state(data: any, function: string) -> int {
+    let st = rt_alloc(48)
+    std::raw::store(st, rt_bdata(data))
+    std::raw::store(st + 8, rt_slen(data))
+    std::raw::store(st + 16, 0)
+    std::raw::store(st + 24, 128)
+    std::raw::store(st + 32, std::raw::bits(function))
+    std::raw::store(st + 40, 1)
+    st
+}
+
+fn jw_k(c: any) -> int {
+    std::raw::bits(rt_seq_get(c, 0))
+}
+
+fn jw_a(c: any) -> any {
+    rt_seq_get(c, 1)
+}
+
+// ---------------------------------------------------------------- lectura
+
+fn jw_trailing(st: int) {
+    if js_skip_ws(st) >= 0 {
+        js_peek_error(st, "trailing characters")
+    }
+}
+
+fn jw_colon(st: int) {
+    let c = js_skip_ws(st)
+    if c == 58 {
+        js_eat(st)
+    } else if c < 0 {
+        js_peek_error(st, "EOF while parsing an object")
+    } else {
+        js_peek_error(st, "expected `:`")
+    }
+}
+
+fn jw_end_seq(st: int) {
+    let c = js_skip_ws(st)
+    if c == 93 {
+        js_eat(st)
+    } else if c == 44 {
+        js_eat(st)
+        if js_skip_ws(st) == 93 {
+            js_peek_error(st, "trailing comma")
+        } else {
+            js_peek_error(st, "trailing characters")
+        }
+    } else if c < 0 {
+        js_peek_error(st, "EOF while parsing a list")
+    } else {
+        js_peek_error(st, "trailing characters")
+    }
+}
+
+fn jw_end_map(st: int) {
+    let c = js_skip_ws(st)
+    if c == 125 {
+        js_eat(st)
+    } else if c == 44 {
+        js_peek_error(st, "trailing comma")
+    } else if c < 0 {
+        js_peek_error(st, "EOF while parsing an object")
+    } else {
+        js_peek_error(st, "trailing characters")
+    }
+}
+
+// Los mismos movimientos que end_seq / end_map, sin errores (cuando el
+// visitante ya falló, serde descarta el error del cierre).
+fn jw_end_seq_quiet(st: int) {
+    let c = js_skip_ws(st)
+    if c == 93 {
+        js_eat(st)
+    } else if c == 44 {
+        js_eat(st)
+        js_skip_ws(st)
+    }
+}
+
+fn jw_end_map_quiet(st: int) {
+    if js_skip_ws(st) == 125 {
+        js_eat(st)
+    }
+}
+
+// SeqAccess::next_element: true si sigue un elemento.
+fn jw_seq_next(st: int, first: bool) -> bool {
+    let mut c = js_skip_ws(st)
+    if c == 93 {
+        return false
+    }
+    if c == 44 && !first {
+        js_eat(st)
+        c = js_skip_ws(st)
+    } else if c >= 0 {
+        if !first {
+            js_peek_error(st, "expected `,` or `]`")
+        }
+    } else {
+        js_peek_error(st, "EOF while parsing a list")
+    }
+    if c == 93 {
+        js_peek_error(st, "trailing comma")
+    }
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    true
+}
+
+// MapAccess::next_key: la clave, o nil al llegar a '}'.
+fn jw_map_next(st: int, first: bool) -> any {
+    let mut c = js_skip_ws(st)
+    if c == 125 {
+        return nil
+    }
+    if c == 44 && !first {
+        js_eat(st)
+        c = js_skip_ws(st)
+    } else if c >= 0 {
+        if !first {
+            js_peek_error(st, "expected `,` or `}`")
+        }
+    } else {
+        js_peek_error(st, "EOF while parsing an object")
+    }
+    if c == 34 {
+        js_eat(st)
+        return js_parse_str(st)
+    }
+    if c == 125 {
+        js_peek_error(st, "trailing comma")
+    }
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    js_peek_error(st, "key must be a string")
+    nil
+}
+
+// Número como Content (el '-' ya se consumió si positive es false).
+fn jw_number(st: int, positive: bool) -> any {
+    let mut start = std::raw::load(st + 16)
+    if !positive {
+        start = start - 1
+    }
+    let v = js_parse_integer(st, positive)
+    let end = std::raw::load(st + 16)
+    let src = std::raw::load(st)
+    let mut is_float = false
+    let mut k = start
+    while k < end {
+        let c = std::raw::load8(src + k)
+        if c == 46 || c == 101 || c == 69 {
+            is_float = true
+        }
+        k += 1
+    }
+    let ts = rt_str_alloc(end - start)
+    rt_copy(ts + 16, src + start, end - start)
+    let text = rt_sval(ts)
+    if is_float {
+        return [4, v, nil]
+    }
+    if std::raw::tag(v) == 1 {
+        if positive {
+            return [2, text, v]
+        }
+        return [3, text, nil]
+    }
+    if positive {
+        let len = end - start
+        let fits = len < 20 || (len == 20 && rt_str_cmp(text, "18446744073709551615") <= 0)
+        if fits {
+            return [2, text, v]
+        }
+    }
+    return [4, v, nil]
+}
+
+// Unexpected de serde_json (con "null" y los floats de serde_json).
+fn jw_unexp(c: any) -> any {
+    let k = jw_k(c)
+    if k == 0 {
+        return "null"
+    }
+    if k == 1 {
+        if std::raw::bits(jw_a(c)) != 0 {
+            return "boolean `true`"
+        }
+        return "boolean `false`"
+    }
+    if k == 2 || k == 3 {
+        return rt_concat(rt_concat("integer `", jw_a(c)), "`")
+    }
+    if k == 4 {
+        return rt_concat(rt_concat("floating point `", js_float_text(std::raw::bits(jw_a(c)))), "`")
+    }
+    if k == 5 {
+        let s = jw_a(c)
+        return rt_concat("string ", rt_debug_str(std::raw::bits(s) + 16, rt_slen(s)))
+    }
+    if k == 6 {
+        return "sequence"
+    }
+    "map"
+}
+
+fn jw_invalid(unexp: any, exp: any) -> any {
+    rt_concat(rt_concat(rt_concat("invalid type: ", unexp), ", expected "), exp)
+}
+
+// peek_invalid_type: consume los escalares y falla en el índice actual.
+fn jw_peek_invalid(st: int, exp: any) {
+    let c = js_peek(st)
+    let mut u: any = nil
+    if c == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+        u = "null"
+    } else if c == 116 {
+        js_eat(st)
+        js_parse_ident(st, "rue")
+        u = "boolean `true`"
+    } else if c == 102 {
+        js_eat(st)
+        js_parse_ident(st, "alse")
+        u = "boolean `false`"
+    } else if c == 45 {
+        js_eat(st)
+        u = jw_unexp(jw_number(st, false))
+    } else if c >= 48 && c <= 57 {
+        u = jw_unexp(jw_number(st, true))
+    } else if c == 34 {
+        js_eat(st)
+        u = jw_unexp([5, js_parse_str(st), nil])
+    } else if c == 91 {
+        u = "sequence"
+    } else if c == 123 {
+        u = "map"
+    } else {
+        js_peek_error(st, "expected value")
+    }
+    js_error(st, jw_invalid(u, exp))
+}
+
+// deserialize_any hacia Content.
+fn jw_any(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+        return [0, nil, nil]
+    }
+    if c == 116 {
+        js_eat(st)
+        js_parse_ident(st, "rue")
+        return [1, true, nil]
+    }
+    if c == 102 {
+        js_eat(st)
+        js_parse_ident(st, "alse")
+        return [1, false, nil]
+    }
+    if c == 45 {
+        js_eat(st)
+        return jw_number(st, false)
+    }
+    if c >= 48 && c <= 57 {
+        return jw_number(st, true)
+    }
+    if c == 34 {
+        js_eat(st)
+        return [5, js_parse_str(st), nil]
+    }
+    if c == 91 {
+        js_enter(st)
+        js_eat(st)
+        let mut items: any = rt_array_new(0)
+        let mut first = true
+        while jw_seq_next(st, first) {
+            first = false
+            items = std::array::push(items, jw_any(st))
+        }
+        js_leave(st)
+        jw_end_seq(st)
+        return [6, items, nil]
+    }
+    if c == 123 {
+        js_enter(st)
+        js_eat(st)
+        let mut pairs: any = rt_array_new(0)
+        let mut first = true
+        while true {
+            let key = jw_map_next(st, first)
+            if key == nil {
+                break
+            }
+            first = false
+            jw_colon(st)
+            pairs = std::array::push(pairs, [key, jw_any(st)])
+        }
+        js_leave(st)
+        jw_end_map(st)
+        return [7, pairs, nil]
+    }
+    js_peek_error(st, "expected value")
+    nil
+}
+
+// ---------------------------------------------------------------- ignorar
+
+// decode_hex_escape sin comprobar el valor.
+fn jw_ignore_hex4(st: int) {
+    let i = std::raw::load(st + 16)
+    let n = std::raw::load(st + 8)
+    if n - i < 4 {
+        std::raw::store(st + 16, n)
+        js_error(st, "EOF while parsing a string")
+    }
+    std::raw::store(st + 16, i + 4)
+    let src = std::raw::load(st)
+    let mut k = 0
+    while k < 4 {
+        if js_hex_val(std::raw::load8(src + i + k)) < 0 {
+            js_error(st, "invalid escape")
+        }
+        k += 1
+    }
+}
+
+// ignore_str (tras la comilla): sin validar UTF-8 ni sustitutos.
+fn jw_ignore_str(st: int) {
+    let src = std::raw::load(st)
+    let n = std::raw::load(st + 8)
+    while true {
+        let mut i = std::raw::load(st + 16)
+        while i < n {
+            let c = std::raw::load8(src + i)
+            if c == 34 || c == 92 || c < 32 {
+                break
+            }
+            i += 1
+        }
+        std::raw::store(st + 16, i)
+        if i == n {
+            js_error(st, "EOF while parsing a string")
+        }
+        let c = std::raw::load8(src + i)
+        if c == 34 {
+            std::raw::store(st + 16, i + 1)
+            return
+        }
+        if c == 92 {
+            std::raw::store(st + 16, i + 1)
+            let e = js_next(st)
+            if e < 0 {
+                js_error(st, "EOF while parsing a string")
+            }
+            if e == 117 {
+                jw_ignore_hex4(st)
+            } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 && e != 110 && e != 114 && e != 116 {
+                js_error(st, "invalid escape")
+            }
+        } else {
+            js_error(st, "control character (\\u0000-\\u001F) found while parsing a string")
+        }
+    }
+}
+
+// next_char_or_null: al final no consume y devuelve 0.
+fn jw_next_or_null(st: int) -> int {
+    let c = js_next(st)
+    if c < 0 {
+        return 0
+    }
+    c
+}
+
+fn jw_peek_digit(st: int) -> bool {
+    let c = js_peek(st)
+    c >= 48 && c <= 57
+}
+
+fn jw_ignore_exponent(st: int) {
+    js_eat(st)
+    let c = js_peek(st)
+    if c == 43 || c == 45 {
+        js_eat(st)
+    }
+    let d = jw_next_or_null(st)
+    if d < 48 || d > 57 {
+        js_error(st, "invalid number")
+    }
+    while jw_peek_digit(st) {
+        js_eat(st)
+    }
+}
+
+fn jw_ignore_integer(st: int) {
+    let c = jw_next_or_null(st)
+    if c == 48 {
+        if jw_peek_digit(st) {
+            js_peek_error(st, "invalid number")
+        }
+    } else if c >= 49 && c <= 57 {
+        while jw_peek_digit(st) {
+            js_eat(st)
+        }
+    } else {
+        js_error(st, "invalid number")
+    }
+    let p = js_peek(st)
+    if p == 46 {
+        js_eat(st)
+        let mut one = false
+        while jw_peek_digit(st) {
+            js_eat(st)
+            one = true
+        }
+        if !one {
+            js_peek_error(st, "invalid number")
+        }
+        let q = js_peek(st)
+        if q == 101 || q == 69 {
+            jw_ignore_exponent(st)
+        }
+    } else if p == 101 || p == 69 {
+        jw_ignore_exponent(st)
+    }
+}
+
+// ignore_value de serde_json: iterativo y sin límite de profundidad.
+fn jw_ignore_value(st: int) {
+    let mut cap = 16
+    let mut stack = rt_alloc(8 * cap)
+    let mut sp = 0
+    while true {
+        let c = js_skip_ws(st)
+        if c < 0 {
+            js_peek_error(st, "EOF while parsing a value")
+        }
+        let mut opened = 0
+        if c == 110 {
+            js_eat(st)
+            js_parse_ident(st, "ull")
+        } else if c == 116 {
+            js_eat(st)
+            js_parse_ident(st, "rue")
+        } else if c == 102 {
+            js_eat(st)
+            js_parse_ident(st, "alse")
+        } else if c == 45 {
+            js_eat(st)
+            jw_ignore_integer(st)
+        } else if c >= 48 && c <= 57 {
+            jw_ignore_integer(st)
+        } else if c == 34 {
+            js_eat(st)
+            jw_ignore_str(st)
+        } else if c == 91 || c == 123 {
+            js_eat(st)
+            opened = c
+        } else {
+            js_peek_error(st, "expected value")
+        }
+        let mut frame = opened
+        let mut accept_comma = false
+        if opened == 0 {
+            if sp == 0 {
+                rt_free_block(stack)
+                return
+            }
+            sp -= 1
+            frame = std::raw::load(stack + 8 * sp)
+            accept_comma = true
+        }
+        while true {
+            let c2 = js_skip_ws(st)
+            if c2 == 44 && accept_comma {
+                js_eat(st)
+                break
+            }
+            let closes = (c2 == 93 && frame == 91) || (c2 == 125 && frame == 123)
+            if !closes {
+                if c2 >= 0 {
+                    if accept_comma {
+                        if frame == 91 {
+                            js_peek_error(st, "expected `,` or `]`")
+                        }
+                        js_peek_error(st, "expected `,` or `}`")
+                    }
+                    break
+                }
+                if frame == 91 {
+                    js_peek_error(st, "EOF while parsing a list")
+                }
+                js_peek_error(st, "EOF while parsing an object")
+            }
+            js_eat(st)
+            if sp == 0 {
+                rt_free_block(stack)
+                return
+            }
+            sp -= 1
+            frame = std::raw::load(stack + 8 * sp)
+            accept_comma = true
+        }
+        if frame == 123 {
+            let c3 = js_skip_ws(st)
+            if c3 == 34 {
+                js_eat(st)
+            } else if c3 >= 0 {
+                js_peek_error(st, "key must be a string")
+            } else {
+                js_peek_error(st, "EOF while parsing an object")
+            }
+            jw_ignore_str(st)
+            let c4 = js_skip_ws(st)
+            if c4 == 58 {
+                js_eat(st)
+            } else if c4 >= 0 {
+                js_peek_error(st, "expected `:`")
+            } else {
+                js_peek_error(st, "EOF while parsing an object")
+            }
+        }
+        if sp == cap {
+            let bigger = rt_alloc(16 * cap)
+            rt_copy(bigger, stack, 8 * cap)
+            rt_free_block(stack)
+            stack = bigger
+            cap = cap * 2
+        }
+        std::raw::store(stack + 8 * sp, frame)
+        sp += 1
+    }
+}
+
+// ---------------------------------------------------------------- tipos
+
+fn jw_index(names: any, s: any) -> int {
+    let n = rt_seq_len(names)
+    let mut k = 0
+    while k < n {
+        if rt_str_eq(rt_seq_get(names, k), s) {
+            return k
+        }
+        k += 1
+    }
+    -1
+}
+
+fn jw_unknown_variant(s: any, names: any) -> any {
+    let mut msg = rt_concat(rt_concat("unknown variant `", s), "`, expected one of ")
+    let n = rt_seq_len(names)
+    let mut k = 0
+    while k < n {
+        if k > 0 {
+            msg = rt_concat(msg, ", ")
+        }
+        msg = rt_concat(rt_concat(rt_concat(msg, "`"), rt_seq_get(names, k)), "`")
+        k += 1
+    }
+    msg
+}
+
+fn jw_algorithms() -> any {
+    return ["HS256", "HS384", "HS512", "ES256", "ES384", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "EdDSA"]
+}
+
+fn jw_key_algorithms() -> any {
+    return ["HS256", "HS384", "HS512", "ES256", "ES384", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "EdDSA", "RSA1_5", "RSA-OAEP", "RSA-OAEP-256"]
+}
+
+// String (deserialize_str).
+fn jw_string(st: int, exp: any) -> any {
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c == 34 {
+        js_eat(st)
+        return js_parse_str(st)
+    }
+    jw_peek_invalid(st, exp)
+    nil
+}
+
+fn jw_opt_string(st: int) -> any {
+    if js_skip_ws(st) == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+        return nil
+    }
+    jw_string(st, "a string")
+}
+
+fn jw_variant_check(st: int, s: any, names: any) {
+    if jw_index(names, s) < 0 {
+        js_error(st, jw_unknown_variant(s, names))
+    }
+}
+
+// Enum Algorithm leído directamente (deserialize_enum de serde_json).
+fn jw_alg(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c == 34 {
+        js_eat(st)
+        let s = js_parse_str(st)
+        jw_variant_check(st, s, jw_algorithms())
+        return s
+    }
+    if c == 123 {
+        js_enter(st)
+        js_eat(st)
+        let c2 = js_skip_ws(st)
+        if c2 < 0 {
+            js_peek_error(st, "EOF while parsing an object")
+        }
+        if c2 == 125 {
+            js_peek_error(st, "expected value")
+        }
+        if c2 != 34 {
+            js_peek_error(st, "key must be a string")
+        }
+        js_eat(st)
+        let s = js_parse_str(st)
+        jw_variant_check(st, s, jw_algorithms())
+        jw_colon(st)
+        let c3 = js_skip_ws(st)
+        if c3 < 0 {
+            js_peek_error(st, "EOF while parsing a value")
+        }
+        if c3 == 110 {
+            js_eat(st)
+            js_parse_ident(st, "ull")
+        } else {
+            jw_peek_invalid(st, "unit")
+        }
+        js_leave(st)
+        let c4 = js_skip_ws(st)
+        if c4 == 125 {
+            js_eat(st)
+        } else if c4 < 0 {
+            js_error(st, "EOF while parsing an object")
+        } else {
+            js_error(st, "expected value")
+        }
+        return s
+    }
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    js_peek_error(st, "expected value")
+    nil
+}
+
+// Option<Vec<String>> ya sin el caso null.
+fn jw_str_seq(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c != 91 {
+        jw_peek_invalid(st, "a sequence")
+    }
+    js_enter(st)
+    js_eat(st)
+    let mut out: any = rt_array_new(0)
+    let mut first = true
+    while jw_seq_next(st, first) {
+        first = false
+        out = std::array::push(out, jw_string(st, "a string"))
+    }
+    js_leave(st)
+    jw_end_seq(st)
+    out
+}
+
+// ---------------------------------------------------------------- Jwk
+
+// Enum desde un Content propio (ContentDeserializer::deserialize_enum):
+// (nil, nombre) o (error, nil).
+fn jw_enum_owned(v: any, names: any) -> (any, any) {
+    let k = jw_k(v)
+    if k == 7 {
+        let pairs = jw_a(v)
+        if rt_seq_len(pairs) != 1 {
+            return ("invalid value: map, expected map with a single key", nil)
+        }
+        let pair = rt_seq_get(pairs, 0)
+        let name = rt_seq_get(pair, 0)
+        if jw_index(names, name) < 0 {
+            return (jw_unknown_variant(name, names), nil)
+        }
+        let val = rt_seq_get(pair, 1)
+        let vk = jw_k(val)
+        let empty_map = vk == 7 && rt_seq_len(jw_a(val)) == 0
+        if vk != 0 && !empty_map {
+            return (jw_invalid(jw_unexp(val), "unit"), nil)
+        }
+        return (nil, name)
+    }
+    if k == 5 {
+        let name = jw_a(v)
+        if jw_index(names, name) < 0 {
+            return (jw_unknown_variant(name, names), nil)
+        }
+        return (nil, name)
+    }
+    return (jw_invalid(jw_unexp(v), "string or map"), nil)
+}
+
+// Enum desde un Content prestado (solo Unit como valor): nombre o nil.
+fn jw_enum_ref(v: any, names: any) -> any {
+    let k = jw_k(v)
+    if k == 5 {
+        if jw_index(names, jw_a(v)) >= 0 {
+            return jw_a(v)
+        }
+        return nil
+    }
+    if k == 7 {
+        let pairs = jw_a(v)
+        if rt_seq_len(pairs) != 1 {
+            return nil
+        }
+        let pair = rt_seq_get(pairs, 0)
+        if jw_index(names, rt_seq_get(pair, 0)) < 0 || jw_k(rt_seq_get(pair, 1)) != 0 {
+            return nil
+        }
+        return rt_seq_get(pair, 0)
+    }
+    nil
+}
+
+// Una variante de AlgorithmParameters sobre las entradas no tomadas.
+// variants[i] es nil para String o la lista de nombres de un enum.
+fn jw_try_params(entries: any, taken: int, fields: any, variants: any) -> any {
+    let nf = rt_seq_len(fields)
+    let mut vals: any = rt_array_new(0)
+    let mut k = 0
+    while k < nf {
+        vals = std::array::push(vals, nil)
+        k += 1
+    }
+    let n = rt_seq_len(entries)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(taken + i) == 0 {
+            let e = rt_seq_get(entries, i)
+            let idx = jw_index(fields, rt_seq_get(e, 0))
+            if idx >= 0 {
+                if rt_seq_get(vals, idx) != nil {
+                    return nil
+                }
+                let v = rt_seq_get(e, 1)
+                let vs = rt_seq_get(variants, idx)
+                let mut got: any = nil
+                if vs == nil {
+                    if jw_k(v) == 5 {
+                        got = jw_a(v)
+                    }
+                } else {
+                    got = jw_enum_ref(v, vs)
+                }
+                if got == nil {
+                    return nil
+                }
+                vals = std::array::set(vals, idx, got)
+            }
+        }
+        i += 1
+    }
+    let mut out: any = std::map::new()
+    k = 0
+    while k < nf {
+        if rt_seq_get(vals, k) == nil {
+            return nil
+        }
+        out = std::map::insert(out, rt_seq_get(fields, k), rt_seq_get(vals, k))
+        k += 1
+    }
+    out
+}
+
+// Reparte las entradas del Jwk: (nil, mapa) o (error custom, nil).
+fn jw_jwk_build(entries: any) -> (any, any) {
+    let n = rt_seq_len(entries)
+    let taken = rt_alloc(n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store8(taken + i, 0)
+        i += 1
+    }
+    let common = ["use", "key_ops", "alg", "kid", "x5u", "x5c", "x5t", "x5t#S256"]
+    let seen = rt_alloc(16)
+    i = 0
+    while i < 8 {
+        std::raw::store8(seen + i, 0)
+        i += 1
+    }
+    let mut out: any = std::map::new()
+    i = 0
+    while i < n {
+        let e = rt_seq_get(entries, i)
+        let key = rt_seq_get(e, 0)
+        let idx = jw_index(common, key)
+        if idx >= 0 {
+            std::raw::store8(taken + i, 1)
+            if std::raw::load8(seen + idx) != 0 {
+                return (rt_concat(rt_concat("duplicate field `", key), "`"), nil)
+            }
+            std::raw::store8(seen + idx, 1)
+            let v = rt_seq_get(e, 1)
+            let k = jw_k(v)
+            if k != 0 {
+                if idx == 1 || idx == 5 {
+                    if k != 6 {
+                        return (jw_invalid(jw_unexp(v), "a sequence"), nil)
+                    }
+                    let items = jw_a(v)
+                    let mut arr: any = rt_array_new(0)
+                    let mut j = 0
+                    while j < rt_seq_len(items) {
+                        let it = rt_seq_get(items, j)
+                        if jw_k(it) != 5 {
+                            return (jw_invalid(jw_unexp(it), "a string"), nil)
+                        }
+                        arr = std::array::push(arr, jw_a(it))
+                        j += 1
+                    }
+                    out = std::map::insert(out, key, arr)
+                } else if idx == 2 {
+                    let (err, name) = jw_enum_owned(v, jw_key_algorithms())
+                    if err != nil {
+                        return (err, nil)
+                    }
+                    out = std::map::insert(out, key, name)
+                } else {
+                    if k != 5 {
+                        return (jw_invalid(jw_unexp(v), "a string"), nil)
+                    }
+                    out = std::map::insert(out, key, jw_a(v))
+                }
+            }
+        }
+        i += 1
+    }
+    let curves = ["P-256", "P-384", "P-521", "Ed25519"]
+    let mut params = jw_try_params(entries, taken, ["kty", "crv", "x", "y"], [["EC"], curves, nil, nil])
+    if params == nil {
+        params = jw_try_params(entries, taken, ["kty", "n", "e"], [["RSA"], nil, nil])
+    }
+    if params == nil {
+        params = jw_try_params(entries, taken, ["kty", "k"], [["oct"], nil])
+    }
+    if params == nil {
+        params = jw_try_params(entries, taken, ["kty", "crv", "x"], [["OKP"], curves, nil])
+    }
+    rt_free_block(taken)
+    rt_free_block(seen)
+    if params == nil {
+        return ("data did not match any variant of untagged enum AlgorithmParameters", nil)
+    }
+    let pp = std::raw::bits(params)
+    let np = std::raw::load(pp + 8)
+    let mut k2 = 0
+    while k2 < np {
+        let en = std::raw::load(pp + 24) + 24 * k2
+        out = std::map::insert(out, std::raw::value(5, std::raw::load(en)), std::raw::value(std::raw::load(en + 8), std::raw::load(en + 16)))
+        k2 += 1
+    }
+    return (nil, out)
+}
+
+// Jwk (deserialize_map con flatten), ya sin el caso null.
+fn jw_jwk(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c != 123 {
+        jw_peek_invalid(st, "struct Jwk")
+    }
+    js_enter(st)
+    js_eat(st)
+    let mut entries: any = rt_array_new(0)
+    let mut first = true
+    while true {
+        let key = jw_map_next(st, first)
+        if key == nil {
+            break
+        }
+        first = false
+        jw_colon(st)
+        entries = std::array::push(entries, [key, jw_any(st)])
+    }
+    js_leave(st)
+    let (err, out) = jw_jwk_build(entries)
+    if err != nil {
+        jw_end_map_quiet(st)
+        js_error(st, err)
+    }
+    jw_end_map(st)
+    out
+}
+
+// ---------------------------------------------------------------- Header
+
+fn jw_header_names() -> any {
+    return ["typ", "alg", "cty", "jku", "jwk", "kid", "x5u", "x5c", "x5t", "x5t#S256"]
+}
+
+fn jw_header_field(st: int, idx: int) -> any {
+    if idx == 1 {
+        return jw_alg(st)
+    }
+    if idx == 4 || idx == 7 {
+        if js_skip_ws(st) == 110 {
+            js_eat(st)
+            js_parse_ident(st, "ull")
+            return nil
+        }
+        if idx == 4 {
+            return jw_jwk(st)
+        }
+        return jw_str_seq(st)
+    }
+    jw_opt_string(st)
+}
+
+// Header::from_encoded tras el base64: [mapa, alg].
+fn jw_header(st: int) -> any {
+    let names = jw_header_names()
+    let mut vals: any = rt_array_new(0)
+    let mut k = 0
+    while k < 10 {
+        vals = std::array::push(vals, nil)
+        k += 1
+    }
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c == 91 {
+        js_enter(st)
+        js_eat(st)
+        let mut first = true
+        k = 0
+        while k < 10 {
+            if !jw_seq_next(st, first) {
+                js_leave(st)
+                jw_end_seq_quiet(st)
+                js_error(st, rt_concat(rt_concat("invalid length ", rt_int_to_str(k)), ", expected struct Header with 10 elements"))
+            }
+            first = false
+            vals = std::array::set(vals, k, jw_header_field(st, k))
+            k += 1
+        }
+        js_leave(st)
+        jw_end_seq(st)
+    } else if c == 123 {
+        js_enter(st)
+        js_eat(st)
+        let seen = rt_alloc(16)
+        k = 0
+        while k < 10 {
+            std::raw::store8(seen + k, 0)
+            k += 1
+        }
+        let mut first = true
+        while true {
+            let key = jw_map_next(st, first)
+            if key == nil {
+                break
+            }
+            first = false
+            let idx = jw_index(names, key)
+            if idx >= 0 && std::raw::load8(seen + idx) != 0 {
+                js_leave(st)
+                jw_end_map_quiet(st)
+                js_error(st, rt_concat(rt_concat("duplicate field `", key), "`"))
+            }
+            jw_colon(st)
+            if idx < 0 {
+                jw_ignore_value(st)
+            } else {
+                std::raw::store8(seen + idx, 1)
+                vals = std::array::set(vals, idx, jw_header_field(st, idx))
+            }
+        }
+        js_leave(st)
+        if std::raw::load8(seen + 1) == 0 {
+            jw_end_map_quiet(st)
+            js_error(st, "missing field `alg`")
+        }
+        rt_free_block(seen)
+        jw_end_map(st)
+    } else {
+        jw_peek_invalid(st, "struct Header")
+    }
+    let mut out: any = std::map::new()
+    k = 0
+    while k < 10 {
+        let v = rt_seq_get(vals, k)
+        if v != nil {
+            out = std::map::insert(out, rt_seq_get(names, k), v)
+        }
+        k += 1
+    }
+    return [out, rt_seq_get(vals, 1)]
+}
+
+// ---------------------------------------------------------------- claims
+
+// numeric_type (deserialize_any + TryParse<u64>): [estado, valor, enorme].
+// Estados: 0 NotPresent, 1 Parsed, 2 FailedToParse. Los errores de tipo se
+// tragan; aquí el JSON ya está validado (se leyó antes como Value).
+fn jw_numeric(st: int) -> any {
+    let c = js_skip_ws(st)
+    if c == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+    } else if c == 116 {
+        js_eat(st)
+        js_parse_ident(st, "rue")
+    } else if c == 102 {
+        js_eat(st)
+        js_parse_ident(st, "alse")
+    } else if c == 34 {
+        js_eat(st)
+        js_parse_str(st)
+    } else if c == 45 || (c >= 48 && c <= 57) {
+        let positive = c != 45
+        if !positive {
+            js_eat(st)
+        }
+        let num = jw_number(st, positive)
+        let k = jw_k(num)
+        if k == 2 {
+            let v = rt_seq_get(num, 2)
+            if std::raw::tag(v) == 1 {
+                return [1, v, false]
+            }
+            return [1, 0, true]
+        }
+        if k == 4 {
+            let b = std::raw::bits(jw_a(num))
+            let non_neg = b >= 0 || b == js_sign_bit()
+            if js_finite(b) && non_neg && (b < 0 || b < 4895412794951729152) {
+                let r = std::raw::bits(std__math__round(rt_float(b)))
+                if r >= 4890909195324358656 {
+                    return [1, 0, true]
+                }
+                return [1, std::raw::ftoint(r), false]
+            }
+        }
+    } else if c == 91 {
+        js_enter(st)
+        js_eat(st)
+        js_leave(st)
+        jw_end_seq_quiet(st)
+    } else if c == 123 {
+        js_enter(st)
+        js_eat(st)
+        js_leave(st)
+        jw_end_map_quiet(st)
+    }
+    return [2, 0, false]
+}
+
+// TryParse<Cow<str>> (sub): solo importa cuánto consume.
+fn jw_sub(st: int) {
+    let c = js_skip_ws(st)
+    if c == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+    } else if c == 34 {
+        js_eat(st)
+        js_parse_str(st)
+    } else if c == 116 {
+        js_eat(st)
+        js_parse_ident(st, "rue")
+    } else if c == 102 {
+        js_eat(st)
+        js_parse_ident(st, "alse")
+    } else if c == 45 {
+        js_eat(st)
+        jw_number(st, false)
+    } else if c >= 48 && c <= 57 {
+        jw_number(st, true)
+    }
+}
+
+// TryParse<Issuer> / TryParse<Audience>: [estado, content].
+fn jw_iss_aud(st: int) -> any {
+    if js_skip_ws(st) == 110 {
+        js_eat(st)
+        js_parse_ident(st, "ull")
+        return [0, nil]
+    }
+    let v = jw_any(st)
+    let k = jw_k(v)
+    if k == 5 {
+        return [1, v]
+    }
+    if k == 6 {
+        let items = jw_a(v)
+        let mut j = 0
+        while j < rt_seq_len(items) {
+            if jw_k(rt_seq_get(items, j)) != 5 {
+                return [2, nil]
+            }
+            j += 1
+        }
+        return [1, v]
+    }
+    return [2, nil]
+}
+
+fn jw_claims_len_error(st: int, k: int) {
+    js_leave(st)
+    jw_end_seq_quiet(st)
+    js_error(st, rt_concat(rt_concat("invalid length ", rt_int_to_str(k)), ", expected struct ClaimsForValidation with 5 elements"))
+}
+
+// ClaimsForValidation: [exp, iss, aud].
+fn jw_claims(st: int) -> any {
+    let mut exp: any = [0, 0, false]
+    let mut iss: any = [0, nil]
+    let mut aud: any = [0, nil]
+    let c = js_skip_ws(st)
+    if c < 0 {
+        js_peek_error(st, "EOF while parsing a value")
+    }
+    if c == 91 {
+        js_enter(st)
+        js_eat(st)
+        let mut first = true
+        if jw_seq_next(st, first) {
+            first = false
+            exp = jw_numeric(st)
+        }
+        if jw_seq_next(st, first) {
+            first = false
+            jw_numeric(st)
+        }
+        if !jw_seq_next(st, first) {
+            jw_claims_len_error(st, 2)
+        }
+        first = false
+        jw_sub(st)
+        if !jw_seq_next(st, first) {
+            jw_claims_len_error(st, 3)
+        }
+        iss = jw_iss_aud(st)
+        if !jw_seq_next(st, first) {
+            jw_claims_len_error(st, 4)
+        }
+        aud = jw_iss_aud(st)
+        js_leave(st)
+        jw_end_seq(st)
+    } else if c == 123 {
+        js_enter(st)
+        js_eat(st)
+        let names = ["exp", "nbf", "sub", "iss", "aud"]
+        let seen = rt_alloc(8)
+        let mut k = 0
+        while k < 5 {
+            std::raw::store8(seen + k, 0)
+            k += 1
+        }
+        let mut first = true
+        while true {
+            let key = jw_map_next(st, first)
+            if key == nil {
+                break
+            }
+            first = false
+            let idx = jw_index(names, key)
+            if idx >= 0 && std::raw::load8(seen + idx) != 0 {
+                js_leave(st)
+                jw_end_map_quiet(st)
+                js_error(st, rt_concat(rt_concat("duplicate field `", key), "`"))
+            }
+            jw_colon(st)
+            if idx < 0 {
+                jw_ignore_value(st)
+            } else {
+                std::raw::store8(seen + idx, 1)
+                if idx == 0 {
+                    exp = jw_numeric(st)
+                } else if idx == 1 {
+                    jw_numeric(st)
+                } else if idx == 2 {
+                    jw_sub(st)
+                } else if idx == 3 {
+                    iss = jw_iss_aud(st)
+                } else {
+                    aud = jw_iss_aud(st)
+                }
+            }
+        }
+        rt_free_block(seen)
+        js_leave(st)
+        jw_end_map(st)
+    } else {
+        jw_peek_invalid(st, "struct ClaimsForValidation")
+    }
+    return [exp, iss, aud]
+}
+
+fn jw_contains(v: any, s: any) -> bool {
+    if jw_k(v) == 5 {
+        return rt_str_eq(jw_a(v), s)
+    }
+    let items = jw_a(v)
+    let mut j = 0
+    while j < rt_seq_len(items) {
+        if rt_str_eq(jw_a(rt_seq_get(items, j)), s) {
+            return true
+        }
+        j += 1
+    }
+    false
+}
+
+fn jw_validate(claims: any, aud: any, iss: any, function: string) {
+    let exp = rt_seq_get(claims, 0)
+    if std::raw::bits(rt_seq_get(exp, 0)) != 1 {
+        jw_fail(function, "Missing required claim: exp")
+    }
+    let (now, ns) = rt_clock(0)
+    let huge = std::raw::bits(rt_seq_get(exp, 2)) != 0
+    if !huge && std::raw::bits(rt_seq_get(exp, 1)) < now - 60 {
+        jw_fail(function, "ExpiredSignature")
+    }
+    let ic = rt_seq_get(claims, 1)
+    if rt_slen(iss) > 0 && std::raw::bits(rt_seq_get(ic, 0)) == 1 {
+        if !jw_contains(rt_seq_get(ic, 1), iss) {
+            jw_fail(function, "InvalidIssuer")
+        }
+    }
+    let ac = rt_seq_get(claims, 2)
+    if std::raw::bits(rt_seq_get(ac, 0)) == 1 {
+        if rt_slen(aud) == 0 || !jw_contains(rt_seq_get(ac, 1), aud) {
+            jw_fail(function, "InvalidAudience")
+        }
+    }
+}
+
+// ---------------------------------------------------------------- nativas
+
+fn jw_last_dot(p: int, n: int) -> int {
+    let mut i = n - 1
+    while i >= 0 {
+        if std::raw::load8(p + i) == 46 {
+            return i
+        }
+        i -= 1
+    }
+    -1
+}
+
+fn jw_b64_part(p: int, n: int, function: string) -> any {
+    let (err, bytes) = jr_b64_decode(p, n, 1)
+    if err != nil {
+        jw_fail(function, rt_concat("Base64 error: ", err))
+    }
+    bytes
+}
+
+// [mapa, alg] de la cabecera p[0..n).
+fn jw_decode_header(p: int, n: int, function: string) -> any {
+    let bytes = jw_b64_part(p, n, function)
+    let st = jw_state(bytes, function)
+    let h = jw_header(st)
+    jw_trailing(st)
+    rt_free_block(st)
+    h
+}
+
+fn jw_verify(token: any, key: any, aud: any, iss: any, rs: bool, function: string) -> any {
+    rt_expect_str(token, function)
+    rt_expect_bytes(key, function)
+    rt_expect_str(aud, function)
+    rt_expect_str(iss, function)
+    let mut der: any = nil
+    if rs {
+        let (err, d) = jr_rsa_der(key)
+        if err != nil {
+            rt_native_fail(function, rt_concat("invalid PEM material: ", err))
+        }
+        der = d
+    }
+    let p = std::raw::bits(token) + 16
+    let n = rt_slen(token)
+    let d1 = jw_last_dot(p, n)
+    if d1 < 0 {
+        jw_fail(function, "InvalidToken")
+    }
+    let d2 = jw_last_dot(p, d1)
+    if d2 < 0 {
+        jw_fail(function, "InvalidToken")
+    }
+    let h = jw_decode_header(p, d2, function)
+    let mut want = "HS256"
+    if rs {
+        want = "RS256"
+    }
+    if !rt_str_eq(rt_seq_get(h, 1), want) {
+        jw_fail(function, "InvalidAlgorithm")
+    }
+    if rs {
+        let sig = jw_b64_part(p + d1 + 1, n - d1 - 1, function)
+        if !jr_verify(der, p, d1, sig) {
+            jw_fail(function, "InvalidSignature")
+        }
+    } else {
+        let mac = hs_hmac_raw(1, 64, rt_bdata(key), rt_slen(key), p, d1)
+        let expect = jr_b64url(mac, 32)
+        rt_free_block(mac)
+        let sl = n - d1 - 1
+        let mut same = rt_slen(expect) == sl
+        let ep = std::raw::bits(expect) + 16
+        let mut i = 0
+        while same && i < sl {
+            if std::raw::load8(ep + i) != std::raw::load8(p + d1 + 1 + i) {
+                same = false
+            }
+            i += 1
+        }
+        if !same {
+            jw_fail(function, "InvalidSignature")
+        }
+    }
+    let payload = jw_b64_part(p + d2 + 1, d1 - d2 - 1, function)
+    let st = jw_state(payload, function)
+    let value = js_parse_value(st)
+    jw_trailing(st)
+    rt_free_block(st)
+    let st2 = jw_state(payload, function)
+    let claims = jw_claims(st2)
+    jw_trailing(st2)
+    rt_free_block(st2)
+    jw_validate(claims, aud, iss, function)
+    value
+}
+
+fn jw_sign(claims: any, key: any, rs: bool, function: string) -> any {
+    let norm = js_norm(claims, function)
+    rt_expect_bytes(key, function)
+    let mut kp: any = nil
+    if rs {
+        let (err, der) = jr_rsa_der(key)
+        if err != nil {
+            rt_native_fail(function, rt_concat("invalid PEM material: ", err))
+        }
+        let (kerr, k) = jr_private_key(der)
+        if kerr != nil {
+            jw_fail(function, rt_concat("RSA key invalid: ", kerr))
+        }
+        kp = k
+    }
+    let b = sb_new(64)
+    js_write(b, norm, false, 0, function)
+    let json = sb_finish(b)
+    let mut msg: any = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9."
+    if rs {
+        msg = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9."
+    }
+    msg = rt_concat(msg, jr_b64url(std::raw::bits(json) + 16, rt_slen(json)))
+    let mp = std::raw::bits(msg) + 16
+    let ml = rt_slen(msg)
+    let mut sig: any = nil
+    if rs {
+        let (serr, sb) = jr_sign(kp, mp, ml)
+        if serr != nil {
+            jw_fail(function, serr)
+        }
+        sig = jr_b64url(rt_bdata(sb), rt_slen(sb))
+    } else {
+        let mac = hs_hmac_raw(1, 64, rt_bdata(key), rt_slen(key), mp, ml)
+        sig = jr_b64url(mac, 32)
+        rt_free_block(mac)
+    }
+    rt_concat(rt_concat(msg, "."), sig)
+}
+
+fn std__jwt__sign_hs256(claims: any, secret: any) -> any {
+    jw_sign(claims, secret, false, "std::jwt::sign_hs256")
+}
+
+fn std__jwt__verify_hs256(token: any, secret: any, aud: any, iss: any) -> any {
+    jw_verify(token, secret, aud, iss, false, "std::jwt::verify_hs256")
+}
+
+fn std__jwt__sign_rs256(claims: any, pem: any) -> any {
+    jw_sign(claims, pem, true, "std::jwt::sign_rs256")
+}
+
+fn std__jwt__verify_rs256(token: any, pem: any, aud: any, iss: any) -> any {
+    jw_verify(token, pem, aud, iss, true, "std::jwt::verify_rs256")
+}
+
+fn std__jwt__peek_header(token: any) -> any {
+    rt_expect_str(token, "std::jwt::peek_header")
+    let p = std::raw::bits(token) + 16
+    let n = rt_slen(token)
+    let d1 = jw_last_dot(p, n)
+    if d1 < 0 {
+        jw_fail("std::jwt::peek_header", "InvalidToken")
+    }
+    let d2 = jw_last_dot(p, d1)
+    if d2 < 0 {
+        jw_fail("std::jwt::peek_header", "InvalidToken")
+    }
+    rt_seq_get(jw_decode_header(p, d2, "std::jwt::peek_header"), 0)
+}

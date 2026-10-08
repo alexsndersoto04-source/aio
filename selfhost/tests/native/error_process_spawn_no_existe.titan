@@ -1,0 +1,3 @@
+fn main() {
+    std::process::spawn("titan_no_existe")
+}

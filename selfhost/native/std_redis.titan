@@ -1,0 +1,1128 @@
+// Cliente Redis real sobre TCP/RESP2. El transporte usa sockets del sistema
+// (nt_connect + read/sendto), mantiene handles opacos y nunca sustituye el
+// servidor por estado local. Límites alineados con redis_mod.rs.
+const RD_STATE_SLOT: int = 3560
+const RD_MAX_CONNECTIONS: int = 8
+const RD_READ_CHUNK: int = 4096
+const RD_MAX_URL_BYTES: int = 16384
+const RD_MAX_KEY_BYTES: int = 65536
+const RD_MAX_VALUE_BYTES: int = 8388608
+const RD_MAX_RAW_COMMAND_BYTES: int = 65536
+const RD_MAX_COMMAND_ARGUMENTS: int = 32
+const RD_MAX_REQUEST_BYTES: int = 9437184
+const RD_MAX_RESPONSE_PAYLOAD_BYTES: int = 8388608
+const RD_MAX_RESPONSE_WIRE_BYTES: int = 9437184
+const RD_MAX_RESPONSE_ELEMENTS: int = 65536
+const RD_MAX_RESPONSE_DEPTH: int = 16
+const RD_MAX_RESPONSE_LINE_BYTES: int = 65536
+const RD_MAX_COLLECTION_ITEMS: int = 65536
+const RD_MAX_COLLECTION_BYTES: int = 8388608
+const RD_MAX_SCAN_ROUNDS: int = 256
+const RD_OPERATION_TIMEOUT_MS: int = 5000
+
+// state: next_id, active_count, table pointer. entry: id, fd, read_buffer,
+// read_pos, read_len, broken, owning state, monotonic deadline, RESP budget. IDs never recycle after close.
+fn rd_state() -> int {
+    let slot = std::raw::globals() + RD_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(24)
+    let table = rt_alloc_zero(8 * RD_MAX_CONNECTIONS)
+    std::raw::store(created, 1)
+    std::raw::store(created + 16, table)
+    std::raw::store(slot, created)
+    created
+}
+
+fn rd_find(state: int, handle: int) -> int {
+    let count = std::raw::load(state + 8)
+    let table = std::raw::load(state + 16)
+    let mut i = 0
+    while i < count {
+        let entry = std::raw::load(table + 8 * i)
+        if std::raw::load(entry) == handle { return i + 1 }
+        i += 1
+    }
+    0
+}
+
+fn rd_remove_entry(entry: int) {
+    let state = std::raw::load(entry + 48)
+    let handle = std::raw::load(entry)
+    let index = rd_find(state, handle)
+    if index != 0 {
+        let count = std::raw::load(state + 8)
+        let table = std::raw::load(state + 16)
+        let mut i = index - 1
+        while i + 1 < count {
+            std::raw::store(table + 8 * i, std::raw::load(table + 8 * (i + 1)))
+            i += 1
+        }
+        std::raw::store(table + 8 * (count - 1), 0)
+        std::raw::store(state + 8, count - 1)
+    }
+    let fd = std::raw::load(entry + 8)
+    if fd >= 0 { std::raw::syscall(3, fd, 0, 0, 0, 0, 0) }
+    let buffer = std::raw::load(entry + 16)
+    if buffer != 0 { rt_free_block(buffer) }
+    let line_buffer = std::raw::load(entry + 88)
+    if line_buffer != 0 { rt_free_block(line_buffer) }
+    let pending_bulk = std::raw::load(entry + 96)
+    if pending_bulk != 0 { rt_free_block(pending_bulk) }
+    let pending_request = std::raw::load(entry + 104)
+    if pending_request != 0 { rt_free_block(pending_request) }
+    rt_free_block(entry)
+}
+
+fn rd_fail(function: string, message: any) {
+    rt_native_fail(function, message)
+}
+
+fn rd_invalid(function: string, message: string) {
+    rd_fail(function, rt_concat("invalid Redis argument: ", message))
+}
+
+fn rd_limit(function: string, resource: string, limit: int) {
+    rd_fail(function, rt_concat(rt_concat(resource, " exceeds limit "), rt_int_to_str(limit)))
+}
+
+fn rd_unknown(function: string, handle: int) {
+    rd_fail(function, rt_concat("unknown connection handle ", rt_int_to_str(handle)))
+}
+
+fn rd_break_protocol(entry: int, function: string, message: string) {
+    rd_remove_entry(entry)
+    rd_fail(function, rt_concat("invalid RESP2 reply: ", message))
+}
+
+fn rd_break_timeout(entry: int, function: string) {
+    rd_remove_entry(entry)
+    rd_fail(function, "Redis operation timed out")
+}
+
+fn rd_break_io(entry: int, function: string, error: int) {
+    rd_remove_entry(entry)
+    rd_fail(function, rt_concat("Redis I/O error: ", rt_os_error(0 - error)))
+}
+
+fn rd_entry(handle_value: any, function: string) -> int {
+    rt_expect_int(handle_value, function)
+    let handle = std::raw::bits(handle_value)
+    let state = rd_state()
+    let index = rd_find(state, handle)
+    if index == 0 { rd_unknown(function, handle) }
+    let entry = std::raw::load(std::raw::load(state + 16) + 8 * (index - 1))
+    if std::raw::load(entry + 40) != 0 {
+        rd_fail(function, "invalid RESP2 reply: connection is already broken")
+    }
+    entry
+}
+
+fn rd_close_handle(handle: int) {
+    let state = rd_state()
+    let index = rd_find(state, handle)
+    if index != 0 {
+        let entry = std::raw::load(std::raw::load(state + 16) + 8 * (index - 1))
+        rd_remove_entry(entry)
+    }
+}
+
+fn rd_set_timeouts(entry: int, function: string) {
+    let timeout = rt_alloc_zero(16)
+    // struct timeval { int64 tv_sec; int64 tv_usec; }
+    std::raw::store(timeout, 5)
+    let fd = std::raw::load(entry + 8)
+    let recv_status = std::raw::syscall(54, fd, 1, 20, timeout, 16, 0)
+    if recv_status < 0 {
+        rt_free_block(timeout)
+        rd_break_io(entry, function, recv_status)
+    }
+    let send_status = std::raw::syscall(54, fd, 1, 21, timeout, 16, 0)
+    rt_free_block(timeout)
+    if send_status < 0 { rd_break_io(entry, function, send_status) }
+    // Match TcpStream::set_nodelay(true).
+    let no_delay = rt_alloc_zero(4)
+    std::raw::store(no_delay, 1)
+    let status = std::raw::syscall(54, fd, 6, 1, no_delay, 4, 0)
+    rt_free_block(no_delay)
+    if status < 0 { rd_break_io(entry, function, status) }
+}
+
+fn rd_monotonic_millis(entry: int, function: string) -> int {
+    let timespec = rt_alloc(16)
+    let status = std::raw::syscall(228, 1, timespec, 0, 0, 0, 0)
+    if status < 0 {
+        rt_free_block(timespec)
+        rd_break_io(entry, function, status)
+    }
+    let seconds = std::raw::load(timespec)
+    let nanoseconds = std::raw::load(timespec + 8)
+    rt_free_block(timespec)
+    seconds * 1000 + nanoseconds / 1000000
+}
+
+fn rd_begin_deadline(entry: int, function: string) {
+    std::raw::store(entry + 56, rd_monotonic_millis(entry, function) + RD_OPERATION_TIMEOUT_MS)
+}
+
+fn rd_refresh_timeout(entry: int, socket_option: int, function: string) {
+    let remaining = std::raw::load(entry + 56) - rd_monotonic_millis(entry, function)
+    if remaining <= 0 { rd_break_timeout(entry, function) }
+    let timeout = rt_alloc_zero(16)
+    std::raw::store(timeout, remaining / 1000)
+    std::raw::store(timeout + 8, (remaining % 1000) * 1000)
+    let status = std::raw::syscall(54, std::raw::load(entry + 8), 1, socket_option, timeout, 16, 0)
+    rt_free_block(timeout)
+    if status < 0 { rd_break_io(entry, function, status) }
+}
+
+fn rd_validate_size(value: any, resource: string, limit: int, function: string) {
+    rt_expect_str(value, function)
+    if rt_slen(value) > limit { rd_limit(function, resource, limit) }
+}
+
+fn rd_hex_digit(c: int) -> int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    -1
+}
+
+fn rd_percent_decode(value: any, function: string) -> any {
+    let n = rt_slen(value)
+    let src = std::raw::bits(value) + 16
+    let out = rt_str_alloc(n)
+    let mut i = 0
+    let mut used = 0
+    while i < n {
+        let c = std::raw::load8(src + i)
+        if c == 37 {
+            if i + 2 >= n {
+                rt_free_block(out)
+                rd_invalid(function, "invalid percent escape in Redis URL credentials")
+            }
+            let hi = rd_hex_digit(std::raw::load8(src + i + 1))
+            let lo = rd_hex_digit(std::raw::load8(src + i + 2))
+            if hi < 0 || lo < 0 {
+                rt_free_block(out)
+                rd_invalid(function, "invalid percent escape in Redis URL credentials")
+            }
+            std::raw::store8(out + 16 + used, hi * 16 + lo)
+            used += 1
+            i += 3
+        } else {
+            std::raw::store8(out + 16 + used, c)
+            used += 1
+            i += 1
+        }
+    }
+    std::raw::store(out + 8, used)
+    let err = rt_utf8_error(out + 16, used)
+    if rt_slen(err) > 0 {
+        rt_free_block(out)
+        rd_invalid(function, "Redis URL credentials are not UTF-8")
+    }
+    rt_sval(out)
+}
+
+fn rd_userinfo(url: any, function: string) -> any {
+    // Return [username, password, has_userinfo]. Parse only the authority;
+    // '@' inside percent-escaped credentials is handled by rd_percent_decode.
+    let p = std::raw::bits(url) + 16
+    let n = rt_slen(url)
+    let mut scheme_end = 0
+    while scheme_end + 2 < n {
+        if std::raw::load8(p + scheme_end) == 58 && std::raw::load8(p + scheme_end + 1) == 47 && std::raw::load8(p + scheme_end + 2) == 47 { break }
+        scheme_end += 1
+    }
+    if scheme_end + 2 >= n { return ["", "", false] }
+    let start = scheme_end + 3
+    let mut end = start
+    while end < n {
+        let c = std::raw::load8(p + end)
+        if c == 47 || c == 63 || c == 35 { break }
+        end += 1
+    }
+    let mut at = -1
+    let mut i = start
+    while i < end {
+        if std::raw::load8(p + i) == 64 { at = i }
+        i += 1
+    }
+    if at < 0 { return ["", "", false] }
+    let mut colon = -1
+    i = start
+    while i < at {
+        if std::raw::load8(p + i) == 58 { colon = i; break }
+        i += 1
+    }
+    if colon < 0 { rd_invalid(function, "Redis username requires a password") }
+    let raw_user = rt_substr_bytes(url, start, colon)
+    let raw_password = rt_substr_bytes(url, colon + 1, at)
+    let username = rd_percent_decode(raw_user, function)
+    let password = rd_percent_decode(raw_password, function)
+    return [username, password, true]
+}
+
+fn rd_url_database(path: any, function: string) -> int {
+    let n = rt_slen(path)
+    if n == 0 { return 0 }
+    let p = std::raw::bits(path) + 16
+    if n == 1 && std::raw::load8(p) == 47 { return 0 }
+    let start = if std::raw::load8(p) == 47 { 1 } else { 0 }
+    if start == n { return 0 }
+    let digits = rt_substr_bytes(path, start, n)
+    let value = std::text::parse_int(digits)
+    let mut db = 0
+    match value {
+        Option::Some(number) => db = number,
+        Option::None => rd_invalid(function, "Redis database number must be a nonnegative integer")
+    }
+    if db < 0 { rd_invalid(function, "Redis database number must be nonnegative") }
+    db
+}
+
+fn rd_read_byte(entry: int, budget: int, function: string) -> int {
+    let buffer = std::raw::load(entry + 16)
+    let pos = std::raw::load(entry + 24)
+    let length = std::raw::load(entry + 32)
+    if pos >= length {
+        let fd = std::raw::load(entry + 8)
+        loop {
+            rd_refresh_timeout(entry, 20, function)
+            let count = std::raw::syscall(0, fd, buffer, RD_READ_CHUNK, 0, 0, 0)
+            if count == -4 { continue }
+            if count == -11 { rd_break_timeout(entry, function) }
+            if count < 0 { rd_break_io(entry, function, count) }
+            if count == 0 { rd_break_protocol(entry, function, "connection closed before the reply was complete") }
+            std::raw::store(entry + 24, 1)
+            std::raw::store(entry + 32, count)
+            let wire = std::raw::load(budget)
+            if wire >= RD_MAX_RESPONSE_WIRE_BYTES {
+                rd_remove_entry(entry)
+                rd_limit(function, "Redis response wire bytes", RD_MAX_RESPONSE_WIRE_BYTES)
+            }
+            std::raw::store(budget, wire + 1)
+            return std::raw::load8(buffer)
+        }
+        0
+    }
+    let wire = std::raw::load(budget)
+    if wire >= RD_MAX_RESPONSE_WIRE_BYTES {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response wire bytes", RD_MAX_RESPONSE_WIRE_BYTES)
+    }
+    std::raw::store(entry + 24, pos + 1)
+    std::raw::store(budget, wire + 1)
+    std::raw::load8(buffer + pos)
+}
+
+fn rd_read_line(entry: int, budget: int, payload_line: bool, function: string) -> any {
+    let temporary = std::raw::load(entry + 88)
+    let mut length = 0
+    loop {
+        let byte = rd_read_byte(entry, budget, function)
+        if byte == 13 {
+            if rd_read_byte(entry, budget, function) != 10 {
+                rd_break_protocol(entry, function, "RESP line did not end with CRLF")
+            }
+            break
+        }
+        if length >= RD_MAX_RESPONSE_LINE_BYTES {
+            rd_remove_entry(entry)
+            rd_limit(function, "Redis response line bytes", RD_MAX_RESPONSE_LINE_BYTES)
+        }
+        std::raw::store8(temporary + length, byte)
+        length += 1
+    }
+    let bytes = rt_bytes_from(temporary, length)
+    if payload_line {
+        let payload = std::raw::load(budget + 8)
+        if payload + length > RD_MAX_RESPONSE_PAYLOAD_BYTES {
+            rd_remove_entry(entry)
+            rd_limit(function, "Redis response payload bytes", RD_MAX_RESPONSE_PAYLOAD_BYTES)
+        }
+        std::raw::store(budget + 8, payload + length)
+    }
+    bytes
+}
+
+fn rd_parse_integer(bytes: any, entry: int, function: string) -> int {
+    let n = rt_slen(bytes)
+    let p = rt_bdata(bytes)
+    if n == 0 { rd_break_protocol(entry, function, "invalid RESP integer") }
+    let first = std::raw::load8(p)
+    let negative = first == 45
+    let explicit_positive = first == 43
+    let mut i = if negative || explicit_positive { 1 } else { 0 }
+    if i == n { rd_break_protocol(entry, function, "invalid RESP integer") }
+    let limit = if negative { -9223372036854775807 - 1 } else { -9223372036854775807 }
+    let mut value = 0
+    while i < n {
+        let byte = std::raw::load8(p + i)
+        if byte < 0 || byte > 127 { rd_break_protocol(entry, function, "RESP integer was not ASCII") }
+        let digit = byte - 48
+        if digit < 0 || digit > 9 || value < (limit + digit) / 10 {
+            rd_break_protocol(entry, function, "invalid RESP integer")
+        }
+        value = value * 10 - digit
+        i += 1
+    }
+    if negative { value } else { 0 - value }
+}
+
+fn rd_read_bulk(entry: int, budget: int, length: int, function: string) -> any {
+    if length < 0 || length > RD_MAX_RESPONSE_PAYLOAD_BYTES {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response payload bytes", RD_MAX_RESPONSE_PAYLOAD_BYTES)
+    }
+    let payload = std::raw::load(budget + 8)
+    if payload + length > RD_MAX_RESPONSE_PAYLOAD_BYTES {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response payload bytes", RD_MAX_RESPONSE_PAYLOAD_BYTES)
+    }
+    std::raw::store(budget + 8, payload + length)
+    if std::raw::load(budget) + length + 2 > RD_MAX_RESPONSE_WIRE_BYTES {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response wire bytes", RD_MAX_RESPONSE_WIRE_BYTES)
+    }
+    let object = rt_str_alloc(length)
+    std::raw::store(entry + 96, object)
+    let target = object + 16
+    let mut copied = 0
+    while copied < length {
+        let read_pos = std::raw::load(entry + 24)
+        let read_len = std::raw::load(entry + 32)
+        if read_pos >= read_len {
+            let _ = rd_read_byte(entry, budget, function)
+            copied += 1
+            std::raw::store8(target + copied - 1, std::raw::load8(std::raw::load(entry + 16)))
+            nil
+        } else {
+            let chunk = if read_len - read_pos < length - copied { read_len - read_pos } else { length - copied }
+            rt_copy(target + copied, std::raw::load(entry + 16) + read_pos, chunk)
+            std::raw::store(entry + 24, read_pos + chunk)
+            std::raw::store(budget, std::raw::load(budget) + chunk)
+            copied += chunk
+            nil
+        }
+    }
+    if rd_read_byte(entry, budget, function) != 13 || rd_read_byte(entry, budget, function) != 10 {
+        rd_break_protocol(entry, function, "bulk response did not end with CRLF")
+    }
+    std::raw::store(entry + 96, 0)
+    std::raw::adopt(6, object)
+}
+
+fn rd_read_resp(entry: int, budget: int, depth: int, function: string) -> any {
+    if depth > RD_MAX_RESPONSE_DEPTH {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response nesting depth", RD_MAX_RESPONSE_DEPTH)
+    }
+    let elements = std::raw::load(budget + 16)
+    if elements >= RD_MAX_RESPONSE_ELEMENTS {
+        rd_remove_entry(entry)
+        rd_limit(function, "Redis response elements", RD_MAX_RESPONSE_ELEMENTS)
+    }
+    std::raw::store(budget + 16, elements + 1)
+    let prefix = rd_read_byte(entry, budget, function)
+    if prefix == 43 { return rd_read_line(entry, budget, true, function) }
+    if prefix == 45 {
+        let bytes = rd_read_line(entry, budget, true, function)
+        let message = at_bytes_text_lossy(bytes, 0, rt_slen(bytes))
+        if std::raw::load(entry) == 0 { rd_remove_entry(entry) }
+        rd_fail(function, rt_concat("Redis server error: ", message))
+    }
+    if prefix == 58 {
+        let line = rd_read_line(entry, budget, false, function)
+        return rd_parse_integer(line, entry, function)
+    }
+    if prefix == 36 || prefix == 42 {
+        let line = rd_read_line(entry, budget, false, function)
+        let length = rd_parse_integer(line, entry, function)
+        if length == -1 { return nil }
+        if length < -1 { rd_break_protocol(entry, function, "invalid negative RESP length") }
+        if prefix == 36 { return rd_read_bulk(entry, budget, length, function) }
+        if length > RD_MAX_RESPONSE_ELEMENTS || std::raw::load(budget + 16) + length > RD_MAX_RESPONSE_ELEMENTS {
+            rd_remove_entry(entry)
+            rd_limit(function, "Redis response elements", RD_MAX_RESPONSE_ELEMENTS)
+        }
+        let out = rt_array_new(length)
+        let data = rt_seq_data(out)
+        let mut i = 0
+        while i < length {
+            rt_seq_put(data, i, rd_read_resp(entry, budget, depth + 1, function))
+            i += 1
+        }
+        return out
+    }
+    rd_break_protocol(entry, function, "unsupported RESP2 type prefix")
+    nil
+}
+
+fn rd_send_request(entry: int, args: any, function: string) {
+    rt_expect_array(args, function)
+    let count = rt_seq_len(args)
+    if count == 0 { rd_invalid(function, "Redis command cannot be empty") }
+    if count > RD_MAX_COMMAND_ARGUMENTS { rd_limit(function, "Redis command arguments", RD_MAX_COMMAND_ARGUMENTS) }
+    let data = rt_seq_data(args)
+    let total_text = rt_int_to_str(count)
+    let total = 1 + rt_slen(total_text) + 2
+    let mut size = total
+    let mut i = 0
+    while i < count {
+        let value = std::raw::value(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+        rt_expect_str(value, function)
+        let n = rt_slen(value)
+        let digits = rt_int_to_str(n)
+        size += 1 + rt_slen(digits) + 2 + n + 2
+        if size > RD_MAX_REQUEST_BYTES { rd_limit(function, "Redis request bytes", RD_MAX_REQUEST_BYTES) }
+        i += 1
+    }
+    if std::raw::load(entry + 24) < std::raw::load(entry + 32) {
+        rd_break_protocol(entry, function, "unsolicited bytes were buffered before a command")
+    }
+    let request = rt_alloc(size)
+    std::raw::store(entry + 104, request)
+    let mut at = 0
+    std::raw::store8(request + at, 42)
+    at += 1
+    let count_text = rt_int_to_str(count)
+    let count_len = rt_slen(count_text)
+    rt_copy(request + at, std::raw::bits(count_text) + 16, count_len)
+    at += count_len
+    std::raw::store8(request + at, 13)
+    std::raw::store8(request + at + 1, 10)
+    at += 2
+    i = 0
+    while i < count {
+        let value = std::raw::value(std::raw::load(data + 16 * i), std::raw::load(data + 16 * i + 8))
+        let n = rt_slen(value)
+        std::raw::store8(request + at, 36)
+        at += 1
+        let digits = rt_int_to_str(n)
+        let digit_len = rt_slen(digits)
+        rt_copy(request + at, std::raw::bits(digits) + 16, digit_len)
+        at += digit_len
+        std::raw::store8(request + at, 13)
+        std::raw::store8(request + at + 1, 10)
+        at += 2
+        rt_copy(request + at, std::raw::bits(value) + 16, n)
+        at += n
+        std::raw::store8(request + at, 13)
+        std::raw::store8(request + at + 1, 10)
+        at += 2
+        i += 1
+    }
+    let fd = std::raw::load(entry + 8)
+    let mut sent = 0
+    while sent < size {
+        rd_refresh_timeout(entry, 21, function)
+        let written = std::raw::syscall(44, fd, request + sent, size - sent, 16384, 0, 0)
+        if written == -4 { continue }
+        if written == -11 { rd_break_timeout(entry, function) }
+        if written < 0 { rd_break_io(entry, function, written) }
+        if written == 0 { rd_break_io(entry, function, -5) }
+        sent += written
+    }
+    std::raw::store(entry + 104, 0)
+    rt_free_block(request)
+}
+
+fn rd_execute_with_deadline(entry: int, args: any, function: string) -> any {
+    let budget = entry + 64
+    std::raw::store(budget, 0)
+    std::raw::store(budget + 8, 0)
+    std::raw::store(budget + 16, 0)
+    rd_send_request(entry, args, function)
+    let result = rd_read_resp(entry, budget, 0, function)
+    if std::raw::load(entry + 24) < std::raw::load(entry + 32) {
+        rd_break_protocol(entry, function, "server sent bytes beyond one RESP2 reply")
+    }
+    result
+}
+
+fn rd_execute(entry: int, args: any, function: string) -> any {
+    rd_begin_deadline(entry, function)
+    rd_execute_with_deadline(entry, args, function)
+}
+
+fn rd_as_string(value: any, function: string) -> any {
+    let tag = std::raw::tag(value)
+    if tag == 5 { return value }
+    if tag != 6 { rd_fail(function, "unexpected Redis reply: expected a string") }
+    let n = rt_slen(value)
+    let bytes = rt_bdata(value)
+    let error = rt_utf8_error(bytes, n)
+    if rt_slen(error) > 0 { rd_fail(function, "unexpected Redis reply: response string was not UTF-8") }
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, bytes, n)
+    rt_sval(out)
+}
+
+fn rd_as_int(value: any, function: string) -> int {
+    if std::raw::tag(value) != 1 { rd_fail(function, "unexpected Redis reply: expected an integer") }
+    std::raw::bits(value)
+}
+
+fn rd_as_array(value: any, function: string) -> any {
+    if std::raw::tag(value) != 7 { rd_fail(function, "unexpected Redis reply: expected an array") }
+    value
+}
+
+fn rd_as_ok(value: any, function: string) {
+    let text = rd_as_string(value, function)
+    if !rt_str_eq(text, "OK") { rd_fail(function, "unexpected Redis reply: expected OK") }
+}
+
+fn rd_connect_expect_ok(entry: int, value: any, function: string) {
+    let tag = std::raw::tag(value)
+    if tag != 5 && tag != 6 {
+        rd_remove_entry(entry)
+        rd_fail(function, "unexpected Redis reply: expected a string")
+    }
+    let text = rd_as_string(value, function)
+    if !rt_str_eq(text, "OK") {
+        rd_remove_entry(entry)
+        rd_fail(function, "unexpected Redis reply: expected OK")
+    }
+}
+
+fn rd_as_bool(value: any, function: string) -> bool {
+    let number = rd_as_int(value, function)
+    if number == 0 { return false }
+    if number == 1 { return true }
+    rd_fail(function, "unexpected Redis reply: expected integer zero or one")
+    false
+}
+
+fn rd_as_nonnegative(value: any, function: string) -> int {
+    let number = rd_as_int(value, function)
+    if number < 0 { rd_fail(function, "unexpected Redis reply: expected a nonnegative integer") }
+    number
+}
+
+fn rd_key(key: any, function: string) {
+    rd_validate_size(key, "Redis key bytes", RD_MAX_KEY_BYTES, function)
+}
+
+fn rd_value(value: any, function: string) {
+    rd_validate_size(value, "Redis value bytes", RD_MAX_VALUE_BYTES, function)
+}
+
+fn rd_escape_percent(text: any, function: string) -> any {
+    // Used only for credentials; decode percent-encoded URL userinfo bytes.
+    rd_percent_decode(text, function)
+}
+
+fn std__redis__connect(url: any) -> any {
+    let function = "std::redis::connect"
+    rd_validate_size(url, "Redis URL bytes", RD_MAX_URL_BYTES, function)
+    let state = rd_state()
+    let count = std::raw::load(state + 8)
+    if count >= RD_MAX_CONNECTIONS { rd_limit(function, "Redis connection handles", RD_MAX_CONNECTIONS) }
+    let scheme = std::url::scheme(url)
+    if rt_str_eq(scheme, "rediss") { rd_invalid(function, "TLS Redis URLs are not enabled in this build") }
+    if !rt_str_eq(scheme, "redis") { rd_invalid(function, "expected a redis:// URL") }
+    let query = std::url::query(url)
+    if rt_slen(query) > 0 && !rt_str_eq(query, "protocol=resp2") {
+        rd_invalid(function, "only RESP2 Redis URLs are supported")
+    }
+    let host = std::url::host(url)
+    let port_value = std::url::port(url)
+    let port = if port_value < 0 { 6379 } else { port_value }
+    if port < 0 || port > 65535 { rd_invalid(function, "Redis port is out of range") }
+    let path = std::url::path(url)
+    let database = rd_url_database(path, function)
+    let userinfo = rd_userinfo(url, function)
+    let username = userinfo[0]
+    let password = userinfo[1]
+    let has_userinfo = userinfo[2]
+    let host_ptr = std::raw::bits(host) + 16
+    let fd = nt_connect(function, host_ptr, rt_slen(host), port)
+    let entry = rt_alloc_zero(112)
+    std::raw::store(entry + 8, fd)
+    std::raw::store(entry + 16, rt_alloc(RD_READ_CHUNK))
+    std::raw::store(entry + 48, state)
+    std::raw::store(entry + 88, rt_alloc(RD_MAX_RESPONSE_LINE_BYTES))
+    // Publish temporarily so transport failures cleanly close and release it.
+    let table = std::raw::load(state + 16)
+    std::raw::store(table + 8 * count, entry)
+    std::raw::store(state + 8, count + 1)
+    rd_set_timeouts(entry, function)
+    rd_begin_deadline(entry, function)
+    if has_userinfo {
+        let auth = if rt_slen(username) == 0 { ["AUTH", password] } else { ["AUTH", username, password] }
+        rd_connect_expect_ok(entry, rd_execute_with_deadline(entry, auth, function), function)
+    }
+    if database != 0 {
+        rd_connect_expect_ok(entry, rd_execute_with_deadline(entry, ["SELECT", rt_int_to_str(database)], function), function)
+    }
+    let id = std::raw::load(state)
+    if id <= 0 || id == 9223372036854775807 {
+        rd_remove_entry(entry)
+        rd_fail(function, "Redis handle space exhausted")
+    }
+    std::raw::store(entry, id)
+    std::raw::store(state, id + 1)
+    id
+}
+
+fn std__redis__close(handle: any) -> any {
+    rt_expect_int(handle, "std::redis::close")
+    rd_close_handle(std::raw::bits(handle))
+    nil
+}
+
+fn std__redis__ping(handle: any) -> any {
+    let function = "std::redis::ping"
+    let entry = rd_entry(handle, function)
+    rd_as_string(rd_execute(entry, ["PING"], function), function)
+}
+
+fn std__redis__set(handle: any, key: any, value: any) -> any {
+    let function = "std::redis::set"
+    rd_key(key, function)
+    rd_value(value, function)
+    let entry = rd_entry(handle, function)
+    rd_as_ok(rd_execute(entry, ["SET", key, value], function), function)
+    nil
+}
+
+fn std__redis__set_ex(handle: any, key: any, value: any, seconds: any) -> any {
+    let function = "std::redis::set_ex"
+    rd_key(key, function)
+    rd_value(value, function)
+    rt_expect_int(seconds, function)
+    let duration = std::raw::bits(seconds)
+    if duration < 0 { rd_fail(function, "seconds out of range") }
+    let entry = rd_entry(handle, function)
+    rd_as_ok(rd_execute(entry, ["SETEX", key, rt_int_to_str(duration), value], function), function)
+    nil
+}
+
+fn std__redis__get(handle: any, key: any) -> any {
+    let function = "std::redis::get"
+    rd_key(key, function)
+    let entry = rd_entry(handle, function)
+    let reply = rd_execute(entry, ["GET", key], function)
+    if std::raw::tag(reply) == 0 { return nil }
+    rd_as_string(reply, function)
+}
+
+fn std__redis__del(handle: any, key: any) -> any {
+    let function = "std::redis::del"
+    rd_key(key, function)
+    let entry = rd_entry(handle, function)
+    rd_as_nonnegative(rd_execute(entry, ["DEL", key], function), function)
+}
+
+fn std__redis__exists(handle: any, key: any) -> any {
+    let function = "std::redis::exists"
+    rd_key(key, function)
+    let entry = rd_entry(handle, function)
+    rd_as_bool(rd_execute(entry, ["EXISTS", key], function), function)
+}
+
+fn std__redis__expire(handle: any, key: any, seconds: any) -> any {
+    let function = "std::redis::expire"
+    rd_key(key, function)
+    rt_expect_int(seconds, function)
+    let entry = rd_entry(handle, function)
+    rd_as_bool(rd_execute(entry, ["EXPIRE", key, rt_int_to_str(std::raw::bits(seconds))], function), function)
+}
+
+fn std__redis__ttl(handle: any, key: any) -> any {
+    let function = "std::redis::ttl"
+    rd_key(key, function)
+    let entry = rd_entry(handle, function)
+    rd_as_int(rd_execute(entry, ["TTL", key], function), function)
+}
+
+fn std__redis__incr(handle: any, key: any, delta: any) -> any {
+    let function = "std::redis::incr"
+    rd_key(key, function)
+    rt_expect_int(delta, function)
+    let entry = rd_entry(handle, function)
+    rd_as_int(rd_execute(entry, ["INCRBY", key, rt_int_to_str(std::raw::bits(delta))], function), function)
+}
+
+fn rd_scan_keys(entry: int, pattern: any, function: string) -> any {
+    rd_begin_deadline(entry, function)
+    let mut cursor = "0"
+    let mut all: any = []
+    let mut total_bytes = 0
+    let mut round = 0
+    while round < RD_MAX_SCAN_ROUNDS {
+        let reply = rd_as_array(rd_execute_with_deadline(entry, ["SCAN", cursor, "MATCH", pattern, "COUNT", "256"], function), function)
+        if rt_seq_len(reply) != 2 { rd_fail(function, "unexpected Redis reply: SCAN reply must contain cursor and keys") }
+        cursor = rd_as_string(rt_seq_get(reply, 0), function)
+        let cursor_bytes = std::encoding::utf8_encode(cursor)
+        let _ = rd_parse_cursor(cursor_bytes, function)
+        let page = rd_as_array(rt_seq_get(reply, 1), function)
+        if len(all) + rt_seq_len(page) > RD_MAX_COLLECTION_ITEMS {
+            rd_limit(function, "Redis collection items", RD_MAX_COLLECTION_ITEMS)
+        }
+        let mut i = 0
+        while i < rt_seq_len(page) {
+            let key = rd_as_string(rt_seq_get(page, i), function)
+            total_bytes += rt_slen(key)
+            if total_bytes > RD_MAX_COLLECTION_BYTES { rd_limit(function, "Redis collection bytes", RD_MAX_COLLECTION_BYTES) }
+            all = std::array::push(all, key)
+            i += 1
+        }
+        if rt_str_eq(cursor, "0") { return rd_sort_deduplicate(all) }
+        round += 1
+    }
+    rd_limit(function, "Redis SCAN rounds", RD_MAX_SCAN_ROUNDS)
+    return []
+}
+
+fn rd_parse_cursor(bytes: any, function: string) -> bool {
+    let n = rt_slen(bytes)
+    if n == 0 || n > 20 { rd_fail(function, "unexpected Redis reply: SCAN cursor was not an integer") }
+    let p = rt_bdata(bytes)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 { rd_fail(function, "unexpected Redis reply: SCAN cursor was not an integer") }
+        i += 1
+    }
+    if n == 20 {
+        let maximum = "18446744073709551615"
+        i = 0
+        while i < n {
+            let digit = std::raw::load8(p + i)
+            let limit = std::raw::load8(std::raw::bits(maximum) + 16 + i)
+            if digit > limit { rd_fail(function, "unexpected Redis reply: SCAN cursor was not an integer") }
+            if digit < limit { break }
+            i += 1
+        }
+    }
+    true
+}
+
+fn rd_array_value_at(data: int, index: int) -> any {
+    let slot = data + 16 * index
+    std::raw::value(std::raw::load(slot), std::raw::load(slot + 8))
+}
+
+fn rd_index_at(data: int, index: int) -> int {
+    std::raw::load(data + 16 * index + 8)
+}
+
+fn rd_index_swap(data: int, left_index: int, right_index: int) {
+    if left_index == right_index { return }
+    let slot_left = data + 16 * left_index + 8
+    let slot_right = data + 16 * right_index + 8
+    let left = std::raw::load(slot_left)
+    let right = std::raw::load(slot_right)
+    std::raw::store(slot_left, right)
+    std::raw::store(slot_right, left)
+}
+
+fn rd_heap_sift_down(index_data: int, values_data: int, root_value: int, end: int) {
+    let mut root = root_value
+    loop {
+        let left = 2 * root + 1
+        if left >= end { break }
+        let mut largest = left
+        let right = left + 1
+        if right < end && rt_str_cmp(
+            rd_array_value_at(values_data, rd_index_at(index_data, left)),
+            rd_array_value_at(values_data, rd_index_at(index_data, right))
+        ) < 0 {
+            largest = right
+        }
+        if rt_str_cmp(
+            rd_array_value_at(values_data, rd_index_at(index_data, root)),
+            rd_array_value_at(values_data, rd_index_at(index_data, largest))
+        ) >= 0 { break }
+        rd_index_swap(index_data, root, largest)
+        root = largest
+    }
+}
+
+fn rd_sort_deduplicate(values: any) -> any {
+    let n = rt_seq_len(values)
+    let index_array = rt_array_new(n)
+    let index_data = rt_seq_data(index_array)
+    let values_data = rt_seq_data(values)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(index_data, i, i)
+        i += 1
+    }
+    let mut start = n / 2
+    while start > 0 {
+        start -= 1
+        rd_heap_sift_down(index_data, values_data, start, n)
+    }
+    let mut end = n
+    while end > 1 {
+        end -= 1
+        rd_index_swap(index_data, 0, end)
+        rd_heap_sift_down(index_data, values_data, 0, end)
+    }
+    let output = rt_array_new(n)
+    let output_data = rt_seq_data(output)
+    let mut unique = 0
+    i = 0
+    while i < n {
+        let item = rd_array_value_at(values_data, rd_index_at(index_data, i))
+        if unique == 0 || !rt_str_eq(item, rd_array_value_at(output_data, unique - 1)) {
+            rt_seq_put(output_data, unique, item)
+            unique += 1
+        }
+        i += 1
+    }
+    std::raw::store(std::raw::bits(output) + 8, unique)
+    output
+}
+
+fn std__redis__keys(handle: any, pattern: any) -> any {
+    let function = "std::redis::keys"
+    rd_validate_size(pattern, "Redis pattern bytes", RD_MAX_KEY_BYTES, function)
+    rd_scan_keys(rd_entry(handle, function), pattern, function)
+}
+
+fn rd_list_push(handle: any, key: any, value: any, command: string, function: string) -> any {
+    rd_key(key, function)
+    rd_value(value, function)
+    rd_as_nonnegative(rd_execute(rd_entry(handle, function), [command, key, value], function), function)
+}
+
+fn std__redis__lpush(handle: any, key: any, value: any) -> any {
+    rd_list_push(handle, key, value, "LPUSH", "std::redis::lpush")
+}
+
+fn std__redis__rpush(handle: any, key: any, value: any) -> any {
+    rd_list_push(handle, key, value, "RPUSH", "std::redis::rpush")
+}
+
+fn std__redis__lrange(handle: any, key: any, start_value: any, stop_value: any) -> any {
+    let function = "std::redis::lrange"
+    rd_key(key, function)
+    rt_expect_int(start_value, function)
+    rt_expect_int(stop_value, function)
+    let start = std::raw::bits(start_value)
+    let stop = std::raw::bits(stop_value)
+    let entry = rd_entry(handle, function)
+    rd_begin_deadline(entry, function)
+    let length = rd_as_int(rd_execute_with_deadline(entry, ["LLEN", key], function), function)
+    if length < 0 { rd_fail(function, "unexpected Redis reply: LLEN returned a negative length") }
+    if length == 0 { return [] }
+    let first = if start < 0 { length + start } else { start }
+    let last = if stop < 0 { length + stop } else { stop }
+    let normalized_start = if first < 0 { 0 } else { first }
+    let normalized_stop = if last >= length { length - 1 } else { last }
+    if normalized_stop < 0 || normalized_stop < normalized_start || normalized_start >= length { return [] }
+    let count = normalized_stop - normalized_start + 1
+    if count > RD_MAX_COLLECTION_ITEMS { rd_limit(function, "Redis collection items", RD_MAX_COLLECTION_ITEMS) }
+    let result = rd_as_array(rd_execute_with_deadline(entry, ["LRANGE", key, rt_int_to_str(normalized_start), rt_int_to_str(normalized_stop)], function), function)
+    if rt_seq_len(result) > RD_MAX_COLLECTION_ITEMS { rd_limit(function, "Redis collection items", RD_MAX_COLLECTION_ITEMS) }
+    let mut bytes = 0
+    let mut out: any = []
+    let mut i = 0
+    while i < rt_seq_len(result) {
+        let text = rd_as_string(rt_seq_get(result, i), function)
+        bytes += rt_slen(text)
+        if bytes > RD_MAX_COLLECTION_BYTES { rd_limit(function, "Redis collection bytes", RD_MAX_COLLECTION_BYTES) }
+        out = std::array::push(out, text)
+        i += 1
+    }
+    out
+}
+
+fn std__redis__llen(handle: any, key: any) -> any {
+    let function = "std::redis::llen"
+    rd_key(key, function)
+    rd_as_nonnegative(rd_execute(rd_entry(handle, function), ["LLEN", key], function), function)
+}
+
+fn std__redis__hset(handle: any, key: any, field: any, value: any) -> any {
+    let function = "std::redis::hset"
+    rd_key(key, function)
+    rd_validate_size(field, "Redis hash field bytes", RD_MAX_KEY_BYTES, function)
+    rd_value(value, function)
+    let changed = rd_as_int(rd_execute(rd_entry(handle, function), ["HSET", key, field, value], function), function)
+    if changed != 0 && changed != 1 { rd_fail(function, "unexpected Redis reply: HSET returned an invalid count") }
+    nil
+}
+
+fn std__redis__hget(handle: any, key: any, field: any) -> any {
+    let function = "std::redis::hget"
+    rd_key(key, function)
+    rd_validate_size(field, "Redis hash field bytes", RD_MAX_KEY_BYTES, function)
+    let reply = rd_execute(rd_entry(handle, function), ["HGET", key, field], function)
+    if std::raw::tag(reply) == 0 { return nil }
+    rd_as_string(reply, function)
+}
+
+fn std__redis__hdel(handle: any, key: any, field: any) -> any {
+    let function = "std::redis::hdel"
+    rd_key(key, function)
+    rd_validate_size(field, "Redis hash field bytes", RD_MAX_KEY_BYTES, function)
+    rd_as_nonnegative(rd_execute(rd_entry(handle, function), ["HDEL", key, field], function), function)
+}
+
+fn std__redis__hgetall(handle: any, key: any) -> any {
+    let function = "std::redis::hgetall"
+    rd_key(key, function)
+    let values = rd_as_array(rd_execute(rd_entry(handle, function), ["HGETALL", key], function), function)
+    let n = rt_seq_len(values)
+    if n % 2 != 0 { rd_fail(function, "unexpected Redis reply: HGETALL returned an odd number of values") }
+    if n / 2 > RD_MAX_COLLECTION_ITEMS { rd_limit(function, "Redis collection items", RD_MAX_COLLECTION_ITEMS) }
+    let mut bytes = 0
+    let mut out: any = []
+    let mut i = 0
+    while i < n {
+        let field = rd_as_string(rt_seq_get(values, i), function)
+        let value = rd_as_string(rt_seq_get(values, i + 1), function)
+        bytes += rt_slen(field) + rt_slen(value)
+        if bytes > RD_MAX_COLLECTION_BYTES { rd_limit(function, "Redis collection bytes", RD_MAX_COLLECTION_BYTES) }
+        out = std::array::push(out, [field, value])
+        i += 2
+    }
+    out
+}
+
+fn rd_raw_allowed(command: any) -> bool {
+    let allowed = [
+        "APPEND", "DEL", "DECR", "DECRBY", "EXISTS", "EXPIRE", "GET", "GETDEL", "GETEX", "GETRANGE", "GETSET",
+        "HDEL", "HEXISTS", "HGET", "HGETALL", "HSET", "HLEN", "HSTRLEN", "INCR", "INCRBY", "INCRBYFLOAT",
+        "LINDEX", "LLEN", "LPOP", "LPUSH", "LRANGE", "MGET", "MSET", "MSETNX", "PERSIST", "PEXPIRE", "PING",
+        "PTTL", "PUBLISH", "RPOP", "RPUSH", "SCAN", "SCARD", "SET", "SETEX", "SETNX", "SISMEMBER", "SREM",
+        "STRLEN", "TOUCH", "TTL", "TYPE", "UNLINK", "ZCARD", "ZREM", "ZSCORE"
+    ]
+    let mut i = 0
+    while i < len(allowed) {
+        if rt_str_eq(command, allowed[i]) { return true }
+        i += 1
+    }
+    false
+}
+
+fn rd_render_size_add(total: int, extra: int, function: string) -> int {
+    if extra > RD_MAX_COLLECTION_BYTES - total {
+        rd_limit(function, "Redis raw output bytes", RD_MAX_COLLECTION_BYTES)
+    }
+    total + extra
+}
+
+fn rd_render_quoted_size(data: int, n: int, function: string) -> int {
+    let mut total = 2
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(data + i)
+        let extra = if c == 34 || c == 92 || c == 10 || c == 13 || c == 9 { 2 } else if c >= 32 && c <= 126 { 1 } else { 4 }
+        total = rd_render_size_add(total, extra, function)
+        i += 1
+    }
+    total
+}
+
+fn rd_render_size(value: any, function: string, depth: int) -> int {
+    if depth > RD_MAX_RESPONSE_DEPTH { rd_limit(function, "Redis response nesting depth", RD_MAX_RESPONSE_DEPTH) }
+    let tag = std::raw::tag(value)
+    if tag == 6 { return rd_render_quoted_size(rt_bdata(value), rt_slen(value), function) }
+    if tag == 5 { return rd_render_quoted_size(std::raw::bits(value) + 16, rt_slen(value), function) }
+    if tag == 1 { return rt_slen(rt_int_to_str(std::raw::bits(value))) }
+    if tag == 0 { return 4 }
+    if tag == 7 {
+        let n = rt_seq_len(value)
+        let total = if n == 0 { 2 } else { 2 + 2 * (n - 1) }
+        let mut size = total
+        let mut i = 0
+        while i < n {
+            size = rd_render_size_add(size, rd_render_size(rt_seq_get(value, i), function, depth + 1), function)
+            i += 1
+        }
+        return size
+    }
+    rd_fail(function, "unexpected Redis reply: unsupported value for raw output")
+    0
+}
+
+fn rd_render_put(buffer: int, position: int, text: any, function: string) -> int {
+    let n = rt_slen(text)
+    if position + n > RD_MAX_COLLECTION_BYTES { rd_limit(function, "Redis raw output bytes", RD_MAX_COLLECTION_BYTES) }
+    rt_copy(buffer + 16 + position, std::raw::bits(text) + 16, n)
+    position + n
+}
+
+fn rd_render_byte(buffer: int, position: int, byte: int, function: string) -> int {
+    if position >= RD_MAX_COLLECTION_BYTES { rd_limit(function, "Redis raw output bytes", RD_MAX_COLLECTION_BYTES) }
+    std::raw::store8(buffer + 16 + position, byte)
+    position + 1
+}
+
+fn rd_render_quoted(buffer: int, position: int, bytes: any, function: string) -> int {
+    let mut out = rd_render_byte(buffer, position, 34, function)
+    let data = rt_bdata(bytes)
+    let n = rt_slen(bytes)
+    let mut i = 0
+    let hex = "0123456789abcdef"
+    while i < n {
+        let c = std::raw::load8(data + i)
+        if c == 34 || c == 92 {
+            out = rd_render_byte(buffer, out, 92, function)
+            out = rd_render_byte(buffer, out, c, function)
+        } else if c == 10 {
+            out = rd_render_put(buffer, out, "\\n", function)
+        } else if c == 13 {
+            out = rd_render_put(buffer, out, "\\r", function)
+        } else if c == 9 {
+            out = rd_render_put(buffer, out, "\\t", function)
+        } else if c >= 32 && c <= 126 {
+            out = rd_render_byte(buffer, out, c, function)
+        } else {
+            out = rd_render_put(buffer, out, "\\x", function)
+            out = rd_render_byte(buffer, out, std::raw::load8(std::raw::bits(hex) + 16 + std::raw::shr(c, 4)), function)
+            out = rd_render_byte(buffer, out, std::raw::load8(std::raw::bits(hex) + 16 + (c & 15)), function)
+        }
+        i += 1
+    }
+    rd_render_byte(buffer, out, 34, function)
+}
+
+fn rd_render_value(buffer: int, position: int, value: any, function: string, depth: int) -> int {
+    if depth > RD_MAX_RESPONSE_DEPTH { rd_limit(function, "Redis response nesting depth", RD_MAX_RESPONSE_DEPTH) }
+    let tag = std::raw::tag(value)
+    if tag == 6 { return rd_render_quoted(buffer, position, value, function) }
+    if tag == 5 { return rd_render_quoted(buffer, position, std::encoding::utf8_encode(value), function) }
+    if tag == 1 { return rd_render_put(buffer, position, rt_int_to_str(std::raw::bits(value)), function) }
+    if tag == 0 { return rd_render_put(buffer, position, "null", function) }
+    if tag == 7 {
+        let n = rt_seq_len(value)
+        let mut out = rd_render_byte(buffer, position, 91, function)
+        let mut i = 0
+        while i < n {
+            if i > 0 { out = rd_render_put(buffer, out, ", ", function) }
+            out = rd_render_value(buffer, out, rt_seq_get(value, i), function, depth + 1)
+            i += 1
+        }
+        return rd_render_byte(buffer, out, 93, function)
+    }
+    rd_fail(function, "unexpected Redis reply: unsupported value for raw output")
+    position
+}
+
+fn std__redis__raw(handle: any, command_text: any) -> any {
+    let function = "std::redis::raw"
+    rd_validate_size(command_text, "Redis raw command bytes", RD_MAX_RAW_COMMAND_BYTES, function)
+    let parts = std__text__words(command_text)
+    let count = rt_seq_len(parts)
+    if count == 0 { rd_invalid(function, "raw Redis command cannot be empty") }
+    if count > RD_MAX_COMMAND_ARGUMENTS { rd_limit(function, "Redis command arguments", RD_MAX_COMMAND_ARGUMENTS) }
+    let name = std__text__uppercase(rt_seq_get(parts, 0))
+    if !rd_raw_allowed(name) { rd_invalid(function, "raw Redis command is not in the safe allowlist") }
+    let entry = rd_entry(handle, function)
+    let reply = rd_execute(entry, parts, function)
+    let output_size = rd_render_size(reply, function, 0)
+    let output = rt_str_alloc(output_size)
+    std::raw::store(output + 8, 0)
+    let end = rd_render_value(output, 0, reply, function, 0)
+    std::raw::store(output + 8, end)
+    rt_sval(output)
+}

@@ -1,0 +1,17 @@
+// Varios errores: el parser se recupera en cada declaración y los reporta todos.
+fn ok() { 1 }
+fn bad1( { }
+struct S { x int }
+fn good() { let (a, b) = pair() a }
+fn bad2() { let x = }
+fn bad3() { match x { 1 => } }
+enum E { A(int }
+impl (int, int) for T { }
+fn bad4() { let v = 99999999999999999999 }
+fn bad5() { x.99999999999999999999 }
+fn bad6() { let s = "texto" "otro" ) }
+fn bad7() { let c = 'q' 'r' ] }
+fn bad8() { #{ 1: 2 } }
+garbage here
+fn bad9() { if }
+fn last() {

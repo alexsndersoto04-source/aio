@@ -1,0 +1,1 @@
+struct Toolkit { value: int } impl Toolkit { fn map(self, amount: int) -> int { self.value + amount } } fn main() { let toolkit = Toolkit { value: 1 } let result: string = toolkit.map(1) }

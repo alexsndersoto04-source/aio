@@ -1,0 +1,44 @@
+// Prueba diferencial de la búsqueda: el archivo tiene tres líneas por caso
+// (patrón, texto y reemplazo, en hexadecimal). Escribe el
+// resultado de is_match, find, find_all, captures, split y replace_all (o el
+// error) en hexadecimal. Se ejecuta en la VM (zett run) y compilado con el
+// backend nativo; busca.py compara las dos salidas.
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+fn arr(a: [string]) -> string {
+    let mut out = "["
+    let mut i = 0
+    while i < len(a) {
+        out = out + hx(a[i]) + ","
+        i += 1
+    }
+    out + "]"
+}
+fn un(h: string) -> string {
+    std::encoding::utf8_decode(std::encoding::hex_decode(h))
+}
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i + 2 < len(ls) {
+        let p = un(ls[i])
+        let t = un(ls[i + 1])
+        let r = un(ls[i + 2])
+        let res = std::try::catch(|| {
+            let m = std::regex::is_match(p, t)
+            let f = std::regex::find(p, t)
+            let fa = std::regex::find_all(p, t)
+            let c = std::regex::captures(p, t)
+            let sp = std::regex::split(p, t)
+            let ra = std::regex::replace_all(p, t, r)
+            "{m} " + hx(f) + " " + arr(fa) + " " + arr(c) + " " + arr(sp) + " " + hx(ra)
+        })
+        match res {
+            Result::Ok(v) => println(v),
+            Result::Err(e) => println("ERR " + hx(e)),
+        }
+        i += 3
+    }
+}

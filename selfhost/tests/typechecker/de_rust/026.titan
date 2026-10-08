@@ -1,0 +1,1 @@
+fn main() { let listener = std::net::tcp_listen("127.0.0.1:0") let address = std::net::tcp_local_addr(listener) let stream = std::net::tcp_connect(address) let bytes = std::encoding::utf8_encode("ping") std::net::tcp_write(stream, bytes) }

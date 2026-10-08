@@ -1,0 +1,1 @@
+fn main() { let mixed = [1, "ok"] let values: array = mixed print(values) }

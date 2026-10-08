@@ -1,0 +1,4 @@
+// Cantidad negativa (se comprueba antes que el nombre).
+fn main() {
+    std::metrics::counter_add("", -1)
+}

@@ -1,0 +1,1 @@
+fn render(value: any) -> any { value } fn main() { let callback = || 1 print("value={render(callback)}") }

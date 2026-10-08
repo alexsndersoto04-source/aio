@@ -1,0 +1,2035 @@
+// std::archive — tar y zip en memoria, en Titan (fase 6 del self-hosting).
+//
+// Reproduce crates/titan_stdlib/src/archive_mod.rs, traducido del código
+// original de sus dependencias:
+//   * tar 0.4.46: builder.rs (append_data, prepare_header_path,
+//     prepare_header, append, pad_zeroes, finish), header.rs (new_gnu,
+//     set_size/mode/mtime/cksum, octal_into, num_field_wrapper_into/from,
+//     octal_from, copy_path_into_inner, path_bytes, cksum), archive.rs
+//     (next_entry_raw, next_entry, parse_sparse_header, skip,
+//     try_read_all), entry.rs (path_bytes, read), pax.rs (PaxExtensions,
+//     pax_extensions_value);
+//   * zip 2.4.2 con la característica deflate: write.rs (start_file,
+//     start_entry, finish_file, write_central_and_footer), types.rs
+//     (initialize_local_block, local_block, block, version_needed, flags),
+//     spec.rs (find_central_directory, bloques EOCD/EOCD64/localizador),
+//     read/magic_finder.rs (buscadores hacia atrás y hacia delante),
+//     read.rs (get_metadata, read_central_header,
+//     central_header_to_zip_file, parse_single_extra_field, by_index,
+//     make_crypto_reader), extra_fields/*.rs, cp437.rs; la compresión es la
+//     de flate2 (DeflateEncoder nivel 6, std_compress_enc) y la CRC-32 la de
+//     std_compress.
+//
+// Mismos mensajes que la VM ("archive I/O error: ...", "zip error: ...").
+//
+// Defectos reales de la versión en Rust corregidos en las dos versiones (ver
+// selfhost/ESTADO.md): al leer un zip, un flujo deflate cortado, una
+// referencia a antes del principio de la salida (flate2 copiaba ceros
+// inventados de su diccionario circular) y un archivo almacenado al que le
+// faltan bytes se daban por buenos si la CRC-32 coincidía con lo que saliera.
+// Ahora son "unexpected end of file" o "corrupt deflate stream".
+//
+// Prefijo ax_.
+
+// ------------------------------------------------------------ utilidades
+
+fn ax_top() -> int {
+    std::raw::shl(1, 63)
+}
+
+// a < b sin signo (los valores de 64 bits de zip64 y tar pueden pasar de 2^63).
+fn ax_ult(a: int, b: int) -> bool {
+    (a ^ ax_top()) < (b ^ ax_top())
+}
+
+fn ax_umin(a: int, b: int) -> int {
+    if ax_ult(a, b) {
+        return a
+    }
+    b
+}
+
+// saturating_add sin signo.
+fn ax_sadd(a: int, b: int) -> int {
+    let s = std::raw::wadd(a, b)
+    if ax_ult(s, a) {
+        return -1
+    }
+    s
+}
+
+fn ax_le16(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1)
+}
+
+fn ax_le32(p: int) -> int {
+    ax_le16(p) + 65536 * ax_le16(p + 2)
+}
+
+fn ax_le64(p: int) -> int {
+    std::raw::load(p)
+}
+
+fn ax_put16(b: int, v: int) {
+    sb_byte(b, v & 255)
+    sb_byte(b, std::raw::shr(v, 8) & 255)
+}
+
+fn ax_put32(b: int, v: int) {
+    ax_put16(b, v & 65535)
+    ax_put16(b, std::raw::shr(v, 16) & 65535)
+}
+
+fn ax_put64(b: int, v: int) {
+    ax_put32(b, v & 4294967295)
+    ax_put32(b, std::raw::shr(v, 32))
+}
+
+fn ax_zeros(b: int, k: int) {
+    sb_reserve(b, k)
+    let mut i = 0
+    while i < k {
+        sb_byte(b, 0)
+        i += 1
+    }
+}
+
+fn ax_fill0(p: int, k: int) {
+    let mut i = 0
+    while i < k {
+        std::raw::store8(p + i, 0)
+        i += 1
+    }
+}
+
+fn ax_str(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    rt_copy(s + 16, p, n)
+    rt_sval(s)
+}
+
+// String::from_utf8_lossy de n bytes.
+fn ax_lossy(p: int, n: int) -> any {
+    dr_lossy(ax_str(p, n))
+}
+
+// Posición del primer byte 0 (o n): `truncate` de tar.
+fn ax_trunc(p: int, n: int) -> int {
+    let mut i = 0
+    while i < n && std::raw::load8(p + i) != 0 {
+        i += 1
+    }
+    i
+}
+
+fn ax_same(p: int, q: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) != std::raw::load8(q + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ------------------------------------------------------------ entradas
+
+fn ax_field(v: any, i: int, key: string) -> any {
+    let item = rt_seq_get(v, i)
+    rt_map_value_at(item, rt_map_find(item, key))
+}
+
+// value_to_archive_entries (native.rs) y después safe_name de todas.
+fn ax_entries(v: any, function: string) {
+    rt_expect_array(v, function)
+    let n = rt_seq_len(v)
+    let mut i = 0
+    while i < n {
+        let item = rt_seq_get(v, i)
+        rt_expect_map(item, function)
+        let a = rt_map_find(item, "name")
+        if a < 0 {
+            rt_native_fail(function, "archive entry map requires 'name'")
+        }
+        rt_expect_str(rt_map_value_at(item, a), function)
+        let b = rt_map_find(item, "bytes")
+        if b < 0 {
+            rt_native_fail(function, "archive entry map requires 'bytes'")
+        }
+        rt_expect_bytes(rt_map_value_at(item, b), function)
+        i += 1
+    }
+    i = 0
+    while i < n {
+        ax_safe(ax_field(v, i, "name"), function)
+        i += 1
+    }
+}
+
+// safe_name: ni '/' al principio, ni "..", ni '\', ni NUL.
+fn ax_safe(name: any, function: string) {
+    let p = std::raw::bits(name) + 16
+    let n = rt_slen(name)
+    let mut bad = n > 0 && std::raw::load8(p) == 47
+    let mut i = 0
+    while !bad && i < n {
+        let c = std::raw::load8(p + i)
+        if c == 92 || c == 0 || (c == 46 && i + 1 < n && std::raw::load8(p + i + 1) == 46) {
+            bad = true
+        }
+        i += 1
+    }
+    if bad {
+        rt_native_fail(function, rt_concat(rt_concat("archive entry name '", name), "' contains a path traversal sequence"))
+    }
+}
+
+fn ax_entry_map(name: any, data: any) -> any {
+    let mut m: any = rt_map_alloc(0, 2)
+    m = std::map::insert(m, "bytes", data)
+    m = std::map::insert(m, "name", name)
+    m
+}
+
+fn ax_ends_slash(s: any) -> bool {
+    let n = rt_slen(s)
+    n > 0 && std::raw::load8(std::raw::bits(s) + 16 + n - 1) == 47
+}
+
+// ------------------------------------------------------------ tar: escritura
+
+// octal_into: de derecha a izquierda un 0, las cifras y ceros de relleno.
+fn ax_octal(p: int, len: int, v: int) {
+    std::raw::store8(p + len - 1, 0)
+    let mut x = v
+    let mut i = len - 2
+    while i >= 0 {
+        std::raw::store8(p + i, 48 + (x & 7))
+        x = std::raw::shr(x, 3)
+        i -= 1
+    }
+}
+
+// num_field_wrapper_into: binario (bit alto) si no cabe en octal.
+fn ax_num_into(p: int, len: int, v: int) {
+    if !ax_ult(v, 8589934592) || (!ax_ult(v, 2097152) && len == 8) {
+        ax_fill0(p, len - 8)
+        let mut k = 0
+        while k < 8 {
+            std::raw::store8(p + len - 1 - k, std::raw::shr(v, 8 * k) & 255)
+            k += 1
+        }
+        std::raw::store8(p, std::raw::load8(p) | 128)
+    } else {
+        ax_octal(p, len, v)
+    }
+}
+
+// Header::new_gnu: todo a cero, "ustar " + " \0" y mtime 0.
+fn ax_gnu(h: int) {
+    ax_fill0(h, 512)
+    std::raw::store8(h + 257, 117)
+    std::raw::store8(h + 258, 115)
+    std::raw::store8(h + 259, 116)
+    std::raw::store8(h + 260, 97)
+    std::raw::store8(h + 261, 114)
+    std::raw::store8(h + 262, 32)
+    std::raw::store8(h + 263, 32)
+    ax_num_into(h + 136, 12, 0)
+}
+
+// set_cksum: suma de los 512 bytes con el campo cksum como espacios.
+fn ax_cksum(h: int) {
+    let mut sum = 256
+    let mut i = 0
+    while i < 512 {
+        if i < 148 || i >= 156 {
+            sum += std::raw::load8(h + i)
+        }
+        i += 1
+    }
+    ax_octal(h + 148, 8, sum)
+}
+
+// copy() de copy_path_into_inner sobre el campo name (100 bytes): escribe los
+// bytes y un 0 detrás si cabe. Devuelve el nuevo desplazamiento o -1.
+fn ax_tcopy(h: int, off: int, q: int, k: int) -> int {
+    let room = 100 - off
+    if k > room {
+        return -1
+    }
+    rt_copy(h + off, q, k)
+    if room > k {
+        std::raw::store8(h + off + k, 0)
+    }
+    off + k
+}
+
+fn ax_tslash(h: int, off: int) -> int {
+    if off >= 100 {
+        return -1
+    }
+    std::raw::store8(h + off, 47)
+    if off + 1 < 100 {
+        std::raw::store8(h + off + 1, 0)
+    }
+    off + 1
+}
+
+// Fin del siguiente trozo entre '/' que empieza en i.
+fn ax_seg_end(p: int, n: int, i: int) -> int {
+    let mut j = i
+    while j < n && std::raw::load8(p + j) != 47 {
+        j += 1
+    }
+    j
+}
+
+// ¿El trozo [i, j) es un componente Normal? (vacíos y "." se saltan).
+fn ax_seg_normal(p: int, i: int, j: int) -> bool {
+    if j == i {
+        return false
+    }
+    !(j == i + 1 && std::raw::load8(p + i) == 46)
+}
+
+// copy_path_into_inner con los componentes de Path::components (Unix, ruta
+// relativa sin ".."; safe_name ya lo garantiza). 0 bien, 1 "provided value
+// is too long", 2 "paths in archives must have at least one component".
+fn ax_tar_path(h: int, p: int, n: int) -> int {
+    let cur = n >= 1 && std::raw::load8(p) == 46 && (n == 1 || std::raw::load8(p + 1) == 47)
+    let mut start = 0
+    let mut count = 0
+    if cur {
+        start = 1
+        count = 1
+    }
+    let mut i = start
+    while i < n {
+        let j = ax_seg_end(p, n, i)
+        if ax_seg_normal(p, i, j) {
+            count += 1
+        }
+        i = j + 1
+    }
+    let mut off = 0
+    let mut emitted = false
+    let mut needs_slash = false
+    if cur && count == 1 {
+        off = ax_tcopy(h, off, p, 1)
+        if off < 0 {
+            return 1
+        }
+        needs_slash = true
+        emitted = true
+    }
+    i = start
+    while i < n {
+        let j = ax_seg_end(p, n, i)
+        if ax_seg_normal(p, i, j) {
+            if needs_slash {
+                off = ax_tslash(h, off)
+                if off < 0 {
+                    return 1
+                }
+            }
+            off = ax_tcopy(h, off, p + i, j - i)
+            if off < 0 {
+                return 1
+            }
+            needs_slash = true
+            emitted = true
+        }
+        i = j + 1
+    }
+    if !emitted {
+        return 2
+    }
+    if n > 0 && std::raw::load8(p + n - 1) == 47 {
+        off = ax_tslash(h, off)
+        if off < 0 {
+            return 1
+        }
+    }
+    0
+}
+
+fn ax_tar_path_fail(h: int, code: int, function: string) {
+    let mut m = "provided value is too long"
+    if code == 2 {
+        m = "paths in archives must have at least one component"
+    }
+    let path = ax_lossy(h, ax_trunc(h, 100))
+    rt_native_fail(function, rt_concat(rt_concat(rt_concat("archive I/O error: ", m), " when setting path for "), path))
+}
+
+fn ax_pad(b: int, len: int) {
+    let r = 512 - (len & 511)
+    if r < 512 {
+        ax_zeros(b, r)
+    }
+}
+
+fn ax_tar_pack(v: any, function: string) -> any {
+    ax_entries(v, function)
+    let count = rt_seq_len(v)
+    let out = sb_new(4096)
+    let h = rt_alloc(512)
+    let h2 = rt_alloc(512)
+    let mut e = 0
+    while e < count {
+        let name = ax_field(v, e, "name")
+        let data = ax_field(v, e, "bytes")
+        let np = std::raw::bits(name) + 16
+        let nn = rt_slen(name)
+        let dp = std::raw::bits(data) + 16
+        let dn = rt_slen(data)
+        ax_gnu(h)
+        ax_num_into(h + 124, 12, dn)
+        ax_octal(h + 100, 8, 420)
+        let r = ax_tar_path(h, np, nn)
+        if r != 0 {
+            if nn < 100 {
+                ax_tar_path_fail(h, r, function)
+            }
+            // Nombre largo: la cabecera lleva el nombre cortado (hasta el último
+            // carácter UTF-8 entero de los 100 primeros bytes) y delante va una
+            // entrada GNU "././@LongLink" de tipo 'L' con el nombre entero y un 0.
+            let mut t = 100
+            if t < nn {
+                while t > 0 && (std::raw::load8(np + t) & 192) == 128 {
+                    t -= 1
+                }
+            }
+            let r2 = ax_tar_path(h, np, t)
+            if r2 != 0 {
+                ax_tar_path_fail(h, r2, function)
+            }
+            ax_gnu(h2)
+            rt_copy(h2, rt_bdata("././@LongLink"), 13)
+            ax_octal(h2 + 100, 8, 420)
+            ax_num_into(h2 + 108, 8, 0)
+            ax_num_into(h2 + 116, 8, 0)
+            ax_num_into(h2 + 136, 12, 0)
+            ax_num_into(h2 + 124, 12, nn + 1)
+            std::raw::store8(h2 + 156, 76)
+            ax_cksum(h2)
+            sb_raw(out, h2, 512)
+            sb_raw(out, np, nn)
+            sb_byte(out, 0)
+            ax_pad(out, nn + 1)
+        }
+        ax_cksum(h)
+        sb_raw(out, h, 512)
+        sb_raw(out, dp, dn)
+        ax_pad(out, dn)
+        e += 1
+    }
+    ax_zeros(out, 1024)
+    rt_free_block(h)
+    rt_free_block(h2)
+    sb_finish_bytes(out)
+}
+
+// ------------------------------------------------------------ números
+
+// Cifras de u64::from_str_radix / str::parse::<u64> (radix 8 o 10): '+'
+// opcional, al menos una cifra, sin desbordar. Pone 1 en `ok` si vale.
+fn ax_parse_u(p: int, n: int, radix: int, ok: int) -> int {
+    std::raw::store(ok, 0)
+    let mut i = 0
+    if n > 0 && std::raw::load8(p) == 43 {
+        i = 1
+    }
+    if i >= n {
+        return 0
+    }
+    let mut lim = 1844674407370955161
+    if radix == 8 {
+        lim = 2305843009213693951
+    }
+    let mut v = 0
+    while i < n {
+        let d = std::raw::load8(p + i) - 48
+        if d < 0 || d >= radix {
+            return 0
+        }
+        if ax_ult(lim, v) {
+            return 0
+        }
+        let m = std::raw::wmul(v, radix)
+        v = std::raw::wadd(m, d)
+        if ax_ult(v, m) {
+            return 0
+        }
+        i += 1
+    }
+    std::raw::store(ok, 1)
+    v
+}
+
+// Ruta de la cabecera (Header::path_bytes): ustar con prefijo si prefix[0]
+// no es 0 o el nombre (los 100 bytes) tiene '\'.
+fn ax_hpath(h: int) -> any {
+    let nn = ax_trunc(h, 100)
+    let ustar = ax_same(h + 257, rt_bdata("ustar"), 5) && std::raw::load8(h + 262) == 0 && std::raw::load8(h + 263) == 48 && std::raw::load8(h + 264) == 48
+    if ustar {
+        let mut back = false
+        let mut i = 0
+        while i < 100 {
+            if std::raw::load8(h + i) == 92 {
+                back = true
+            }
+            i += 1
+        }
+        if std::raw::load8(h + 345) != 0 || back {
+            let pn = ax_trunc(h + 345, 155)
+            let b = sb_new(pn + nn + 1)
+            if pn > 0 {
+                sb_raw(b, h + 345, pn)
+                sb_byte(b, 47)
+            }
+            sb_raw(b, h, nn)
+            return sb_finish(b)
+        }
+    }
+    ax_str(h, nn)
+}
+
+fn ax_is_gnu(h: int) -> bool {
+    ax_same(h + 257, rt_bdata("ustar "), 6) && std::raw::load8(h + 263) == 32 && std::raw::load8(h + 264) == 0
+}
+
+fn ax_is_ustar(h: int) -> bool {
+    ax_same(h + 257, rt_bdata("ustar"), 5) && std::raw::load8(h + 262) == 0 && std::raw::load8(h + 263) == 48 && std::raw::load8(h + 264) == 48
+}
+
+fn ax_tfail(function: string, msg: any) {
+    rt_native_fail(function, rt_concat("archive I/O error: ", msg))
+}
+
+// Sufijo del error de un campo numérico según quién lo pide.
+fn ax_numctx(ctx: int, h: int) -> any {
+    if ctx == 0 {
+        return rt_concat(" when getting cksum for ", dr_lossy(ax_hpath(h)))
+    }
+    if ctx == 1 {
+        return rt_concat(" when getting size for ", dr_lossy(ax_hpath(h)))
+    }
+    if ctx == 2 {
+        return " when getting offset from sparse header"
+    }
+    if ctx == 3 {
+        return " when getting length from sparse header"
+    }
+    let g = ax_lossy(h + 297, ax_trunc(h + 297, 32))
+    let u = ax_lossy(h + 265, ax_trunc(h + 265, 32))
+    rt_concat(rt_concat(rt_concat(" when getting real_size for ", g), ":"), u)
+}
+
+// octal_from (binary = false) o num_field_wrapper_from (binary = true).
+fn ax_numf(p: int, len: int, binary: bool, ctx: int, h: int, ok: int, function: string) -> int {
+    if binary && (std::raw::load8(p) & 128) != 0 {
+        let mut v = 0
+        let mut i = len - 8
+        if len == 8 {
+            v = std::raw::load8(p) ^ 128
+            i = 1
+        }
+        while i < len {
+            v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+            i += 1
+        }
+        return v
+    }
+    let t = ax_trunc(p, len)
+    let mut msg: any = ""
+    if !rt_valid_utf8(p, t) {
+        msg = rt_concat("numeric field did not have utf-8 text: ", ax_lossy(p, t))
+    } else {
+        let s = ax_str(p, t)
+        let tr = rt_trim(s)
+        let v = ax_parse_u(rt_bdata(tr), rt_slen(tr), 8, ok)
+        if std::raw::load(ok) == 1 {
+            return v
+        }
+        msg = rt_concat("numeric field was not a number: ", s)
+    }
+    ax_tfail(function, rt_concat(msg, ax_numctx(ctx, h)))
+    0
+}
+
+// ------------------------------------------------------------ tar: lectura
+
+// Estado del lector (bloque st):
+//   0 datos, 8 longitud, 16 pos, 24 next, 32 size, 40 celda ok,
+//   48 inicio del valor pax, 56 cabecera (512), 568 bloque de extensión (512).
+fn ax_tst(p: int, n: int) -> int {
+    let st = rt_alloc(1080)
+    std::raw::store(st, p)
+    std::raw::store(st + 8, n)
+    std::raw::store(st + 16, 0)
+    std::raw::store(st + 24, 0)
+    st
+}
+
+// try_read_all de un bloque de 512: 0 fin limpio, 1 leído (en dst).
+fn ax_block(st: int, dst: int, eof_msg: string, function: string) -> int {
+    let n = std::raw::load(st + 8)
+    let pos = std::raw::load(st + 16)
+    if pos >= n {
+        if rt_slen(eof_msg) > 0 {
+            ax_tfail(function, eof_msg)
+        }
+        return 0
+    }
+    if n - pos < 512 {
+        ax_tfail(function, "failed to read entire block")
+    }
+    rt_copy(dst, std::raw::load(st) + pos, 512)
+    std::raw::store(st + 16, pos + 512)
+    1
+}
+
+// Valor de "size" de las extensiones pax (pax_extensions_value): -1 en ok
+// si no hay (ok = 0).
+fn ax_pax_find(pp: int, pn: int, key: string, strict: bool, ok: int) -> int {
+    let kp = rt_bdata(key)
+    let kn = rt_slen(key)
+    std::raw::store(ok, 0)
+    let mut i = 0
+    while i <= pn {
+        let mut j = i
+        while j < pn && std::raw::load8(pp + j) != 10 {
+            j += 1
+        }
+        if j == i {
+            return 0
+        }
+        // Línea [i, j): "LEN clave=valor" con LEN = longitud + 1.
+        let mut good = false
+        let mut ks = 0
+        let mut eq = 0
+        let mut sp = i
+        while sp < j && std::raw::load8(pp + sp) != 32 {
+            sp += 1
+        }
+        if sp < j && rt_valid_utf8(pp + i, sp - i) {
+            let rl = ax_parse_u(pp + i, sp - i, 10, ok)
+            if std::raw::load(ok) == 1 && rl == j - i + 1 {
+                ks = sp + 1
+                eq = ks
+                while eq < j && std::raw::load8(pp + eq) != 61 {
+                    eq += 1
+                }
+                good = eq < j
+            }
+        }
+        std::raw::store(ok, 0)
+        if !good {
+            if strict {
+                return 0
+            }
+        } else if eq - ks == kn && ax_same(pp + ks, kp, kn) {
+            if !strict {
+                std::raw::store(ok, 1)
+                std::raw::store(ok + 8, eq + 1)
+                return j
+            }
+            if !rt_valid_utf8(pp + eq + 1, j - eq - 1) {
+                return 0
+            }
+            return ax_parse_u(pp + eq + 1, j - eq - 1, 10, ok)
+        }
+        i = j + 1
+    }
+    0
+}
+
+// next_entry_raw. Devuelve false al final del archivo.
+fn ax_raw(st: int, pp: int, pn: int, function: string) -> bool {
+    let h = st + 56
+    let ok = st + 40
+    let n = std::raw::load(st + 8)
+    loop {
+        let delta = std::raw::wsub(std::raw::load(st + 24), std::raw::load(st + 16))
+        if ax_ult(n - std::raw::load(st + 16), delta) {
+            ax_tfail(function, "unexpected EOF during skip")
+        }
+        std::raw::store(st + 16, std::raw::load(st + 16) + delta)
+        if ax_block(st, h, "", function) == 0 {
+            return false
+        }
+        let mut zero = true
+        let mut i = 0
+        while zero && i < 512 {
+            if std::raw::load8(h + i) != 0 {
+                zero = false
+            }
+            i += 1
+        }
+        if zero {
+            return false
+        }
+        std::raw::store(st + 24, std::raw::load(st + 24) + 512)
+        break
+    }
+    let mut sum = 256
+    let mut i = 0
+    while i < 512 {
+        if i < 148 || i >= 156 {
+            sum += std::raw::load8(h + i)
+        }
+        i += 1
+    }
+    let ck = ax_numf(h + 148, 8, false, 0, h, ok, function) & 4294967295
+    if sum != ck {
+        ax_tfail(function, "archive header checksum mismatch")
+    }
+    let ty = std::raw::load8(h + 156)
+    let ext = ty == 76 || ty == 75 || ty == 120 || ty == 103
+    let mut has_pax = false
+    let mut pax_size = 0
+    if pn >= 0 && !ext {
+        pax_size = ax_pax_find(pp, pn, "size", true, ok)
+        has_pax = std::raw::load(ok) == 1
+    }
+    let mut size = ax_numf(h + 124, 12, true, 1, h, ok, function)
+    if has_pax {
+        size = pax_size
+    }
+    std::raw::store(st + 32, size)
+    let s1 = std::raw::wadd(size, 511)
+    if ax_ult(s1, size) {
+        ax_tfail(function, "size overflow")
+    }
+    let nx0 = std::raw::load(st + 24)
+    let nx = std::raw::wadd(nx0, s1 & -512)
+    if ax_ult(nx, nx0) {
+        ax_tfail(function, "size overflow")
+    }
+    std::raw::store(st + 24, nx)
+    true
+}
+
+// read_all de una entrada de extensión: los bytes quedan en el archivo; se
+// devuelve cuántos (y avanza pos).
+fn ax_take(st: int, size: int) -> int {
+    let pos = std::raw::load(st + 16)
+    let k = ax_umin(size, std::raw::load(st + 8) - pos)
+    std::raw::store(st + 16, pos + k)
+    k
+}
+
+// Tramos de una entrada dispersa: pares (0, ceros) o (1, datos).
+fn ax_seg(b: int, kind: int, k: int) {
+    sb_reserve(b, 16)
+    ax_put64(b, kind)
+    ax_put64(b, k)
+}
+
+// add_block de parse_sparse_header. c: 0 cur, 8 remaining, 16 size.
+fn ax_sparse_block(st: int, bp: int, c: int, segs: int, function: string) {
+    if std::raw::load8(bp) == 0 || std::raw::load8(bp + 12) == 0 {
+        return
+    }
+    let ok = st + 40
+    let off = ax_numf(bp, 12, true, 2, st + 56, ok, function)
+    let len = ax_numf(bp + 12, 12, true, 3, st + 56, ok, function)
+    let cur = std::raw::load(c)
+    let rem = std::raw::load(c + 8)
+    let used = std::raw::wsub(std::raw::load(c + 16), rem)
+    if len != 0 && (used & 511) != 0 {
+        ax_tfail(function, "previous block in sparse file was not aligned to 512-byte boundary")
+    }
+    if ax_ult(off, cur) {
+        ax_tfail(function, "out of order or overlapping sparse blocks")
+    }
+    if ax_ult(cur, off) {
+        ax_seg(segs, 0, off - cur)
+    }
+    let nc = std::raw::wadd(off, len)
+    if ax_ult(nc, off) {
+        ax_tfail(function, "more bytes listed in sparse file than u64 can hold")
+    }
+    std::raw::store(c, nc)
+    if ax_ult(rem, len) {
+        ax_tfail(function, "sparse file consumed more data than the header listed")
+    }
+    std::raw::store(c + 8, rem - len)
+    ax_seg(segs, 1, len)
+}
+
+// parse_sparse_header: devuelve el tamaño real.
+fn ax_sparse(st: int, segs: int, function: string) -> int {
+    let h = st + 56
+    if !ax_is_gnu(h) {
+        ax_tfail(function, "sparse entry type listed but not GNU header")
+    }
+    let size = std::raw::load(st + 32)
+    let c = rt_alloc(24)
+    std::raw::store(c, 0)
+    std::raw::store(c + 8, size)
+    std::raw::store(c + 16, size)
+    let mut i = 0
+    while i < 4 {
+        ax_sparse_block(st, h + 386 + 24 * i, c, segs, function)
+        i += 1
+    }
+    if std::raw::load8(h + 482) == 1 {
+        let e = st + 568
+        std::raw::store8(e + 504, 1)
+        while std::raw::load8(e + 504) == 1 {
+            ax_block(st, e, "failed to read extension", function)
+            std::raw::store(st + 24, std::raw::load(st + 24) + 512)
+            i = 0
+            while i < 21 {
+                ax_sparse_block(st, e + 24 * i, c, segs, function)
+                i += 1
+            }
+        }
+    }
+    let real = ax_numf(h + 483, 12, true, 4, h, st + 40, function)
+    let cur = std::raw::load(c)
+    if cur != real {
+        ax_tfail(function, "mismatch in sparse file chunks and size in header")
+    }
+    if std::raw::load(c + 8) != 0 {
+        ax_tfail(function, "mismatch in sparse file chunks and entry size in header")
+    }
+    rt_free_block(c)
+    cur
+}
+
+// Lee los tramos de la entrada (Entry::read_to_end).
+fn ax_read_segs(st: int, segs: any) -> any {
+    let sp = rt_bdata(segs)
+    let count = rt_slen(segs) / 16
+    let p = std::raw::load(st)
+    let n = std::raw::load(st + 8)
+    let mut pos = std::raw::load(st + 16)
+    let mut total = 0
+    let mut i = 0
+    while i < count {
+        let k = ax_le64(sp + 16 * i + 8)
+        if ax_le64(sp + 16 * i) == 0 {
+            total += k
+        } else {
+            let k2 = ax_umin(k, n - pos)
+            pos += k2
+            total += k2
+        }
+        i += 1
+    }
+    let out = rt_str_alloc(total)
+    let d = out + 16
+    pos = std::raw::load(st + 16)
+    let mut w = 0
+    i = 0
+    while i < count {
+        let k = ax_le64(sp + 16 * i + 8)
+        if ax_le64(sp + 16 * i) == 0 {
+            ax_fill0(d + w, k)
+            w += k
+        } else {
+            let k2 = ax_umin(k, n - pos)
+            rt_copy(d + w, p + pos, k2)
+            pos += k2
+            w += k2
+        }
+        i += 1
+    }
+    std::raw::store(st + 16, pos)
+    std::raw::adopt(6, out)
+}
+
+fn ax_tar_unpack(data: any, function: string) -> any {
+    rt_expect_bytes(data, function)
+    let dp = rt_bdata(data)
+    let st = ax_tst(dp, rt_slen(data))
+    let ok = st + 40
+    let h = st + 56
+    let mut out: any = rt_array_new(0)
+    loop {
+        // next_entry
+        let mut ln_p = 0
+        let mut ln_n = -1
+        let mut ll = false
+        let mut px_p = 0
+        let mut px_n = -1
+        let mut processed = 0
+        let mut done = false
+        loop {
+            processed += 1
+            if !ax_raw(st, px_p, px_n, function) {
+                if processed > 1 {
+                    ax_tfail(function, "members found describing a future member but no future member found")
+                }
+                done = true
+                break
+            }
+            let rec = ax_is_gnu(h) || ax_is_ustar(h)
+            let ty = std::raw::load8(h + 156)
+            let size = std::raw::load(st + 32)
+            if rec && ty == 76 {
+                if ln_n >= 0 {
+                    ax_tfail(function, "two long name entries describing the same member")
+                }
+                ln_p = dp + std::raw::load(st + 16)
+                ln_n = ax_take(st, size)
+            } else if rec && ty == 75 {
+                if ll {
+                    ax_tfail(function, "two long name entries describing the same member")
+                }
+                ll = true
+                ax_take(st, size)
+            } else if rec && ty == 120 {
+                if px_n >= 0 {
+                    ax_tfail(function, "two pax extensions entries describing the same member")
+                }
+                px_p = dp + std::raw::load(st + 16)
+                px_n = ax_take(st, size)
+            } else {
+                break
+            }
+        }
+        if done {
+            break
+        }
+        // Entry::path
+        let mut name: any = ""
+        if ln_n >= 0 {
+            let mut k = ln_n
+            if k > 0 && std::raw::load8(ln_p + k - 1) == 0 {
+                k -= 1
+            }
+            name = ax_lossy(ln_p, k)
+        } else {
+            let mut found = false
+            if px_n >= 0 {
+                let e = ax_pax_find(px_p, px_n, "path", false, ok)
+                if std::raw::load(ok) == 1 {
+                    let vs = std::raw::load(ok + 8)
+                    name = ax_lossy(px_p + vs, e - vs)
+                    found = true
+                }
+            }
+            if !found {
+                name = dr_lossy(ax_hpath(h))
+            }
+        }
+        let segs = sb_new(64)
+        let ty = std::raw::load8(h + 156)
+        let mut big = false
+        if ty == 83 {
+            let real = ax_sparse(st, segs, function)
+            big = ax_ult(4294967296, real)
+        } else {
+            ax_seg(segs, 1, std::raw::load(st + 32))
+        }
+        ax_safe(name, function)
+        if big {
+            ax_tfail(function, "sparse entry too large to unpack in memory")
+        }
+        let sv = sb_finish_bytes(segs)
+        out = std::array::push(out, ax_entry_map(name, ax_read_segs(st, sv)))
+    }
+    rt_free_block(st)
+    out
+}
+
+// ------------------------------------------------------------ nativas
+
+fn std__archive__tar_pack(entries: any) -> any {
+    ax_tar_pack(entries, "std::archive::tar_pack")
+}
+
+fn std__archive__tar_unpack(data: any) -> any {
+    ax_tar_unpack(data, "std::archive::tar_unpack")
+}
+
+// ------------------------------------------------------------ zip: tablas
+
+// Code page 437 (bytes 0x80..0xFF), 4 cifras hex por byte; generada desde
+// zip-2.4.2/src/cp437.rs y comprobada con el códec cp437 de Python.
+fn ax_cp437_hex() -> string {
+    "00c700fc00e900e200e400e000e500e700ea00eb00e800ef00ee00ec00c400c500c900e600c600f400f600f200fb00f900ff00d600dc00a200a300a520a7019200e100ed00f300fa00f100d100aa00ba00bf231000ac00bd00bc00a100ab00bb259125922593250225242561256225562555256325512557255d255c255b251025142534252c251c2500253c255e255f255a25542569256625602550256c25672568256425652559255825522553256b256a2518250c25882584258c2590258003b100df039303c003a303c300b503c403a6039803a903b4221e03c603b52229226100b1226522642320232100f7224800b0221900b7221a207f00b225a000a0"
+}
+
+fn ax_hexd(c: int) -> int {
+    if c >= 97 {
+        return c - 87
+    }
+    c - 48
+}
+
+fn ax_cp437(b: int) -> int {
+    let p = rt_bdata(ax_cp437_hex()) + (b - 128) * 4
+    let mut v = 0
+    let mut i = 0
+    while i < 4 {
+        v = v * 16 + ax_hexd(std::raw::load8(p + i))
+        i += 1
+    }
+    v
+}
+
+// Nombre o comentario tal como lo decodifica zip: UTF-8 con pérdidas si el
+// bit 11 está puesto; si no, code page 437 (ASCII tal cual).
+fn ax_decode_into(b: int, p: int, n: int, utf8: bool) {
+    if utf8 {
+        let s = ax_lossy(p, n)
+        sb_raw(b, rt_bdata(s), rt_slen(s))
+        return
+    }
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 128 {
+            sb_byte(b, c)
+        } else {
+            sb_cp(b, ax_cp437(c))
+        }
+        i += 1
+    }
+}
+
+// ------------------------------------------------------------ tabla hash
+
+// Tabla de direccionamiento abierto sobre claves (puntero, longitud) guardadas
+// en kb (16 bytes por clave). Guarda índice + 1.
+fn ax_hash(p: int, n: int) -> int {
+    let mut h = -3750763034362895579
+    let mut i = 0
+    while i < n {
+        h = std::raw::wmul(h ^ std::raw::load8(p + i), 1099511628211)
+        i += 1
+    }
+    h
+}
+
+fn ax_ht_new(count: int) -> int {
+    let mut cap = 16
+    while cap < 2 * count + 2 {
+        cap = cap * 2
+    }
+    let t = rt_alloc_zero(8 * cap + 8)
+    std::raw::store(t, cap)
+    t
+}
+
+// Busca la clave i; si ya hay una igual devuelve su índice, si no la inserta
+// y devuelve -1.
+fn ax_ht_put(t: int, kb: int, i: int) -> int {
+    let cap = std::raw::load(t)
+    let p = std::raw::load(kb + 16 * i)
+    let n = std::raw::load(kb + 16 * i + 8)
+    let mut slot = ax_hash(p, n) & (cap - 1)
+    loop {
+        let v = std::raw::load(t + 8 + 8 * slot)
+        if v == 0 {
+            std::raw::store(t + 8 + 8 * slot, i + 1)
+            return -1
+        }
+        let j = v - 1
+        if std::raw::load(kb + 16 * j + 8) == n && ax_same(std::raw::load(kb + 16 * j), p, n) {
+            return j
+        }
+        slot = (slot + 1) & (cap - 1)
+    }
+    -1
+}
+
+// ------------------------------------------------------------ zip: escritura
+
+fn ax_zfail(function: string, msg: any) {
+    rt_native_fail(function, rt_concat("zip error: ", msg))
+}
+
+fn ax_zip_pack(v: any, function: string) -> any {
+    ax_entries(v, function)
+    let count = rt_seq_len(v)
+    let kb = rt_alloc(16 * count + 16)
+    let t = ax_ht_new(count)
+    let mut e = 0
+    while e < count {
+        let name = ax_field(v, e, "name")
+        std::raw::store(kb + 16 * e, rt_bdata(name))
+        std::raw::store(kb + 16 * e + 8, rt_slen(name))
+        if ax_ht_put(t, kb, e) >= 0 {
+            ax_zfail(function, "invalid Zip archive: Duplicate filename")
+        }
+        e += 1
+    }
+    rt_free_block(t)
+    // Por entrada: crc, tamaño comprimido, tamaño, inicio de la cabecera.
+    let info = rt_alloc(32 * count + 32)
+    let out = sb_new(4096)
+    e = 0
+    while e < count {
+        let np = std::raw::load(kb + 16 * e)
+        let nn = std::raw::load(kb + 16 * e + 8)
+        let data = ax_field(v, e, "bytes")
+        let dp = rt_bdata(data)
+        let dn = rt_slen(data)
+        if ax_ult(4294967295, dn) {
+            ax_tfail(function, "Large file option has not been set")
+        }
+        let comp = ce_encode(dp, dn, 6, 0)
+        let cn = rt_slen(comp)
+        if ax_ult(4294967295, cn) {
+            ax_zfail(function, "i/o error: Large file option has not been set")
+        }
+        let crc = cz_crc(dp, dn)
+        let hs = sb_len(out)
+        std::raw::store(info + 32 * e, crc)
+        std::raw::store(info + 32 * e + 8, cn)
+        std::raw::store(info + 32 * e + 16, dn)
+        std::raw::store(info + 32 * e + 24, hs)
+        let big = !ax_ult(hs, 4294967295)
+        let mut flags = 0
+        let mut i = 0
+        while i < nn {
+            if std::raw::load8(np + i) >= 128 {
+                flags = 2048
+            }
+            i += 1
+        }
+        sb_reserve(out, 30 + nn + 12)
+        ax_put32(out, 67324752)
+        ax_put16(out, 20)
+        ax_put16(out, flags)
+        ax_put16(out, 8)
+        ax_put16(out, 0)
+        ax_put16(out, 33)
+        ax_put32(out, crc)
+        ax_put32(out, cn)
+        ax_put32(out, dn)
+        ax_put16(out, nn)
+        if big {
+            ax_put16(out, 12)
+        } else {
+            ax_put16(out, 0)
+        }
+        sb_raw(out, np, nn)
+        if big {
+            ax_put16(out, 1)
+            ax_put16(out, 8)
+            ax_put64(out, hs)
+        }
+        sb_raw(out, rt_bdata(comp), cn)
+        e += 1
+    }
+    let cs = sb_len(out)
+    e = 0
+    while e < count {
+        let np = std::raw::load(kb + 16 * e)
+        let nn = std::raw::load(kb + 16 * e + 8)
+        let hs = std::raw::load(info + 32 * e + 24)
+        let big = !ax_ult(hs, 4294967295)
+        let mut flags = 0
+        let mut i = 0
+        while i < nn {
+            if std::raw::load8(np + i) >= 128 {
+                flags = 2048
+            }
+            i += 1
+        }
+        sb_reserve(out, 46 + nn + 12)
+        ax_put32(out, 33639248)
+        ax_put16(out, 788)
+        ax_put16(out, 20)
+        ax_put16(out, flags)
+        ax_put16(out, 8)
+        ax_put16(out, 0)
+        ax_put16(out, 33)
+        ax_put32(out, std::raw::load(info + 32 * e))
+        ax_put32(out, std::raw::load(info + 32 * e + 8))
+        ax_put32(out, std::raw::load(info + 32 * e + 16))
+        ax_put16(out, nn)
+        if big {
+            ax_put16(out, 12)
+        } else {
+            ax_put16(out, 0)
+        }
+        ax_put16(out, 0)
+        ax_put16(out, 0)
+        ax_put16(out, 0)
+        ax_put32(out, 2175008768)
+        ax_put32(out, ax_umin(hs, 4294967295))
+        sb_raw(out, np, nn)
+        if big {
+            ax_put16(out, 1)
+            ax_put16(out, 8)
+            ax_put64(out, hs)
+        }
+        e += 1
+    }
+    let csize = sb_len(out) - cs
+    let mut mx = csize
+    if cs > mx {
+        mx = cs
+    }
+    if count > 65535 || ax_ult(4294967295, mx) {
+        sb_reserve(out, 76)
+        ax_put32(out, 101075792)
+        ax_put64(out, 44)
+        ax_put16(out, 20)
+        ax_put16(out, 20)
+        ax_put32(out, 0)
+        ax_put32(out, 0)
+        ax_put64(out, count)
+        ax_put64(out, count)
+        ax_put64(out, csize)
+        ax_put64(out, cs)
+        ax_put32(out, 117853008)
+        ax_put32(out, 0)
+        ax_put64(out, cs + csize)
+        ax_put32(out, 1)
+    }
+    let n16 = ax_umin(count, 65535)
+    sb_reserve(out, 22)
+    ax_put32(out, 101010256)
+    ax_put16(out, 0)
+    ax_put16(out, 0)
+    ax_put16(out, n16)
+    ax_put16(out, n16)
+    ax_put32(out, ax_umin(csize, 4294967295))
+    ax_put32(out, ax_umin(cs, 4294967295))
+    ax_put16(out, 0)
+    rt_free_block(kb)
+    rt_free_block(info)
+    sb_finish_bytes(out)
+}
+
+// ------------------------------------------------------------ zip: lectura
+
+// Estado del lector (bloque z):
+//   0 datos, 8 longitud, 16 fin de la zona buscada (end_exclusive)
+//   resultado de ax_find_cd: 24 pos EOCD, 32 archive_offset, 40 inicio del
+//   directorio, 48 número de archivos, 56 disco, 64 disco del directorio,
+//   72 ¿info válida? (0 = CentralDirectoryInfo::try_from falló)
+//   buscador hacia atrás: 80 cursor, 88 mid, 96 lo, 104 hi
+//   buscador hacia delante: 112 cursor, 120 mid, 128 lo, 136 hi, 144 guess,
+//   152 firma
+//   160 registros (sb), 168 nombres (sb), 176 celda ok
+
+fn ax_zst(p: int, n: int) -> int {
+    let z = rt_alloc_zero(192)
+    std::raw::store(z, p)
+    std::raw::store(z + 8, n)
+    std::raw::store(z + 16, n)
+    z
+}
+
+fn ax_clamp(v: int, lo: int, hi: int) -> int {
+    if ax_ult(v, lo) {
+        return lo
+    }
+    if ax_ult(hi, v) {
+        return hi
+    }
+    v
+}
+
+fn ax_sat_sub(a: int, b: int) -> int {
+    if ax_ult(a, b) {
+        return 0
+    }
+    a - b
+}
+
+// ¿Está la firma (32 bits) en p?
+fn ax_magic(p: int, m: int) -> bool {
+    ax_le32(p) == m
+}
+
+// MagicFinder<Backwards> sobre [lo, hi) con ventana de 2048 bytes.
+fn ax_back_new(z: int, lo: int, hi: int) {
+    std::raw::store(z + 80, ax_clamp(ax_sat_sub(hi, 2048), lo, hi))
+    std::raw::store(z + 88, -1)
+    std::raw::store(z + 96, lo)
+    std::raw::store(z + 104, hi)
+}
+
+fn ax_back_next(z: int, m: int) -> int {
+    let p = std::raw::load(z)
+    loop {
+        let cur = std::raw::load(z + 80)
+        let lo = std::raw::load(z + 96)
+        let hi = std::raw::load(z + 104)
+        if cur < lo || cur >= hi {
+            return -1
+        }
+        let mut we = cur + 2048
+        if we > hi {
+            we = hi
+        }
+        if we <= cur {
+            return -1
+        }
+        let mid = std::raw::load(z + 88)
+        let mut end = we
+        if mid >= 0 {
+            end = cur + mid
+        }
+        let mut k = end - 4
+        while k >= cur {
+            if ax_magic(p + k, m) {
+                std::raw::store(z + 88, k - cur)
+                return k
+            }
+            k -= 1
+        }
+        std::raw::store(z + 88, -1)
+        if cur <= lo {
+            std::raw::store(z + 96, hi)
+            return -1
+        }
+        std::raw::store(z + 80, ax_clamp(ax_sat_sub(cur + 3, 2048), lo, hi))
+    }
+    -1
+}
+
+// OptimisticMagicFinder<Forward> sobre [lo, hi) con suposición inicial.
+fn ax_fwd_new(z: int, m: int, lo: int, hi: int, guess: int) {
+    std::raw::store(z + 112, lo)
+    std::raw::store(z + 120, -1)
+    std::raw::store(z + 128, lo)
+    std::raw::store(z + 136, hi)
+    std::raw::store(z + 144, guess)
+    std::raw::store(z + 152, m)
+}
+
+fn ax_fwd_next(z: int) -> int {
+    let p = std::raw::load(z)
+    let m = std::raw::load(z + 152)
+    let g = std::raw::load(z + 144)
+    if g >= 0 {
+        std::raw::store(z + 144, -1)
+        if g + 4 <= std::raw::load(z + 136) && ax_magic(p + g, m) {
+            return g
+        }
+    }
+    loop {
+        let cur = std::raw::load(z + 112)
+        let lo = std::raw::load(z + 128)
+        let hi = std::raw::load(z + 136)
+        if cur < lo || cur >= hi {
+            return -1
+        }
+        let mut we = cur + 2048
+        if we > hi {
+            we = hi
+        }
+        if we <= cur {
+            return -1
+        }
+        let mid = std::raw::load(z + 120)
+        let mut k = cur
+        if mid >= 0 {
+            k = cur + mid
+        }
+        while k + 4 <= we {
+            if ax_magic(p + k, m) {
+                std::raw::store(z + 120, k - cur + 4)
+                return k
+            }
+            k += 1
+        }
+        std::raw::store(z + 120, -1)
+        let nx = cur + 2045
+        if nx >= hi {
+            std::raw::store(z + 128, hi)
+            return -1
+        }
+        std::raw::store(z + 112, nx)
+    }
+    -1
+}
+
+fn ax_zmsg(code: int) -> string {
+    if code == 0 {
+        return "i/o error: failed to fill whole buffer"
+    }
+    if code == 1 {
+        return "invalid Zip archive: EOCD comment exceeds file boundary"
+    }
+    if code == 2 {
+        return "invalid Zip archive: Invalid CDFH offset in EOCD"
+    }
+    if code == 3 {
+        return "invalid Zip archive: No CDFH found"
+    }
+    if code == 4 {
+        return "invalid Zip archive: Invalid EOCD64 Locator CD offset"
+    }
+    if code == 5 {
+        return "invalid Zip archive: Multi-disk ZIP files are not supported"
+    }
+    if code == 6 {
+        return "invalid Zip archive: Low EOCD64 record size"
+    }
+    if code == 7 {
+        return "invalid Zip archive: EOCD64 extends beyond EOCD64 locator"
+    }
+    if code == 8 {
+        return "invalid Zip archive: Invalid EOCD64: inconsistency with Locator data"
+    }
+    if code == 9 {
+        return "invalid Zip archive: Invalid EOCD64: inconsistent length"
+    }
+    if code == 10 {
+        return "invalid Zip archive: Invalid EOCD64: inconsistent number of files"
+    }
+    if code == 11 {
+        return "invalid Zip archive: Could not find EOCD64"
+    }
+    "invalid Zip archive: Could not find EOCD"
+}
+
+// Rellena el resultado a partir de EOCD (y EOCD64 si e64 >= 0):
+// CentralDirectoryInfo::try_from.
+fn ax_cd_info(z: int, eocd: int, e64: int, aoff: int) {
+    let p = std::raw::load(z)
+    std::raw::store(z + 24, eocd)
+    std::raw::store(z + 32, aoff)
+    std::raw::store(z + 72, 0)
+    let mut rel = 0
+    if e64 >= 0 {
+        let q = p + e64
+        if ax_ult(ax_le64(q + 32), ax_le64(q + 24)) {
+            return
+        }
+        if ax_le16(q + 14) > ax_le16(q + 12) {
+            return
+        }
+        rel = ax_le64(q + 48)
+        std::raw::store(z + 48, ax_le64(q + 32))
+        std::raw::store(z + 56, ax_le32(q + 16))
+        std::raw::store(z + 64, ax_le32(q + 20))
+    } else {
+        let q = p + eocd
+        rel = ax_le32(q + 16)
+        std::raw::store(z + 48, ax_le16(q + 8))
+        std::raw::store(z + 56, ax_le16(q + 4))
+        std::raw::store(z + 64, ax_le16(q + 6))
+    }
+    let ds = std::raw::wadd(rel, aoff)
+    if ax_ult(ds, rel) {
+        return
+    }
+    std::raw::store(z + 40, ds)
+    std::raw::store(z + 72, 1)
+}
+
+// spec::find_central_directory. Falla con el mensaje de zip si no encuentra.
+fn ax_find_cd(z: int, function: string) {
+    let p = std::raw::load(z)
+    let n = std::raw::load(z + 8)
+    ax_back_new(z, 0, std::raw::load(z + 16))
+    let mut err = -1
+    loop {
+        let eo = ax_back_next(z, 101010256)
+        if eo < 0 {
+            break
+        }
+        if eo + 22 > n {
+            if err < 0 {
+                err = 0
+            }
+            continue
+        }
+        let q = p + eo
+        if eo + 22 + ax_le16(q + 20) > n {
+            if err < 0 {
+                err = 1
+            }
+            continue
+        }
+        let nfiles = ax_le16(q + 10)
+        let rel = ax_le32(q + 16)
+        let mut loc = -1
+        if nfiles == 65535 || rel == 4294967295 {
+            if eo >= 20 && ax_magic(p + eo - 20, 117853008) {
+                loc = eo - 20
+            }
+        }
+        if loc < 0 {
+            if nfiles == 0 {
+                ax_cd_info(z, eo, -1, ax_sat_sub(eo, rel))
+                return
+            }
+            if rel >= eo {
+                err = 2
+                continue
+            }
+            ax_fwd_new(z, 33639248, rel, eo, rel)
+            let cd = ax_fwd_next(z)
+            if cd >= 0 {
+                ax_cd_info(z, eo, -1, cd - rel)
+                return
+            }
+            err = 3
+            continue
+        }
+        let lq = p + loc
+        let e64off = ax_le64(lq + 8)
+        if !ax_ult(e64off, loc) {
+            err = 4
+            continue
+        }
+        if ax_ult(1, ax_le32(lq + 16)) {
+            err = 5
+            continue
+        }
+        ax_fwd_new(z, 101075792, e64off, loc, e64off)
+        let mut local = -1
+        loop {
+            let h = ax_fwd_next(z)
+            if h < 0 {
+                break
+            }
+            if h + 56 > n {
+                local = 0
+                continue
+            }
+            let hq = p + h
+            let rs = ax_le64(hq + 4)
+            let maxs = loc - h
+            if ax_ult(rs, 44) {
+                local = 6
+                continue
+            }
+            if ax_ult(maxs, ax_sadd(rs, 12)) {
+                local = 7
+                continue
+            }
+            if ax_le32(hq + 20) != ax_le32(lq + 4) {
+                local = 8
+                continue
+            }
+            if rs + 12 != maxs {
+                local = 9
+                continue
+            }
+            let nf = ax_le64(hq + 32)
+            let mut need = -1
+            if !ax_ult(401016175515425035, nf) {
+                need = std::raw::wmul(nf, 46)
+            }
+            need = ax_sadd(need, ax_le64(hq + 48))
+            if ax_ult(h, need) {
+                local = 10
+                continue
+            }
+            ax_cd_info(z, eo, h, h - e64off)
+            return
+        }
+        err = local
+        if err < 0 {
+            err = 11
+        }
+    }
+    if err < 0 {
+        err = 12
+    }
+    ax_zfail(function, ax_zmsg(err))
+}
+
+// Lector de campos extra (un Cursor): x: 0 datos, 8 longitud, 16 posición.
+// Devuelve -1 si no quedan k bytes (error de E/S: se deja de leer).
+fn ax_xread(x: int, k: int) -> int {
+    let pos = std::raw::load(x + 16)
+    if pos + k > std::raw::load(x + 8) {
+        return -1
+    }
+    std::raw::store(x + 16, pos + k)
+    std::raw::load(x) + pos
+}
+
+// Estado de una entrada durante la lectura del directorio (bloque f):
+//   0 us, 8 cs, 16 hs, 24 método, 32 aes, 40 nombre ptr, 48 nombre len,
+//   56 ¿nombre sustituido (UTF-8 crudo)?, 64 comentario ptr, 72 len,
+//   80 ¿comentario sustituido?, 88 bit utf8, 96 cursor extra (24 bytes)
+
+fn ax_decoded_crc(f: int, off: int) -> int {
+    let p = std::raw::load(f + off)
+    let n = std::raw::load(f + off + 8)
+    if std::raw::load(f + off + 16) == 1 {
+        return cz_crc(p, n)
+    }
+    let b = sb_new(n * 3 + 8)
+    ax_decode_into(b, p, n, std::raw::load(f + 88) == 1)
+    let c = cz_crc(std::raw::load(b + 16), sb_len(b))
+    rt_free_block(std::raw::load(b + 16))
+    rt_free_block(b)
+    c
+}
+
+// parse_single_extra_field. 1 sigue, 0 parar (E/S), -1 error de verdad.
+fn ax_extra_one(f: int) -> int {
+    let x = f + 96
+    let a = ax_xread(x, 2)
+    if a < 0 {
+        return 0
+    }
+    let kind = ax_le16(a)
+    let b = ax_xread(x, 2)
+    if b < 0 {
+        return 0
+    }
+    let len = ax_le16(b)
+    if kind == 1 {
+        let mut used = 0
+        if len >= 24 || std::raw::load(f) == 4294967295 {
+            let q = ax_xread(x, 8)
+            if q < 0 {
+                return 0
+            }
+            std::raw::store(f, ax_le64(q))
+            used += 8
+        }
+        if len >= 24 || std::raw::load(f + 8) == 4294967295 {
+            let q = ax_xread(x, 8)
+            if q < 0 {
+                return 0
+            }
+            std::raw::store(f + 8, ax_le64(q))
+            used += 8
+        }
+        if len >= 24 || std::raw::load(f + 16) == 4294967295 {
+            let q = ax_xread(x, 8)
+            if q < 0 {
+                return 0
+            }
+            std::raw::store(f + 16, ax_le64(q))
+            used += 8
+        }
+        if len < used {
+            return -1
+        }
+        if ax_xread(x, len - used) < 0 {
+            return 0
+        }
+        return 1
+    }
+    if kind == 10 {
+        if len != 32 {
+            return -1
+        }
+        if ax_xread(x, 4) < 0 {
+            return 0
+        }
+        let t = ax_xread(x, 2)
+        if t < 0 {
+            return 0
+        }
+        if ax_le16(t) != 1 {
+            return -1
+        }
+        let s = ax_xread(x, 2)
+        if s < 0 {
+            return 0
+        }
+        if ax_le16(s) != 24 {
+            return -1
+        }
+        if ax_xread(x, 24) < 0 {
+            return 0
+        }
+        return 1
+    }
+    if kind == 39169 {
+        if len != 7 {
+            return -1
+        }
+        let q = ax_xread(x, 7)
+        if q < 0 {
+            return 0
+        }
+        let vv = ax_le16(q)
+        if ax_le16(q + 2) != 17729 {
+            return -1
+        }
+        if vv != 1 && vv != 2 {
+            return -1
+        }
+        let mode = std::raw::load8(q + 4)
+        if mode < 1 || mode > 3 {
+            return -1
+        }
+        std::raw::store(f + 32, 1)
+        std::raw::store(f + 24, ax_le16(q + 5))
+        return 1
+    }
+    if kind == 21589 {
+        let q = ax_xread(x, 1)
+        if q < 0 {
+            return 0
+        }
+        let fl = std::raw::load8(q)
+        let bits = (fl & 1) + (std::raw::shr(fl, 1) & 1) + (std::raw::shr(fl, 2) & 1) + (std::raw::shr(fl, 3) & 1) + (std::raw::shr(fl, 4) & 1) + (std::raw::shr(fl, 5) & 1) + (std::raw::shr(fl, 6) & 1) + (std::raw::shr(fl, 7) & 1)
+        if len != 5 && len != 1 + 4 * bits {
+            return -1
+        }
+        if (fl & 248) != 0 {
+            return -1
+        }
+        if (fl & 1) != 0 || len == 5 {
+            if ax_xread(x, 4) < 0 {
+                return 0
+            }
+        }
+        if (fl & 2) != 0 && len > 5 {
+            if ax_xread(x, 4) < 0 {
+                return 0
+            }
+        }
+        if (fl & 4) != 0 && len > 5 {
+            if ax_xread(x, 4) < 0 {
+                return 0
+            }
+        }
+        return 1
+    }
+    if kind == 25461 || kind == 28789 {
+        if ax_xread(x, 1) < 0 {
+            return 0
+        }
+        let c = ax_xread(x, 4)
+        if c < 0 {
+            return 0
+        }
+        let crc = ax_le32(c)
+        if len < 5 {
+            return -1
+        }
+        let q = ax_xread(x, len - 5)
+        if q < 0 {
+            return 0
+        }
+        let mut off = 64
+        if kind == 28789 {
+            off = 40
+        }
+        let mut actual = 0
+        if kind == 28789 {
+            // unwrap_valid contra los bytes crudos del nombre.
+            actual = cz_crc(std::raw::load(f + 40), std::raw::load(f + 48))
+        } else {
+            actual = ax_decoded_crc(f, 64)
+        }
+        if actual != crc {
+            return -1
+        }
+        if !rt_valid_utf8(q, len - 5) {
+            return -1
+        }
+        std::raw::store(f + off, q)
+        std::raw::store(f + off + 8, len - 5)
+        std::raw::store(f + off + 16, 1)
+        return 1
+    }
+    if ax_xread(x, len) < 0 {
+        return 0
+    }
+    1
+}
+
+// central_header_to_zip_file para la entrada en pos. Devuelve la posición
+// siguiente o -1 si la entrada no vale (se prueba el EOCD anterior).
+fn ax_central(z: int, pos: int, f: int) -> int {
+    let p = std::raw::load(z)
+    let n = std::raw::load(z + 8)
+    if pos + 46 > n || !ax_magic(p + pos, 33639248) {
+        return -1
+    }
+    let q = p + pos
+    let nl = ax_le16(q + 28)
+    let el = ax_le16(q + 30)
+    let cl = ax_le16(q + 32)
+    if pos + 46 + nl + el + cl > n {
+        return -1
+    }
+    let flags = ax_le16(q + 8)
+    std::raw::store(f, ax_le32(q + 24))
+    std::raw::store(f + 8, ax_le32(q + 20))
+    std::raw::store(f + 16, ax_le32(q + 42))
+    std::raw::store(f + 24, ax_le16(q + 10))
+    std::raw::store(f + 32, 0)
+    std::raw::store(f + 40, q + 46)
+    std::raw::store(f + 48, nl)
+    std::raw::store(f + 56, 0)
+    std::raw::store(f + 64, q + 46 + nl + el)
+    std::raw::store(f + 72, cl)
+    std::raw::store(f + 80, 0)
+    std::raw::store(f + 88, std::raw::shr(flags, 11) & 1)
+    std::raw::store(f + 96, q + 46 + nl)
+    std::raw::store(f + 104, el)
+    std::raw::store(f + 112, 0)
+    while std::raw::load(f + 112) < el {
+        let r = ax_extra_one(f)
+        if r < 0 {
+            return -1
+        }
+        if r == 0 {
+            break
+        }
+    }
+    if std::raw::load(f + 24) == 99 && std::raw::load(f + 32) == 0 {
+        return -1
+    }
+    let hs0 = std::raw::load(f + 16)
+    let hs = std::raw::wadd(hs0, std::raw::load(z + 32))
+    if ax_ult(hs, hs0) {
+        return -1
+    }
+    let dir = std::raw::load(z + 40)
+    if !ax_ult(hs, dir) {
+        return -1
+    }
+    // find_data_start: cabecera local en hs (hs < dir <= n).
+    if hs + 30 > n || !ax_magic(p + hs, 67324752) {
+        return -1
+    }
+    let ds = hs + 30 + ax_le16(p + hs + 26) + ax_le16(p + hs + 28)
+    if ds > dir {
+        return -1
+    }
+    // Registro: nombre (en el sb de nombres), flags, método, aes, crc, cs, ds.
+    let names = std::raw::load(z + 168)
+    let noff = sb_len(names)
+    if std::raw::load(f + 56) == 1 {
+        sb_raw(names, std::raw::load(f + 40), std::raw::load(f + 48))
+    } else {
+        ax_decode_into(names, q + 46, nl, std::raw::load(f + 88) == 1)
+    }
+    let recs = std::raw::load(z + 160)
+    sb_reserve(recs, 64)
+    ax_put64(recs, noff)
+    ax_put64(recs, sb_len(names) - noff)
+    ax_put64(recs, flags)
+    ax_put64(recs, std::raw::load(f + 24))
+    ax_put64(recs, std::raw::load(f + 32))
+    ax_put64(recs, ax_le32(q + 16))
+    ax_put64(recs, std::raw::load(f + 8))
+    ax_put64(recs, ds)
+    pos + 46 + nl + el + cl
+}
+
+// read_central_header (true si todo el directorio vale).
+fn ax_read_cd(z: int) -> bool {
+    if std::raw::load(z + 72) == 0 {
+        return false
+    }
+    if std::raw::load(z + 56) != std::raw::load(z + 64) {
+        return false
+    }
+    let f = rt_alloc(128)
+    let count = std::raw::load(z + 48)
+    let mut pos = std::raw::load(z + 40)
+    let mut i = 0
+    while ax_ult(i, count) {
+        pos = ax_central(z, pos, f)
+        if pos < 0 {
+            rt_free_block(f)
+            return false
+        }
+        i += 1
+    }
+    rt_free_block(f)
+    true
+}
+
+fn ax_sb_reset(b: int) {
+    std::raw::store(b, 0)
+}
+
+// ZipArchive::new: busca el directorio, lo lee y quita nombres repetidos
+// (IndexMap: queda la primera posición con los datos de la última entrada).
+// Deja en z+160 los registros (bytes) y en z+168 los nombres (bytes).
+fn ax_zip_open(data: any, function: string) -> int {
+    rt_expect_bytes(data, function)
+    let z = ax_zst(rt_bdata(data), rt_slen(data))
+    std::raw::store(z + 160, sb_new(1024))
+    std::raw::store(z + 168, sb_new(1024))
+    loop {
+        ax_find_cd(z, function)
+        ax_sb_reset(std::raw::load(z + 160))
+        ax_sb_reset(std::raw::load(z + 168))
+        if ax_read_cd(z) {
+            break
+        }
+        std::raw::store(z + 16, std::raw::load(z + 24))
+    }
+    let recs = std::raw::load(z + 160)
+    let rp = std::raw::load(recs + 16)
+    let count = sb_len(recs) / 64
+    let np = std::raw::load(std::raw::load(z + 168) + 16)
+    let kb = rt_alloc(16 * count + 16)
+    let t = ax_ht_new(count)
+    let mut w = 0
+    let mut i = 0
+    while i < count {
+        let r = rp + 64 * i
+        std::raw::store(kb + 16 * w, np + std::raw::load(r))
+        std::raw::store(kb + 16 * w + 8, std::raw::load(r + 8))
+        let j = ax_ht_put(t, kb, w)
+        if j >= 0 {
+            // Misma clave: la posición j se queda con los datos nuevos.
+            let d = rp + 64 * j
+            let mut k = 16
+            while k < 64 {
+                std::raw::store(d + k, std::raw::load(r + k))
+                k += 8
+            }
+        } else {
+            if w != i {
+                let d = rp + 64 * w
+                let mut k = 0
+                while k < 64 {
+                    std::raw::store(d + k, std::raw::load(r + k))
+                    k += 8
+                }
+            }
+            w += 1
+        }
+        i += 1
+    }
+    std::raw::store(recs, 64 * w)
+    rt_free_block(t)
+    rt_free_block(kb)
+    z
+}
+
+fn ax_zip_close(z: int) {
+    let a = std::raw::load(z + 160)
+    let b = std::raw::load(z + 168)
+    rt_free_block(std::raw::load(a + 16))
+    rt_free_block(a)
+    rt_free_block(std::raw::load(b + 16))
+    rt_free_block(b)
+    rt_free_block(z)
+}
+
+fn ax_zcount(z: int) -> int {
+    sb_len(std::raw::load(z + 160)) / 64
+}
+
+fn ax_zrec(z: int, i: int) -> int {
+    std::raw::load(std::raw::load(z + 160) + 16) + 64 * i
+}
+
+fn ax_zname(z: int, i: int) -> any {
+    let r = ax_zrec(z, i)
+    ax_str(std::raw::load(std::raw::load(z + 168) + 16) + std::raw::load(r), std::raw::load(r + 8))
+}
+
+// by_index: 0 bien, o el código del error (1 contraseña, 2 método, 3 AES).
+fn ax_by_index(z: int, i: int) -> int {
+    let r = ax_zrec(z, i)
+    if (std::raw::load(r + 16) & 1) == 1 {
+        return 1
+    }
+    let m = std::raw::load(r + 24)
+    if m != 0 && m != 8 {
+        return 2
+    }
+    if std::raw::load(r + 32) == 1 {
+        return 3
+    }
+    0
+}
+
+fn ax_by_index_fail(code: int, function: string) {
+    if code == 1 {
+        ax_zfail(function, "unsupported Zip archive: Password required to decrypt file")
+    }
+    if code == 2 {
+        ax_zfail(function, "unsupported Zip archive: Compression method not supported")
+    }
+    ax_zfail(function, "The password provided is incorrect")
+}
+
+// Datos de la entrada i: almacenados o deflate (estricto), con CRC-32.
+fn ax_zdata(z: int, i: int, function: string) -> any {
+    let r = ax_zrec(z, i)
+    let p = std::raw::load(z)
+    let n = std::raw::load(z + 8)
+    let ds = std::raw::load(r + 56)
+    let cs = std::raw::load(r + 48)
+    let avail = ax_umin(cs, n - ds)
+    let mut out: any = ""
+    if std::raw::load(r + 24) == 0 {
+        if avail != cs {
+            ax_tfail(function, "unexpected end of file")
+        }
+        out = rt_bytes_from(p + ds, avail)
+    } else {
+        let s = cz_new(p + ds, avail, 0)
+        let rc = cz_run(s, false)
+        if rc < 0 {
+            rt_free_block(std::raw::load(s + 45256))
+            rt_free_block(s)
+            if rc == -1 {
+                ax_tfail(function, "unexpected end of file")
+            }
+            ax_tfail(function, "corrupt deflate stream")
+        }
+        out = cz_finish(s)
+    }
+    if cz_crc(rt_bdata(out), rt_slen(out)) != std::raw::load(r + 40) {
+        ax_tfail(function, "Invalid checksum")
+    }
+    out
+}
+
+fn ax_zip_unpack(data: any, function: string) -> any {
+    let z = ax_zip_open(data, function)
+    let mut out: any = rt_array_new(0)
+    let count = ax_zcount(z)
+    let mut i = 0
+    while i < count {
+        let c = ax_by_index(z, i)
+        if c != 0 {
+            ax_by_index_fail(c, function)
+        }
+        let name = ax_zname(z, i)
+        ax_safe(name, function)
+        if !ax_ends_slash(name) {
+            out = std::array::push(out, ax_entry_map(name, ax_zdata(z, i, function)))
+        }
+        i += 1
+    }
+    ax_zip_close(z)
+    out
+}
+
+fn ax_zip_list(data: any, function: string) -> any {
+    let z = ax_zip_open(data, function)
+    let mut out: any = rt_array_new(0)
+    let count = ax_zcount(z)
+    let mut i = 0
+    while i < count {
+        if ax_by_index(z, i) == 0 {
+            out = std::array::push(out, ax_zname(z, i))
+        }
+        i += 1
+    }
+    ax_zip_close(z)
+    out
+}
+
+fn std__archive__zip_pack(entries: any) -> any {
+    ax_zip_pack(entries, "std::archive::zip_pack")
+}
+
+fn std__archive__zip_unpack(data: any) -> any {
+    ax_zip_unpack(data, "std::archive::zip_unpack")
+}
+
+fn std__archive__zip_list(data: any) -> any {
+    ax_zip_list(data, "std::archive::zip_list")
+}

@@ -1,0 +1,10 @@
+fn main() {
+    let mut i = 0
+    while i < 64 {
+        std::progress::spinner_new()
+        i += 1
+    }
+    print("64 creadas")
+    std::progress::bar_new(1)
+    print("no llega")
+}

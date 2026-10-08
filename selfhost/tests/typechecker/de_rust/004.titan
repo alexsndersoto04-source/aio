@@ -1,0 +1,1 @@
+fn main() { let c = 1 let x: int = if c == 1 { 1 } else { "no" } print(x) }

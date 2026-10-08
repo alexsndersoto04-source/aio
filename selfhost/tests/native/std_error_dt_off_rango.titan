@@ -1,0 +1,4 @@
+// Minutos de desfase que no caben en i32.
+fn main() {
+    print(std::datetime::format_offset(0, "%H", 2147483648))
+}

@@ -1,0 +1,164 @@
+// Prueba diferencial de std::archive: cada línea del archivo es
+//   t HEX / z HEX / l HEX      -> tar_unpack / zip_unpack / zip_list
+//   T LISTA / P LISTA          -> tar_pack / zip_pack
+// con LISTA = "NOMBREHEX:DATOSHEX,..." (DATOS con prefijo s = como string)
+// o X N / Y N para las entradas mal formadas número N (tar / zip).
+// Escribe "ok ..." o "ERR HEX(mensaje)". Se ejecuta en la VM (zett run) y
+// compilado con el backend nativo; fuzz.py compara las salidas.
+fn hx(s: string) -> string {
+    std::encoding::hex_encode(std::encoding::utf8_encode(s))
+}
+
+fn entries_text(v: any) -> string {
+    let a: array = v
+    let mut out = ""
+    let mut i = 0
+    while i < len(a) {
+        let m = a[i]
+        let name: string = std::map::get(m, "name")
+        let data: bytes = std::map::get(m, "bytes")
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + hx(name) + ":" + std::encoding::hex_encode(data)
+        i += 1
+    }
+    out
+}
+
+fn names_text(v: any) -> string {
+    let a: array = v
+    let mut out = ""
+    let mut i = 0
+    while i < len(a) {
+        let s: string = a[i]
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + hx(s)
+        i += 1
+    }
+    out
+}
+
+fn show_b(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + std::encoding::hex_encode(v),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+
+fn show_e(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + entries_text(v),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+
+fn show_n(r: Result) -> string {
+    match r {
+        Result::Ok(v) => "ok " + names_text(v),
+        Result::Err(e) => "ERR " + hx(e),
+    }
+}
+
+fn entry(name: any, data: any) -> any {
+    let m = std::map::insert(std::map::new(), "name", name)
+    std::map::insert(m, "bytes", data)
+}
+
+fn parse_list(s: string) -> array {
+    let mut out = []
+    if s == "" {
+        return out
+    }
+    let items = std::text::lines(std::text::replace(s, ",", "\n"))
+    let mut i = 0
+    while i < len(items) {
+        let kv = std::text::lines(std::text::replace(items[i], ":", "\n"))
+        let name = std::encoding::utf8_decode(std::encoding::hex_decode(kv[0]))
+        let mut d = ""
+        if len(kv) > 1 {
+            d = kv[1]
+        }
+        if std::text::starts_with(d, "s") {
+            let h = std::text::replace(d, "s", "")
+            out = std::array::push(out, entry(name, std::encoding::utf8_decode(std::encoding::hex_decode(h))))
+        } else {
+            out = std::array::push(out, entry(name, std::encoding::hex_decode(d)))
+        }
+        i += 1
+    }
+    out
+}
+
+fn bad(n: int) -> any {
+    let ok = entry("a", std::encoding::utf8_encode("x"))
+    if n == 0 {
+        return 5
+    }
+    if n == 1 {
+        return [ok, 7]
+    }
+    if n == 2 {
+        return [ok, std::map::insert(std::map::new(), "bytes", "x")]
+    }
+    if n == 3 {
+        return [ok, entry(3, "x")]
+    }
+    if n == 4 {
+        return [ok, std::map::insert(std::map::new(), "name", "b")]
+    }
+    if n == 5 {
+        return [ok, entry("b", 4.5)]
+    }
+    if n == 6 {
+        return [entry("../x", "x"), entry(3, "x")]
+    }
+    if n == 7 {
+        return (ok, entry("q", "zz"))
+    }
+    "texto"
+}
+
+fn main() {
+    let args = std::env::args()
+    let ls = std::text::lines(std::fs::read_text(args[len(args) - 1]))
+    let mut i = 0
+    while i < len(ls) {
+        let parts = std::text::lines(std::text::replace(ls[i], " ", "\n"))
+        let mode = parts[0]
+        let mut h = ""
+        if len(parts) > 1 {
+            h = parts[1]
+        }
+        if mode == "t" {
+            let data = std::encoding::hex_decode(h)
+            println(show_e(std::try::catch(|| { std::archive::tar_unpack(data) })))
+        } else if mode == "z" {
+            let data = std::encoding::hex_decode(h)
+            println(show_e(std::try::catch(|| { std::archive::zip_unpack(data) })))
+        } else if mode == "l" {
+            let data = std::encoding::hex_decode(h)
+            println(show_n(std::try::catch(|| { std::archive::zip_list(data) })))
+        } else if mode == "T" {
+            let e = parse_list(h)
+            println(show_b(std::try::catch(|| { std::archive::tar_pack(e) })))
+        } else if mode == "P" {
+            let e = parse_list(h)
+            println(show_b(std::try::catch(|| { std::archive::zip_pack(e) })))
+        } else {
+            let n = match std::text::parse_int(h) {
+                Option::Some(v) => v,
+                Option::None => 0,
+            }
+            let e = bad(n)
+            if mode == "X" {
+                println(show_b(std::try::catch(|| { std::archive::tar_pack(e) })))
+            } else {
+                println(show_b(std::try::catch(|| { std::archive::zip_pack(e) })))
+            }
+        }
+        i += 1
+    }
+}

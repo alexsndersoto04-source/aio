@@ -1,0 +1,1 @@
+type Text = string fn combine(total: int, value: int) -> int { total + value } fn main() { let initial: Text = "zero"; [1, 2].fold(initial, combine) }

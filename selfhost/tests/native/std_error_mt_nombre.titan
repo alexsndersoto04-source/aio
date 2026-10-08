@@ -1,0 +1,4 @@
+// Nombre con espacio.
+fn main() {
+    std::metrics::counter_add("bad name", 1)
+}

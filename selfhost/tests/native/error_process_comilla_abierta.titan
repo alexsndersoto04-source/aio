@@ -1,0 +1,3 @@
+fn main() {
+    std::process::run("echo \"hola")
+}

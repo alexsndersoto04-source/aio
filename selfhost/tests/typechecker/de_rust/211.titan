@@ -1,0 +1,1 @@
+fn value() -> bool { true || loop {} } fn main() { let result: bool = value() }

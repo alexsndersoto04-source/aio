@@ -1,0 +1,8 @@
+// Dividir un decimal por cero (0.0 o -0.0) es un error, igual que con enteros.
+fn main() {
+    let a = 1.5
+    let b = a - 1.5
+    print(a / 2.0)
+    print(-b)
+    print(a / -b)
+}

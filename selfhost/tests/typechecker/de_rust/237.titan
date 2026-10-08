@@ -1,0 +1,1 @@
+fn dynamic(value: any) -> any { value? } fn main() {}

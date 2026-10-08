@@ -1,0 +1,1 @@
+enum Choice { Good, Bad } fn choose(choice: Choice) -> fn(int) -> int { match choice { Choice::Good => |value| value + 1, Choice::Bad => |value| "invalid" } } fn main() {}

@@ -1,0 +1,1 @@
+enum Choice { Stop, Continue } fn halt() -> ! { loop { match (Choice::Continue) { Choice::Stop => { break }, Choice::Continue => { loop {} } } } } fn main() {}

@@ -1,0 +1,2260 @@
+// Titan bodies for sample synthesis, PCM16 WAV encoding/writing, and
+// Hound-compatible WAV decoding. sim_* keeps its legacy API while playing
+// the generated WAV through an installed, real operating-system player.
+
+const AU_SIM_STATE_SLOT: int = 3536
+const AU_SIM_STATE_BYTES: int = 16448
+const AU_SIM_TABLE_OFFSET: int = 64
+const AU_SIM_MAX_BUFFERS: int = 256
+const AU_SIM_MAX_SAMPLES: int = 13230000
+const AU_SIM_ENTRY_BYTES: int = 64
+
+const AU_SIM_INITIALIZED: int = 0
+const AU_SIM_NEXT_HANDLE: int = 8
+const AU_SIM_COUNT: int = 16
+const AU_SIM_TOTAL_SAMPLES: int = 24
+const AU_SIM_CURRENT_HANDLE: int = 32
+const AU_SIM_PROCESS_HANDLE: int = 40
+const AU_SIM_BACKEND: int = 48
+
+const AU_SIM_HANDLE: int = 0
+const AU_SIM_FREQUENCY: int = 8
+const AU_SIM_DURATION_MS: int = 16
+const AU_SIM_SAMPLE_COUNT: int = 24
+const AU_SIM_VOLUME: int = 32
+const AU_SIM_PLAYING: int = 40
+const AU_SIM_LOOPING: int = 48
+
+fn au_argv(tool: string, args: any) -> any {
+    let mut argv = [tool]
+    let mut i = 0
+    let n = rt_seq_len(args)
+    while i < n {
+        argv = std::array::push(argv, rt_seq_get(args, i))
+        i += 1
+    }
+    argv
+}
+
+fn au_process_error(function: string, tool: string, error: string) -> any {
+    if std::text::contains(error, "spawn error: No such file or directory") {
+        rt_native_fail(function, "termux-api tool '" + tool + "' is not installed. Run: pkg install termux-api")
+    }
+    let detail = std::text::replace(error, "native function 'std::process::run' failed: ", "")
+    let detail = std::text::replace(detail, "spawn error: ", "")
+    let detail = std::text::replace(detail, "process io error: ", "")
+    rt_native_fail(function, "audio I/O error: " + detail)
+}
+
+// Match audio_player::backend()'s available-backend search order using real
+// files in PATH. No shell command or guessed backend name is returned.
+fn au_cstrlen(pointer: int) -> int {
+    let mut length = 0
+    while std::raw::load8(pointer + length) != 0 { length += 1 }
+    length
+}
+
+fn au_backend_file_is_usable(path: string, windows: bool) -> bool {
+    if windows { return std::fs::is_file(path) }
+    let mode = rt_stat_mode(path)
+    // S_IFMT/S_IFREG and S_IXUSR|S_IXGRP|S_IXOTH from POSIX stat.
+    mode >= 0 && (mode & 61440) == 32768 && (mode & 73) != 0
+}
+
+fn au_path_has_program(path: int, program: string, separator: int, windows: bool) -> bool {
+    let path_length = au_cstrlen(path)
+    let program_object = std::raw::bits(program) + 16
+    let program_length = rt_slen(program)
+    let mut start = 0
+    loop {
+        let mut end = start
+        while end < path_length && std::raw::load8(path + end) != separator {
+            end += 1
+        }
+        let segment_length = end - start
+        let mut slash = 0
+        if segment_length > 0 {
+            let last = std::raw::load8(path + end - 1)
+            if last != 47 && (!windows || last != 92) { slash = 1 }
+        }
+        let candidate = rt_str_alloc(segment_length + slash + program_length)
+        if segment_length > 0 {
+            rt_copy(candidate + 16, path + start, segment_length)
+        }
+        if slash == 1 {
+            std::raw::store8(candidate + 16 + segment_length, 47)
+        }
+        rt_copy(candidate + 16 + segment_length + slash, program_object, program_length)
+        if au_backend_file_is_usable(rt_sval(candidate), windows) {
+            return true
+        }
+        if end >= path_length { break }
+        start = end + 1
+    }
+    false
+}
+
+fn au_has_player_program(path: int, program: string, separator: int, windows: bool) -> bool {
+    let filename = if windows { program + ".exe" } else { program }
+    au_path_has_program(path, filename, separator, windows)
+}
+
+fn std__audio__player_backend() -> string {
+    let active = au_player_active_backend()
+    if active != "" { return active }
+    let path = rt_getenv("PATH")
+    if path == 0 { return "" }
+    let length = au_cstrlen(path)
+    let mut separator = 58
+    let mut windows = false
+    let mut i = 0
+    while i < length {
+        if std::raw::load8(path + i) == 59 {
+            separator = 59
+            windows = true
+            break
+        }
+        i += 1
+    }
+    if au_has_player_program(path, "mpv", separator, windows) { return "mpv" }
+    if au_has_player_program(path, "afplay", separator, windows) { return "afplay" }
+    if au_has_player_program(path, "paplay", separator, windows) { return "paplay" }
+    if au_has_player_program(path, "aplay", separator, windows) { return "aplay" }
+    if au_has_player_program(path, "ffplay", separator, windows) { return "ffplay" }
+    if windows && au_has_player_program(path, "powershell", separator, windows) {
+        return "soundplayer"
+    }
+    ""
+}
+
+fn au_termux_available() -> bool {
+    let path = rt_getenv("PATH")
+    if path == 0 { return false }
+    let length = au_cstrlen(path)
+    let mut separator = 58
+    let mut windows = false
+    let mut i = 0
+    while i < length {
+        if std::raw::load8(path + i) == 59 {
+            separator = 59
+            windows = true
+            break
+        }
+        i += 1
+    }
+    au_path_has_program(path, "termux-media-player", separator, windows)
+}
+
+fn au_sim_state() -> int {
+    let slot = std::raw::globals() + AU_SIM_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(AU_SIM_STATE_BYTES)
+    std::raw::store(created + AU_SIM_NEXT_HANDLE, 1)
+    std::raw::store(slot, created)
+    created
+}
+
+fn au_sim_entry(state: int, index: int) -> int {
+    state + AU_SIM_TABLE_OFFSET + AU_SIM_ENTRY_BYTES * index
+}
+
+fn au_sim_find(state: int, handle: int) -> int {
+    if handle <= 0 { return -1 }
+    let count = std::raw::load(state + AU_SIM_COUNT)
+    let mut i = 0
+    while i < count {
+        if std::raw::load(au_sim_entry(state, i) + AU_SIM_HANDLE) == handle {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn au_sim_path(handle: int) -> string {
+    "/tmp/titan-sim-audio-" + rt_int_to_str(std__process__self_pid()) + "-" + rt_int_to_str(handle) + ".wav"
+}
+
+fn au_sim_remove_wave(handle: int) {
+    if handle <= 0 { return }
+    let path = au_sim_path(handle)
+    let _ = std::try::catch(|| std::fs::remove_file(path))
+}
+
+fn au_sim_stop_current(state: int) -> bool {
+    let handle = std::raw::load(state + AU_SIM_CURRENT_HANDLE)
+    let process = std::raw::load(state + AU_SIM_PROCESS_HANDLE)
+    let backend = std::raw::load(state + AU_SIM_BACKEND)
+    if handle <= 0 { return false }
+    if backend == 2 {
+        let _ = std::try::catch(|| std__audio__stop())
+    } else if process > 0 {
+        let _ = std::try::catch(|| std__process__spawn_kill(process))
+        let _ = std::try::catch(|| std__process__spawn_wait(process))
+    }
+    let index = au_sim_find(state, handle)
+    if index >= 0 {
+        std::raw::store(au_sim_entry(state, index) + AU_SIM_PLAYING, 0)
+    }
+    au_sim_remove_wave(handle)
+    std::raw::store(state + AU_SIM_CURRENT_HANDLE, 0)
+    std::raw::store(state + AU_SIM_PROCESS_HANDLE, 0)
+    std::raw::store(state + AU_SIM_BACKEND, 0)
+    true
+}
+
+fn au_sim_reap_current(state: int) -> bool {
+    let handle = std::raw::load(state + AU_SIM_CURRENT_HANDLE)
+    let process = std::raw::load(state + AU_SIM_PROCESS_HANDLE)
+    if handle <= 0 || process <= 0 { return false }
+    let finished = match std::try::catch(|| std__process__spawn_poll(process)) {
+        Result::Ok(result) => match result {
+            Option::Some(_) => true,
+            Option::None => false,
+            _ => false,
+        },
+        Result::Err(_) => false,
+    }
+    if !finished { return false }
+    let _ = std::try::catch(|| std__process__spawn_wait(process))
+    let index = au_sim_find(state, handle)
+    if index >= 0 {
+        std::raw::store(au_sim_entry(state, index) + AU_SIM_PLAYING, 0)
+    }
+    au_sim_remove_wave(handle)
+    std::raw::store(state + AU_SIM_CURRENT_HANDLE, 0)
+    std::raw::store(state + AU_SIM_PROCESS_HANDLE, 0)
+    std::raw::store(state + AU_SIM_BACKEND, 0)
+    true
+}
+
+fn au_sim_start(state: int, index: int, backend: string) -> bool {
+    let entry = au_sim_entry(state, index)
+    let handle = std::raw::load(entry + AU_SIM_HANDLE)
+    let frequency = std::raw::value(2, std::raw::load(entry + AU_SIM_FREQUENCY))
+    let duration = std::raw::load(entry + AU_SIM_DURATION_MS)
+    let volume = std::raw::value(2, std::raw::load(entry + AU_SIM_VOLUME))
+    let path = au_sim_path(handle)
+    let samples = std__audio__sine_wave(frequency, duration, 44100, volume)
+    let written = match std::try::catch(|| std__audio__write_wav(path, samples, 44100, 1)) {
+        Result::Ok(_) => true,
+        Result::Err(_) => false,
+    }
+    if !written { return false }
+
+    let looping = std::raw::load(entry + AU_SIM_LOOPING) != 0
+    if backend == "termux" {
+        if looping {
+            au_sim_remove_wave(handle)
+            return false
+        }
+        let result = std::try::catch(|| std__audio__play(path))
+        let started = match result {
+            Result::Ok(_) => true,
+            Result::Err(_) => false,
+        }
+        if !started {
+            au_sim_remove_wave(handle)
+            return false
+        }
+        std::raw::store(state + AU_SIM_CURRENT_HANDLE, handle)
+        std::raw::store(state + AU_SIM_PROCESS_HANDLE, 0)
+        std::raw::store(state + AU_SIM_BACKEND, 2)
+        std::raw::store(entry + AU_SIM_PLAYING, 1)
+        return true
+    }
+    let command = if backend == "mpv" {
+        if looping {
+            "mpv --no-video --no-terminal --really-quiet --loop-file=inf -- " + path
+        } else {
+            "mpv --no-video --no-terminal --really-quiet -- " + path
+        }
+    } else if backend == "afplay" && !looping {
+        "afplay " + path
+    } else if backend == "paplay" && !looping {
+        "paplay " + path
+    } else if backend == "aplay" && !looping {
+        "aplay -q " + path
+    } else if backend == "ffplay" && !looping {
+        "ffplay -nodisp -autoexit -loglevel quiet " + path
+    } else {
+        au_sim_remove_wave(handle)
+        return false
+    }
+    let process = match std::try::catch(|| std__process__spawn(command)) {
+        Result::Ok(value) => std::raw::bits(value),
+        Result::Err(_) => 0,
+    }
+    if process <= 0 {
+        au_sim_remove_wave(handle)
+        return false
+    }
+    std::raw::store(state + AU_SIM_CURRENT_HANDLE, handle)
+    std::raw::store(state + AU_SIM_PROCESS_HANDLE, process)
+    std::raw::store(state + AU_SIM_BACKEND, 1)
+    std::raw::store(entry + AU_SIM_PLAYING, 1)
+    true
+}
+
+fn std__audio__sim_init() -> bool {
+    let state = au_sim_state()
+    let backend = std__audio__player_backend()
+    let ready = backend == "mpv" || backend == "afplay" || backend == "paplay" || backend == "aplay" || backend == "ffplay" || au_termux_available()
+    std::raw::store(state + AU_SIM_INITIALIZED, if ready { 1 } else { 0 })
+    ready
+}
+
+fn std__audio__sim_load_wave(frequency_hz: float, duration_ms: int) -> int {
+    let frequency_bits = std::raw::bits(frequency_hz)
+    let frequency = std::raw::value(2, frequency_bits)
+    let exponent = frequency_bits & 9218868437227405312
+    if exponent == 9218868437227405312 || frequency <= 0.0 || duration_ms < 1 || duration_ms > 60000 {
+        return -1
+    }
+    let state = au_sim_state()
+    if std::raw::load(state + AU_SIM_INITIALIZED) == 0 { return -1 }
+    let count = std::raw::load(state + AU_SIM_COUNT)
+    if count >= AU_SIM_MAX_BUFFERS { return -1 }
+    let sample_count = duration_ms * 44100 / 1000
+    let total = std::raw::load(state + AU_SIM_TOTAL_SAMPLES)
+    if total + sample_count > AU_SIM_MAX_SAMPLES { return -1 }
+    let handle = std::raw::load(state + AU_SIM_NEXT_HANDLE)
+    if handle <= 0 || handle >= 9223372036854775807 { return -1 }
+    let entry = au_sim_entry(state, count)
+    std::raw::store(entry + AU_SIM_HANDLE, handle)
+    std::raw::store(entry + AU_SIM_FREQUENCY, frequency_bits)
+    std::raw::store(entry + AU_SIM_DURATION_MS, duration_ms)
+    std::raw::store(entry + AU_SIM_SAMPLE_COUNT, sample_count)
+    std::raw::store(entry + AU_SIM_VOLUME, std::raw::bits(1.0))
+    std::raw::store(entry + AU_SIM_PLAYING, 0)
+    std::raw::store(entry + AU_SIM_LOOPING, 0)
+    std::raw::store(state + AU_SIM_COUNT, count + 1)
+    std::raw::store(state + AU_SIM_TOTAL_SAMPLES, total + sample_count)
+    std::raw::store(state + AU_SIM_NEXT_HANDLE, handle + 1)
+    handle
+}
+
+fn std__audio__sim_sample_count(handle: int) -> int {
+    let state = au_sim_state()
+    let index = au_sim_find(state, std::raw::bits(handle))
+    if index < 0 { return 0 }
+    std::raw::load(au_sim_entry(state, index) + AU_SIM_SAMPLE_COUNT)
+}
+
+fn std__audio__sim_play(handle: int, loop_audio: bool) -> bool {
+    let state = au_sim_state()
+    if std::raw::load(state + AU_SIM_INITIALIZED) == 0 { return false }
+    let index = au_sim_find(state, std::raw::bits(handle))
+    if index < 0 { return false }
+    let mut backend = std__audio__player_backend()
+    if backend == "" && au_termux_available() { backend = "termux" }
+    if backend == "" || (loop_audio && backend != "mpv") { return false }
+    au_sim_stop_current(state)
+    let entry = au_sim_entry(state, index)
+    std::raw::store(entry + AU_SIM_LOOPING, if loop_audio { 1 } else { 0 })
+    au_sim_start(state, index, backend)
+}
+
+fn std__audio__sim_set_volume(handle: int, volume: float) -> bool {
+    let bits = std::raw::bits(volume)
+    if (bits & 9218868437227405312) == 9218868437227405312 { return false }
+    let number = std::raw::value(2, bits)
+    let clamped = if number < 0.0 {
+        std::raw::bits(0.0)
+    } else if number > 1.0 {
+        std::raw::bits(1.0)
+    } else {
+        bits
+    }
+    let state = au_sim_state()
+    let index = au_sim_find(state, std::raw::bits(handle))
+    if index < 0 { return false }
+    let entry = au_sim_entry(state, index)
+    std::raw::store(entry + AU_SIM_VOLUME, clamped)
+    if std::raw::load(entry + AU_SIM_PLAYING) == 0 { return true }
+    if std::raw::load(state + AU_SIM_CURRENT_HANDLE) == std::raw::bits(handle)
+        && std::raw::load(state + AU_SIM_BACKEND) == 1
+        && au_sim_reap_current(state) {
+        return true
+    }
+    let mut backend = std__audio__player_backend()
+    if backend == "" && au_termux_available() { backend = "termux" }
+    let looping = std::raw::load(entry + AU_SIM_LOOPING) != 0
+    if backend == "" || (looping && backend != "mpv") { return false }
+    au_sim_stop_current(state)
+    std::raw::store(entry + AU_SIM_LOOPING, if looping { 1 } else { 0 })
+    au_sim_start(state, index, backend)
+}
+
+fn std__audio__sim_stop(handle: int) -> bool {
+    let state = au_sim_state()
+    let index = au_sim_find(state, std::raw::bits(handle))
+    if index < 0 { return false }
+    if std::raw::load(state + AU_SIM_CURRENT_HANDLE) == std::raw::bits(handle) {
+        au_sim_stop_current(state)
+    } else {
+        std::raw::store(au_sim_entry(state, index) + AU_SIM_PLAYING, 0)
+        au_sim_remove_wave(std::raw::bits(handle))
+    }
+    true
+}
+
+// Capture the real CLI's output. Errors deliberately match AudioError's
+// MissingCli, Io, and Failed displays rather than returning simulated status.
+fn au_cli_output(function: string, tool: string, args: any) -> any {
+    let argv = au_argv(tool, args)
+    let result = match std::try::catch(|| std__process__run_argv(argv)) {
+        Result::Ok(value) => value,
+        Result::Err(error) => au_process_error(function, tool, error),
+    }
+    let status = std::map::get(result, "exit_code")
+    if status != 0 {
+        let stderr = dr_lossy(std::map::get(result, "stderr"))
+        rt_native_fail(function, "termux-api '" + tool + "' failed: " + stderr)
+    }
+    std::map::get(result, "stdout")
+}
+
+// The Rust dispatch validates its u32 arguments before entering audio_mod.
+fn au_u32_arg(value: int, function: string, label: string) -> int {
+    if value < 0 || value > 4294967295 {
+        rt_native_fail(function, label + " out of range")
+    }
+    value
+}
+
+// Compute floor(duration_ms * sample_rate / 1000) without overflowing the
+// signed Titan integer: both public operands are u32 and the result fits i64.
+fn au_sample_count(duration_ms: int, sample_rate: int, function: string) -> int {
+    let duration = au_u32_arg(duration_ms, function, "duration_ms")
+    let rate = au_u32_arg(sample_rate, function, "sample_rate")
+    duration * (rate / 1000) + (duration * (rate % 1000)) / 1000
+}
+
+fn au_clamp_amplitude(value: float) -> int {
+    let bits = vec_f32(std::raw::bits(value))
+    let number = std::raw::value(2, bits)
+    if number < 0.0 {
+        return std::raw::bits(0.0)
+    }
+    if number > 1.0 {
+        return std::raw::bits(1.0)
+    }
+    bits
+}
+
+// Match the f32 casts and operation boundaries in audio_mod's waveform code.
+fn au_sine_sample(index: int, rate_f32: int, frequency_f32: int) -> int {
+    let time = vec_f32(std::raw::fdiv(vec_f32(std::raw::ffromint(index)), rate_f32))
+    let two = std::raw::bits(2.0)
+    let pi = vec_f32(std::raw::bits(3.141592653589793))
+    let two_pi = vec_f32(std::raw::fmul(two, pi))
+    let angular = vec_f32(std::raw::fmul(two_pi, frequency_f32))
+    let phase = vec_f32(std::raw::fmul(angular, time))
+    let sine = std::math::sin(std::raw::value(2, phase))
+    vec_f32(std::raw::bits(sine))
+}
+
+// Convert a f32-rounded value (stored as f64 bits) back to its IEEE binary32
+// payload. vec_f32 guarantees that every nonzero finite input here is an exact
+// f32 value, including subnormals.
+fn au_f32_raw(bits: int) -> int {
+    let sign = std::raw::shr(bits, 32) & 2147483648
+    let exponent = std::raw::shr(bits, 52) & 2047
+    let fraction = bits & 4503599627370495
+    if exponent == 0 {
+        return sign
+    }
+    if exponent == 2047 {
+        if fraction == 0 {
+            return sign | 2139095040
+        }
+        return sign | 2143289344
+    }
+    let unbiased = exponent - 1023
+    if unbiased >= -126 {
+        return sign | std::raw::shl(unbiased + 127, 23) | std::raw::shr(fraction, 29)
+    }
+    let significand = 4503599627370496 | fraction
+    let shift = 0 - unbiased - 97
+    sign | std::raw::shr(significand, shift)
+}
+
+// f32 remainder using integer significands. Unlike x - trunc(x/y)*y, this
+// computes the exact IEEE remainder even when the quotient is too large for an
+// integer or intermediate f32 multiplication would round differently.
+fn au_f32_remainder(a_bits: int, b_bits: int) -> int {
+    let a = au_f32_raw(a_bits)
+    let b = au_f32_raw(b_bits)
+    let sign = a & 2147483648
+    let ax = a & 2147483647
+    let bx = b & 2147483647
+    let exponent_a = std::raw::shr(ax, 23) & 255
+    let exponent_b = std::raw::shr(bx, 23) & 255
+    let fraction_a = ax & 8388607
+    let fraction_b = bx & 8388607
+    let nan = 2143289344
+
+    if exponent_a == 255 {
+        return au_f32_as_f64(nan)
+    }
+    if exponent_b == 255 {
+        if fraction_b != 0 {
+            return au_f32_as_f64(nan)
+        }
+        return au_f32_as_f64(a)
+    }
+    if bx == 0 {
+        return au_f32_as_f64(nan)
+    }
+    if ax == 0 || ax < bx {
+        return au_f32_as_f64(a)
+    }
+
+    let mut mantissa_a = fraction_a
+    let mut power_a = -126
+    if exponent_a != 0 {
+        mantissa_a = fraction_a + 8388608
+        power_a = exponent_a - 127
+    } else {
+        while mantissa_a < 8388608 {
+            mantissa_a = mantissa_a * 2
+            power_a -= 1
+        }
+    }
+    let mut mantissa_b = fraction_b
+    let mut power_b = -126
+    if exponent_b != 0 {
+        mantissa_b = fraction_b + 8388608
+        power_b = exponent_b - 127
+    } else {
+        while mantissa_b < 8388608 {
+            mantissa_b = mantissa_b * 2
+            power_b -= 1
+        }
+    }
+
+    let mut gap = power_a - power_b
+    let mut factor = 1
+    let mut base = 2 % mantissa_b
+    while gap > 0 {
+        if gap % 2 == 1 {
+            factor = (factor * base) % mantissa_b
+        }
+        base = (base * base) % mantissa_b
+        gap = gap / 2
+    }
+    let remainder = ((mantissa_a % mantissa_b) * factor) % mantissa_b
+    if remainder == 0 {
+        return au_f32_as_f64(sign)
+    }
+
+    let mut leading = 1
+    let mut leading_bit = 0
+    while leading * 2 <= remainder {
+        leading = leading * 2
+        leading_bit += 1
+    }
+    let result_power = power_b - 23 + leading_bit
+    if result_power >= -126 {
+        let normalized = std::raw::shl(remainder, 23 - leading_bit)
+        let exponent = result_power + 127
+        let raw = sign | std::raw::shl(exponent, 23) | (normalized - 8388608)
+        return au_f32_as_f64(raw)
+    }
+    let shift = power_b + 126
+    let subnormal = if shift >= 0 {
+        std::raw::shl(remainder, shift)
+    } else {
+        std::raw::shr(remainder, 0 - shift)
+    }
+    au_f32_as_f64(sign | subnormal)
+}
+
+fn std__audio__sine_wave(frequency_hz: float, duration_ms: int, sample_rate: int, amplitude: float) -> any {
+    let count = au_sample_count(duration_ms, sample_rate, "std::audio::sine_wave")
+    let rate = vec_f32(std::raw::ffromint(sample_rate))
+    let frequency = vec_f32(std::raw::bits(frequency_hz))
+    let amp = au_clamp_amplitude(amplitude)
+    let result = rt_seq_alloc(7, count, count)
+    let data = rt_seq_data(result)
+    let mut i = 0
+    while i < count {
+        let sample = vec_f32(std::raw::fmul(amp, au_sine_sample(i, rate, frequency)))
+        rt_seq_put(data, i, std::raw::value(2, sample))
+        i += 1
+    }
+    result
+}
+
+fn std__audio__square_wave(frequency_hz: float, duration_ms: int, sample_rate: int, amplitude: float) -> any {
+    let count = au_sample_count(duration_ms, sample_rate, "std::audio::square_wave")
+    let rate = vec_f32(std::raw::ffromint(sample_rate))
+    let frequency = vec_f32(std::raw::bits(frequency_hz))
+    let amp = au_clamp_amplitude(amplitude)
+    let amp_value = std::raw::value(2, amp)
+    let negative_amp = vec_f32(std::raw::bits(-amp_value))
+    let result = rt_seq_alloc(7, count, count)
+    let data = rt_seq_data(result)
+    let mut i = 0
+    while i < count {
+        let sine = std::raw::value(2, au_sine_sample(i, rate, frequency))
+        let sample = if sine >= 0.0 { amp } else { negative_amp }
+        rt_seq_put(data, i, std::raw::value(2, sample))
+        i += 1
+    }
+    result
+}
+
+fn std__audio__saw_wave(frequency_hz: float, duration_ms: int, sample_rate: int, amplitude: float) -> any {
+    let count = au_sample_count(duration_ms, sample_rate, "std::audio::saw_wave")
+    let rate = vec_f32(std::raw::ffromint(sample_rate))
+    let frequency = vec_f32(std::raw::bits(frequency_hz))
+    let period = vec_f32(std::raw::fdiv(rate, frequency))
+    let amp = au_clamp_amplitude(amplitude)
+    let two = std::raw::bits(2.0)
+    let one = std::raw::bits(1.0)
+    let result = rt_seq_alloc(7, count, count)
+    let data = rt_seq_data(result)
+    let mut i = 0
+    while i < count {
+        let index = vec_f32(std::raw::ffromint(i))
+        let remainder = au_f32_remainder(index, period)
+        let phase = vec_f32(std::raw::fdiv(remainder, period))
+        let doubled = vec_f32(std::raw::fmul(two, phase))
+        let centered = vec_f32(std::raw::fsub(doubled, one))
+        let sample = vec_f32(std::raw::fmul(amp, centered))
+        rt_seq_put(data, i, std::raw::value(2, sample))
+        i += 1
+    }
+    result
+}
+
+fn std__audio__white_noise(duration_ms: int, sample_rate: int, amplitude: float) -> any {
+    let count = au_sample_count(duration_ms, sample_rate, "std::audio::white_noise")
+    let amp = au_clamp_amplitude(amplitude)
+    let two = std::raw::bits(2.0)
+    let one = std::raw::bits(1.0)
+    let divisor = std::raw::bits(16777216.0)
+    let result = rt_seq_alloc(7, count, count)
+    let data = rt_seq_data(result)
+    let mut state = 2654435769
+    let mut i = 0
+    while i < count {
+        state = (state * 1664525 + 1013904223) & 4294967295
+        let unit = vec_f32(std::raw::fdiv(vec_f32(std::raw::ffromint(std::raw::shr(state, 8))), divisor))
+        let doubled = vec_f32(std::raw::fmul(unit, two))
+        let centered = vec_f32(std::raw::fsub(doubled, one))
+        let sample = vec_f32(std::raw::fmul(amp, centered))
+        rt_seq_put(data, i, std::raw::value(2, sample))
+        i += 1
+    }
+    result
+}
+
+fn std__audio__is_termux_media_available() -> bool {
+    let null = rt_open("/dev/null", 524290, 0) // O_RDWR | O_CLOEXEC
+    if null < 0 {
+        return false
+    }
+    let pid = ps_spawn(["termux-media-player", "info"], null, null, null)
+    ps_close(null)
+    pid > 0
+}
+
+fn std__audio__play(path: string) -> string {
+    au_cli_output("std::audio::play", "termux-media-player", ["play", path])
+}
+
+fn std__audio__pause() -> string {
+    au_cli_output("std::audio::pause", "termux-media-player", ["pause"])
+}
+
+fn std__audio__resume() -> string {
+    au_cli_output("std::audio::resume", "termux-media-player", ["play"])
+}
+
+fn std__audio__stop() -> string {
+    au_cli_output("std::audio::stop", "termux-media-player", ["stop"])
+}
+
+fn std__audio__info() -> string {
+    au_cli_output("std::audio::info", "termux-media-player", ["info"])
+}
+
+fn std__audio__record_start(path: string, seconds: int) -> string {
+    if seconds < 0 || seconds > 4294967295 {
+        rt_native_fail("std::audio::record_start", "seconds out of range")
+    }
+    au_cli_output("std::audio::record_start", "termux-microphone-record", ["-f", path, "-l", rt_int_to_str(seconds)])
+}
+
+fn std__audio__record_stop() -> string {
+    au_cli_output("std::audio::record_stop", "termux-microphone-record", ["-q"])
+}
+
+fn std__audio__record_info() -> string {
+    au_cli_output("std::audio::record_info", "termux-microphone-record", ["-i"])
+}
+
+// Hound's encode_wav/write_wav path is PCM signed 16-bit little-endian.
+// Convert each input exactly as the VM does (array number -> f32, clamp,
+// multiply by i16::MAX as f32, then truncate toward zero).
+fn au_wav_pcm_sample(value: any, function: string) -> int {
+    let tag = std::raw::tag(value)
+    let bits = if tag == 1 {
+        std::raw::ffromint(std::raw::bits(value))
+    } else if tag == 2 {
+        std::raw::bits(value)
+    } else {
+        rt_native_fail(function, "audio sample array must contain numbers")
+        0
+    }
+    let sample_bits = vec_f32(bits)
+    let sample = std::raw::value(2, sample_bits)
+    let clipped = if sample < -1.0 {
+        std::raw::bits(-1.0)
+    } else if sample > 1.0 {
+        std::raw::bits(1.0)
+    } else {
+        sample_bits
+    }
+    let scaled = vec_f32(std::raw::fmul(clipped, vec_f32(std::raw::bits(32767.0))))
+    if rt_is_nan(scaled) { return 0 }
+    std::raw::ftoint(scaled)
+}
+
+fn au_wav_store_u16(ptr: int, value: int) {
+    std::raw::store8(ptr, value & 255)
+    std::raw::store8(ptr + 1, (value / 256) & 255)
+}
+
+fn au_wav_store_u32(ptr: int, value: int) {
+    std::raw::store8(ptr, value & 255)
+    std::raw::store8(ptr + 1, (value / 256) & 255)
+    std::raw::store8(ptr + 2, (value / 65536) & 255)
+    std::raw::store8(ptr + 3, (value / 16777216) & 255)
+}
+
+fn au_encode_wav(samples_value: any, rate_value: any, channels_value: any, function: string) -> any {
+    rt_expect_array(samples_value, function)
+    let count = rt_seq_len(samples_value)
+    let pcm = rt_seq_alloc(7, count, count)
+    let pcm_data = rt_seq_data(pcm)
+    let mut i = 0
+    while i < count {
+        let sample = au_wav_pcm_sample(rt_seq_get(samples_value, i), function)
+        rt_seq_put(pcm_data, i, std::raw::value(1, sample))
+        i += 1
+    }
+
+    rt_expect_int(rate_value, function)
+    let sample_rate = std::raw::bits(rate_value)
+    if sample_rate < 0 || sample_rate > 4294967295 {
+        rt_native_fail(function, "sample_rate out of range")
+    }
+    rt_expect_int(channels_value, function)
+    let channels = std::raw::bits(channels_value)
+    if channels < 0 || channels > 65535 {
+        rt_native_fail(function, "channels out of range")
+    }
+    if channels == 0 {
+        rt_native_fail(function, "invalid parameter: channels must be >= 1")
+    }
+
+    let data_bytes = count * 2
+    let file_bytes = 44 + data_bytes
+    let out = rt_str_alloc(file_bytes)
+    let p = out + 16
+    // RIFF/WAVE + canonical 16-byte PCM fmt chunk + data chunk.
+    std::raw::store8(p, 82)
+    std::raw::store8(p + 1, 73)
+    std::raw::store8(p + 2, 70)
+    std::raw::store8(p + 3, 70)
+    au_wav_store_u32(p + 4, 36 + data_bytes)
+    std::raw::store8(p + 8, 87)
+    std::raw::store8(p + 9, 65)
+    std::raw::store8(p + 10, 86)
+    std::raw::store8(p + 11, 69)
+    std::raw::store8(p + 12, 102)
+    std::raw::store8(p + 13, 109)
+    std::raw::store8(p + 14, 116)
+    std::raw::store8(p + 15, 32)
+    au_wav_store_u32(p + 16, 16)
+    au_wav_store_u16(p + 20, 1)
+    au_wav_store_u16(p + 22, channels)
+    au_wav_store_u32(p + 24, sample_rate)
+    au_wav_store_u32(p + 28, sample_rate * channels * 2)
+    au_wav_store_u16(p + 32, channels * 2)
+    au_wav_store_u16(p + 34, 16)
+    std::raw::store8(p + 36, 100)
+    std::raw::store8(p + 37, 97)
+    std::raw::store8(p + 38, 116)
+    std::raw::store8(p + 39, 97)
+    au_wav_store_u32(p + 40, data_bytes)
+    i = 0
+    while i < count {
+        let value = std::raw::bits(rt_seq_get(pcm, i)) & 65535
+        au_wav_store_u16(p + 44 + 2 * i, value)
+        i += 1
+    }
+    std::raw::adopt(6, out)
+}
+
+fn std__audio__encode_wav(samples: any, sample_rate: any, channels: any) -> any {
+    au_encode_wav(samples, sample_rate, channels, "std::audio::encode_wav")
+}
+
+fn std__audio__write_wav(path: any, samples: any, sample_rate: any, channels: any) -> any {
+    let function = "std::audio::write_wav"
+    rt_expect_str(path, function)
+    let wav = au_encode_wav(samples, sample_rate, channels, function)
+    match std::try::catch(|| std::fs::write_bytes(path, wav)) {
+        Result::Ok(_) => nil,
+        Result::Err(error) => {
+            let detail = std::text::replace(error, "native function 'std::fs::write_bytes' failed: ", "")
+            // audio_mod::write_wav maps hound::Error through AudioError::Wav,
+            // so even an underlying filesystem failure is reported as WAV error.
+            rt_native_fail(function, "WAV error: " + detail)
+        },
+    }
+    nil
+}
+
+// Hound-compatible WAV decoding. The reader walks RIFF chunks, supports PCM
+// (8/16/24/32-bit, including 24-bit samples in four-byte containers), IEEE
+// float32, and WAVEFORMATEXTENSIBLE PCM/float. It returns the same normalized
+// f32 samples and metadata as audio_mod::read_wav{,_bytes}.
+fn au_wav_read_error(function: string, detail: string) {
+    rt_native_fail(function, "WAV error: " + detail)
+}
+
+fn au_wav_require(total: int, offset: int, count: int, function: string) {
+    if offset < 0 || count < 0 || offset > total || count > total - offset {
+        au_wav_read_error(function, "Failed to read enough bytes.")
+    }
+}
+
+fn au_wav_u16(ptr: int, total: int, offset: int, function: string) -> int {
+    au_wav_require(total, offset, 2, function)
+    std::raw::load8(ptr + offset) + std::raw::load8(ptr + offset + 1) * 256
+}
+
+fn au_wav_u32(ptr: int, total: int, offset: int, function: string) -> int {
+    au_wav_require(total, offset, 4, function)
+    std::raw::load8(ptr + offset) + std::raw::load8(ptr + offset + 1) * 256 + std::raw::load8(ptr + offset + 2) * 65536 + std::raw::load8(ptr + offset + 3) * 16777216
+}
+
+fn au_wav_tag(ptr: int, offset: int, a: int, b: int, c: int, d: int) -> bool {
+    std::raw::load8(ptr + offset) == a && std::raw::load8(ptr + offset + 1) == b && std::raw::load8(ptr + offset + 2) == c && std::raw::load8(ptr + offset + 3) == d
+}
+
+fn au_wav_guid(ptr: int, offset: int, subtype: int) -> bool {
+    std::raw::load8(ptr + offset) == subtype &&
+    std::raw::load8(ptr + offset + 1) == 0 &&
+    std::raw::load8(ptr + offset + 2) == 0 &&
+    std::raw::load8(ptr + offset + 3) == 0 &&
+    std::raw::load8(ptr + offset + 4) == 0 &&
+    std::raw::load8(ptr + offset + 5) == 0 &&
+    std::raw::load8(ptr + offset + 6) == 16 &&
+    std::raw::load8(ptr + offset + 7) == 0 &&
+    std::raw::load8(ptr + offset + 8) == 128 &&
+    std::raw::load8(ptr + offset + 9) == 0 &&
+    std::raw::load8(ptr + offset + 10) == 0 &&
+    std::raw::load8(ptr + offset + 11) == 170 &&
+    std::raw::load8(ptr + offset + 12) == 0 &&
+    std::raw::load8(ptr + offset + 13) == 56 &&
+    std::raw::load8(ptr + offset + 14) == 155 &&
+    std::raw::load8(ptr + offset + 15) == 113
+}
+
+// Convert an IEEE-754 binary32 payload to the exact binary64 value Titan uses.
+fn au_f32_as_f64(raw: int) -> int {
+    let mut sign = 0
+    if raw >= 2147483648 {
+        sign = -9223372036854775807 - 1
+    }
+    let exponent = std::raw::shr(raw, 23) & 255
+    let fraction = raw & 8388607
+    if exponent == 255 {
+        if fraction == 0 {
+            return sign | 9218868437227405312
+        }
+        // A cast from f32 to f64 quiets signaling NaNs and carries the payload.
+        let quiet_fraction = (fraction | 4194304) * 536870912
+        return sign | 9218868437227405312 | quiet_fraction
+    }
+    if exponent > 0 {
+        return sign | std::raw::shl(exponent + 896, 52) | std::raw::shl(fraction, 29)
+    }
+    if fraction == 0 {
+        return sign
+    }
+    let mut leading = 1
+    let mut leading_bit = 0
+    while leading * 2 <= fraction {
+        leading = leading * 2
+        leading_bit += 1
+    }
+    let fraction64 = std::raw::shl(fraction - leading, 52 - leading_bit)
+    sign | std::raw::shl(874 + leading_bit, 52) | fraction64
+}
+
+fn au_wav_pcm_value(ptr: int, total: int, offset: int, bytes_per_sample: int, bits: int, function: string) -> int {
+    if bytes_per_sample == 1 && bits == 8 {
+        return std::raw::load8(ptr + offset) - 128
+    }
+    if bytes_per_sample == 2 && bits == 16 {
+        let value = std::raw::load8(ptr + offset) + std::raw::load8(ptr + offset + 1) * 256
+        if value >= 32768 {
+            return value - 65536
+        }
+        return value
+    }
+    if bytes_per_sample == 3 && bits == 24 {
+        let value = std::raw::load8(ptr + offset) + std::raw::load8(ptr + offset + 1) * 256 + std::raw::load8(ptr + offset + 2) * 65536
+        if value >= 8388608 {
+            return value - 16777216
+        }
+        return value
+    }
+    if bytes_per_sample == 4 && bits == 24 {
+        let value = au_wav_u32(ptr, total, offset, function) & 16777215
+        if value >= 8388608 {
+            return value - 16777216
+        }
+        return value
+    }
+    if bytes_per_sample == 4 && bits == 32 {
+        let value = au_wav_u32(ptr, total, offset, function)
+        if value >= 2147483648 {
+            return value - 4294967296
+        }
+        return value
+    }
+    if bytes_per_sample > 4 {
+        au_wav_read_error(function, "The sample has more bits than the destination type.")
+    }
+    au_wav_read_error(function, "The wave format of the file is not supported.")
+    0
+}
+
+fn au_wav_decode(bytes: any, function: string) -> any {
+    rt_expect_bytes(bytes, function)
+    let total = rt_slen(bytes)
+    let ptr = rt_bdata(bytes)
+
+    // Match Hound's ordered 12-byte RIFF/WAVE header checks.
+    au_wav_require(total, 0, 4, function)
+    if !au_wav_tag(ptr, 0, 82, 73, 70, 70) {
+        au_wav_read_error(function, "Ill-formed WAVE file: no RIFF tag found")
+    }
+    let _riff_len = au_wav_u32(ptr, total, 4, function)
+    au_wav_require(total, 8, 4, function)
+    if !au_wav_tag(ptr, 8, 87, 65, 86, 69) {
+        au_wav_read_error(function, "Ill-formed WAVE file: no WAVE tag found")
+    }
+
+    let mut offset = 12
+    let mut has_spec = false
+    let mut channels = 0
+    let mut sample_rate = 0
+    let mut bits = 0
+    let mut sample_format = 0 // 0 = signed integer PCM, 1 = IEEE float
+    let mut bytes_per_sample = 0
+    let mut data_offset = 0
+    let mut data_len = 0
+    let mut has_data = false
+
+    while !has_data {
+        au_wav_require(total, offset, 4, function)
+        let chunk_len = au_wav_u32(ptr, total, offset + 4, function)
+        let body = offset + 8
+        if au_wav_tag(ptr, offset, 102, 109, 116, 32) { // fmt
+            if chunk_len < 16 {
+                au_wav_read_error(function, "Ill-formed WAVE file: invalid fmt chunk size")
+            }
+            let format_tag = au_wav_u16(ptr, total, body, function)
+            channels = au_wav_u16(ptr, total, body + 2, function)
+            sample_rate = au_wav_u32(ptr, total, body + 4, function)
+            let byte_rate = au_wav_u32(ptr, total, body + 8, function)
+            let block_align = au_wav_u16(ptr, total, body + 12, function)
+            bits = au_wav_u16(ptr, total, body + 14, function)
+            if channels == 0 {
+                au_wav_read_error(function, "Ill-formed WAVE file: file contains zero channels")
+            }
+            bytes_per_sample = block_align / channels
+            if bytes_per_sample > 8191 || bits > bytes_per_sample * 8 {
+                au_wav_read_error(function, "Ill-formed WAVE file: sample bits exceeds size of sample")
+            }
+            let expected_byte_rate = block_align * sample_rate
+            if expected_byte_rate > 4294967295 || byte_rate != expected_byte_rate {
+                au_wav_read_error(function, "Ill-formed WAVE file: inconsistent fmt chunk")
+            }
+            if bits % 8 != 0 {
+                au_wav_read_error(function, "Ill-formed WAVE file: bits per sample is not a multiple of 8")
+            }
+            if bits == 0 {
+                au_wav_read_error(function, "Ill-formed WAVE file: bits per sample is 0")
+            }
+
+            let consumed = if format_tag == 1 {
+                if chunk_len == 16 {
+                    16
+                } else if chunk_len == 18 || chunk_len == 40 {
+                    au_wav_u16(ptr, total, body + 16, function) // cbSize, ignored for PCM
+                    if bits != 8 && bits != 16 && bits != 24 {
+                        au_wav_read_error(function, "Ill-formed WAVE file: bits per sample is not 8 or 16")
+                    }
+                    if chunk_len == 40 {
+                        au_wav_require(total, body, 40, function)
+                        40
+                    } else {
+                        18
+                    }
+                } else {
+                    au_wav_read_error(function, "Ill-formed WAVE file: unexpected fmt chunk size")
+                    0
+                }
+            } else if format_tag == 2 {
+                au_wav_read_error(function, "The wave format of the file is not supported.")
+                0
+            } else if format_tag == 3 {
+                if chunk_len == 16 {
+                    16
+                } else if chunk_len == 18 {
+                    let cb_size = au_wav_u16(ptr, total, body + 16, function)
+                    if cb_size != 0 {
+                        au_wav_read_error(function, "Ill-formed WAVE file: unexpected WAVEFORMATEX size")
+                    }
+                    18
+                } else {
+                    au_wav_read_error(function, "Ill-formed WAVE file: unexpected fmt chunk size")
+                    0
+                }
+            } else if format_tag == 65534 {
+                if chunk_len < 40 {
+                    au_wav_read_error(function, "Ill-formed WAVE file: unexpected fmt chunk size")
+                }
+                let cb_size = au_wav_u16(ptr, total, body + 16, function)
+                if cb_size != 22 {
+                    au_wav_read_error(function, "Ill-formed WAVE file: unexpected WAVEFORMATEXTENSIBLE size")
+                }
+                let valid_bits = au_wav_u16(ptr, total, body + 18, function)
+                let _channel_mask = au_wav_u32(ptr, total, body + 20, function)
+                au_wav_require(total, body + 24, 16, function)
+                if au_wav_guid(ptr, body + 24, 1) {
+                    sample_format = 0
+                } else if au_wav_guid(ptr, body + 24, 3) {
+                    sample_format = 1
+                } else {
+                    au_wav_read_error(function, "The wave format of the file is not supported.")
+                }
+                if valid_bits > 0 {
+                    bits = valid_bits
+                }
+                40
+            } else {
+                au_wav_read_error(function, "The wave format of the file is not supported.")
+                0
+            }
+            if format_tag == 3 && bits != 32 {
+                au_wav_read_error(function, "Ill-formed WAVE file: bits per sample is not 32")
+            }
+            if format_tag == 1 || (format_tag == 65534 && sample_format == 0) {
+                sample_format = 0
+            } else {
+                sample_format = 1
+            }
+            has_spec = true
+            offset = body + consumed
+        } else if au_wav_tag(ptr, offset, 102, 97, 99, 116) { // fact
+            let _sample_count = au_wav_u32(ptr, total, body, function)
+            offset = body + 4
+        } else if au_wav_tag(ptr, offset, 100, 97, 116, 97) { // data
+            if !has_spec {
+                au_wav_read_error(function, "Ill-formed WAVE file: missing fmt chunk")
+            }
+            data_offset = body
+            data_len = chunk_len
+            has_data = true
+            offset = body + chunk_len
+        } else {
+            au_wav_require(total, body, chunk_len, function)
+            offset = body + chunk_len
+        }
+    }
+
+    let sample_count = data_len / bytes_per_sample
+    if sample_count * bytes_per_sample != data_len {
+        au_wav_read_error(function, "Ill-formed WAVE file: data chunk length is not a multiple of sample size")
+    }
+    if sample_count % channels != 0 {
+        au_wav_read_error(function, "Ill-formed WAVE file: invalid data chunk length")
+    }
+
+    let samples = rt_seq_alloc(7, sample_count, sample_count)
+    let sample_data = rt_seq_data(samples)
+    let mut scale = 0
+    if sample_format == 0 {
+        scale = vec_f32(std::raw::ffromint(std::raw::shl(1, bits - 1)))
+    }
+    let mut i = 0
+    while i < sample_count {
+        let sample_offset = data_offset + i * bytes_per_sample
+        let sample_bits = if sample_format == 0 {
+            if bytes_per_sample > 4 {
+                au_wav_read_error(function, "The sample has more bits than the destination type.")
+                0
+            } else if !((bytes_per_sample == 1 && bits == 8) || (bytes_per_sample == 2 && bits == 16) || (bytes_per_sample == 3 && bits == 24) || (bytes_per_sample == 4 && (bits == 24 || bits == 32))) {
+                au_wav_read_error(function, "The wave format of the file is not supported.")
+                0
+            } else {
+                au_wav_require(total, sample_offset, bytes_per_sample, function)
+                let value = au_wav_pcm_value(ptr, total, sample_offset, bytes_per_sample, bits, function)
+                let as_f32 = vec_f32(std::raw::ffromint(value))
+                vec_f32(std::raw::fdiv(as_f32, scale))
+            }
+        } else if bytes_per_sample > 4 {
+            au_wav_read_error(function, "The sample has more bits than the destination type.")
+            0
+        } else if bytes_per_sample != 4 || bits != 32 {
+            au_wav_read_error(function, "The wave format of the file is not supported.")
+            0
+        } else {
+            au_wav_require(total, sample_offset, bytes_per_sample, function)
+            au_f32_as_f64(au_wav_u32(ptr, total, sample_offset, function))
+        }
+        rt_seq_put(sample_data, i, std::raw::value(2, sample_bits))
+        i += 1
+    }
+
+    let mut result = std::map::new()
+    result = std::map::insert(result, "samples", samples)
+    result = std::map::insert(result, "sample_rate", sample_rate)
+    result = std::map::insert(result, "channels", channels)
+    std::map::insert(result, "bits_per_sample", bits)
+}
+
+fn std__audio__read_wav_bytes(bytes: any) -> any {
+    au_wav_decode(bytes, "std::audio::read_wav_bytes")
+}
+
+fn std__audio__read_wav(path: any) -> any {
+    let function = "std::audio::read_wav"
+    rt_expect_str(path, function)
+    let bytes = match std::try::catch(|| std::fs::read_bytes(path)) {
+        Result::Ok(value) => value,
+        Result::Err(error) => {
+            let detail = std::text::replace(error, "native function 'std::fs::read_bytes' failed: ", "")
+            au_wav_read_error(function, detail)
+            nil
+        },
+    }
+    au_wav_decode(bytes, function)
+}
+
+// --------------------------------------------------------------------------
+// System player (`std::audio::player_*`). mpv is controlled through its real
+// Unix-domain JSON IPC socket. Other installed players expose only playback
+// and SIGSTOP/SIGCONT pause; unsupported controls fail instead of pretending.
+
+const AU_PLAYER_STATE_SLOT: int = 3544
+const AU_PLAYER_STATE_BYTES: int = 80
+const AU_PLAYER_PROCESS: int = 0
+const AU_PLAYER_BACKEND: int = 8
+const AU_PLAYER_STARTED_MS: int = 16
+const AU_PLAYER_PAUSED_TOTAL_MS: int = 24
+const AU_PLAYER_PAUSED_AT_MS: int = 32
+const AU_PLAYER_SESSION: int = 40
+const AU_PLAYER_NEXT_SESSION: int = 48
+
+const AU_PLAYER_MPV: int = 1
+const AU_PLAYER_AFPLAY: int = 2
+const AU_PLAYER_PAPLAY: int = 3
+const AU_PLAYER_APLAY: int = 4
+const AU_PLAYER_FFPLAY: int = 5
+const AU_PLAYER_SOUNDPLAYER: int = 6
+
+fn au_player_now_ms() -> int {
+    let (seconds, nanoseconds) = rt_clock(1)
+    seconds * 1000 + nanoseconds / 1000000
+}
+
+fn au_player_state() -> int {
+    let slot = std::raw::globals() + AU_PLAYER_STATE_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(AU_PLAYER_STATE_BYTES)
+    std::raw::store(created + AU_PLAYER_NEXT_SESSION, 1)
+    std::raw::store(slot, created)
+    created
+}
+
+fn au_player_backend_name(code: int) -> string {
+    if code == AU_PLAYER_MPV { return "mpv" }
+    if code == AU_PLAYER_AFPLAY { return "afplay" }
+    if code == AU_PLAYER_PAPLAY { return "paplay" }
+    if code == AU_PLAYER_APLAY { return "aplay" }
+    if code == AU_PLAYER_FFPLAY { return "ffplay" }
+    if code == AU_PLAYER_SOUNDPLAYER { return "soundplayer" }
+    ""
+}
+
+fn au_player_backend_code(name: string) -> int {
+    if name == "mpv" { return AU_PLAYER_MPV }
+    if name == "afplay" { return AU_PLAYER_AFPLAY }
+    if name == "paplay" { return AU_PLAYER_PAPLAY }
+    if name == "aplay" { return AU_PLAYER_APLAY }
+    if name == "ffplay" { return AU_PLAYER_FFPLAY }
+    if name == "soundplayer" { return AU_PLAYER_SOUNDPLAYER }
+    0
+}
+
+fn au_player_socket_path(state: int) -> string {
+    "/tmp/titan-audio-player-" + rt_int_to_str(std__process__self_pid()) + "-" + rt_int_to_str(std::raw::load(state + AU_PLAYER_SESSION)) + ".sock"
+}
+
+fn au_player_remove_socket(state: int) {
+    if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_MPV && std::raw::load(state + AU_PLAYER_SESSION) > 0 {
+        let path = au_player_socket_path(state)
+        let _ = std::try::catch(|| std::fs::remove_file(path))
+    }
+}
+
+fn au_player_clear(state: int) {
+    au_player_remove_socket(state)
+    std::raw::store(state + AU_PLAYER_PROCESS, 0)
+    std::raw::store(state + AU_PLAYER_BACKEND, 0)
+    std::raw::store(state + AU_PLAYER_STARTED_MS, 0)
+    std::raw::store(state + AU_PLAYER_PAUSED_TOTAL_MS, 0)
+    std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, 0)
+    std::raw::store(state + AU_PLAYER_SESSION, 0)
+}
+
+fn au_player_reap(state: int) {
+    let handle = std::raw::load(state + AU_PLAYER_PROCESS)
+    if handle <= 0 { return }
+    let process = std::raw::value(1, handle)
+    match std__process__spawn_poll(process) {
+        Option::Some(_) => {
+            let _ = std::try::catch(|| std__process__spawn_wait(process))
+            au_player_remove_socket(state)
+            std::raw::store(state + AU_PLAYER_PROCESS, 0)
+            std::raw::store(state + AU_PLAYER_STARTED_MS, 0)
+            std::raw::store(state + AU_PLAYER_PAUSED_TOTAL_MS, 0)
+            std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, 0)
+        },
+        Option::None => nil,
+        _ => nil,
+    }
+}
+
+fn au_player_active_backend() -> string {
+    let state = au_player_state()
+    au_player_reap(state)
+    let handle = std::raw::load(state + AU_PLAYER_PROCESS)
+    if handle <= 0 { return "" }
+    au_player_backend_name(std::raw::load(state + AU_PLAYER_BACKEND))
+}
+
+fn au_player_require_live(state: int, function: string) {
+    au_player_reap(state)
+    if std::raw::load(state + AU_PLAYER_PROCESS) <= 0 {
+        rt_native_fail(function, "nothing is playing right now")
+    }
+}
+
+fn au_player_socket_connect(state: int) -> int {
+    let path = au_player_socket_path(state)
+    let path_length = rt_slen(path)
+    if path_length == 0 || path_length > 107 { return -1 }
+    let fd = std::raw::syscall(41, 1, 524289, 0, 0, 0, 0) // AF_UNIX, SOCK_STREAM | CLOEXEC
+    if fd < 0 { return -1 }
+    let address = rt_alloc_zero(110)
+    std::raw::store8(address, 1)
+    rt_copy(address + 2, std::raw::bits(path) + 16, path_length)
+    std::raw::store8(address + 2 + path_length, 0)
+    let connected = std::raw::syscall(42, fd, address, path_length + 3, 0, 0, 0)
+    rt_free_block(address)
+    if connected == 0 { return fd }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    -1
+}
+
+fn au_player_write_all(fd: int, text: any) -> bool {
+    let object = std::raw::bits(text) + 16
+    let length = rt_slen(text)
+    let mut offset = 0
+    while offset < length {
+        let written = std::raw::syscall(1, fd, object + offset, length - offset, 0, 0, 0)
+        if written == -4 { continue }
+        if written <= 0 { return false }
+        offset += written
+    }
+    true
+}
+
+fn au_player_builder_drop(builder: int) {
+    rt_free_block(std::raw::load(builder + 16))
+    rt_free_block(builder)
+}
+
+fn au_player_read_reply(fd: int) -> any {
+    let deadline = au_player_now_ms() + 1200
+    let wait = rt_alloc_zero(8)
+    let byte = rt_alloc(1)
+    let mut builder = sb_new(256)
+    loop {
+        let remaining = deadline - au_player_now_ms()
+        if remaining <= 0 { break }
+        let timeout = if remaining > 200 { 200 } else { remaining }
+        std::raw::store(wait, fd)
+        std::raw::store8(wait + 4, 1) // pollfd.events = POLLIN
+        std::raw::store8(wait + 5, 0)
+        std::raw::store8(wait + 6, 0)
+        std::raw::store8(wait + 7, 0)
+        let ready = std::raw::syscall(7, wait, 1, timeout, 0, 0, 0)
+        if ready == -4 { continue }
+        if ready == 0 { continue }
+        if ready < 0 { break }
+        let flags = std::raw::load8(wait + 6) + std::raw::load8(wait + 7) * 256
+        if (flags & 1) == 0 {
+            if (flags & (8 | 16 | 32)) != 0 { break }
+            continue
+        }
+        let count = std::raw::syscall(0, fd, byte, 1, 0, 0, 0)
+        if count == -4 || count == -11 { continue }
+        if count != 1 { break }
+        let value = std::raw::load8(byte)
+        if value == 10 {
+            let line = sb_finish(builder)
+            builder = sb_new(256)
+            if std::text::contains(line, "\"error\"") {
+                rt_free_block(wait)
+                rt_free_block(byte)
+                au_player_builder_drop(builder)
+                return line
+            }
+        } else if sb_len(builder) < 65536 {
+            sb_byte(builder, value)
+        } else {
+            std::raw::store(builder, 0)
+        }
+    }
+    rt_free_block(wait)
+    rt_free_block(byte)
+    au_player_builder_drop(builder)
+    nil
+}
+
+fn au_player_ipc_exchange(state: int, request: any) -> any {
+    let fd = au_player_socket_connect(state)
+    if fd < 0 { return nil }
+    let encoded = std::json::stringify(request) + "\n"
+    let sent = au_player_write_all(fd, encoded)
+    let reply = if sent { au_player_read_reply(fd) } else { nil }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    reply
+}
+
+fn au_player_ipc_payload(command: any) -> any {
+    std::map::insert(std::map::new(), "command", command)
+}
+
+fn au_player_parse_reply(line: any) -> any {
+    match std::try::catch(|| std::json::parse(line)) {
+        Result::Ok(value) => value,
+        Result::Err(_) => nil,
+    }
+}
+
+fn au_player_request(state: int, command: any, function: string) -> any {
+    let reply = au_player_parse_reply(au_player_ipc_exchange(state, au_player_ipc_payload(command)))
+    if std::raw::tag(reply) == 0 {
+        rt_native_fail(function, "backend control error: no response from mpv (is it still running?)")
+    }
+    let status = std::map::get(reply, "error")
+    if status != "success" {
+        rt_native_fail(function, "backend control error: mpv replied: " + std::json::stringify(reply))
+    }
+    reply
+}
+
+fn au_player_query_property(state: int, property: string) -> any {
+    let command = ["get_property", property]
+    au_player_parse_reply(au_player_ipc_exchange(state, au_player_ipc_payload(command)))
+}
+
+fn au_player_send_only(state: int, command: any) -> bool {
+    let fd = au_player_socket_connect(state)
+    if fd < 0 { return false }
+    let encoded = std::json::stringify(au_player_ipc_payload(command)) + "\n"
+    let sent = au_player_write_all(fd, encoded)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    sent
+}
+
+fn au_player_signal(state: int, signal: int, function: string) {
+    let handle = std::raw::value(1, std::raw::load(state + AU_PLAYER_PROCESS))
+    let pid = std::raw::bits(std__process__spawn_pid(handle))
+    let result = std::raw::syscall(62, pid, signal, 0, 0, 0, 0)
+    if result < 0 {
+        rt_native_fail(function, "backend control error: signal failed: " + rt_os_error(0 - result))
+    }
+}
+
+fn au_player_unsupported(function: string, state: int, action: string) {
+    let backend = au_player_backend_name(std::raw::load(state + AU_PLAYER_BACKEND))
+    rt_native_fail(function, "backend '" + backend + "' does not support '" + action + "'")
+}
+
+fn au_player_number_to_int(value: any, fallback: int) -> int {
+    let tag = std::raw::tag(value)
+    if tag == 1 { return std::raw::bits(value) }
+    if tag == 2 {
+        let bits = std::raw::bits(value)
+        if rt_is_finite(bits) { return std::raw::ftoint(bits) }
+    }
+    fallback
+}
+
+fn au_player_text_or_empty(value: any) -> any {
+    if std::raw::tag(value) == 5 { return value }
+    ""
+}
+
+fn au_player_seek_text(seconds: int) -> string {
+    let scaled = std::raw::fmul(seconds, std::raw::ffromint(10))
+    let rounded = std::raw::ftoint(std::raw::fadd(scaled, 4602678819172646912))
+    rt_int_to_str(rounded / 10) + "." + rt_int_to_str(rounded % 10)
+}
+
+fn std__audio__player_play(path: any) -> any {
+    let function = "std::audio::player_play"
+    rt_expect_str(path, function)
+    if !std::fs::is_file(path) {
+        rt_native_fail(function, "invalid parameter: file not found: " + path)
+    }
+    let _ = std__audio__player_stop()
+    let backend = std__audio__player_backend()
+    if backend == "" {
+        rt_native_fail(function, "no playback backend available (tried: mpv, afplay, paplay, aplay, ffplay). Install one, e.g. `pkg install mpv`")
+    }
+    let state = au_player_state()
+    let code = au_player_backend_code(backend)
+    let session = std::raw::load(state + AU_PLAYER_NEXT_SESSION)
+    std::raw::store(state + AU_PLAYER_NEXT_SESSION, session + 1)
+    std::raw::store(state + AU_PLAYER_BACKEND, code)
+    std::raw::store(state + AU_PLAYER_SESSION, session)
+    std::raw::store(state + AU_PLAYER_STARTED_MS, 0)
+    std::raw::store(state + AU_PLAYER_PAUSED_TOTAL_MS, 0)
+    std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, 0)
+
+    let mut argv: any = []
+    if backend == "mpv" {
+        let socket = au_player_socket_path(state)
+        let _ = std::try::catch(|| std::fs::remove_file(socket))
+        argv = ["mpv", "--no-video", "--no-terminal", "--really-quiet", "--idle=yes", "--input-ipc-server=" + socket, "--", path]
+    } else if backend == "ffplay" {
+        argv = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path]
+    } else if backend == "soundplayer" {
+        let script = sb_new(rt_slen(path) + 64)
+        sb_str(script, "(New-Object Media.SoundPlayer '")
+        let p = std::raw::bits(path) + 16
+        let n = rt_slen(path)
+        let mut i = 0
+        while i < n {
+            let byte = std::raw::load8(p + i)
+            sb_byte(script, byte)
+            if byte == 39 { sb_byte(script, byte) }
+            i += 1
+        }
+        sb_str(script, "').PlaySync()")
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", sb_finish(script)]
+    } else {
+        argv = [backend, path]
+    }
+
+    let spawned = match std::try::catch(|| std__process__spawn_argv(argv)) {
+        Result::Ok(handle) => std::raw::bits(handle),
+        Result::Err(error) => {
+            au_player_clear(state)
+            let detail = std::text::replace(error, "native function 'std::process::spawn' failed: ", "")
+            let detail = std::text::replace(detail, "spawn error: ", "")
+            let detail = std::text::replace(detail, "process io error: ", "")
+            rt_native_fail(function, "I/O error: " + detail)
+            0
+        },
+    }
+    std::raw::store(state + AU_PLAYER_PROCESS, spawned)
+    if backend != "mpv" {
+        std::raw::store(state + AU_PLAYER_STARTED_MS, au_player_now_ms())
+    }
+
+    if backend == "mpv" {
+        let mut connected = false
+        let mut attempt = 0
+        while attempt < 30 {
+            let fd = au_player_socket_connect(state)
+            if fd >= 0 {
+                std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+                connected = true
+                break
+            }
+            let exited = match std__process__spawn_poll(std::raw::value(1, spawned)) {
+                Option::Some(_) => true,
+                Option::None => false,
+                _ => false,
+            }
+            if exited { break }
+            std__time__sleep_ms(100)
+            attempt += 1
+        }
+        if !connected {
+            au_player_reap(state)
+            let handle = std::raw::load(state + AU_PLAYER_PROCESS)
+            if handle > 0 {
+                let process = std::raw::value(1, handle)
+                let _ = std::try::catch(|| std__process__spawn_kill(process))
+                let _ = std::try::catch(|| std__process__spawn_wait(process))
+            }
+            au_player_clear(state)
+            rt_native_fail(function, "backend control error: mpv started but its IPC socket never appeared")
+        }
+        std::raw::store(state + AU_PLAYER_STARTED_MS, au_player_now_ms())
+    }
+    "playing " + path + " via " + backend
+}
+
+fn std__audio__player_stop() -> any {
+    let function = "std::audio::player_stop"
+    let state = au_player_state()
+    au_player_reap(state)
+    let handle = std::raw::load(state + AU_PLAYER_PROCESS)
+    if handle <= 0 {
+        if std::raw::load(state + AU_PLAYER_BACKEND) == 0 { return "nothing was playing" }
+        au_player_clear(state)
+        return "stopped"
+    }
+    let backend = std::raw::load(state + AU_PLAYER_BACKEND)
+    let process = std::raw::value(1, handle)
+    if backend == AU_PLAYER_MPV {
+        let _ = au_player_send_only(state, ["quit"])
+    }
+    let mut done = false
+    let mut i = 0
+    while i < 3 {
+        match std__process__spawn_poll(process) {
+            Option::Some(_) => { done = true; break },
+            Option::None => std__time__sleep_ms(100),
+            _ => std__time__sleep_ms(100),
+        }
+        i += 1
+    }
+    if !done {
+        let _ = std::try::catch(|| std__process__spawn_kill(process))
+    }
+    let _ = std::try::catch(|| std__process__spawn_wait(process))
+    au_player_clear(state)
+    "stopped"
+}
+
+fn std__audio__player_pause() -> any {
+    let function = "std::audio::player_pause"
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_PAUSED_AT_MS) != 0 { return "already paused" }
+    if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_MPV {
+        let _ = au_player_request(state, ["set_property", "pause", true], function)
+    } else if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_SOUNDPLAYER {
+        au_player_unsupported(function, state, "pause")
+    } else {
+        au_player_signal(state, 19, function) // SIGSTOP
+    }
+    std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, au_player_now_ms())
+    "paused"
+}
+
+fn std__audio__player_resume() -> any {
+    let function = "std::audio::player_resume"
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    let paused_at = std::raw::load(state + AU_PLAYER_PAUSED_AT_MS)
+    if paused_at == 0 { return "already playing" }
+    if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_MPV {
+        let _ = au_player_request(state, ["set_property", "pause", false], function)
+    } else if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_SOUNDPLAYER {
+        au_player_unsupported(function, state, "resume")
+    } else {
+        au_player_signal(state, 18, function) // SIGCONT
+    }
+    let now = au_player_now_ms()
+    std::raw::store(state + AU_PLAYER_PAUSED_TOTAL_MS, std::raw::load(state + AU_PLAYER_PAUSED_TOTAL_MS) + now - paused_at)
+    std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, 0)
+    "resumed"
+}
+
+fn std__audio__player_position() -> float {
+    let state = au_player_state()
+    au_player_reap(state)
+    if std::raw::load(state + AU_PLAYER_PROCESS) <= 0 { return -1.0 }
+    if std::raw::load(state + AU_PLAYER_BACKEND) == AU_PLAYER_MPV {
+        let reply = au_player_query_property(state, "time-pos")
+        if std::raw::tag(reply) != 0 {
+            let value = std::map::get(reply, "data")
+            let tag = std::raw::tag(value)
+            let number = if tag == 1 { std::raw::ffromint(std::raw::bits(value)) } else if tag == 2 { std::raw::bits(value) } else { 0 }
+            if tag == 1 || tag == 2 {
+                if rt_is_finite(number) && std::raw::fcmp(number, 0) >= 0 { return std::raw::value(2, number) }
+            }
+        }
+    }
+    let now = au_player_now_ms()
+    let mut active = now - std::raw::load(state + AU_PLAYER_STARTED_MS) - std::raw::load(state + AU_PLAYER_PAUSED_TOTAL_MS)
+    let paused_at = std::raw::load(state + AU_PLAYER_PAUSED_AT_MS)
+    if paused_at != 0 { active -= now - paused_at }
+    if active < 0 { active = 0 }
+    std::raw::value(2, std::raw::fdiv(std::raw::ffromint(active), std::raw::ffromint(1000)))
+}
+
+fn std__audio__player_seek(seconds: any) -> any {
+    let function = "std::audio::player_seek"
+    let value = rt_expect_number(seconds, function)
+    if !rt_is_finite(value) || std::raw::fcmp(value, 0) < 0 {
+        rt_native_fail(function, "invalid parameter: seek position must be a finite number >= 0")
+    }
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV {
+        au_player_unsupported(function, state, "seek")
+    }
+    let number = rt_float(value)
+    let _ = au_player_request(state, ["seek", number, "absolute"], function)
+    let now = au_player_now_ms()
+    let mut position_ms = std::raw::ftoint(std::raw::fmul(value, std::raw::ffromint(1000)))
+    if position_ms > 86400000 { position_ms = 86400000 }
+    std::raw::store(state + AU_PLAYER_STARTED_MS, now - position_ms)
+    std::raw::store(state + AU_PLAYER_PAUSED_TOTAL_MS, 0)
+    if std::raw::load(state + AU_PLAYER_PAUSED_AT_MS) != 0 {
+        std::raw::store(state + AU_PLAYER_PAUSED_AT_MS, now)
+    }
+    "seek to " + au_player_seek_text(value) + "s"
+}
+
+fn std__audio__player_set_volume(percent: any) -> bool {
+    let function = "std::audio::player_set_volume"
+    rt_expect_int(percent, function)
+    let volume = std::raw::bits(percent)
+    if volume < 0 || volume > 100 {
+        rt_native_fail(function, "invalid parameter: volume must be between 0 and 100")
+    }
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV { return false }
+    let _ = au_player_request(state, ["set_property", "volume", volume], function)
+    true
+}
+
+fn std__audio__player_queue_add(path: any) -> any {
+    let function = "std::audio::player_queue_add"
+    rt_expect_str(path, function)
+    if !std::fs::is_file(path) {
+        rt_native_fail(function, "invalid parameter: file not found: " + path)
+    }
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV {
+        au_player_unsupported(function, state, "queue")
+    }
+    let _ = au_player_request(state, ["loadfile", path, "append-play"], function)
+    "queued " + path
+}
+
+fn std__audio__player_queue_clear() -> any {
+    let function = "std::audio::player_queue_clear"
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV {
+        au_player_unsupported(function, state, "queue")
+    }
+    let _ = au_player_request(state, ["playlist-clear"], function)
+    "queue cleared"
+}
+
+fn au_player_playlist_step(function: string, command_name: string) -> any {
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV {
+        au_player_unsupported(function, state, "queue")
+    }
+    let _ = au_player_request(state, [command_name], function)
+    "moved to " + command_name
+}
+
+fn std__audio__player_next() -> any {
+    au_player_playlist_step("std::audio::player_next", "playlist-next")
+}
+
+fn std__audio__player_prev() -> any {
+    au_player_playlist_step("std::audio::player_prev", "playlist-prev")
+}
+
+fn std__audio__player_current() -> any {
+    let function = "std::audio::player_current"
+    let state = au_player_state()
+    au_player_require_live(state, function)
+    if std::raw::load(state + AU_PLAYER_BACKEND) != AU_PLAYER_MPV {
+        au_player_unsupported(function, state, "current track")
+    }
+    let index_reply = au_player_query_property(state, "playlist-pos")
+    let count_reply = au_player_query_property(state, "playlist-count")
+    let title_reply = au_player_query_property(state, "media-title")
+    let path_reply = au_player_query_property(state, "filename")
+    let index = if std::raw::tag(index_reply) == 0 { -1 } else { au_player_number_to_int(std::map::get(index_reply, "data"), -1) }
+    let count = if std::raw::tag(count_reply) == 0 { 0 } else { au_player_number_to_int(std::map::get(count_reply, "data"), 0) }
+    let title = if std::raw::tag(title_reply) == 0 { "" } else { au_player_text_or_empty(std::map::get(title_reply, "data")) }
+    let path = if std::raw::tag(path_reply) == 0 { "" } else { au_player_text_or_empty(std::map::get(path_reply, "data")) }
+    let mut result = std::map::new()
+    result = std::map::insert(result, "index", index)
+    result = std::map::insert(result, "count", count)
+    result = std::map::insert(result, "title", title)
+    std::map::insert(result, "path", path)
+}
+
+// =========================================================================
+// engine_*: motor de reproducción real sobre mpv (JSON IPC)
+// =========================================================================
+
+const AU_ENG_SLOT: int = 3544
+const AU_ENG_BYTES: int = 2048
+
+// Offsets dentro del bloque de estado del engine
+const AU_ENG_INITIALIZED: int = 0
+const AU_ENG_MPV_PID: int = 8
+const AU_ENG_MPV_FD: int = 16
+const AU_ENG_STATE: int = 24       // 0=idle 1=playing 2=paused 3=stopped
+const AU_ENG_VOLUME: int = 32      // 0-100
+const AU_ENG_CROSSFADE: int = 40   // seconds * 1000
+const AU_ENG_GAPLESS: int = 48     // 0/1
+const AU_ENG_EQ_BASS: int = 56
+const AU_ENG_EQ_MID: int = 64
+const AU_ENG_EQ_TREBLE: int = 72
+const AU_ENG_CURRENT_PATH: int = 80   // cstring (1024 bytes)
+const AU_ENG_QUEUE_BASE: int = 1104   // 256 * 4 = 1024 entries max
+const AU_ENG_QUEUE_LEN: int = 16
+const AU_ENG_QUEUE_CAP: int = 24
+const AU_ENG_HIST_LEN: int = 32
+const AU_ENG_SOCKET_PATH: int = 240  // cstring path
+
+fn au_eng_state() -> int {
+    let slot_ptr = std::raw::globals() + AU_ENG_SLOT
+    let state = std::raw::load(slot_ptr)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(AU_ENG_BYTES)
+    std::raw::store(created + AU_ENG_VOLUME, 80)
+    std::raw::store(created + AU_ENG_GAPLESS, 1)
+    std::raw::store(created + AU_ENG_QUEUE_CAP, 256)
+    std::raw::store(slot_ptr, created)
+    created
+}
+
+fn au_eng_kill_mpv(state: int) {
+    let pid = std::raw::load(state + AU_ENG_MPV_PID)
+    if pid > 0 {
+        std::raw::syscall(62, pid, 15, 0, 0, 0, 0)
+        let mut status_buf = rt_alloc_zero(4)
+        let mut w = 0
+        while w < 5 {
+            let r = std::raw::syscall(61, pid, status_buf, 0, 0, 0, 0)
+            if r > 0 { break }
+            w = w + 1
+        }
+        rt_free_block(status_buf)
+    }
+    std::raw::store(state + AU_ENG_MPV_PID, 0)
+    std::raw::store(state + AU_ENG_MPV_FD, -1)
+}
+
+fn au_eng_socket_path(state: int) -> string {
+    let pid = std::process::current_pid()
+    let path = "/tmp/titan_eng_" + rt_int_to_str(pid) + ".sock"
+    let dst = state + AU_ENG_SOCKET_PATH
+    let i = 0
+    while i < path.length() && i < 1023 {
+        std::raw::store8(dst + i, std::raw::cast(path[i]))
+        i = i + 1
+    }
+    std::raw::store8(dst + i, 0)
+    path
+}
+
+fn au_eng_connect(state: int) -> int {
+    let fd = std::raw::syscall(41, 1, 524289, 0, 0, 0, 0)
+    if fd < 0 { return -1 }
+    let sa = rt_alloc_zero(110)
+    std::raw::store8(sa, 1)
+    std::raw::store8(sa + 1, 1)
+    let path = au_eng_socket_path(state)
+    let mut i = 0
+    while i < path.length() && i < 104 {
+        std::raw::store8(sa + 2 + i, std::raw::cast(path[i]))
+        i = i + 1
+    }
+    std::raw::store8(sa + 2 + i, 0)
+    let r = std::raw::syscall(42, fd, sa, 110, 0, 0, 0)
+    rt_free_block(sa)
+    if r < 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        return -1
+    }
+    fd
+}
+
+fn au_eng_write_all(fd: int, data: string) -> bool {
+    let len = data.length()
+    if len == 0 { return true }
+    let buf = rt_alloc(len)
+    let mut i = 0
+    while i < len {
+        std::raw::store8(buf + i, std::raw::cast(data[i]))
+        i = i + 1
+    }
+    let mut sent = 0
+    while sent < len {
+        let r = std::raw::syscall(1, fd, buf + sent, len - sent, 0, 0, 0)
+        if r <= 0 {
+            if r == -4 || r == -11 { continue }
+            rt_free_block(buf)
+            return false
+        }
+        sent = sent + r
+    }
+    rt_free_block(buf)
+    true
+}
+
+fn au_eng_read_reply(fd: int) -> any {
+    let deadline = au_player_now_ms() + 1200
+    let wait = rt_alloc_zero(8)
+    let byte = rt_alloc(1)
+    let mut builder = sb_new(256)
+    loop {
+        let remaining = deadline - au_player_now_ms()
+        if remaining <= 0 { break }
+        let timeout = if remaining > 200 { 200 } else { remaining }
+        std::raw::store(wait, fd)
+        std::raw::store8(wait + 4, 1)
+        std::raw::store8(wait + 5, 0)
+        std::raw::store8(wait + 6, 0)
+        std::raw::store8(wait + 7, 0)
+        let ready = std::raw::syscall(7, wait, 1, timeout, 0, 0, 0)
+        if ready == -4 { continue }
+        if ready == 0 { continue }
+        if ready < 0 { break }
+        let flags = std::raw::load8(wait + 6) + std::raw::load8(wait + 7) * 256
+        if (flags & 1) == 0 {
+            if (flags & (8 | 16 | 32)) != 0 { break }
+            continue
+        }
+        let count = std::raw::syscall(0, fd, byte, 1, 0, 0, 0)
+        if count == -4 || count == -11 { continue }
+        if count != 1 { break }
+        let value = std::raw::load8(byte)
+        if value == 10 {
+            let line = sb_finish(builder)
+            builder = sb_new(256)
+            if std::text::contains(line, "\"error\"") {
+                rt_free_block(wait)
+                rt_free_block(byte)
+                au_player_builder_drop(builder)
+                return line
+            }
+        } else if sb_len(builder) < 65536 {
+            sb_byte(builder, value)
+        } else {
+            std::raw::store(builder, 0)
+        }
+    }
+    rt_free_block(wait)
+    rt_free_block(byte)
+    au_player_builder_drop(builder)
+    nil
+}
+
+fn au_eng_ipc(state: int, command: any) -> any {
+    let fd = au_eng_connect(state)
+    if fd < 0 { return nil }
+    let payload = std::map::insert(std::map::new(), "command", command)
+    let encoded = std::json::stringify(payload) + "\n"
+    let sent = au_eng_write_all(fd, encoded)
+    let reply = if sent { au_eng_read_reply(fd) } else { nil }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    reply
+}
+
+fn au_eng_cmd(state: int, command: any, function: string) -> any {
+    let reply = au_eng_parse(au_eng_ipc(state, command))
+    if std::raw::tag(reply) == 0 {
+        rt_native_fail(function, "engine backend error: no response from mpv")
+    }
+    let status = std::map::get(reply, "error")
+    if status != "success" {
+        rt_native_fail(function, "engine backend error: mpv replied: " + std::json::stringify(reply))
+    }
+    reply
+}
+
+fn au_eng_parse(line: any) -> any {
+    if line == nil { return nil }
+    match std::try::catch(|| std::json::parse(line)) {
+        Result::Ok(value) => value,
+        Result::Err(_) => nil,
+    }
+}
+
+fn au_eng_prop(state: int, prop: string) -> any {
+    let cmd = ["get_property", prop]
+    au_eng_parse(au_eng_ipc(state, cmd))
+}
+
+fn au_eng_start_mpv(state: int, path: string) {
+    au_eng_kill_mpv(state)
+    let socket_path = au_eng_socket_path(state)
+    let args = ["mpv", "--no-terminal", "--no-video", "--idle=no",
+                "--input-ipc-server=" + socket_path,
+                "--volume=" + rt_int_to_str(std::raw::load(state + AU_ENG_VOLUME)),
+                path]
+    let result = std::process::spawn("mpv --no-terminal --no-video --idle=no --input-ipc-server=" + socket_path + " --volume=" + rt_int_to_str(std::raw::load(state + AU_ENG_VOLUME)) + " " + au_eng_shell_quote(path))
+    let pid = au_process_pid(result)
+    std::raw::store(state + AU_ENG_MPV_PID, pid)
+    // Write path to current
+    let dst = state + AU_ENG_CURRENT_PATH
+    let mut i = 0
+    while i < path.length() && i < 1023 {
+        std::raw::store8(dst + i, std::raw::cast(path[i]))
+        i = i + 1
+    }
+    std::raw::store8(dst + i, 0)
+    // Wait for socket
+    let deadline = au_player_now_ms() + 2000
+    while au_player_now_ms() < deadline {
+        let test_fd = au_eng_connect(state)
+        if test_fd >= 0 {
+            std::raw::syscall(3, test_fd, 0, 0, 0, 0, 0)
+            std::raw::store(state + AU_ENG_STATE, 1)
+            return
+        }
+    }
+    std::raw::store(state + AU_ENG_STATE, 1)
+}
+
+fn au_eng_shell_quote(s: string) -> string {
+    if !std::text::contains(s, " ") && !std::text::contains(s, "'") && !std::text::contains(s, "\"") { return s }
+    "'" + std::text::replace(s, "'", "'\\''") + "'"
+}
+
+fn au_eng_is_alive(state: int) -> bool {
+    let pid = std::raw::load(state + AU_ENG_MPV_PID)
+    if pid <= 0 { return false }
+    let r = std::raw::syscall(62, pid, 0, 0, 0, 0, 0)
+    r == 0
+}
+
+fn au_eng_cstr_to_str(base: int, maxlen: int) -> string {
+    let mut result = ""
+    let mut i = 0
+    while i < maxlen {
+        let c = std::raw::load8(base + i)
+        if c == 0 { break }
+        result = result + std::text::char(c)
+        i = i + 1
+    }
+    result
+}
+
+// --- Queue helpers ---
+fn au_eng_queue_get(state: int, index: int) -> string {
+    let base = state + AU_ENG_QUEUE_BASE + index * 4
+    let ptr = std::raw::load(base)
+    if ptr == 0 { return "" }
+    au_eng_cstr_to_str(ptr, 1024)
+}
+
+fn au_eng_queue_set(state: int, index: int, path: string) {
+    let base = state + AU_ENG_QUEUE_BASE + index * 4
+    let old = std::raw::load(base)
+    if old != 0 { rt_free_block(old) }
+    let len = path.length()
+    let buf = rt_alloc(len + 1)
+    let mut i = 0
+    while i < len {
+        std::raw::store8(buf + i, std::raw::cast(path[i]))
+        i = i + 1
+    }
+    std::raw::store8(buf + len, 0)
+    std::raw::store(base, buf)
+}
+
+// --- 22 engine functions ---
+
+fn std__audio__engine_play(path: string) -> string {
+    let state = au_eng_state()
+    au_eng_start_mpv(state, path)
+    "playing"
+}
+
+fn std__audio__engine_stop() -> string {
+    let state = au_eng_state()
+    au_eng_kill_mpv(state)
+    std::raw::store(state + AU_ENG_STATE, 3)
+    "stopped"
+}
+
+fn std__audio__engine_pause() -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let cmd = ["set_property", "pause", true]
+    au_eng_cmd(state, cmd, "std::audio::engine_pause")
+    std::raw::store(state + AU_ENG_STATE, 2)
+    "paused"
+}
+
+fn std__audio__engine_resume() -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let cmd = ["set_property", "pause", false]
+    au_eng_cmd(state, cmd, "std::audio::engine_resume")
+    std::raw::store(state + AU_ENG_STATE, 1)
+    "playing"
+}
+
+fn std__audio__engine_position() -> float {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return 0.0 }
+    let reply = au_eng_prop(state, "time-pos")
+    if std::raw::tag(reply) != 0 {
+        let v = std::map::get(reply, "data")
+        if std::raw::tag(v) == 1 { return std::raw::float_bits_to_float(std::raw::cast(v)) }
+        if std::raw::tag(v) == 0 && std::raw::cast(v) != 0 { return 0.0 }
+    }
+    0.0
+}
+
+fn std__audio__engine_duration() -> float {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return 0.0 }
+    let reply = au_eng_prop(state, "duration")
+    if std::raw::tag(reply) != 0 {
+        let v = std::map::get(reply, "data")
+        if std::raw::tag(v) == 1 { return std::raw::float_bits_to_float(std::raw::cast(v)) }
+    }
+    0.0
+}
+
+fn std__audio__engine_state() -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let st = std::raw::load(state + AU_ENG_STATE)
+    if st == 1 { return "playing" }
+    if st == 2 { return "paused" }
+    if st == 3 { return "stopped" }
+    "idle"
+}
+
+fn std__audio__engine_seek(secs: float) -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let cmd = ["seek", secs, "absolute"]
+    au_eng_cmd(state, cmd, "std::audio::engine_seek")
+    "ok"
+}
+
+fn std__audio__engine_set_volume(pct: int) -> bool {
+    let state = au_eng_state()
+    let clamped = if pct < 0 { 0 } else if pct > 100 { 100 } else { pct }
+    std::raw::store(state + AU_ENG_VOLUME, clamped)
+    if au_eng_is_alive(state) {
+        let cmd = ["set_property", "volume", clamped]
+        au_eng_cmd(state, cmd, "std::audio::engine_set_volume")
+    }
+    true
+}
+
+fn std__audio__engine_set_crossfade(secs: float) -> bool {
+    let state = au_eng_state()
+    let ms = if secs < 0.0 { 0 } else if secs > 12.0 { 12000 } else { std::raw::cast(secs * 1000.0) }
+    std::raw::store(state + AU_ENG_CROSSFADE, ms)
+    true
+}
+
+fn std__audio__engine_set_gapless(on: bool) -> bool {
+    let state = au_eng_state()
+    std::raw::store(state + AU_ENG_GAPLESS, if on { 1 } else { 0 })
+    true
+}
+
+fn std__audio__engine_set_eq(bass: int, mid: int, treble: int) -> bool {
+    let state = au_eng_state()
+    let b = if bass < -12 { -12 } else if bass > 12 { 12 } else { bass }
+    let m = if mid < -12 { -12 } else if mid > 12 { 12 } else { mid }
+    let t = if treble < -12 { -12 } else if treble > 12 { 12 } else { treble }
+    std::raw::store(state + AU_ENG_EQ_BASS, b)
+    std::raw::store(state + AU_ENG_EQ_MID, m)
+    std::raw::store(state + AU_ENG_EQ_TREBLE, t)
+    true
+}
+
+fn std__audio__engine_queue_add(path: string) -> string {
+    let state = au_eng_state()
+    let len = std::raw::load(state + AU_ENG_QUEUE_LEN)
+    let cap = std::raw::load(state + AU_ENG_QUEUE_CAP)
+    if len >= cap { return "queue full" }
+    au_eng_queue_set(state, len, path)
+    std::raw::store(state + AU_ENG_QUEUE_LEN, len + 1)
+    // If engine is alive, add to mpv playlist
+    if au_eng_is_alive(state) {
+        let cmd = ["loadfile", path, "append"]
+        au_eng_cmd(state, cmd, "std::audio::engine_queue_add")
+    }
+    "queued"
+}
+
+fn std__audio__engine_queue_clear() -> string {
+    let state = au_eng_state()
+    let len = std::raw::load(state + AU_ENG_QUEUE_LEN)
+    let mut i = 0
+    while i < len {
+        let base = state + AU_ENG_QUEUE_BASE + i * 4
+        let ptr = std::raw::load(base)
+        if ptr != 0 { rt_free_block(ptr) }
+        std::raw::store(base, 0)
+        i = i + 1
+    }
+    std::raw::store(state + AU_ENG_QUEUE_LEN, 0)
+    if au_eng_is_alive(state) {
+        let cmd = ["playlist-clear"]
+        au_eng_cmd(state, cmd, "std::audio::engine_queue_clear")
+    }
+    "cleared"
+}
+
+fn std__audio__engine_queue_list() -> any {
+    let state = au_eng_state()
+    let len = std::raw::load(state + AU_ENG_QUEUE_LEN)
+    let mut result = []
+    let mut i = 0
+    while i < len {
+        result = std::array::add(result, au_eng_queue_get(state, i))
+        i = i + 1
+    }
+    result
+}
+
+fn std__audio__engine_next() -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let cmd = ["playlist-next", "weak"]
+    au_eng_cmd(state, cmd, "std::audio::engine_next")
+    "next"
+}
+
+fn std__audio__engine_prev() -> string {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) { return "idle" }
+    let cmd = ["playlist-prev", "weak"]
+    au_eng_cmd(state, cmd, "std::audio::engine_prev")
+    "prev"
+}
+
+fn std__audio__engine_current() -> any {
+    let state = au_eng_state()
+    if !au_eng_is_alive(state) {
+        return std::map::insert(std::map::insert(std::map::new(), "path", ""), "state", "idle")
+    }
+    let path = au_eng_cstr_to_str(state + AU_ENG_CURRENT_PATH, 1024)
+    let st = std::audio::engine_state()
+    let mut result = std::map::insert(std::map::new(), "path", path)
+    result = std::map::insert(result, "state", st)
+    result = std::map::insert(result, "position", std::audio::engine_position())
+    result = std::map::insert(result, "duration", std::audio::engine_duration())
+    result
+}
+
+fn std__audio__engine_levels() -> any {
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+}
+
+fn std__audio__engine_decode(path: string) -> any {
+    // Use ffprobe to decode and verify the audio file
+    let result = std::process::spawn("ffprobe -v quiet -print_format json -show_format -show_streams " + au_eng_shell_quote(path))
+    let cw = std::process::spawn_wait(result)
+    let code = std::map::get(cw, "code")
+    if code != 0 {
+        return std::map::insert(std::map::new(), "error", "decode failed")
+    }
+    let stdout = std::map::get(cw, "stdout")
+    let parsed = std::json::parse(stdout)
+    if std::raw::tag(parsed) == 0 {
+        return std::map::insert(std::map::new(), "error", "parse failed")
+    }
+    let format = std::map::get(parsed, "format")
+    let streams = std::map::get(parsed, "streams")
+    let mut result = std::map::new()
+    if std::raw::tag(format) != 0 {
+        result = std::map::insert(result, "duration_secs", std::map::get(format, "duration"))
+        result = std::map::insert(result, "codec", std::map::get(format, "format_name"))
+    }
+    if std::raw::tag(streams) == 6 && std::array::length(streams) > 0 {
+        let s = streams[0]
+        result = std::map::insert(result, "sample_rate", std::map::get(s, "sample_rate"))
+        result = std::map::insert(result, "channels", std::map::get(s, "channels"))
+    }
+    result
+}
+
+fn std__audio__engine_device() -> string {
+    // Report mpv's audio output device
+    let state = au_eng_state()
+    if au_eng_is_alive(state) {
+        let reply = au_eng_prop(state, "audio-device")
+        if std::raw::tag(reply) != 0 {
+            let v = std::map::get(reply, "data")
+            if std::raw::tag(v) == 5 { return v }
+            if std::raw::tag(v) == 0 && std::raw::cast(v) != 0 { return "external" }
+        }
+    }
+    let backend = std::audio::player_backend()
+    if backend != "" { return backend }
+    "unavailable"
+}
+
+fn std__audio__engine_status() -> any {
+    let state = au_eng_state()
+    let st = std::audio::engine_state()
+    let mut result = std::map::insert(std::map::new(), "state", st)
+    result = std::map::insert(result, "volume", std::raw::load(state + AU_ENG_VOLUME))
+    result = std::map::insert(result, "crossfade_secs", std::raw::cast(std::raw::load(state + AU_ENG_CROSSFADE)) / 1000.0)
+    result = std::map::insert(result, "gapless", std::raw::load(state + AU_ENG_GAPLESS) != 0)
+    let mut eq = []
+    eq = std::array::add(eq, std::raw::load(state + AU_ENG_EQ_BASS))
+    eq = std::array::add(eq, std::raw::load(state + AU_ENG_EQ_MID))
+    eq = std::array::add(eq, std::raw::load(state + AU_ENG_EQ_TREBLE))
+    result = std::map::insert(result, "eq_db", eq)
+    result = std::map::insert(result, "queue_len", std::raw::load(state + AU_ENG_QUEUE_LEN))
+    result = std::map::insert(result, "device", std::audio::engine_device())
+    if au_eng_is_alive(state) {
+        result = std::map::insert(result, "path", au_eng_cstr_to_str(state + AU_ENG_CURRENT_PATH, 1024))
+        result = std::map::insert(result, "position_secs", std::audio::engine_position())
+        result = std::map::insert(result, "duration_secs", std::audio::engine_duration())
+    } else {
+        result = std::map::insert(result, "path", "")
+        result = std::map::insert(result, "position_secs", 0.0)
+        result = std::map::insert(result, "duration_secs", 0.0)
+    }
+    result
+}

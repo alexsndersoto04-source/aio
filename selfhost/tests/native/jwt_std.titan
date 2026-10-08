@@ -1,0 +1,20 @@
+// std::jwt: firma y verificación HS256 / RS256 (clave RSA de prueba).
+fn main() {
+    let priv = std::encoding::utf8_encode("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0mcSjIaZTkWyRMl9n0Auvie3oK5HdeHPAEN8vOJtqVCmJ7w4\n19JzHrhoPdpGuUnujR+P20RHg5gPJuRxxLB2dHVPWwCjEJbfqFXONqiP+d3O7lNv\nvjApBOUZdMV7km/UU5TTZSWaQzxxDyA2xE391phawT8KIW8FL1j33qeXx9R/h7Vn\nrz7N9o2j+ZP0pr/Pn5GoslLMNHDO3GnTYssLcL9ddj+Y1vPEMEy2dwUIvmorNzKp\noMtBHSlz/zbDoCaLI5ne43Kgluh4ugiCLSLALoFvgWic3Dapu1FYdpa8Cv3ViWup\n734KnHDJ7dAh87+Xtrq9jlsHoyHfBpNRdY5rTwIDAQABAoIBABG3F/q5AoNyntXn\n2Snlb4oXMgDXa7DjOFifVgtZTT5qSfMih+60C3lUsYIztKy5Ktq7A5PEpfjQfsYZ\nifKzoOWhUvMolJI7Ac3cm6ZCfwzcviWW5NuwlmORHpmUXxkvTUNUTpA/oEN0/Vf2\nsGXK40qEPW/z7NhvzpHz/brDhaYPeS2kmh+l13XGWMhKpf1XSK0cX0tIebynX08R\nEt35xOom74emZuOOEPG9PaTkYbDhp1ChIP19fql8pwakMFUkVM0UL3hMSj100G9T\nmOhsGF3BKlE2locod0nuuCnqoPqq7XSwGcgD2yBEfHeAz7azgXy7Hv4WmRVTdI37\n/6IWtYECgYEA7Zc7auVjMXRERvgYZ/mQPh1MtXd1dYKJ7WKmeD54fjxizsl/I31v\nniXMMbCxkDdittqI0VrkJKTWg6rgcxHmcZl8OO0CHulCFun0npFoKhVv1p163TI3\nVv5ECo5aykSGodxciTk5XLiwEjk+2YTZs5NTw+ndRUO2JcgfnqDGkWECgYEA4rSL\n0D0xqqFhF0r/G9kD3WP42IXwrxGbWorpN16/uIoyWpgQOv0OSR+mIEerl3W1VCbT\nhiCsLyrg4SUlF52HjG//MEk3gp4yxjO6zW5m8syiP8wKVtOFGgbpBSHpOr0ZM+Ei\nIJ0jx5YD3IrYw/SkAOQvmBEqAsVGtQBxxIyrSq8CgYEAt88+aq7YlNQMVpNt3lLW\n4xcr12B6ANVi+8JMY86AzbjOAIkm0UAj8Efxt6epV5dhyXE8VCtrQWY9h1PVnXCF\nxfEmh6vk7iErvip1049O9O/svC7NdP96jNTdswT6/G0Tc3nWJVueIzvHC/I5y3La\nMfGS5oixZPrDmms++ywLM0ECgYARcBPFC7/zQQCH2yPuT24FrHfqp7rQrIkHmOHB\neY9DsZWX9FRjRS3BICcWGo0vVEWDWI0ypva3lhPAHaxRubNAcSju3OLhMCv1pOr8\nfD589JKSV65/6Ts2uktYMriO5Ra4L9wBKDUlV/uqDiAISpwG2YZzqvZRSj1bFNKr\nbKqMTwKBgQCjFrbhO69CXqeWbwaW1CorTmA1covJeKFWud0WHaNiVq9GqsbZ5Il5\nc7DjNZOYPcr6LRTIxOc2E1ydHJ0Nmtn9eEeNWlVFKdVnVhjLkaj1RtpNNYiCfFeX\nr5E7Vfj/3zBWY6IsMdmwfqHoK4WvgQdmn1ax51sZEzBXZ2vdAoJ4Ow==\n-----END RSA PRIVATE KEY-----")
+    let publica = std::encoding::utf8_encode("-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0mcSjIaZTkWyRMl9n0Au\nvie3oK5HdeHPAEN8vOJtqVCmJ7w419JzHrhoPdpGuUnujR+P20RHg5gPJuRxxLB2\ndHVPWwCjEJbfqFXONqiP+d3O7lNvvjApBOUZdMV7km/UU5TTZSWaQzxxDyA2xE39\n1phawT8KIW8FL1j33qeXx9R/h7Vnrz7N9o2j+ZP0pr/Pn5GoslLMNHDO3GnTYssL\ncL9ddj+Y1vPEMEy2dwUIvmorNzKpoMtBHSlz/zbDoCaLI5ne43Kgluh4ugiCLSLA\nLoFvgWic3Dapu1FYdpa8Cv3ViWup734KnHDJ7dAh87+Xtrq9jlsHoyHfBpNRdY5r\nTwIDAQAB\n-----END PUBLIC KEY-----")
+    let k = std::encoding::utf8_encode("secreto")
+    let c0 = std::map::insert(std::map::new(), "exp", 9999999999)
+    let c1 = std::map::insert(c0, "sub", "ana")
+    let c2 = std::map::insert(c1, "aud", ["web", "app"])
+    let c = std::map::insert(c2, "iss", "yo")
+    let t = std::jwt::sign_hs256(c, k)
+    print(t)
+    print(std::jwt::peek_header(t))
+    print(std::jwt::verify_hs256(t, k, "app", "yo"))
+    print(std::jwt::verify_hs256(t, k, "web", ""))
+    let r = std::jwt::sign_rs256(c, priv)
+    print(r)
+    print(std::jwt::peek_header(r))
+    print(std::jwt::verify_rs256(r, publica, "web", "yo"))
+    print(std::jwt::verify_rs256(r, priv, "", "yo"))
+}

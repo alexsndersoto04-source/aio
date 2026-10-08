@@ -1,0 +1,20 @@
+// Errores de std::plot.
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("line len", std::try::catch(|| { std::plot::line("/tmp/x.svg", "t", "x", "y", [0.0], []) }))
+    show("line empty", std::try::catch(|| { std::plot::line("/tmp/x.svg", "t", "x", "y", [], []) }))
+    show("bar len", std::try::catch(|| { std::plot::bar("/tmp/x.svg", "t", "y", ["a"], []) }))
+    show("bar empty", std::try::catch(|| { std::plot::bar("/tmp/x.svg", "t", "y", [], []) }))
+    show("hist empty", std::try::catch(|| { std::plot::histogram("/tmp/x.svg", "t", "x", [], 4) }))
+    show("hist neg", std::try::catch(|| { std::plot::histogram("/tmp/x.svg", "t", "x", [1.0], 0 - 1) }))
+    show("multi empty", std::try::catch(|| { std::plot::multi_line("/tmp/x.svg", "t", "x", "y", [], [], []) }))
+    show("multi mismatch", std::try::catch(|| { std::plot::multi_line("/tmp/x.svg", "t", "x", "y", ["a"], [[0.0]], []) }))
+    show("multi series", std::try::catch(|| { std::plot::multi_line("/tmp/x.svg", "t", "x", "y", ["a"], [[]], [[]]) }))
+    show("multi xy", std::try::catch(|| { std::plot::multi_line("/tmp/x.svg", "t", "x", "y", ["a"], [[0.0]], [[0.0, 1.0]]) }))
+}

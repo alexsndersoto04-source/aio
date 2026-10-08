@@ -1,0 +1,3 @@
+fn main() {
+    std::process::send_signal(1, 0)
+}

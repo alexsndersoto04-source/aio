@@ -1,0 +1,3 @@
+fn main() {
+    std::process::pipe(["sh -c \"echo antes >&2\"", "titan_no_existe", "cat"])
+}

@@ -1,0 +1,884 @@
+// std::compress — descompresión gzip / zlib / deflate, en Titan.
+//
+// Port fiel del descompresor de miniz_oxide 0.8.9 (src/inflate/core.rs:
+// init_tree, decode_huffman_code, read_bits, decompress) y del lector gzip
+// de flate2 1.1.9 (src/gz/mod.rs: GzHeaderParser; src/gz/bufread.rs:
+// comprobación de CRC-32 y longitud). Mismas reglas de aceptación y mismos
+// mensajes que la versión de Rust (crates/titan_stdlib/src/compress_mod.rs):
+//
+//   * cualquier dato inválido (cabecera zlib mala, diccionario previo,
+//     bloque tipo 3, LEN/NLEN, tablas Huffman mal formadas, símbolos
+//     inválidos, Adler-32 distinto...) -> "corrupt deflate stream";
+//   * se acaban los datos -> "unexpected end of file";
+//   * gzip: "invalid gzip header", "gzip header field too long",
+//     "corrupt gzip stream does not have a matching checksum";
+//   * los bytes que sobran tras el final del flujo se ignoran; gzip solo
+//     lee el primer miembro.
+//
+// Igual que en Rust tras la corrección: un flujo truncado es un error (antes
+// devolvía lo que hubiera salido) y una referencia a antes del principio de
+// la salida es un error (antes salían ceros inventados).
+//
+// El resultado no depende de qué camino de miniz se use (rápido o lento):
+// todos deciden con los mismos bits, y "se acabaron los datos" sale
+// exactamente cuando hace falta un bit que no existe. Por eso aquí los bits
+// se piden de uno en uno byte a byte, y las tablas se construyen igual que
+// init_tree (incluida su rareza: en un código incompleto de un solo símbolo
+// largo, los caminos no usados del árbol valen 0 = símbolo 0).
+//
+// Estado (bloque de rt_alloc, palabras de 8 bytes), desde s:
+//   tabla t (0 literales/longitudes, 1 distancias, 2 longitudes de código)
+//     en s + 12800*t: look_up (1024 palabras) y detrás tree (576).
+//   + 38400 tamaños de literales (288)   + 40704 tamaños de distancias (32)
+//   + 40960 tamaños de longitudes (19)   + 41120 len_codes (512)
+//   + 45216 entrada  + 45224 n  + 45232 pos  + 45240 bit_buf  + 45248 num_bits
+//   + 45256 salida (bloque de bytes)  + 45264 longitud  + 45272 capacidad
+//   + 45280 total_symbols (16)  + 45408 next_code (17)
+// Tabla CRC-32: globals + 3072 (se crea la primera vez).
+//
+// Códigos internos: -1 fin de datos, -2 flujo corrupto, -3 cabecera gzip
+// inválida, -4 campo de cabecera gzip demasiado largo, -5 checksum gzip.
+
+fn cz_new(data: int, n: int, start: int) -> int {
+    let s = rt_alloc(45584)
+    std::raw::store(s + 45568, 0)
+    std::raw::store(s + 45576, 0)
+    std::raw::store(s + 45216, data)
+    std::raw::store(s + 45224, n)
+    std::raw::store(s + 45232, start)
+    std::raw::store(s + 45240, 0)
+    std::raw::store(s + 45248, 0)
+    let mut cap = 2 * n
+    if cap < 64 {
+        cap = 64
+    }
+    std::raw::store(s + 45256, rt_str_alloc(cap))
+    std::raw::store(s + 45264, 0)
+    std::raw::store(s + 45272, cap)
+    s
+}
+
+fn cz_message(code: int) -> string {
+    if code == -1 {
+        return "compression I/O error: unexpected end of file"
+    }
+    if code == -3 {
+        return "compression I/O error: invalid gzip header"
+    }
+    if code == -4 {
+        return "compression I/O error: gzip header field too long"
+    }
+    if code == -5 {
+        return "compression I/O error: corrupt gzip stream does not have a matching checksum"
+    }
+    "compression I/O error: corrupt deflate stream"
+}
+
+fn cz_fail(s: int, function: string, code: int) {
+    if s != 0 {
+        rt_free_block(std::raw::load(s + 45256))
+        rt_free_block(s)
+    }
+    rt_native_fail(function, cz_message(code))
+}
+
+// Entrega la salida como bytes y libera el estado.
+fn cz_finish(s: int) -> any {
+    let p = std::raw::load(s + 45256)
+    std::raw::store(p + 8, std::raw::load(s + 45264))
+    rt_free_block(s)
+    std::raw::adopt(6, p)
+}
+
+// Algunas lecturas (como PNG) conocen de antemano el máximo permitido.
+// El límite es opcional y no cambia el descompresor público.
+fn cz_bound(s: int, limit: int, function_id: int) {
+    std::raw::store(s + 45568, limit)
+    std::raw::store(s + 45576, function_id)
+    let cap = std::raw::load(s + 45272)
+    let target = if limit < 64 { 64 } else { limit }
+    if cap > target {
+        let old = std::raw::load(s + 45256)
+        let p = rt_str_alloc(target)
+        rt_free_block(old)
+        std::raw::store(s + 45256, p)
+        std::raw::store(s + 45272, target)
+    }
+}
+
+fn cz_bound_fail(s: int) {
+    let function_id = std::raw::load(s + 45576)
+    rt_free_block(std::raw::load(s + 45256))
+    rt_free_block(s)
+    if function_id == 1 {
+        rt_native_fail("std::image::load_bytes", "image error: decompressed PNG data exceeds the safety limit")
+    }
+    if function_id == 2 {
+        rt_native_fail("std::http_full::request", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 3 {
+        rt_native_fail("std::http_full::get_json", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 4 {
+        rt_native_fail("std::http_full::post_json", "HTTP response body exceeds configured limit")
+    }
+    if function_id == 5 {
+        rt_native_fail("std::http_full::post_form", "HTTP response body exceeds configured limit")
+    }
+    rt_native_fail("std::image::load", "image error: decompressed PNG data exceeds the safety limit")
+}
+
+// ------------------------------------------------------------ salida
+
+fn cz_room(s: int, k: int) {
+    let olen = std::raw::load(s + 45264)
+    let limit = std::raw::load(s + 45568)
+    if limit > 0 && olen + k > limit {
+        cz_bound_fail(s)
+    }
+    let cap = std::raw::load(s + 45272)
+    if olen + k > cap {
+        let mut nc = cap * 2
+        while nc < olen + k {
+            nc = nc * 2
+        }
+        let old = std::raw::load(s + 45256)
+        let p = rt_str_alloc(nc)
+        rt_copy(p + 16, old + 16, olen)
+        rt_free_block(old)
+        std::raw::store(s + 45256, p)
+        std::raw::store(s + 45272, nc)
+    }
+}
+
+fn cz_put(s: int, byte: int) {
+    let olen = std::raw::load(s + 45264)
+    let limit = std::raw::load(s + 45568)
+    if limit > 0 && olen >= limit {
+        cz_bound_fail(s)
+    }
+    if olen >= std::raw::load(s + 45272) {
+        cz_room(s, 1)
+    }
+    std::raw::store8(std::raw::load(s + 45256) + 16 + olen, byte)
+    std::raw::store(s + 45264, olen + 1)
+}
+
+// ------------------------------------------------------------ bits
+
+// read_bits: k bits (LSB primero) o -1 si no quedan datos.
+fn cz_bits(s: int, k: int) -> int {
+    let mut nb = std::raw::load(s + 45248)
+    let mut bb = std::raw::load(s + 45240)
+    if nb < k {
+        let data = std::raw::load(s + 45216)
+        let n = std::raw::load(s + 45224)
+        let mut pos = std::raw::load(s + 45232)
+        while nb < k {
+            if pos >= n {
+                std::raw::store(s + 45232, pos)
+                std::raw::store(s + 45240, bb)
+                std::raw::store(s + 45248, nb)
+                return -1
+            }
+            bb = bb | std::raw::shl(std::raw::load8(data + pos), nb)
+            pos += 1
+            nb += 8
+        }
+        std::raw::store(s + 45232, pos)
+    }
+    std::raw::store(s + 45240, std::raw::shr(bb, k))
+    std::raw::store(s + 45248, nb - k)
+    bb & (std::raw::shl(1, k) - 1)
+}
+
+// decode_huffman_code: símbolo de la tabla t, o -1 si el código no se puede
+// resolver con los datos que quedan. Un código inválido no es un error aquí:
+// da un símbolo fuera de rango (286 desde look_up, 32767 si el árbol se sale)
+// y quien llama lo rechaza, como en miniz.
+fn cz_decode(s: int, t: int) -> int {
+    let tb = s + 12800 * t
+    loop {
+        let bb = std::raw::load(s + 45240)
+        let nb = std::raw::load(s + 45248)
+        let e = std::raw::load(tb + 8 * (bb & 1023))
+        if e >= 0 {
+            let l = std::raw::shr(e, 9)
+            if l <= nb {
+                std::raw::store(s + 45240, std::raw::shr(bb, l))
+                std::raw::store(s + 45248, nb - l)
+                return e & 511
+            }
+        } else if nb > 10 {
+            let mut cl = 10
+            let mut v = e
+            loop {
+                let idx = (0 - v - 1) + (std::raw::shr(bb, cl) & 1)
+                if idx < 0 || idx >= 576 {
+                    v = 32767
+                } else {
+                    v = std::raw::load(tb + 8192 + 8 * idx)
+                }
+                cl += 1
+                if v >= 0 || nb < cl + 1 {
+                    break
+                }
+            }
+            if v >= 0 {
+                std::raw::store(s + 45240, std::raw::shr(bb, cl))
+                std::raw::store(s + 45248, nb - cl)
+                return v
+            }
+        }
+        let pos = std::raw::load(s + 45232)
+        if pos >= std::raw::load(s + 45224) {
+            return -1
+        }
+        let byte = std::raw::load8(std::raw::load(s + 45216) + pos)
+        std::raw::store(s + 45240, bb | std::raw::shl(byte, nb))
+        std::raw::store(s + 45248, nb + 8)
+        std::raw::store(s + 45232, pos + 1)
+    }
+    -1
+}
+
+// ------------------------------------------------------------ tablas
+
+fn cz_sizes(s: int, t: int) -> int {
+    if t == 0 {
+        return s + 38400
+    }
+    if t == 1 {
+        return s + 40704
+    }
+    s + 40960
+}
+
+fn cz_rev16(n: int) -> int {
+    let mut r = 0
+    let mut i = 0
+    while i < 16 {
+        r = r * 2 + (std::raw::shr(n, i) & 1)
+        i += 1
+    }
+    r
+}
+
+// init_tree para una tabla de `size` símbolos: 0 o -2.
+fn cz_build(s: int, t: int, size: int) -> int {
+    let tb = s + 12800 * t
+    let sizes = cz_sizes(s, t)
+    let ts = s + 45280
+    let nc = s + 45408
+    let mut i = 0
+    while i < 1024 {
+        std::raw::store(tb + 8 * i, 798)
+        i += 1
+    }
+    i = 0
+    while i < 576 {
+        std::raw::store(tb + 8192 + 8 * i, 0)
+        i += 1
+    }
+    i = 0
+    while i < 16 {
+        std::raw::store(ts + 8 * i, 0)
+        i += 1
+    }
+    i = 0
+    while i < size {
+        let cs = std::raw::load(sizes + 8 * i)
+        std::raw::store(ts + 8 * cs, std::raw::load(ts + 8 * cs) + 1)
+        i += 1
+    }
+    let mut used = 0
+    let mut total = 0
+    std::raw::store(nc + 8, 0)
+    i = 1
+    while i < 16 {
+        let c = std::raw::load(ts + 8 * i)
+        used += c
+        total = (total + c) * 2
+        std::raw::store(nc + 8 * (i + 1), total)
+        i += 1
+    }
+    if total != 65536 && (used > 1 || t == 2) {
+        return -2
+    }
+    let mut next = -1
+    let mut sym = 0
+    while sym < size {
+        let cs = std::raw::load(sizes + 8 * sym) & 15
+        if cs != 0 {
+            let cur = std::raw::load(nc + 8 * cs)
+            std::raw::store(nc + 8 * cs, cur + 1)
+            let code = cur & (std::raw::shl(1, cs) - 1)
+            let mut rev = std::raw::shr(cz_rev16(code), 16 - cs)
+            if cs <= 10 {
+                let k = std::raw::shl(cs, 9) | sym
+                let step = std::raw::shl(1, cs)
+                while rev < 1024 {
+                    std::raw::store(tb + 8 * rev, k)
+                    rev += step
+                }
+            } else {
+                let slot = tb + 8 * (rev & 1023)
+                let mut cur_t = std::raw::load(slot)
+                if cur_t == 798 {
+                    std::raw::store(slot, next)
+                    cur_t = next
+                    next -= 2
+                }
+                rev = std::raw::shr(rev, 9)
+                let mut j = 11
+                while j < cs {
+                    rev = std::raw::shr(rev, 1)
+                    cur_t -= rev & 1
+                    let idx = 0 - cur_t - 1
+                    if idx < 0 || idx >= 576 {
+                        return -2
+                    }
+                    let tv = std::raw::load(tb + 8192 + 8 * idx)
+                    if tv == 0 {
+                        std::raw::store(tb + 8192 + 8 * idx, next)
+                        cur_t = next
+                        next -= 2
+                    } else {
+                        cur_t = tv
+                    }
+                    j += 1
+                }
+                rev = std::raw::shr(rev, 1)
+                cur_t -= rev & 1
+                let idx = 0 - cur_t - 1
+                if idx < 0 || idx >= 576 {
+                    return -2
+                }
+                std::raw::store(tb + 8192 + 8 * idx, sym)
+            }
+        }
+        sym += 1
+    }
+    0
+}
+
+// LENGTH_BASE / LENGTH_EXTRA / DIST_BASE de miniz, por fórmula
+// (comprobadas contra las tablas de la fuente; tests/native/compress_codigos
+// usa todos los códigos de longitud y distancia).
+fn cz_len_base(i: int) -> int {
+    if i < 8 {
+        return 3 + i
+    }
+    if i == 28 {
+        return 258
+    }
+    std::raw::shl(4 + (i & 3), i / 4 - 1) + 3
+}
+
+fn cz_len_extra(i: int) -> int {
+    if i < 8 || i == 28 {
+        return 0
+    }
+    i / 4 - 1
+}
+
+fn cz_dist_base(d: int) -> int {
+    if d < 4 {
+        return d + 1
+    }
+    std::raw::shl(2 + (d & 1), d / 2 - 1) + 1
+}
+
+fn cz_dist_extra(d: int) -> int {
+    if d < 4 {
+        return 0
+    }
+    d / 2 - 1
+}
+
+// HUFFMAN_LENGTH_ORDER (16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13,
+// 2, 14, 1, 15) como letras 'A' + valor.
+fn cz_order(i: int) -> int {
+    let o = "QRSAIHJGKFLEMDNCOBP"
+    std::raw::load8(std::raw::bits(o) + 16 + i) - 65
+}
+
+// ------------------------------------------------------------ bloques
+
+fn cz_static(s: int) -> int {
+    let lit = s + 38400
+    let mut i = 0
+    while i < 288 {
+        let mut v = 8
+        if i >= 144 && i < 256 {
+            v = 9
+        } else if i >= 256 && i < 280 {
+            v = 7
+        }
+        std::raw::store(lit + 8 * i, v)
+        i += 1
+    }
+    i = 0
+    while i < 32 {
+        std::raw::store(s + 40704 + 8 * i, 5)
+        i += 1
+    }
+    let r = cz_build(s, 1, 32)
+    if r < 0 {
+        return r
+    }
+    cz_build(s, 0, 288)
+}
+
+fn cz_dynamic(s: int) -> int {
+    let a = cz_bits(s, 5)
+    if a < 0 {
+        return a
+    }
+    let b = cz_bits(s, 5)
+    if b < 0 {
+        return b
+    }
+    let c = cz_bits(s, 4)
+    if c < 0 {
+        return c
+    }
+    let hlit = a + 257
+    let hdist = b + 1
+    let hclen = c + 4
+    let huf = s + 40960
+    let mut i = 0
+    while i < 19 {
+        std::raw::store(huf + 8 * i, 0)
+        i += 1
+    }
+    if hlit > 286 || hdist > 30 {
+        return -2
+    }
+    i = 0
+    while i < hclen {
+        let v = cz_bits(s, 3)
+        if v < 0 {
+            return v
+        }
+        std::raw::store(huf + 8 * cz_order(i), v)
+        i += 1
+    }
+    let r = cz_build(s, 2, 19)
+    if r < 0 {
+        return r
+    }
+    let lc = s + 41120
+    let total = hlit + hdist
+    let mut counter = 0
+    while counter < total {
+        let sym = cz_decode(s, 2)
+        if sym < 0 {
+            return sym
+        }
+        if sym < 16 {
+            std::raw::store(lc + 8 * (counter & 511), sym)
+            counter += 1
+        } else if sym == 16 && counter == 0 {
+            return -2
+        } else {
+            let k = (sym - 16) & 3
+            let mut ne = 0
+            let mut base = 3
+            if k == 0 {
+                ne = 2
+            } else if k == 1 {
+                ne = 3
+            } else if k == 2 {
+                ne = 7
+            }
+            if ((sym - 16) & 2) != 0 {
+                base = 11
+            }
+            let x = cz_bits(s, ne)
+            if x < 0 {
+                return x
+            }
+            let extra = x + base
+            let mut val = 0
+            if sym == 16 {
+                val = std::raw::load(lc + 8 * ((counter - 1) & 511))
+            }
+            let start = counter & 511
+            let stop = (counter + extra) & 511
+            let mut j = start
+            while j < stop {
+                std::raw::store(lc + 8 * j, val)
+                j += 1
+            }
+            counter += extra
+        }
+    }
+    if counter != total {
+        return -2
+    }
+    rt_copy(s + 38400, lc, 8 * hlit)
+    rt_copy(s + 40704, lc + 8 * hlit, 8 * hdist)
+    let r1 = cz_build(s, 1, hdist)
+    if r1 < 0 {
+        return r1
+    }
+    cz_build(s, 0, hlit)
+}
+
+fn cz_stored(s: int) -> int {
+    cz_bits(s, std::raw::load(s + 45248) & 7)
+    let b0 = cz_bits(s, 8)
+    if b0 < 0 {
+        return b0
+    }
+    let b1 = cz_bits(s, 8)
+    if b1 < 0 {
+        return b1
+    }
+    let b2 = cz_bits(s, 8)
+    if b2 < 0 {
+        return b2
+    }
+    let b3 = cz_bits(s, 8)
+    if b3 < 0 {
+        return b3
+    }
+    let len = b0 + 256 * b1
+    let nlen = b2 + 256 * b3
+    if len != (nlen ^ 65535) {
+        return -2
+    }
+    let mut c = len
+    while c > 0 && std::raw::load(s + 45248) != 0 {
+        cz_put(s, cz_bits(s, 8))
+        c -= 1
+    }
+    let data = std::raw::load(s + 45216)
+    let n = std::raw::load(s + 45224)
+    while c > 0 {
+        let pos = std::raw::load(s + 45232)
+        if pos >= n {
+            return -1
+        }
+        let mut k = n - pos
+        if k > c {
+            k = c
+        }
+        cz_room(s, k)
+        let olen = std::raw::load(s + 45264)
+        rt_copy(std::raw::load(s + 45256) + 16 + olen, data + pos, k)
+        std::raw::store(s + 45264, olen + k)
+        std::raw::store(s + 45232, pos + k)
+        c -= k
+    }
+    0
+}
+
+// Símbolos de un bloque comprimido hasta el 256.
+fn cz_block(s: int) -> int {
+    loop {
+        let sym = cz_decode(s, 0)
+        if sym < 0 {
+            return sym
+        }
+        if sym < 256 {
+            cz_put(s, sym)
+            continue
+        }
+        let c = sym & 511
+        if c == 256 {
+            return 0
+        }
+        if c > 285 {
+            return -2
+        }
+        let li = c - 257
+        let mut len = cz_len_base(li)
+        let ne = cz_len_extra(li)
+        if ne != 0 {
+            let x = cz_bits(s, ne)
+            if x < 0 {
+                return x
+            }
+            len += x
+        }
+        let d = cz_decode(s, 1)
+        if d < 0 {
+            return d
+        }
+        if d > 29 {
+            return -2
+        }
+        let mut dist = cz_dist_base(d)
+        let de = cz_dist_extra(d)
+        if de != 0 {
+            let x = cz_bits(s, de)
+            if x < 0 {
+                return x
+            }
+            dist += x
+        }
+        let olen = std::raw::load(s + 45264)
+        if dist > olen {
+            return -2
+        }
+        cz_room(s, len)
+        let p = std::raw::load(s + 45256) + 16 + olen
+        let mut i = 0
+        while i < len {
+            std::raw::store8(p + i, std::raw::load8(p + i - dist))
+            i += 1
+        }
+        std::raw::store(s + 45264, olen + len)
+    }
+    -2
+}
+
+// Un flujo deflate completo (con cabecera y Adler-32 si zlib). Deja `pos`
+// justo detrás del flujo (los bytes enteros que quedaban en bit_buf se
+// devuelven, como undo_bytes).
+fn cz_run(s: int, zlib: bool) -> int {
+    if zlib {
+        let cmf = cz_bits(s, 8)
+        if cmf < 0 {
+            return cmf
+        }
+        let flg = cz_bits(s, 8)
+        if flg < 0 {
+            return flg
+        }
+        if (cmf * 256 + flg) % 31 != 0 || (flg & 32) != 0 || (cmf & 15) != 8 || std::raw::shr(cmf, 4) > 7 {
+            return -2
+        }
+    }
+    loop {
+        let h = cz_bits(s, 3)
+        if h < 0 {
+            return h
+        }
+        let bt = std::raw::shr(h, 1) & 3
+        let mut r = 0
+        if bt == 0 {
+            r = cz_stored(s)
+        } else if bt == 3 {
+            r = -2
+        } else {
+            if bt == 1 {
+                r = cz_static(s)
+            } else {
+                r = cz_dynamic(s)
+            }
+            if r == 0 {
+                r = cz_block(s)
+            }
+        }
+        if r < 0 {
+            return r
+        }
+        if (h & 1) == 1 {
+            break
+        }
+    }
+    let nb = std::raw::load(s + 45248)
+    std::raw::store(s + 45232, std::raw::load(s + 45232) - std::raw::shr(nb, 3))
+    std::raw::store(s + 45240, 0)
+    std::raw::store(s + 45248, 0)
+    if zlib {
+        let mut a = 0
+        let mut i = 0
+        while i < 4 {
+            let b = cz_bits(s, 8)
+            if b < 0 {
+                return b
+            }
+            a = a * 256 + b
+            i += 1
+        }
+        if a != cz_adler(std::raw::load(s + 45256) + 16, std::raw::load(s + 45264)) {
+            return -2
+        }
+    }
+    0
+}
+
+// ------------------------------------------------------------ checksums
+
+fn cz_adler(p: int, n: int) -> int {
+    let mut a = 1
+    let mut b = 0
+    let mut i = 0
+    while i < n {
+        let mut stop = i + 5552
+        if stop > n {
+            stop = n
+        }
+        while i < stop {
+            a += std::raw::load8(p + i)
+            b += a
+            i += 1
+        }
+        a = a % 65521
+        b = b % 65521
+    }
+    b * 65536 + a
+}
+
+fn cz_crc_table() -> int {
+    let g = std::raw::globals() + 3072
+    let have = std::raw::load(g)
+    if have != 0 {
+        return have
+    }
+    let t = rt_alloc(2048)
+    let mut i = 0
+    while i < 256 {
+        let mut c = i
+        let mut k = 0
+        while k < 8 {
+            if (c & 1) == 1 {
+                c = std::raw::shr(c, 1) ^ 3988292384
+            } else {
+                c = std::raw::shr(c, 1)
+            }
+            k += 1
+        }
+        std::raw::store(t + 8 * i, c)
+        i += 1
+    }
+    std::raw::store(g, t)
+    t
+}
+
+fn cz_crc(p: int, n: int) -> int {
+    let t = cz_crc_table()
+    let mut c = 4294967295
+    let mut i = 0
+    while i < n {
+        c = std::raw::load(t + 8 * ((c ^ std::raw::load8(p + i)) & 255)) ^ std::raw::shr(c, 8)
+        i += 1
+    }
+    c ^ 4294967295
+}
+
+// ------------------------------------------------------------ gzip
+
+fn cz_le16(p: int) -> int {
+    std::raw::load8(p) + 256 * std::raw::load8(p + 1)
+}
+
+fn cz_le32(p: int) -> int {
+    cz_le16(p) + 65536 * cz_le16(p + 2)
+}
+
+// read_to_nul de flate2 (máximo 65535 bytes sin contar el 0).
+fn cz_gz_nul(p: int, n: int, from: int) -> int {
+    let mut pos = from
+    loop {
+        if pos >= n {
+            return -1
+        }
+        if std::raw::load8(p + pos) == 0 {
+            return pos + 1
+        }
+        if pos - from == 65535 {
+            return -4
+        }
+        pos += 1
+    }
+    -1
+}
+
+// GzHeaderParser: longitud de la cabecera o código de error.
+fn cz_gz_header(p: int, n: int) -> int {
+    if n < 10 {
+        return -1
+    }
+    if std::raw::load8(p) != 31 || std::raw::load8(p + 1) != 139 || std::raw::load8(p + 2) != 8 {
+        return -3
+    }
+    let flags = std::raw::load8(p + 3)
+    if (flags & 224) != 0 {
+        return -3
+    }
+    let mut pos = 10
+    if (flags & 4) != 0 {
+        if n - pos < 2 {
+            return -1
+        }
+        let xlen = cz_le16(p + pos)
+        pos += 2
+        if n - pos < xlen {
+            return -1
+        }
+        pos += xlen
+    }
+    if (flags & 8) != 0 {
+        pos = cz_gz_nul(p, n, pos)
+        if pos < 0 {
+            return pos
+        }
+    }
+    if (flags & 16) != 0 {
+        pos = cz_gz_nul(p, n, pos)
+        if pos < 0 {
+            return pos
+        }
+    }
+    if (flags & 2) != 0 {
+        if n - pos < 2 {
+            return -1
+        }
+        if cz_le16(p + pos) != (cz_crc(p, pos) & 65535) {
+            return -5
+        }
+        pos += 2
+    }
+    pos
+}
+
+// ------------------------------------------------------------ nativas
+
+fn cz_decode_native(b: any, function: string, zlib: bool) -> any {
+    rt_expect_bytes(b, function)
+    let s = cz_new(rt_bdata(b), rt_slen(b), 0)
+    let r = cz_run(s, zlib)
+    if r < 0 {
+        cz_fail(s, function, r)
+    }
+    cz_finish(s)
+}
+
+fn std__compress__deflate_decode(b: any) -> any {
+    cz_decode_native(b, "std::compress::deflate_decode", false)
+}
+
+fn std__compress__zlib_decode(b: any) -> any {
+    cz_decode_native(b, "std::compress::zlib_decode", true)
+}
+
+fn std__compress__gzip_decode(b: any) -> any {
+    let function = "std::compress::gzip_decode"
+    rt_expect_bytes(b, function)
+    let p = rt_bdata(b)
+    let n = rt_slen(b)
+    let h = cz_gz_header(p, n)
+    if h < 0 {
+        cz_fail(0, function, h)
+    }
+    let s = cz_new(p, n, h)
+    let r = cz_run(s, false)
+    if r < 0 {
+        cz_fail(s, function, r)
+    }
+    let pos = std::raw::load(s + 45232)
+    if n - pos < 8 {
+        cz_fail(s, function, -1)
+    }
+    let olen = std::raw::load(s + 45264)
+    let crc = cz_crc(std::raw::load(s + 45256) + 16, olen)
+    if cz_le32(p + pos) != crc || cz_le32(p + pos + 4) != (olen & 4294967295) {
+        cz_fail(s, function, -5)
+    }
+    cz_finish(s)
+}

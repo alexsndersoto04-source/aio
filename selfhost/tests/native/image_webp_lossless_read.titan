@@ -1,0 +1,27 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn main() {
+    let files = ["webp-lossless.webp", "webp-lossless-alpha.webp", "webp-lossless-meta.webp", "webp-lossless-meta-groups.webp"]
+    let mut i = 0
+    while i < len(files) {
+        let path = "selfhost/native/image/testdata/" + files[i]
+        let by_path = std::image::load(path)
+        show_image(by_path, "path " + files[i])
+        std::image::close(by_path)
+        let by_bytes = std::image::load_bytes(std::fs::read_bytes(path))
+        show_image(by_bytes, "bytes " + files[i])
+        std::image::close(by_bytes)
+        i += 1
+    }
+}

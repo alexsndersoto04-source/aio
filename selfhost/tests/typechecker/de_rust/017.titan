@@ -1,0 +1,1 @@
+fn main() { std::stats::mean([10, 20, 30, 40]) }

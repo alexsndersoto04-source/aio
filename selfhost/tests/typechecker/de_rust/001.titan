@@ -1,0 +1,1 @@
+struct A { x: int } impl Nope for A { } fn main() { }

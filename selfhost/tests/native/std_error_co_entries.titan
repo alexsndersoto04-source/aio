@@ -1,0 +1,8 @@
+fn main() {
+    let s = std::collections::set_new()
+    let mut k = 0
+    while k < 5000 {
+        std::collections::set_add(s, "e{k}")
+        k += 1
+    }
+}

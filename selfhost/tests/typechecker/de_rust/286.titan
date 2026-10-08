@@ -1,0 +1,1 @@
+trait Measure { fn value(self) -> int; } struct Item { value: int } impl Measure for Item { fn value(self) { self.value } } fn main() { let item = Item { value: 2 } let value: int = item.value() }

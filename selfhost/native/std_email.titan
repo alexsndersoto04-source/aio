@@ -1,0 +1,439 @@
+// Real SMTP submission through curl/libcurl. Credentials are kept in a
+// mode-0600, exclusive temporary config file (never exposed in argv); TLS
+// verification remains enabled by curl. Port 25 is explicit plaintext,
+// 465 uses implicit TLS, and other ports require STARTTLS.
+const EM_MAX_TEXT_BYTES: int = 8388608
+const EM_MAX_ATTACHMENT_BYTES: int = 8388608
+const EM_MAX_MESSAGE_BYTES: int = 16777216
+
+fn em_fail(function: string, kind: string, detail: string) -> any {
+    rt_native_fail(function, kind + ": " + detail)
+}
+
+fn em_find_byte(value: string, wanted: int, start: int) -> int {
+    let pointer = std::raw::bits(value) + 16
+    let length = rt_slen(value)
+    let mut i = start
+    while i < length {
+        if std::raw::load8(pointer + i) == wanted { return i }
+        i += 1
+    }
+    -1
+}
+
+fn em_header_safe(value: string, function: string, label: string) {
+    let pointer = std::raw::bits(value) + 16
+    let length = rt_slen(value)
+    if length > 8192 {
+        em_fail(function, "email build error", label + " exceeds 8192 bytes")
+    }
+    let mut i = 0
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if c == 0 || c == 10 || c == 13 {
+            em_fail(function, "email build error", label + " contains a forbidden line break or NUL byte")
+        }
+        i += 1
+    }
+}
+
+fn em_local_char(c: int) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+    c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 ||
+    c == 42 || c == 43 || c == 45 || c == 46 || c == 47 || c == 61 ||
+    c == 63 || c == 94 || c == 95 || c == 96 || c == 123 || c == 124 || c == 125 || c == 126
+}
+
+fn em_valid_address(address: string) -> bool {
+    let pointer = std::raw::bits(address) + 16
+    let length = rt_slen(address)
+    if length < 3 || length > 320 { return false }
+    let mut at = -1
+    let mut i = 0
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if c == 64 {
+            if at >= 0 { return false }
+            at = i
+        }
+        i += 1
+    }
+    if at <= 0 || at >= length - 1 { return false }
+
+    // Accept the common dot-atom local part and DNS-style domains. Quoted
+    // local parts and SMTPUTF8 addresses are deliberately not rewritten.
+    let local_first = std::raw::load8(pointer)
+    let local_last = std::raw::load8(pointer + at - 1)
+    if local_first == 46 || local_last == 46 { return false }
+    let mut previous_dot = false
+    i = 0
+    while i < at {
+        let c = std::raw::load8(pointer + i)
+        if !em_local_char(c) { return false }
+        if c == 46 && previous_dot { return false }
+        previous_dot = c == 46
+        i += 1
+    }
+
+    let mut label_length = 0
+    let mut label_first = 0
+    let mut label_last = 0
+    i = at + 1
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if c == 46 {
+            if label_length == 0 || label_first == 45 || label_last == 45 { return false }
+            label_length = 0
+        } else if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 {
+            if label_length == 0 { label_first = c }
+            label_last = c
+            label_length += 1
+            if label_length > 63 { return false }
+        } else {
+            return false
+        }
+        i += 1
+    }
+    label_length > 0 && label_first != 45 && label_last != 45
+}
+
+fn em_mailbox_address(mailbox: string, function: string, label: string) -> string {
+    em_header_safe(mailbox, function, label)
+    let cleaned = std::text::trim(mailbox)
+    let left = em_find_byte(cleaned, 60, 0)
+    let mut address = cleaned
+    if left >= 0 {
+        let right = em_find_byte(cleaned, 62, left + 1)
+        if right <= left + 1 {
+            em_fail(function, "email build error", "invalid " + label + " mailbox")
+        }
+        if std::text::trim(rt_substr_bytes(cleaned, right + 1, rt_slen(cleaned))) != "" {
+            em_fail(function, "email build error", "invalid " + label + " mailbox")
+        }
+        address = std::text::trim(rt_substr_bytes(cleaned, left + 1, right))
+    }
+    if !em_valid_address(address) {
+        em_fail(function, "email build error", "invalid " + label + " email address")
+    }
+    address
+}
+
+fn em_subject_value(subject: string) -> string {
+    let pointer = std::raw::bits(subject) + 16
+    let length = rt_slen(subject)
+    let mut non_ascii = false
+    let mut i = 0
+    while i < length {
+        if std::raw::load8(pointer + i) >= 128 { non_ascii = true }
+        i += 1
+    }
+    if !non_ascii { return subject }
+    let encoded = std::encoding::base64_encode(std::encoding::utf8_encode(subject))
+    let encoded_length = rt_slen(encoded)
+    let mut output = ""
+    i = 0
+    while i < encoded_length {
+        let end = if i + 60 < encoded_length { i + 60 } else { encoded_length }
+        if i > 0 { output = output + "\r\n " }
+        output = output + "=?UTF-8?B?" + rt_substr_bytes(encoded, i, end) + "?="
+        i += 60
+    }
+    output
+}
+
+fn em_common_headers(from: string, to: string, subject: string, function: string) -> string {
+    em_header_safe(from, function, "from")
+    em_header_safe(to, function, "to")
+    em_header_safe(subject, function, "subject")
+    if rt_slen(from) > 8192 || rt_slen(to) > 8192 || rt_slen(subject) > 8192 {
+        em_fail(function, "email build error", "message header exceeds size limit")
+    }
+    "From: " + std::text::trim(from) + "\r\n" +
+    "To: " + std::text::trim(to) + "\r\n" +
+    "Subject: " + em_subject_value(subject) + "\r\n" +
+    "Date: " + std::datetime::to_rfc2822(std::datetime::now()) + "\r\n" +
+    "Message-ID: <" + std::encoding::hex_encode(std::random::bytes(16)) + "@localhost>\r\n" +
+    "MIME-Version: 1.0\r\n"
+}
+
+fn em_base64_lines(bytes: any) -> string {
+    let encoded = std::encoding::base64_encode(bytes)
+    let length = rt_slen(encoded)
+    let mut output = ""
+    let mut i = 0
+    while i < length {
+        let end = if i + 76 < length { i + 76 } else { length }
+        output = output + rt_substr_bytes(encoded, i, end) + "\r\n"
+        i += 76
+    }
+    if length == 0 { return "\r\n" }
+    output
+}
+
+fn em_text_part(content_type: string, text: string) -> string {
+    "Content-Type: " + content_type + "; charset=UTF-8\r\n" +
+    "Content-Transfer-Encoding: base64\r\n\r\n" +
+    em_base64_lines(std::encoding::utf8_encode(text))
+}
+
+fn em_boundary() -> string {
+    "=_Titan_" + std::encoding::hex_encode(std::random::bytes(16))
+}
+
+fn em_simple_message(from: string, to: string, subject: string, body: string, function: string) -> string {
+    if rt_slen(body) > EM_MAX_TEXT_BYTES {
+        em_fail(function, "email build error", "body exceeds limit 8388608 bytes")
+    }
+    em_common_headers(from, to, subject, function) +
+    "Content-Type: text/plain; charset=UTF-8\r\n" +
+    "Content-Transfer-Encoding: base64\r\n\r\n" +
+    em_base64_lines(std::encoding::utf8_encode(body))
+}
+
+fn em_html_message(from: string, to: string, subject: string, text: string, html: string, function: string) -> string {
+    if rt_slen(text) > EM_MAX_TEXT_BYTES || rt_slen(html) > EM_MAX_TEXT_BYTES {
+        em_fail(function, "email build error", "text or HTML body exceeds limit 8388608 bytes")
+    }
+    let boundary = em_boundary()
+    em_common_headers(from, to, subject, function) +
+    "Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n\r\n" +
+    "--" + boundary + "\r\n" + em_text_part("text/plain", text) +
+    "--" + boundary + "\r\n" + em_text_part("text/html", html) +
+    "--" + boundary + "--\r\n"
+}
+
+fn em_valid_mime(mime: string) -> bool {
+    let pointer = std::raw::bits(mime) + 16
+    let length = rt_slen(mime)
+    let mut slash = -1
+    if length < 3 || length > 256 { return false }
+    let mut i = 0
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if c == 47 {
+            if slash >= 0 || i == 0 || i == length - 1 { return false }
+            slash = i
+        } else if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 43 || c == 45 || c == 46) {
+            return false
+        }
+        i += 1
+    }
+    slash > 0
+}
+
+fn em_valid_filename(filename: string) -> bool {
+    let pointer = std::raw::bits(filename) + 16
+    let length = rt_slen(filename)
+    if length == 0 || length > 255 { return false }
+    let mut i = 0
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 46 || c == 45 || c == 95) {
+            return false
+        }
+        i += 1
+    }
+    filename != "." && filename != ".."
+}
+
+fn em_attachment_message(from: string, to: string, subject: string, html: string, filename: string, mime: string, bytes: any, function: string) -> string {
+    if rt_slen(html) > EM_MAX_TEXT_BYTES || rt_slen(bytes) > EM_MAX_ATTACHMENT_BYTES {
+        em_fail(function, "email build error", "HTML body or attachment exceeds limit 8388608 bytes")
+    }
+    em_header_safe(filename, function, "attachment filename")
+    em_header_safe(mime, function, "MIME type")
+    if !em_valid_filename(filename) {
+        em_fail(function, "email build error", "invalid attachment filename")
+    }
+    if !em_valid_mime(mime) {
+        em_fail(function, "email build error", "invalid MIME content type")
+    }
+    let boundary = em_boundary()
+    let attachment = "Content-Type: " + mime + "\r\n" +
+        "Content-Disposition: attachment; filename=\"" + filename + "\"\r\n" +
+        "Content-Transfer-Encoding: base64\r\n\r\n" + em_base64_lines(bytes)
+    em_common_headers(from, to, subject, function) +
+    "Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n" +
+    "--" + boundary + "\r\n" + em_text_part("text/html", html) +
+    "--" + boundary + "\r\n" + attachment +
+    "--" + boundary + "--\r\n"
+}
+
+fn em_curl_quote(value: string, function: string) -> string {
+    let mut output = "\""
+    let length = std::text::length(value)
+    let mut i = 0
+    while i < length {
+        let character = std::text::substring(value, i, i + 1)
+        if character == "\r" || character == "\n" || character == "\0" {
+            em_fail(function, "email build error", "SMTP credentials contain a forbidden control character")
+        }
+        if character == "\\" || character == "\"" { output = output + "\\" }
+        output = output + character
+        i += 1
+    }
+    output + "\""
+}
+
+fn em_config_remove(path: string, function: string) {
+    if path == "" { return }
+    let cpath = rt_cstr(path)
+    let result = std::raw::syscall(87, cpath, 0, 0, 0, 0, 0)
+    rt_free_block(cpath)
+    if result < 0 && result != -2 {
+        em_fail(function, "SMTP transport error", "could not remove private credential file: " + rt_os_error(0 - result))
+    }
+}
+
+fn em_secure_config(user: string, password: string, function: string) -> string {
+    if std::text::contains(user, ":") {
+        em_fail(function, "email build error", "SMTP username cannot contain ':'")
+    }
+    let directory = std__dirs__temp()
+    if rt_slen(directory) == 0 {
+        em_fail(function, "SMTP transport error", "temporary directory is empty")
+    }
+    let directory_length = rt_slen(directory)
+    let last = std::raw::load8(std::raw::bits(directory) + 16 + directory_length - 1)
+    let separator = if last == 47 || last == 92 { "" } else { "/" }
+    let config = "user = " + em_curl_quote(user + ":" + password, function) + "\n"
+    let mut attempt = 0
+    while attempt < 8 {
+        let suffix = std::encoding::hex_encode(std::random::bytes(16))
+        let path = directory + separator + "titan-email-" + suffix + ".curlrc"
+        let cpath = rt_cstr(path)
+        // O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode 0600. The exclusive
+        // create prevents symlink attacks and the credentials never enter argv.
+        let fd = std::raw::syscall(2, cpath, 524481, 384, 0, 0, 0)
+        rt_free_block(cpath)
+        if fd >= 0 {
+            let result = rt_write_all(fd, std::raw::bits(config) + 16, rt_slen(config))
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            if result < 0 {
+                em_config_remove(path, function)
+                em_fail(function, "SMTP transport error", rt_os_error(0 - result))
+            }
+            return path
+        }
+        if fd != -17 {
+            em_fail(function, "SMTP transport error", "cannot create private credential file: " + rt_os_error(0 - fd))
+        }
+        attempt += 1
+    }
+    em_fail(function, "SMTP transport error", "could not allocate a unique credential-file name")
+    ""
+}
+
+fn em_host_for_url(host: string, function: string) -> string {
+    if rt_slen(host) == 0 || rt_slen(host) > 1024 {
+        em_fail(function, "email build error", "invalid SMTP host")
+    }
+    let pointer = std::raw::bits(host) + 16
+    let length = rt_slen(host)
+    let mut colon = false
+    let mut i = 0
+    while i < length {
+        let c = std::raw::load8(pointer + i)
+        if c == 58 { colon = true }
+        if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 58 || c == 91 || c == 93) {
+            em_fail(function, "email build error", "invalid byte in SMTP host")
+        }
+        i += 1
+    }
+    if colon && !std::text::starts_with(host, "[") { "[" + host + "]" } else { host }
+}
+
+fn em_response_code(output: any) -> int {
+    let response = std::text::trim(dr_lossy(output))
+    if rt_slen(response) < 3 { return 0 }
+    let pointer = std::raw::bits(response) + 16
+    let a = std::raw::load8(pointer)
+    let b = std::raw::load8(pointer + 1)
+    let c = std::raw::load8(pointer + 2)
+    if a < 48 || a > 57 || b < 48 || b > 57 || c < 48 || c > 57 { return 0 }
+    return (a - 48) * 100 + (b - 48) * 10 + c - 48
+}
+
+fn em_send_smtp(function: string, host: string, port: int, user: string, password: string, from: string, to: string, message: string) -> string {
+    if port < 0 || port > 65535 {
+        rt_native_fail(function, "port out of range")
+    }
+    em_header_safe(host, function, "SMTP host")
+    em_header_safe(user, function, "SMTP username")
+    em_header_safe(password, function, "SMTP password")
+    let from_address = em_mailbox_address(from, function, "from")
+    let to_address = em_mailbox_address(to, function, "to")
+    if rt_slen(message) > EM_MAX_MESSAGE_BYTES {
+        em_fail(function, "email build error", "complete message exceeds limit 16777216 bytes")
+    }
+    let authority = em_host_for_url(host, function) + ":" + rt_int_to_str(port)
+    let scheme = if port == 465 { "smtps://" } else { "smtp://" }
+    let url = scheme + authority
+    let mut argv: any = ["curl", "--silent", "--show-error", "--fail", "--max-time", "30", "--connect-timeout", "10", "--output", "/dev/null", "--write-out", "%{" + "response_code}", "--url", url]
+    if port != 25 && port != 465 {
+        argv = std::array::push(argv, "--ssl-reqd")
+    }
+    argv = std::array::push(argv, "--mail-from")
+    argv = std::array::push(argv, from_address)
+    argv = std::array::push(argv, "--mail-rcpt")
+    argv = std::array::push(argv, to_address)
+    argv = std::array::push(argv, "--upload-file")
+    argv = std::array::push(argv, "-")
+
+    let has_credentials = rt_slen(user) > 0 || rt_slen(password) > 0
+    let config_path = if has_credentials { em_secure_config(user, password, function) } else { "" }
+    if has_credentials {
+        let mut with_config: any = ["curl", "--config", config_path]
+        let mut i = 1
+        while i < rt_seq_len(argv) {
+            with_config = std::array::push(with_config, rt_seq_get(argv, i))
+            i += 1
+        }
+        argv = with_config
+    }
+
+    let input = std::encoding::utf8_encode(message)
+    let attempted = std::try::catch(|| ps_run_raw_timeout(function, argv, input, 35000, 65536))
+    em_config_remove(config_path, function)
+    let result = match attempted {
+        Result::Ok(value) => value,
+        Result::Err(error) => {
+            if std::text::contains(error, "spawn error: No such file or directory") {
+                em_fail(function, "SMTP transport error", "curl is not installed or is not in PATH")
+            }
+            let detail = std::text::replace(error, "native function '" + function + "' failed: ", "")
+            em_fail(function, "SMTP transport error", detail)
+        },
+    }
+    if std::map::get(result, "timed_out") {
+        em_fail(function, "SMTP transport error", "timed out after 35 seconds")
+    }
+    let exit_code = std::map::get(result, "exit_code")
+    if exit_code != 0 {
+        let detail = std::text::trim(dr_lossy(std::map::get(result, "stderr")))
+        if detail == "" { em_fail(function, "SMTP transport error", "curl exited with status " + rt_int_to_str(exit_code)) }
+        em_fail(function, "SMTP transport error", detail)
+    }
+    let code = em_response_code(std::map::get(result, "stdout"))
+    if code < 200 || code >= 300 {
+        em_fail(function, "SMTP transport error", "server did not confirm message delivery (reply " + rt_int_to_str(code) + ")")
+    }
+    "code=" + rt_int_to_str(code)
+}
+
+fn std__email__send_simple(host: string, port: int, user: string, password: string, from: string, to: string, subject: string, body: string) -> string {
+    let function = "std::email::send_simple"
+    let message = em_simple_message(from, to, subject, body, function)
+    em_send_smtp(function, host, port, user, password, from, to, message)
+}
+
+fn std__email__send_html(host: string, port: int, user: string, password: string, from: string, to: string, subject: string, text: string, html: string) -> string {
+    let function = "std::email::send_html"
+    em_send_smtp(function, host, port, user, password, from, to, em_html_message(from, to, subject, text, html, function))
+}
+
+fn std__email__send_with_attachment(host: string, port: int, user: string, password: string, from: string, to: string, subject: string, html: string, filename: string, mime: string, bytes: any) -> string {
+    let function = "std::email::send_with_attachment"
+    rt_expect_bytes(bytes, function)
+    em_send_smtp(function, host, port, user, password, from, to, em_attachment_message(from, to, subject, html, filename, mime, bytes, function))
+}

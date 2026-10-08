@@ -1,0 +1,1 @@
+fn dynamic(value: int) -> any { true } fn main() { filter([1], dynamic) }

@@ -1,0 +1,680 @@
+// std::pdf: generador PDF real escrito en Titan.
+// Mantiene un registro acotado de documentos y crea un PDF 1.4 con xref,
+// páginas, Helvetica/WinAnsi, texto, color, líneas y rectángulos. No delega al
+// binario Zett ni a una implementación Rust durante la ejecución nativa.
+// Estado del registro: globals+3160 (mapa handle -> documento) y +3168
+// (siguiente handle); este espacio está libre en runtime.titan.
+
+const PDF_SLOT: int = 3160
+const PDF_NEXT_SLOT: int = 3168
+const PDF_MAX_DOCUMENTS: int = 8
+const PDF_MAX_PAGES: int = 256
+const PDF_MAX_RUNTIME_PAGES: int = 512
+const PDF_MAX_COMMANDS: int = 16000
+const PDF_MAX_RUNTIME_COMMANDS: int = 32000
+const PDF_MAX_DOCUMENT_BYTES: int = 8388608
+const PDF_MAX_RUNTIME_BYTES: int = 16777216
+const PDF_MAX_SERIALIZED_BYTES: int = 67108864
+const PDF_MAX_TITLE_BYTES: int = 4096
+const PDF_MAX_LAYER_BYTES: int = 4096
+const PDF_MAX_TEXT_BYTES: int = 262144
+const PDF_MAX_PATH_BYTES: int = 16384
+const PDF_DOCUMENT_OVERHEAD: int = 1024
+const PDF_PAGE_OVERHEAD: int = 512
+const PDF_COMMAND_OVERHEAD: int = 512
+
+fn pdf_global_slot(offset: int) -> int {
+    std::raw::globals() + offset
+}
+
+fn pdf_registry() -> any {
+    let bits = std::raw::load(pdf_global_slot(PDF_SLOT))
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::value(9, bits)
+}
+
+fn pdf_store_registry(registry: any) {
+    let slot = pdf_global_slot(PDF_SLOT)
+    let previous = std::raw::load(slot)
+    let next = std::raw::keep(registry)
+    if previous != 0 {
+        std::raw::release(9, previous)
+    }
+    std::raw::store(slot, next)
+}
+
+fn pdf_handle_key(handle: int) -> any {
+    rt_int_to_str(handle)
+}
+
+fn pdf_fail(function: string, message: string) {
+    rt_native_fail(function, message)
+}
+
+fn pdf_invalid(function: string, message: string) {
+    pdf_fail(function, rt_concat("invalid PDF argument: ", message))
+}
+
+fn pdf_resource(function: string, resource: string, limit: int) {
+    pdf_fail(function, rt_concat(rt_concat(rt_concat(resource, " exceeds limit "), rt_int_to_str(limit)), ""))
+}
+
+fn pdf_win1252(character: int) -> int {
+    if character >= 32 && character <= 126 { return character }
+    if character >= 160 && character <= 255 { return character }
+    if character == 8364 { return 128 }
+    if character == 8218 { return 130 }
+    if character == 402 { return 131 }
+    if character == 8222 { return 132 }
+    if character == 8230 { return 133 }
+    if character == 8224 { return 134 }
+    if character == 8225 { return 135 }
+    if character == 710 { return 136 }
+    if character == 8240 { return 137 }
+    if character == 352 { return 138 }
+    if character == 8249 { return 139 }
+    if character == 338 { return 140 }
+    if character == 381 { return 142 }
+    if character == 8216 { return 145 }
+    if character == 8217 { return 146 }
+    if character == 8220 { return 147 }
+    if character == 8221 { return 148 }
+    if character == 8226 { return 149 }
+    if character == 8211 { return 150 }
+    if character == 8212 { return 151 }
+    if character == 732 { return 152 }
+    if character == 8482 { return 153 }
+    if character == 353 { return 154 }
+    if character == 8250 { return 155 }
+    if character == 339 { return 156 }
+    if character == 382 { return 158 }
+    if character == 376 { return 159 }
+    -1
+}
+
+fn pdf_char_width(first: int) -> int {
+    if first < 128 { return 1 }
+    if first < 224 { return 2 }
+    if first < 240 { return 3 }
+    4
+}
+
+fn pdf_append_hex_digit(builder: int, digit: int) {
+    if digit < 10 {
+        sb_byte(builder, 48 + digit)
+    } else {
+        sb_byte(builder, 87 + digit)
+    }
+}
+
+fn pdf_debug_character(character: int) -> any {
+    let builder = sb_new(16)
+    sb_byte(builder, 39)
+    if character == 39 || character == 92 {
+        sb_byte(builder, 92)
+        sb_byte(builder, character)
+    } else if character == 10 {
+        sb_byte(builder, 92)
+        sb_byte(builder, 110)
+    } else if character == 9 {
+        sb_byte(builder, 92)
+        sb_byte(builder, 116)
+    } else if character == 13 {
+        sb_byte(builder, 92)
+        sb_byte(builder, 114)
+    } else if character == 0 {
+        sb_byte(builder, 92)
+        sb_byte(builder, 48)
+    } else if character < 32 || character == 127 {
+        sb_str(builder, "\\u{")
+        let mut shift = 20
+        while shift > 0 && std::raw::shr(character, shift) == 0 {
+            shift -= 4
+        }
+        while shift >= 0 {
+            pdf_append_hex_digit(builder, std::raw::shr(character, shift) & 15)
+            shift -= 4
+        }
+        sb_byte(builder, 125)
+    } else {
+        sb_cp(builder, character)
+    }
+    sb_byte(builder, 39)
+    sb_finish(builder)
+}
+
+fn pdf_validate_text(value: any, function: string, resource: string, limit: int) -> int {
+    rt_expect_str(value, function)
+    let pointer = std::raw::bits(value)
+    let length = std::raw::load(pointer + 8)
+    if length > limit {
+        pdf_resource(function, resource, limit)
+    }
+    let mut position = 0
+    while position < length {
+        let first = std::raw::load8(pointer + 16 + position)
+        let character = tx_decode(pointer + 16 + position)
+        if pdf_win1252(character) < 0 {
+            let message = rt_concat(rt_concat(rt_concat("character ", pdf_debug_character(character)), " is not representable by the built-in PDF font"), "")
+            pdf_fail(function, message)
+        }
+        position += pdf_char_width(first)
+    }
+    length
+}
+
+fn pdf_number_bits(value: any, function: string) -> int {
+    rt_expect_number(value, function)
+}
+
+fn pdf_validate_range(value: any, lower: any, upper: any, message: string, function: string) -> int {
+    let bits = pdf_number_bits(value, function)
+    if !rt_is_finite(bits) || std::raw::fcmp(bits, std::raw::bits(lower)) < 0 || std::raw::fcmp(bits, std::raw::bits(upper)) > 0 {
+        pdf_invalid(function, message)
+    }
+    bits
+}
+
+fn pdf_validate_page_size(value: any, function: string) -> int {
+    pdf_validate_range(value, 1.0, 5000.0, "page dimensions must be finite and between 1 and 5000 mm", function)
+}
+
+fn pdf_validate_coordinate(value: any, function: string) -> int {
+    pdf_validate_range(value, -10000.0, 10000.0, "coordinates must be finite and within +/-10000 mm", function)
+}
+
+fn pdf_validate_font_size(value: any, function: string) -> int {
+    pdf_validate_range(value, 0.1, 1000.0, "font size must be finite and between 0.1 and 1000 pt", function)
+}
+
+fn pdf_validate_thickness(value: any, function: string) -> int {
+    pdf_validate_range(value, 0.01, 1000.0, "line thickness must be finite and between 0.01 and 1000 pt", function)
+}
+
+fn pdf_validate_color(value: any, function: string) -> int {
+    pdf_validate_range(value, 0.0, 1.0, "color components must be finite and between 0 and 1", function)
+}
+
+fn pdf_validate_extent(value: any, function: string) -> int {
+    let bits = pdf_number_bits(value, function)
+    if !rt_is_finite(bits) || std::raw::fcmp(bits, std::raw::bits(0.0)) <= 0 || std::raw::fcmp(bits, std::raw::bits(5000.0)) > 0 {
+        pdf_invalid(function, "rectangle dimensions must be finite, positive, and at most 5000 mm")
+    }
+    bits
+}
+
+fn pdf_lookup(registry: any, handle: int, function: string) -> any {
+    let document = std__map__get(registry, pdf_handle_key(handle))
+    if std::raw::tag(document) == 0 {
+        pdf_fail(function, rt_concat("unknown PDF handle ", rt_int_to_str(handle)))
+    }
+    document
+}
+
+fn pdf_runtime_totals(registry: any) -> array {
+    let documents = std__map__values(registry)
+    let mut active = 0
+    let mut pages_total = 0
+    let mut commands_total = 0
+    let mut bytes_total = 0
+    let mut i = 0
+    while i < rt_seq_len(documents) {
+        let document = rt_seq_get(documents, i)
+        if std::raw::tag(document) != 0 {
+            active += 1
+            pages_total += rt_seq_len(std__map__get(document, "pages"))
+            commands_total += std::raw::bits(std__map__get(document, "commands"))
+            bytes_total += std::raw::bits(std__map__get(document, "logical_bytes"))
+        }
+        i += 1
+    }
+    return [active, pages_total, commands_total, bytes_total]
+}
+
+fn pdf_make_page(width: any, height: any, layer: any) -> any {
+    let page = std__map__new()
+    let a = std__map__insert(page, "width", width)
+    let b = std__map__insert(a, "height", height)
+    let c = std__map__insert(b, "layer", layer)
+    std__map__insert(c, "commands", [])
+}
+
+fn pdf_make_document(title: any, pages: any, logical_bytes: int) -> any {
+    let document = std__map__new()
+    let a = std__map__insert(document, "title", title)
+    let b = std__map__insert(a, "pages", pages)
+    let c = std__map__insert(b, "commands", 0)
+    std__map__insert(c, "logical_bytes", logical_bytes)
+}
+
+fn std__pdf__new(title: any, width: any, height: any) -> any {
+    let function = "std::pdf::new"
+    let title_bytes = pdf_validate_text(title, function, "PDF title bytes", PDF_MAX_TITLE_BYTES)
+    pdf_validate_page_size(width, function)
+    pdf_validate_page_size(height, function)
+    let registry = pdf_registry()
+    let totals = pdf_runtime_totals(registry)
+    if totals[0] >= PDF_MAX_DOCUMENTS {
+        pdf_resource(function, "PDF documents per runtime", PDF_MAX_DOCUMENTS)
+    }
+    if totals[1] >= PDF_MAX_RUNTIME_PAGES {
+        pdf_resource(function, "PDF pages per runtime", PDF_MAX_RUNTIME_PAGES)
+    }
+    let layer = "Layer 1"
+    let logical_bytes = PDF_DOCUMENT_OVERHEAD + title_bytes + PDF_PAGE_OVERHEAD + rt_slen(layer)
+    if logical_bytes > PDF_MAX_DOCUMENT_BYTES {
+        pdf_resource(function, "PDF document logical bytes", PDF_MAX_DOCUMENT_BYTES)
+    }
+    if totals[3] + logical_bytes > PDF_MAX_RUNTIME_BYTES {
+        pdf_resource(function, "PDF runtime logical bytes", PDF_MAX_RUNTIME_BYTES)
+    }
+    let next_slot = pdf_global_slot(PDF_NEXT_SLOT)
+    let current = std::raw::load(next_slot)
+    let handle = if current == 0 { 1 } else { current }
+    if handle <= 0 || handle >= 9223372036854775806 {
+        pdf_fail(function, "PDF handle space exhausted")
+    }
+    let pages = [pdf_make_page(rt_float(pdf_number_bits(width, function)), rt_float(pdf_number_bits(height, function)), layer)]
+    let document = pdf_make_document(title, pages, logical_bytes)
+    let updated = std__map__insert(registry, pdf_handle_key(handle), document)
+    pdf_store_registry(updated)
+    std::raw::store(next_slot, handle + 1)
+    handle
+}
+
+fn std__pdf__add_page(handle: any, width: any, height: any, layer_name: any) -> any {
+    let function = "std::pdf::add_page"
+    rt_expect_int(handle, function)
+    let layer_bytes = pdf_validate_text(layer_name, function, "PDF layer name bytes", PDF_MAX_LAYER_BYTES)
+    pdf_validate_page_size(width, function)
+    pdf_validate_page_size(height, function)
+    let handle_id = std::raw::bits(handle)
+    let registry = pdf_registry()
+    let document = pdf_lookup(registry, handle_id, function)
+    let pages = std__map__get(document, "pages")
+    let page_index = rt_seq_len(pages)
+    if page_index >= PDF_MAX_PAGES {
+        pdf_resource(function, "PDF pages per document", PDF_MAX_PAGES)
+    }
+    let totals = pdf_runtime_totals(registry)
+    if totals[1] >= PDF_MAX_RUNTIME_PAGES {
+        pdf_resource(function, "PDF pages per runtime", PDF_MAX_RUNTIME_PAGES)
+    }
+    let old_bytes = std::raw::bits(std__map__get(document, "logical_bytes"))
+    let added_bytes = PDF_PAGE_OVERHEAD + layer_bytes
+    if old_bytes + added_bytes > PDF_MAX_DOCUMENT_BYTES {
+        pdf_resource(function, "PDF document logical bytes", PDF_MAX_DOCUMENT_BYTES)
+    }
+    if totals[3] + added_bytes > PDF_MAX_RUNTIME_BYTES {
+        pdf_resource(function, "PDF runtime logical bytes", PDF_MAX_RUNTIME_BYTES)
+    }
+    let page = pdf_make_page(rt_float(pdf_number_bits(width, function)), rt_float(pdf_number_bits(height, function)), layer_name)
+    let updated_pages = std__array__push(pages, page)
+    let updated_document = std__map__insert(document, "pages", updated_pages)
+    let updated_document = std__map__insert(updated_document, "logical_bytes", old_bytes + added_bytes)
+    let updated_registry = std__map__insert(registry, pdf_handle_key(handle_id), updated_document)
+    pdf_store_registry(updated_registry)
+    page_index
+}
+
+fn std__pdf__page_count(handle: any) -> any {
+    let function = "std::pdf::page_count"
+    rt_expect_int(handle, function)
+    let registry = pdf_registry()
+    let document = pdf_lookup(registry, std::raw::bits(handle), function)
+    rt_seq_len(std__map__get(document, "pages"))
+}
+
+fn pdf_append_command(handle: any, page_index: any, layer_index: any, command: any, extra_bytes: int, function: string) {
+    rt_expect_int(handle, function)
+    rt_expect_int(page_index, function)
+    rt_expect_int(layer_index, function)
+    let handle_id = std::raw::bits(handle)
+    let page_id = std::raw::bits(page_index)
+    let layer_id = std::raw::bits(layer_index)
+    let registry = pdf_registry()
+    let document = pdf_lookup(registry, handle_id, function)
+    let pages = std__map__get(document, "pages")
+    let count = rt_seq_len(pages)
+    if page_id < 0 || page_id >= count {
+        pdf_fail(function, rt_concat(rt_concat(rt_concat(rt_concat("page index ", rt_int_to_str(page_id)), " out of range (document has "), rt_int_to_str(count)), " pages)"))
+    }
+    if layer_id != 0 {
+        pdf_fail(function, rt_concat(rt_concat("layer index ", rt_int_to_str(layer_id)), " out of range (each page currently has one layer)"))
+    }
+    let current_commands = std::raw::bits(std__map__get(document, "commands"))
+    if current_commands >= PDF_MAX_COMMANDS {
+        pdf_resource(function, "PDF commands per document", PDF_MAX_COMMANDS)
+    }
+    let totals = pdf_runtime_totals(registry)
+    if totals[2] >= PDF_MAX_RUNTIME_COMMANDS {
+        pdf_resource(function, "PDF commands per runtime", PDF_MAX_RUNTIME_COMMANDS)
+    }
+    let old_bytes = std::raw::bits(std__map__get(document, "logical_bytes"))
+    let added_bytes = PDF_COMMAND_OVERHEAD + extra_bytes
+    if old_bytes + added_bytes > PDF_MAX_DOCUMENT_BYTES {
+        pdf_resource(function, "PDF document logical bytes", PDF_MAX_DOCUMENT_BYTES)
+    }
+    if totals[3] + added_bytes > PDF_MAX_RUNTIME_BYTES {
+        pdf_resource(function, "PDF runtime logical bytes", PDF_MAX_RUNTIME_BYTES)
+    }
+    let page = rt_seq_get(pages, page_id)
+    let page_commands = std__map__get(page, "commands")
+    let updated_commands = std__array__push(page_commands, command)
+    let updated_page = std__map__insert(page, "commands", updated_commands)
+    let updated_pages = std__array__set(pages, page_id, updated_page)
+    let updated_document = std__map__insert(document, "pages", updated_pages)
+    let updated_document = std__map__insert(updated_document, "commands", current_commands + 1)
+    let updated_document = std__map__insert(updated_document, "logical_bytes", old_bytes + added_bytes)
+    let updated_registry = std__map__insert(registry, pdf_handle_key(handle_id), updated_document)
+    pdf_store_registry(updated_registry)
+}
+
+fn std__pdf__add_text(handle: any, page_index: any, layer_index: any, text: any, font_size: any, x: any, y: any) -> any {
+    let function = "std::pdf::add_text"
+    let text_bytes = pdf_validate_text(text, function, "PDF text bytes", PDF_MAX_TEXT_BYTES)
+    let font_bits = pdf_validate_font_size(font_size, function)
+    let x_bits = pdf_validate_coordinate(x, function)
+    let y_bits = pdf_validate_coordinate(y, function)
+    let command = [0, text, rt_float(font_bits), rt_float(x_bits), rt_float(y_bits)]
+    pdf_append_command(handle, page_index, layer_index, command, text_bytes, function)
+    nil
+}
+
+fn std__pdf__set_color(handle: any, page_index: any, layer_index: any, red: any, green: any, blue: any) -> any {
+    let function = "std::pdf::set_color"
+    let r = pdf_validate_color(red, function)
+    let g = pdf_validate_color(green, function)
+    let b = pdf_validate_color(blue, function)
+    let command = [1, rt_float(r), rt_float(g), rt_float(b)]
+    pdf_append_command(handle, page_index, layer_index, command, 0, function)
+    nil
+}
+
+fn std__pdf__add_line(handle: any, page_index: any, layer_index: any, x1: any, y1: any, x2: any, y2: any, thickness: any) -> any {
+    let function = "std::pdf::add_line"
+    let ax = pdf_validate_coordinate(x1, function)
+    let ay = pdf_validate_coordinate(y1, function)
+    let bx = pdf_validate_coordinate(x2, function)
+    let by = pdf_validate_coordinate(y2, function)
+    let width = pdf_validate_thickness(thickness, function)
+    let command = [2, rt_float(ax), rt_float(ay), rt_float(bx), rt_float(by), rt_float(width)]
+    pdf_append_command(handle, page_index, layer_index, command, 0, function)
+    nil
+}
+
+fn std__pdf__add_rect(handle: any, page_index: any, layer_index: any, x: any, y: any, width: any, height: any) -> any {
+    let function = "std::pdf::add_rect"
+    let x_bits = pdf_validate_coordinate(x, function)
+    let y_bits = pdf_validate_coordinate(y, function)
+    let width_bits = pdf_validate_extent(width, function)
+    let height_bits = pdf_validate_extent(height, function)
+    let x_end = std::raw::fadd(x_bits, width_bits)
+    let y_end = std::raw::fadd(y_bits, height_bits)
+    if !rt_is_finite(x_end) || !rt_is_finite(y_end) || std::raw::fcmp(x_end, std::raw::bits(10000.0)) > 0 || std::raw::fcmp(y_end, std::raw::bits(10000.0)) > 0 {
+        pdf_invalid(function, "coordinates must be finite and within +/-10000 mm")
+    }
+    let command = [3, rt_float(x_bits), rt_float(y_bits), rt_float(width_bits), rt_float(height_bits)]
+    pdf_append_command(handle, page_index, layer_index, command, 0, function)
+    nil
+}
+
+fn pdf_append_integer(builder: int, value: int) {
+    sb_str(builder, rt_int_to_str(value))
+}
+
+fn pdf_append_float(builder: int, value: any) {
+    let bits = rt_expect_number(value, "std::pdf::save")
+    let scale = std::raw::ffromint(1000000)
+    let scaled_float = std::raw::fmul(bits, scale)
+    let half = std::raw::bits(0.5)
+    let rounded = if std::raw::fcmp(scaled_float, std::raw::bits(0.0)) < 0 {
+        std::raw::ftoint(std::raw::fsub(scaled_float, half))
+    } else {
+        std::raw::ftoint(std::raw::fadd(scaled_float, half))
+    }
+    if rounded < 0 { sb_byte(builder, 45) }
+    let mut magnitude = rounded
+    if magnitude < 0 { magnitude = 0 - magnitude }
+    let whole = magnitude / 1000000
+    let fraction = magnitude % 1000000
+    pdf_append_integer(builder, whole)
+    if fraction != 0 {
+        sb_byte(builder, 46)
+        let fraction_start = std::raw::load(builder)
+        let mut divisor = 100000
+        let mut rest = fraction
+        while divisor > 0 {
+            let digit = rest / divisor
+            sb_byte(builder, 48 + digit)
+            rest = rest % divisor
+            divisor = divisor / 10
+        }
+        while std::raw::load(builder) > fraction_start && std::raw::load8(std::raw::load(builder + 16) + std::raw::load(builder) - 1) == 48 {
+            std::raw::store(builder, std::raw::load(builder) - 1)
+        }
+    }
+}
+
+fn pdf_mm_to_points(value: any) -> any {
+    let bits = rt_expect_number(value, "std::pdf::save")
+    rt_float(std::raw::fdiv(std::raw::fmul(bits, std::raw::ffromint(360)), std::raw::ffromint(127)))
+}
+
+fn pdf_append_literal(builder: int, value: any) {
+    let pointer = std::raw::bits(value)
+    let length = std::raw::load(pointer + 8)
+    sb_byte(builder, 40)
+    let mut position = 0
+    while position < length {
+        let first = std::raw::load8(pointer + 16 + position)
+        let character = tx_decode(pointer + 16 + position)
+        let byte = pdf_win1252(character)
+        if byte == 40 || byte == 41 || byte == 92 {
+            sb_byte(builder, 92)
+            sb_byte(builder, byte)
+        } else if byte < 32 || byte > 126 {
+            sb_byte(builder, 92)
+            sb_byte(builder, 48 + byte / 64)
+            sb_byte(builder, 48 + (byte / 8) % 8)
+            sb_byte(builder, 48 + byte % 8)
+        } else {
+            sb_byte(builder, byte)
+        }
+        position += pdf_char_width(first)
+    }
+    sb_byte(builder, 41)
+}
+
+fn pdf_append_object_start(builder: int, offsets: int, object_id: int) {
+    std::raw::store(offsets + 8 * object_id, sb_len(builder))
+    pdf_append_integer(builder, object_id)
+    sb_str(builder, " 0 obj\n")
+}
+
+fn pdf_append_xref_offset(builder: int, offset: int) {
+    let digits = rt_int_to_str(offset)
+    let count = rt_slen(digits)
+    let mut padding = 10 - count
+    while padding > 0 {
+        sb_byte(builder, 48)
+        padding -= 1
+    }
+    sb_str(builder, digits)
+    sb_str(builder, " 00000 n \n")
+}
+
+fn pdf_append_content(page: any) -> any {
+    let builder = sb_new(512)
+    sb_str(builder, "q\n")
+    let commands = std__map__get(page, "commands")
+    let mut i = 0
+    while i < rt_seq_len(commands) {
+        let command = rt_seq_get(commands, i)
+        let kind = std::raw::bits(rt_seq_get(command, 0))
+        if kind == 0 {
+            sb_str(builder, "BT /F1 ")
+            pdf_append_float(builder, rt_seq_get(command, 2))
+            sb_str(builder, " Tf ")
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 3)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 4)))
+            sb_str(builder, " Td ")
+            pdf_append_literal(builder, rt_seq_get(command, 1))
+            sb_str(builder, " Tj ET\n")
+        } else if kind == 1 {
+            let red = rt_seq_get(command, 1)
+            let green = rt_seq_get(command, 2)
+            let blue = rt_seq_get(command, 3)
+            pdf_append_float(builder, red)
+            sb_byte(builder, 32)
+            pdf_append_float(builder, green)
+            sb_byte(builder, 32)
+            pdf_append_float(builder, blue)
+            sb_str(builder, " rg ")
+            pdf_append_float(builder, red)
+            sb_byte(builder, 32)
+            pdf_append_float(builder, green)
+            sb_byte(builder, 32)
+            pdf_append_float(builder, blue)
+            sb_str(builder, " RG\n")
+        } else if kind == 2 {
+            pdf_append_float(builder, rt_seq_get(command, 5))
+            sb_str(builder, " w ")
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 1)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 2)))
+            sb_str(builder, " m ")
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 3)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 4)))
+            sb_str(builder, " l S\n")
+        } else {
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 1)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 2)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 3)))
+            sb_byte(builder, 32)
+            pdf_append_float(builder, pdf_mm_to_points(rt_seq_get(command, 4)))
+            sb_str(builder, " re B\n")
+        }
+        i += 1
+    }
+    sb_str(builder, "Q\n")
+    sb_finish_bytes(builder)
+}
+
+fn pdf_serialize(document: any) -> any {
+    let pages = std__map__get(document, "pages")
+    let page_count = rt_seq_len(pages)
+    let object_count = 4 + 2 * page_count
+    let offsets = rt_alloc_zero(8 * (object_count + 1))
+    let builder = sb_new(4096)
+    sb_str(builder, "%PDF-1.4\n%Titan PDF\n")
+
+    pdf_append_object_start(builder, offsets, 1)
+    sb_str(builder, "<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+    pdf_append_object_start(builder, offsets, 2)
+    sb_str(builder, "<< /Type /Pages /Kids [")
+    let mut page_index = 0
+    while page_index < page_count {
+        if page_index > 0 { sb_byte(builder, 32) }
+        pdf_append_integer(builder, 5 + 2 * page_index)
+        sb_str(builder, " 0 R")
+        page_index += 1
+    }
+    sb_str(builder, "] /Count ")
+    pdf_append_integer(builder, page_count)
+    sb_str(builder, " >>\nendobj\n")
+
+    pdf_append_object_start(builder, offsets, 3)
+    sb_str(builder, "<< /Producer (Titan) /Title ")
+    pdf_append_literal(builder, std__map__get(document, "title"))
+    sb_str(builder, " >>\nendobj\n")
+
+    pdf_append_object_start(builder, offsets, 4)
+    sb_str(builder, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
+
+    page_index = 0
+    while page_index < page_count {
+        let page = rt_seq_get(pages, page_index)
+        let page_id = 5 + 2 * page_index
+        let stream_id = page_id + 1
+        pdf_append_object_start(builder, offsets, page_id)
+        sb_str(builder, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ")
+        pdf_append_float(builder, pdf_mm_to_points(std__map__get(page, "width")))
+        sb_byte(builder, 32)
+        pdf_append_float(builder, pdf_mm_to_points(std__map__get(page, "height")))
+        sb_str(builder, "] /Resources << /Font << /F1 4 0 R >> >> /Contents ")
+        pdf_append_integer(builder, stream_id)
+        sb_str(builder, " 0 R >>\nendobj\n")
+
+        let content = pdf_append_content(page)
+        let content_length = rt_seq_len(content)
+        pdf_append_object_start(builder, offsets, stream_id)
+        sb_str(builder, "<< /Length ")
+        pdf_append_integer(builder, content_length)
+        sb_str(builder, " >>\nstream\n")
+        sb_raw(builder, std::raw::bits(content) + 16, content_length)
+        sb_str(builder, "endstream\nendobj\n")
+        page_index += 1
+    }
+
+    let xref_offset = sb_len(builder)
+    sb_str(builder, "xref\n0 ")
+    pdf_append_integer(builder, object_count + 1)
+    sb_str(builder, "\n0000000000 65535 f \n")
+    let mut object_id = 1
+    while object_id <= object_count {
+        pdf_append_xref_offset(builder, std::raw::load(offsets + 8 * object_id))
+        object_id += 1
+    }
+    sb_str(builder, "trailer\n<< /Size ")
+    pdf_append_integer(builder, object_count + 1)
+    sb_str(builder, " /Root 1 0 R /Info 3 0 R >>\nstartxref\n")
+    pdf_append_integer(builder, xref_offset)
+    sb_str(builder, "\n%%EOF\n")
+    rt_free_block(offsets)
+    sb_finish_bytes(builder)
+}
+
+fn std__pdf__save(handle: any, path: any) -> any {
+    let function = "std::pdf::save"
+    rt_expect_int(handle, function)
+    rt_expect_str(path, function)
+    let path_bytes = rt_slen(path)
+    if path_bytes > PDF_MAX_PATH_BYTES {
+        pdf_resource(function, "PDF output path bytes", PDF_MAX_PATH_BYTES)
+    }
+    if path_bytes == 0 {
+        pdf_invalid(function, "PDF output path is empty")
+    }
+    let registry = pdf_registry()
+    let document = pdf_lookup(registry, std::raw::bits(handle), function)
+    let bytes = pdf_serialize(document)
+    if rt_seq_len(bytes) > PDF_MAX_SERIALIZED_BYTES {
+        pdf_resource(function, "serialized PDF bytes", PDF_MAX_SERIALIZED_BYTES)
+    }
+    let temporary = rt_concat(rt_concat(path, ".titan-pdf-"), rt_concat(rt_int_to_str(std::raw::bits(handle)), ".tmp"))
+    std__fs__write_bytes(temporary, bytes)
+    std__fs__rename(temporary, path)
+    nil
+}
+
+fn std__pdf__close(handle: any) -> any {
+    let function = "std::pdf::close"
+    rt_expect_int(handle, function)
+    let handle_id = std::raw::bits(handle)
+    let registry = pdf_registry()
+    let key = pdf_handle_key(handle_id)
+    let document = std__map__get(registry, key)
+    if std::raw::tag(document) != 0 {
+        let updated = std__map__remove(registry, key)
+        pdf_store_registry(updated)
+    }
+    nil
+}

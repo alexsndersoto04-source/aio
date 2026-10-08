@@ -1,0 +1,3 @@
+fn main() {
+    std::process::run_timeout("head", ["-c", "5000000", "/dev/zero"], 5000)
+}

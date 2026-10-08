@@ -1,0 +1,110 @@
+// Compilador de Titan con el backend LLVM.
+//
+// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64|aarch64|aarch64-none]
+//
+// Igual que build.titan (mismo cargador, typechecker, generador y runtime,
+// todo escrito en Titan), pero en vez de código máquina escribe LLVM IR
+// (native/llvm.titan). Después LLVM lo compila y optimiza:
+//   clang -O2 -nostdlib -static -fno-pie -no-pie -Wl,-e,_start SALIDA.ll -o prog
+import args
+import frontend
+import native::llvm
+
+fn runtime_graph(runtime: string) -> Result {
+    let rt_natives = std::array::concat(native_table(), raw_signatures())
+    match front(runtime, rt_natives) {
+        Result::Ok(g) => Result::Ok(g),
+        Result::Err(message) => Result::Err("native runtime: " + message),
+    }
+}
+
+fn build_with(program: string, gr: G, target: string) -> Result {
+    let gu = front(program, native_table())?
+    lv_build(gu, gr, target)
+}
+
+// Sin sistema operativo: programa en 0x40080000 (RAM de "virt" + 512 KiB),
+// pila de 64 MiB.
+fn bare_linker_script() -> string {
+    std::freestanding::generate_linker_script("aarch64-unknown-none", 1074266112, 67108864)
+}
+
+fn main() {
+    let args = ar_user_args()
+    if len(args) < 2 {
+        print("uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]")
+        print("     titan run selfhost/build_llvm.titan --lote DIRECTORIO PROGRAMA.titan...")
+        print("     (--lote-aarch64: lo mismo para ARM64; --lote-bare: ARM64 sin sistema")
+        print("      operativo, con DIRECTORIO/bare.ld para enlazar)")
+        return
+    }
+    let here = std::path::parent(std::path::canonical(ar_program()))
+    let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
+    let gr = match runtime_graph(runtime) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            let is_batch = args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-bare"
+            if is_batch {
+                let error = "error: " + message + "\n"
+                let mut i = 2
+                while i < len(args) {
+                    let base = std::path::stem(args[i])
+                    std::fs::write_text(std::path::join(args[1], base + ".err"), error)
+                    i += 1
+                }
+            } else {
+                print("error: " + message)
+            }
+            return
+        },
+    }
+    // Lote: el runtime se revisa una sola vez; cada PROGRAMA.titan da
+    // DIRECTORIO/PROGRAMA.ll, o DIRECTORIO/PROGRAMA.err con el error.
+    if args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-bare" {
+        let mut lote_target = "x86_64"
+        if args[0] == "--lote-aarch64" {
+            lote_target = "aarch64"
+        }
+        if args[0] == "--lote-bare" {
+            lote_target = "aarch64-none"
+            std::fs::write_text(std::path::join(args[1], "bare.ld"), bare_linker_script())
+        }
+        let dir = args[1]
+        let mut i = 2
+        while i < len(args) {
+            let program = args[i]
+            let base = std::path::stem(program)
+            match build_with(program, gr, lote_target) {
+                Result::Ok(text) => {
+                    std::fs::write_text(std::path::join(dir, base + ".ll"), text)
+                },
+                Result::Err(message) => {
+                    std::fs::write_text(std::path::join(dir, base + ".err"), "error: " + message + "\n")
+                },
+            }
+            i += 1
+        }
+        return
+    }
+    let mut target = "x86_64"
+    if len(args) > 2 {
+        target = args[2]
+    }
+    match build_with(args[0], gr, target) {
+        Result::Ok(text) => {
+            std::fs::write_text(args[1], text)
+            if target == "aarch64-none" {
+                // Sin sistema operativo: guion de enlazado junto al .ll
+                // (programa en 0x40080000, pila de 64 MiB).
+                let mut ld = args[1] + ".ld"
+                if std::text::ends_with(args[1], ".ll") {
+                    ld = std::text::substring(args[1], 0, std::text::length(args[1]) - 3) + ".ld"
+                }
+                std::fs::write_text(ld, bare_linker_script())
+            }
+        },
+        Result::Err(message) => {
+            print("error: " + message)
+        },
+    }
+}

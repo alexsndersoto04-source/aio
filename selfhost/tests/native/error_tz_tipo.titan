@@ -1,0 +1,2 @@
+fn main() { let x: any = 5
+    println(std::datetime::to_timezone(0, x)) }

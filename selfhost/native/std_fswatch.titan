@@ -1,0 +1,677 @@
+// std::fswatch (4 nativas). Reproduce crates/titan_stdlib/src/fswatch_mod.rs
+// sobre notify 6 en Linux: inotify_init1/add_watch/poll/read. Prefijo `fw_`.
+// Nada fingido: mismos textos de evento y de error que la VM.
+//
+// Globales +3112: un puntero al registro (contador, siguiente id, 32 huecos).
+// 3584–4095 es sys_arm64; no se pisa.
+
+fn fw_g() -> int {
+    std::raw::globals() + 3112
+}
+
+fn fw_reg() -> int {
+    let g = fw_g()
+    let r = std::raw::load(g)
+    if r != 0 {
+        return r
+    }
+    let p = rt_alloc_zero(16 + 32 * 16)
+    std::raw::store(p + 8, 1)
+    std::raw::store(g, p)
+    p
+}
+
+fn fw_now() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000 + ns / 1000000
+}
+
+fn fw_bool(v: any, function: string) -> int {
+    if std::raw::tag(v) != 3 {
+        rt_native_fail(function, "expected bool")
+    }
+    if std::raw::bits(v) != 0 {
+        return 1
+    }
+    0
+}
+
+fn fw_timeout(v: any, function: string) -> int {
+    rt_expect_int(v, function)
+    let ms = std::raw::bits(v)
+    if ms < 0 {
+        return 1000
+    }
+    ms
+}
+
+fn fw_limit(function: string, resource: string, limit: int) {
+    rt_native_fail(function, resource + " exceeds limit " + rt_int_to_str(limit))
+}
+
+fn fw_check_path(path: any, function: string) {
+    rt_expect_str(path, function)
+    if rt_slen(path) > 16384 {
+        fw_limit(function, "watch path bytes", 16384)
+    }
+}
+
+fn fw_check_timeout(ms: int, function: string) {
+    if ms > 86400000 {
+        fw_limit(function, "watch timeout milliseconds", 86400000)
+    }
+}
+
+fn fw_about(path: any, errno: int) -> any {
+    let dbg = rt_debug_str(std::raw::bits(path) + 16, rt_slen(path))
+    "watcher error: " + rt_os_error(errno) + " about [" + dbg + "]"
+}
+
+fn fw_save(s: any) -> int {
+    let n = rt_slen(s)
+    let p = rt_alloc(8 + n)
+    std::raw::store(p, n)
+    rt_copy(p + 8, std::raw::bits(s) + 16, n)
+    p
+}
+
+fn fw_load(p: int) -> any {
+    let n = std::raw::load(p)
+    let o = rt_str_alloc(n)
+    rt_copy(o + 16, p + 8, n)
+    rt_sval(o)
+}
+
+fn fw_join(dir: any, name: any) -> any {
+    if rt_slen(name) == 0 {
+        return dir
+    }
+    let n = rt_slen(dir)
+    if n == 0 {
+        return name
+    }
+    let last = std::raw::load8(std::raw::bits(dir) + 16 + n - 1)
+    if last == 47 {
+        return rt_concat(dir, name)
+    }
+    rt_concat(rt_concat(dir, "/"), name)
+}
+
+fn fw_lstat_mode(path: any) -> int {
+    let buf = rt_alloc(144)
+    let c = rt_cstr(path)
+    let r = std::raw::syscall(262, -100, c, buf, 256, 0, 0)
+    let mode = std::raw::load(buf + 24) & 4294967295
+    rt_free_block(c)
+    rt_free_block(buf)
+    if r != 0 {
+        return -1
+    }
+    mode
+}
+
+fn fw_arr_len(a: any) -> int {
+    std::raw::load(std::raw::bits(a) + 8)
+}
+
+fn fw_arr_get(a: any, i: int) -> any {
+    let p = std::raw::bits(a)
+    let data = std::raw::load(p + 24)
+    let e = data + 16 * i
+    std::raw::value(std::raw::load(e), std::raw::load(e + 8))
+}
+
+fn fw_reserve(function: string) {
+    let r = fw_reg()
+    let n = std::raw::load(r)
+    if n >= 32 {
+        fw_limit(function, "filesystem watchers", 32)
+    }
+    std::raw::store(r, n + 1)
+}
+
+fn fw_release() {
+    let r = fw_reg()
+    let n = std::raw::load(r)
+    if n > 0 {
+        std::raw::store(r, n - 1)
+    }
+}
+
+fn fw_destroy(w: int) {
+    if w == 0 {
+        return
+    }
+    let fd = std::raw::load(w)
+    if fd >= 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    }
+    let n = std::raw::load(w + 16)
+    let wds = std::raw::load(w + 32)
+    let mut i = 0
+    while i < n {
+        let ph = std::raw::load(wds + 16 * i + 8)
+        if ph != 0 {
+            rt_free_block(ph)
+        }
+        i += 1
+    }
+    if wds != 0 {
+        rt_free_block(wds)
+    }
+    let qn = std::raw::load(w + 40)
+    let q = std::raw::load(w + 56)
+    i = 0
+    while i < qn {
+        let ph = std::raw::load(q + 8 * i)
+        if ph != 0 {
+            rt_free_block(ph)
+        }
+        i += 1
+    }
+    if q != 0 {
+        rt_free_block(q)
+    }
+    let root = std::raw::load(w + 64)
+    if root != 0 {
+        rt_free_block(root)
+    }
+    let canon = std::raw::load(w + 72)
+    if canon != 0 {
+        rt_free_block(canon)
+    }
+    rt_free_block(w)
+}
+
+fn fw_fail_w(function: string, w: int, message: any) {
+    fw_destroy(w)
+    fw_release()
+    rt_native_fail(function, message)
+}
+
+fn fw_put(id: int, w: int) -> int {
+    let r = fw_reg()
+    let mut i = 0
+    while i < 32 {
+        let slot = r + 16 + 16 * i
+        if std::raw::load(slot + 8) == 0 {
+            std::raw::store(slot, id)
+            std::raw::store(slot + 8, w)
+            return 0
+        }
+        i += 1
+    }
+    -1
+}
+
+fn fw_take(id: int) -> int {
+    let r = fw_reg()
+    let mut i = 0
+    while i < 32 {
+        let slot = r + 16 + 16 * i
+        if std::raw::load(slot + 8) != 0 && std::raw::load(slot) == id {
+            let w = std::raw::load(slot + 8)
+            std::raw::store(slot, 0)
+            std::raw::store(slot + 8, 0)
+            return w
+        }
+        i += 1
+    }
+    0
+}
+
+fn fw_get(id: int) -> int {
+    let r = fw_reg()
+    let mut i = 0
+    while i < 32 {
+        let slot = r + 16 + 16 * i
+        if std::raw::load(slot + 8) != 0 && std::raw::load(slot) == id {
+            return std::raw::load(slot + 8)
+        }
+        i += 1
+    }
+    0
+}
+
+fn fw_grow_wds(w: int) {
+    let n = std::raw::load(w + 16)
+    let cap = std::raw::load(w + 24)
+    if n < cap {
+        return
+    }
+    let mut nc = 8
+    if cap > 0 {
+        nc = cap * 2
+    }
+    let nw = rt_alloc_zero(nc * 16)
+    let old = std::raw::load(w + 32)
+    if old != 0 {
+        rt_copy(nw, old, n * 16)
+        rt_free_block(old)
+    }
+    std::raw::store(w + 32, nw)
+    std::raw::store(w + 24, nc)
+}
+
+fn fw_has_wd(w: int, wd: int) -> int {
+    let n = std::raw::load(w + 16)
+    let wds = std::raw::load(w + 32)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(wds + 16 * i) == wd {
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn fw_wd_path(w: int, wd: int) -> any {
+    let n = std::raw::load(w + 16)
+    let wds = std::raw::load(w + 32)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(wds + 16 * i) == wd {
+            return fw_load(std::raw::load(wds + 16 * i + 8))
+        }
+        i += 1
+    }
+    ""
+}
+
+fn fw_drop_wd(w: int, wd: int) {
+    let n = std::raw::load(w + 16)
+    let wds = std::raw::load(w + 32)
+    let mut i = 0
+    while i < n {
+        if std::raw::load(wds + 16 * i) == wd {
+            let ph = std::raw::load(wds + 16 * i + 8)
+            if ph != 0 {
+                rt_free_block(ph)
+            }
+            let last = n - 1
+            if i != last {
+                std::raw::store(wds + 16 * i, std::raw::load(wds + 16 * last))
+                std::raw::store(wds + 16 * i + 8, std::raw::load(wds + 16 * last + 8))
+            }
+            std::raw::store(w + 16, last)
+            return
+        }
+        i += 1
+    }
+}
+
+fn fw_add_watch(w: int, path: any) -> int {
+    let fd = std::raw::load(w)
+    let c = rt_cstr(path)
+    let wd = std::raw::syscall(254, fd, c, 4046, 0, 0, 0)
+    rt_free_block(c)
+    if wd < 0 {
+        return wd
+    }
+    if fw_has_wd(w, wd) != 0 {
+        return 0
+    }
+    fw_grow_wds(w)
+    let n = std::raw::load(w + 16)
+    let wds = std::raw::load(w + 32)
+    std::raw::store(wds + 16 * n, wd)
+    std::raw::store(wds + 16 * n + 8, fw_save(path))
+    std::raw::store(w + 16, n + 1)
+    0
+}
+
+fn fw_walk(w: int, path: any, depth: int) {
+    if depth > 256 {
+        return
+    }
+    let mode = fw_lstat_mode(path)
+    if mode < 0 {
+        return
+    }
+    if (mode & 61440) != 16384 {
+        return
+    }
+    let names = rt_read_dir(path)
+    if std::raw::tag(names) != 7 {
+        return
+    }
+    let n = fw_arr_len(names)
+    let mut i = 0
+    while i < n {
+        let child = fw_join(path, fw_arr_get(names, i))
+        let cm = fw_lstat_mode(child)
+        if cm >= 0 && (cm & 61440) == 16384 {
+            fw_add_watch(w, child)
+            fw_walk(w, child, depth + 1)
+        }
+        i += 1
+    }
+}
+
+fn fw_watch_tree(w: int, path: any, rec: int) -> int {
+    let r = fw_add_watch(w, path)
+    if r < 0 {
+        return r
+    }
+    if rec != 0 {
+        fw_walk(w, path, 0)
+    }
+    0
+}
+
+fn fw_new(path: any, rec: int, function: string) -> int {
+    fw_reserve(function)
+    let fd = std::raw::syscall(294, 526336, 0, 0, 0, 0, 0)
+    if fd < 0 {
+        let msg = "watcher error: " + rt_os_error(0 - fd)
+        fw_release()
+        rt_native_fail(function, msg)
+    }
+    let w = rt_alloc_zero(88)
+    std::raw::store(w, fd)
+    std::raw::store(w + 8, rec)
+    std::raw::store(w + 24, 8)
+    std::raw::store(w + 32, rt_alloc_zero(128))
+    std::raw::store(w + 48, 1024)
+    std::raw::store(w + 56, rt_alloc_zero(8192))
+    std::raw::store(w + 64, fw_save(path))
+    let mut existed = 0
+    if rt_stat_mode(path) >= 0 {
+        existed = 1
+    }
+    std::raw::store(w + 80, existed)
+    let (cerr, resolved) = rt_canonical_path(path)
+    if cerr == 0 {
+        std::raw::store(w + 72, fw_save(resolved))
+    } else {
+        std::raw::store(w + 72, fw_save(path))
+    }
+    let wr = fw_watch_tree(w, path, rec)
+    if wr < 0 {
+        fw_fail_w(function, w, fw_about(path, 0 - wr))
+    }
+    w
+}
+
+fn fw_push_bounded(b: int, s: any) -> int {
+    let n = rt_slen(s)
+    let have = sb_len(b)
+    let room = 65536 - have
+    if room <= 0 {
+        return 0
+    }
+    if n <= room {
+        sb_str(b, s)
+        return 1
+    }
+    let p = std::raw::bits(s) + 16
+    let mut end = room
+    while end > 0 {
+        let c = std::raw::load8(p + end)
+        if c < 128 || c >= 192 {
+            break
+        }
+        end -= 1
+    }
+    sb_raw(b, p, end)
+    0
+}
+
+fn fw_describe(kind: any, path: any) -> any {
+    let b = sb_new(32 + rt_slen(path))
+    sb_str(b, kind)
+    sb_byte(b, 58)
+    fw_push_bounded(b, path)
+    sb_finish(b)
+}
+
+fn fw_kind(mask: int) -> any {
+    if (mask & 256) != 0 {
+        return "create"
+    }
+    if (mask & 1536) != 0 {
+        return "remove"
+    }
+    if (mask & 49) != 0 {
+        return "access"
+    }
+    if (mask & 2254) != 0 {
+        return "modify"
+    }
+    "other"
+}
+
+fn fw_q_push(w: int, s: any) {
+    let n = std::raw::load(w + 40)
+    if n >= 1024 {
+        return
+    }
+    let q = std::raw::load(w + 56)
+    std::raw::store(q + 8 * n, fw_save(s))
+    std::raw::store(w + 40, n + 1)
+}
+
+fn fw_q_pop(w: int) -> int {
+    let n = std::raw::load(w + 40)
+    if n == 0 {
+        return 0
+    }
+    let q = std::raw::load(w + 56)
+    let p = std::raw::load(q)
+    let mut i = 0
+    while i < n - 1 {
+        std::raw::store(q + 8 * i, std::raw::load(q + 8 * (i + 1)))
+        i += 1
+    }
+    std::raw::store(w + 40, n - 1)
+    p
+}
+
+fn fw_is_root(w: int, p: any) -> int {
+    let root = fw_load(std::raw::load(w + 64))
+    let canon = fw_load(std::raw::load(w + 72))
+    if p == root {
+        return 1
+    }
+    if p == canon {
+        return 1
+    }
+    let (err, c) = rt_canonical_path(p)
+    if err == 0 {
+        if c == canon {
+            return 1
+        }
+    }
+    0
+}
+
+fn fw_stale(w: int, kind: any, path: any) -> int {
+    if std::raw::load(w + 80) == 0 {
+        return 0
+    }
+    if kind != "create" {
+        return 0
+    }
+    fw_is_root(w, path)
+}
+
+fn fw_name(p: int, namelen: int) -> any {
+    if namelen <= 0 {
+        return ""
+    }
+    rt_from_cstr(p)
+}
+
+fn fw_drain(w: int) {
+    let fd = std::raw::load(w)
+    let buf = rt_alloc(4096)
+    loop {
+        let got = std::raw::syscall(0, fd, buf, 4096, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got == -11 {
+            break
+        }
+        if got <= 0 {
+            break
+        }
+        let mut off = 0
+        while off + 16 <= got {
+            let word = std::raw::load(buf + off)
+            let wd = word & 4294967295
+            let mask = std::raw::shr(word, 32) & 4294967295
+            let word2 = std::raw::load(buf + off + 8)
+            let namelen = std::raw::shr(word2, 32) & 4294967295
+            if off + 16 + namelen > got {
+                break
+            }
+            if (mask & 32768) != 0 {
+                fw_drop_wd(w, wd)
+            } else if fw_has_wd(w, wd) != 0 {
+                let wpath = fw_wd_path(w, wd)
+                let name = fw_name(buf + off + 16, namelen)
+                let full = fw_join(wpath, name)
+                if std::raw::load(w + 8) != 0 {
+                    if (mask & 1073741824) != 0 {
+                        if (mask & 384) != 0 {
+                            fw_add_watch(w, full)
+                            fw_walk(w, full, 0)
+                        }
+                    }
+                }
+                if namelen == 0 {
+                    if (mask & 1536) != 0 {
+                        fw_drop_wd(w, wd)
+                    }
+                }
+                let kind = fw_kind(mask)
+                fw_q_push(w, fw_describe(kind, full))
+            }
+            off = off + 16 + namelen
+        }
+    }
+    rt_free_block(buf)
+}
+
+fn fw_pop_fresh(w: int) -> any {
+    loop {
+        let p = fw_q_pop(w)
+        if p == 0 {
+            return ""
+        }
+        let s = fw_load(p)
+        rt_free_block(p)
+        let mut kind = s
+        let mut path = ""
+        let n = rt_slen(s)
+        let sp = std::raw::bits(s) + 16
+        let mut i = 0
+        while i < n {
+            if std::raw::load8(sp + i) == 58 {
+                kind = rt_substr_bytes(s, 0, i)
+                path = rt_substr_bytes(s, i + 1, n)
+                break
+            }
+            i += 1
+        }
+        if fw_stale(w, kind, path) == 0 {
+            return s
+        }
+    }
+    ""
+}
+
+fn fw_poll(fd: int, wait: int) -> int {
+    let pfd = rt_alloc(8)
+    std::raw::store(pfd, fd | std::raw::shl(1, 32))
+    let r = std::raw::syscall(7, pfd, 1, wait, 0, 0, 0)
+    rt_free_block(pfd)
+    r
+}
+
+fn fw_next(w: int, timeout_ms: int) -> any {
+    let start = fw_now()
+    let deadline = start + timeout_ms
+    loop {
+        fw_drain(w)
+        let ev = fw_pop_fresh(w)
+        if rt_slen(ev) > 0 {
+            return ev
+        }
+        let now = fw_now()
+        if now >= deadline {
+            return "timeout"
+        }
+        let wait = deadline - now
+        let pr = fw_poll(std::raw::load(w), wait)
+        if pr == -4 {
+            continue
+        }
+        if pr <= 0 {
+            return "timeout"
+        }
+    }
+    "timeout"
+}
+
+fn std__fswatch__watch_once(path: any, timeout_ms: any, recursive: any) -> any {
+    let function = "std::fswatch::watch_once"
+    fw_check_path(path, function)
+    let ms = fw_timeout(timeout_ms, function)
+    fw_check_timeout(ms, function)
+    let rec = fw_bool(recursive, function)
+    let w = fw_new(path, rec, function)
+    let ev = fw_next(w, ms)
+    fw_destroy(w)
+    fw_release()
+    ev
+}
+
+fn std__fswatch__open(path: any, recursive: any) -> any {
+    let function = "std::fswatch::open"
+    fw_check_path(path, function)
+    let rec = fw_bool(recursive, function)
+    let w = fw_new(path, rec, function)
+    let r = fw_reg()
+    let id = std::raw::load(r + 8)
+    if id < 1 {
+        fw_fail_w(function, w, "watcher handle space exhausted")
+    }
+    if fw_put(id, w) != 0 {
+        fw_fail_w(function, w, "watcher handle space exhausted")
+    }
+    let nxt = id + 1
+    if nxt < 1 {
+        fw_take(id)
+        fw_fail_w(function, w, "watcher handle space exhausted")
+    }
+    std::raw::store(r + 8, nxt)
+    id
+}
+
+fn std__fswatch__next_event(handle: any, timeout_ms: any) -> any {
+    let function = "std::fswatch::next_event"
+    rt_expect_int(handle, function)
+    let id = std::raw::bits(handle)
+    let ms = fw_timeout(timeout_ms, function)
+    fw_check_timeout(ms, function)
+    let w = fw_get(id)
+    if w == 0 {
+        rt_native_fail(function, "no watcher registered under handle " + rt_int_to_str(id))
+    }
+    fw_next(w, ms)
+}
+
+fn std__fswatch__close(handle: any) -> any {
+    let function = "std::fswatch::close"
+    rt_expect_int(handle, function)
+    let id = std::raw::bits(handle)
+    let w = fw_take(id)
+    if w != 0 {
+        fw_destroy(w)
+        fw_release()
+    }
+    nil
+}

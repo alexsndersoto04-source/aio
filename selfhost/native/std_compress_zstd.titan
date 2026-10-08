@@ -1,0 +1,3757 @@
+// std::compress::zstd_decode — descompresor zstd, en Titan.
+//
+// Port línea a línea de libzstd 1.5.7 (lib/decompress/zstd_decompress.c,
+// zstd_decompress_block.c, huf_decompress.c; lib/common/entropy_common.c,
+// fse_decompress.c, bitstream.h, xxhash.h) tal como la usa la VM de Rust:
+// crates/titan_stdlib/src/compress_mod.rs llama a zstd::stream::decode_all
+// (crate zstd 0.13.3), que es io::copy(Decoder, &mut Vec): un búfer de 8192
+// bytes en la pila (stack_buffer_copy), un BufReader de 131075 bytes y
+// ZSTD_decompressStream. Todo eso se reproduce aquí, porque decide qué camino
+// toma libzstd (paso único si el marco entero cabe en la llamada y en los 8192
+// bytes, o búfer circular por bloques) y con él qué errores salen con datos
+// corruptos. Configuración de la VM: sin formatos antiguos (legacy), HUF X1 y
+// X2, camino rápido de Huffman activo (x86-64 con BMI2 / aarch64).
+//
+// Modelo de referencia ejecutable: native/compress/zstd_ref.py (el mismo
+// algoritmo en Python, validado contra la VM con miles de casos por
+// native/compress/fuzz_zstd.py, que compara también este código nativo).
+//
+// Memoria: punteros reales. Cada bloque se pide con 128 bytes de margen,
+// porque libzstd lee y escribe hasta 32 bytes de más (copias "salvajes") y
+// lee de 8 en 8 bytes.
+//
+// Errores: las funciones devuelven un número negativo -código (códigos de
+// zstd_errors.h) y quien llama lo propaga. Los tamaños "size_t" que en C
+// pueden dar la vuelta (distancias repetidas inválidas = 2^64-1, tamaño de
+// contenido desconocido = 2^64-1) se comparan sin signo con zd_ult.
+//
+// Contexto (bloque d, palabras de 8 bytes) — ver zd_new.
+
+fn zd_min(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    b
+}
+
+fn zd_max(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    b
+}
+
+// a < b sin signo (64 bits).
+fn zd_ult(a: int, b: int) -> bool {
+    if a >= 0 && b < 0 {
+        return true
+    }
+    if a < 0 && b >= 0 {
+        return false
+    }
+    a < b
+}
+
+fn zd_umin(a: int, b: int) -> int {
+    if zd_ult(a, b) {
+        return a
+    }
+    b
+}
+
+fn zd_g(d: int, k: int) -> int {
+    std::raw::load(d + k)
+}
+
+fn zd_s(d: int, k: int, v: int) {
+    std::raw::store(d + k, v)
+}
+
+fn zd_b(p: int) -> int {
+    std::raw::load8(p)
+}
+
+fn zd_r16(p: int) -> int {
+    std::raw::load8(p) | std::raw::shl(std::raw::load8(p + 1), 8)
+}
+
+fn zd_r24(p: int) -> int {
+    zd_r16(p) | std::raw::shl(std::raw::load8(p + 2), 16)
+}
+
+fn zd_r32(p: int) -> int {
+    zd_r16(p) | std::raw::shl(zd_r16(p + 2), 16)
+}
+
+// Lectura de 1..8 bytes little-endian.
+fn zd_rn(p: int, n: int) -> int {
+    if n == 8 {
+        return std::raw::load(p)
+    }
+    let mut v = 0
+    let mut i = n - 1
+    while i >= 0 {
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+        i -= 1
+    }
+    v
+}
+
+fn zd_w32(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+fn zd_alloc(n: int) -> int {
+    let p = rt_alloc(n + 128)
+    let mut i = 0
+    while i < n + 128 {
+        std::raw::store(p + i, 0)
+        i += 8
+    }
+    p
+}
+
+// memmove (como la asignación de un trozo: se copia como si pasara por un
+// búfer aparte).
+fn zd_move(d: int, s: int, n: int) {
+    if n <= 0 || d == s {
+        return
+    }
+    if d < s || d >= s + n {
+        let mut i = 0
+        while i + 8 <= n {
+            std::raw::store(d + i, std::raw::load(s + i))
+            i += 8
+        }
+        while i < n {
+            std::raw::store8(d + i, std::raw::load8(s + i))
+            i += 1
+        }
+        return
+    }
+    let mut i = n
+    while i >= 8 {
+        i -= 8
+        std::raw::store(d + i, std::raw::load(s + i))
+    }
+    while i > 0 {
+        i -= 1
+        std::raw::store8(d + i, std::raw::load8(s + i))
+    }
+}
+
+fn zd_fill(d: int, v: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::store8(d + i, v)
+        i += 1
+    }
+}
+
+// Bit más alto (v > 0).
+fn zd_highbit(v: int) -> int {
+    let mut n = 0 - 1
+    let mut x = v
+    while x != 0 {
+        x = std::raw::shr(x, 1)
+        n += 1
+    }
+    n
+}
+
+// Ceros por la derecha; 64 si v == 0 (tzcnt).
+fn zd_ctz(v: int) -> int {
+    if v == 0 {
+        return 64
+    }
+    let mut n = 0
+    let mut x = v
+    if (x & 4294967295) == 0 {
+        n += 32
+        x = std::raw::shr(x, 32)
+    }
+    if (x & 65535) == 0 {
+        n += 16
+        x = std::raw::shr(x, 16)
+    }
+    if (x & 255) == 0 {
+        n += 8
+        x = std::raw::shr(x, 8)
+    }
+    if (x & 15) == 0 {
+        n += 4
+        x = std::raw::shr(x, 4)
+    }
+    if (x & 3) == 0 {
+        n += 2
+        x = std::raw::shr(x, 2)
+    }
+    if (x & 1) == 0 {
+        n += 1
+    }
+    n
+}
+
+// Códigos de error (zstd_errors.h), devueltos en negativo.
+fn zd_message(code: int) -> string {
+    if code == 1 {
+        return "Error (generic)"
+    }
+    if code == 10 {
+        return "Unknown frame descriptor"
+    }
+    if code == 14 {
+        return "Unsupported frame parameter"
+    }
+    if code == 16 {
+        return "Frame requires too much memory for decoding"
+    }
+    if code == 20 {
+        return "Data corruption detected"
+    }
+    if code == 22 {
+        return "Restored data doesn't match checksum"
+    }
+    if code == 24 {
+        return "Header of Literals' block doesn't respect format specification"
+    }
+    if code == 30 {
+        return "Dictionary is corrupted"
+    }
+    if code == 32 {
+        return "Dictionary mismatch"
+    }
+    if code == 44 {
+        return "tableLog requires too much memory : unsupported"
+    }
+    if code == 46 {
+        return "Unsupported max Symbol Value : too large"
+    }
+    if code == 48 {
+        return "Specified maxSymbolValue is too small"
+    }
+    if code == 70 {
+        return "Destination buffer is too small"
+    }
+    if code == 72 {
+        return "Src size is incorrect"
+    }
+    if code == 74 {
+        return "Operation on NULL destination buffer"
+    }
+    if code == 80 {
+        return "Operation made no progress over multiple calls, due to output buffer being full"
+    }
+    if code == 82 {
+        return "Operation made no progress over multiple calls, due to input being empty"
+    }
+    if code == 1000 {
+        return "incomplete frame"
+    }
+    "Error (generic)"
+}
+
+// ------------------------------------------------------------ bitstream.h (64 bits)
+// Flujo de bits en bd: +0 start, +8 limitPtr, +16 ptr, +24 bitContainer,
+// +32 bitsConsumed. Estados de recarga: 0 unfinished, 1 endOfBuffer,
+// 2 completed, 3 overflow.
+
+fn zd_bit_init(bd: int, src: int, size: int) -> int {
+    if size < 1 {
+        zd_s(bd, 0, 0)
+        zd_s(bd, 8, 0)
+        zd_s(bd, 16, 0)
+        zd_s(bd, 24, 0)
+        zd_s(bd, 32, 0)
+        return -72
+    }
+    zd_s(bd, 0, src)
+    zd_s(bd, 8, src + 8)
+    let last = zd_b(src + size - 1)
+    let mut cons = 0
+    if last != 0 {
+        cons = 8 - zd_highbit(last)
+    }
+    if size >= 8 {
+        zd_s(bd, 16, src + size - 8)
+        zd_s(bd, 24, std::raw::load(src + size - 8))
+        zd_s(bd, 32, cons)
+        if last == 0 {
+            return -1
+        }
+    } else {
+        zd_s(bd, 16, src)
+        zd_s(bd, 24, zd_rn(src, size))
+        zd_s(bd, 32, cons)
+        if last == 0 {
+            return -20
+        }
+        zd_s(bd, 32, cons + (8 - size) * 8)
+    }
+    size
+}
+
+fn zd_bit_look(bd: int, nb: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    std::raw::shr(cont, (64 - cons - nb) & 63) & (std::raw::shl(1, nb) - 1)
+}
+
+fn zd_bit_read(bd: int, nb: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    std::raw::store(bd + 32, cons + nb)
+    std::raw::shr(cont, (64 - cons - nb) & 63) & (std::raw::shl(1, nb) - 1)
+}
+
+// readBitsFast (nb >= 1).
+fn zd_bit_readf(bd: int, nb: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    std::raw::store(bd + 32, cons + nb)
+    std::raw::shr(std::raw::shl(cont, cons & 63), (64 - nb) & 63)
+}
+
+fn zd_bit_reload(bd: int) -> int {
+    let cons = std::raw::load(bd + 32)
+    if cons > 64 {
+        // ptr pasa a apuntar a un "cero" estático: ya no se vuelve a leer.
+        std::raw::store(bd + 16, 0 - 8)
+        return 3
+    }
+    let ptr = std::raw::load(bd + 16)
+    if ptr >= std::raw::load(bd + 8) {
+        let np = ptr - std::raw::shr(cons, 3)
+        std::raw::store(bd + 16, np)
+        std::raw::store(bd + 32, cons & 7)
+        std::raw::store(bd + 24, std::raw::load(np))
+        return 0
+    }
+    let start = std::raw::load(bd)
+    if ptr == start {
+        if cons < 64 {
+            return 1
+        }
+        return 2
+    }
+    let mut nb = std::raw::shr(cons, 3)
+    let mut res = 0
+    if ptr - nb < start {
+        nb = ptr - start
+        res = 1
+    }
+    let np = ptr - nb
+    std::raw::store(bd + 16, np)
+    std::raw::store(bd + 32, cons - nb * 8)
+    std::raw::store(bd + 24, std::raw::load(np))
+    res
+}
+
+fn zd_bit_reload_fast(bd: int) -> int {
+    let ptr = std::raw::load(bd + 16)
+    if ptr < std::raw::load(bd + 8) {
+        return 3
+    }
+    let cons = std::raw::load(bd + 32)
+    let np = ptr - std::raw::shr(cons, 3)
+    std::raw::store(bd + 16, np)
+    std::raw::store(bd + 32, cons & 7)
+    std::raw::store(bd + 24, std::raw::load(np))
+    0
+}
+
+fn zd_bit_end(bd: int) -> bool {
+    std::raw::load(bd + 16) == std::raw::load(bd) && std::raw::load(bd + 32) == 64
+}
+
+// ------------------------------------------------------------ entropy_common.c
+
+// FSE_readNCount(norm, maxSV, src, n). Escribe norm[0..maxSV] (palabras con
+// signo) y deja en out: +0 maxSV leído, +8 tableLog. Devuelve el tamaño leído
+// o -código. scratch: 16 bytes para entradas de menos de 8 bytes.
+fn zd_read_ncount(norm: int, maxSV: int, src: int, n: int, out: int, scratch: int) -> int {
+    if n < 8 {
+        std::raw::store(scratch, 0)
+        std::raw::store(scratch + 8, 0)
+        let mut i = 0
+        while i < n {
+            std::raw::store8(scratch + i, zd_b(src + i))
+            i += 1
+        }
+        let r = zd_read_ncount(norm, maxSV, scratch, 8, out, scratch + 16)
+        if r < 0 {
+            return r
+        }
+        if r > n {
+            return -20
+        }
+        return r
+    }
+    let maxSV1 = maxSV + 1
+    let mut i = 0
+    while i < maxSV1 {
+        std::raw::store(norm + 8 * i, 0)
+        i += 1
+    }
+    let iend = src + n
+    let mut ip = src
+    let mut charnum = 0
+    let mut previous0 = false
+    let mut bitStream = zd_r32(ip)
+    let mut nbBits = (bitStream & 15) + 5
+    if nbBits > 15 {
+        return -44
+    }
+    bitStream = std::raw::shr(bitStream, 4)
+    let mut bitCount = 4
+    let tableLog = nbBits
+    let mut remaining = std::raw::shl(1, nbBits) + 1
+    let mut threshold = std::raw::shl(1, nbBits)
+    nbBits += 1
+    while true {
+        if previous0 {
+            let mut repeats = std::raw::shr(zd_ctz((bitStream ^ 4294967295) | 2147483648), 1)
+            while repeats >= 12 {
+                charnum += 36
+                if ip <= iend - 7 {
+                    ip += 3
+                } else {
+                    bitCount -= 8 * (iend - 7 - ip)
+                    bitCount = bitCount & 31
+                    ip = iend - 4
+                }
+                bitStream = std::raw::shr(zd_r32(ip), bitCount)
+                repeats = std::raw::shr(zd_ctz((bitStream ^ 4294967295) | 2147483648), 1)
+            }
+            charnum += 3 * repeats
+            bitStream = std::raw::shr(bitStream, 2 * repeats)
+            bitCount += 2 * repeats
+            charnum += bitStream & 3
+            bitCount += 2
+            if charnum >= maxSV1 {
+                break
+            }
+            if ip <= iend - 7 || ip + std::raw::shr(bitCount, 3) <= iend - 4 {
+                ip += std::raw::shr(bitCount, 3)
+                bitCount = bitCount & 7
+            } else {
+                bitCount -= 8 * (iend - 4 - ip)
+                bitCount = bitCount & 31
+                ip = iend - 4
+            }
+            bitStream = std::raw::shr(zd_r32(ip), bitCount)
+        }
+        let mx = (2 * threshold - 1) - remaining
+        let mut count = 0
+        if (bitStream & (threshold - 1)) < mx {
+            count = bitStream & (threshold - 1)
+            bitCount += nbBits - 1
+        } else {
+            count = bitStream & (2 * threshold - 1)
+            if count >= threshold {
+                count -= mx
+            }
+            bitCount += nbBits
+        }
+        count -= 1
+        if count >= 0 {
+            remaining -= count
+        } else {
+            remaining += count
+        }
+        std::raw::store(norm + 8 * charnum, count)
+        charnum += 1
+        previous0 = count == 0
+        if remaining < threshold {
+            if remaining <= 1 {
+                break
+            }
+            nbBits = zd_highbit(remaining) + 1
+            threshold = std::raw::shl(1, nbBits - 1)
+        }
+        if charnum >= maxSV1 {
+            break
+        }
+        if ip <= iend - 7 || ip + std::raw::shr(bitCount, 3) <= iend - 4 {
+            ip += std::raw::shr(bitCount, 3)
+            bitCount = bitCount & 7
+        } else {
+            bitCount -= 8 * (iend - 4 - ip)
+            bitCount = bitCount & 31
+            ip = iend - 4
+        }
+        bitStream = std::raw::shr(zd_r32(ip), bitCount)
+    }
+    if remaining != 1 {
+        return -20
+    }
+    if charnum > maxSV1 {
+        return -48
+    }
+    if bitCount > 32 {
+        return -20
+    }
+    ip += std::raw::shr(bitCount + 7, 3)
+    std::raw::store(out, charnum - 1)
+    std::raw::store(out + 8, tableLog)
+    ip - src
+}
+
+// FSE_DECOMPRESS_WKSP_SIZE_U32(tl, msv)
+fn zd_fse_wksp_u32(tl: int, msv: int) -> int {
+    let build = (2 * (msv + 1) + std::raw::shl(1, tl) + 8 + 3) / 4
+    1 + std::raw::shl(1, tl) + 1 + build + 128 + 1
+}
+
+// FSE_buildDTable_internal para los pesos de Huffman. Tabla en dt: palabra
+// por celda = símbolo | nbBits << 8 | newState << 16. Devuelve fastMode (0/1)
+// o -código. sym y nxt: espacio de trabajo (palabras).
+fn zd_fse_build(dt: int, norm: int, maxSV: int, tableLog: int, wksize: int, sym: int, nxt: int) -> int {
+    if 2 * (maxSV + 1) + std::raw::shl(1, tableLog) + 8 > wksize {
+        return -46
+    }
+    if maxSV > 255 {
+        return -46
+    }
+    if tableLog > 12 {
+        return -44
+    }
+    let size = std::raw::shl(1, tableLog)
+    let mut high = size - 1
+    let mut fast = 1
+    let large = std::raw::shl(1, tableLog - 1)
+    let mut s = 0
+    while s <= maxSV {
+        let c = std::raw::load(norm + 8 * s)
+        if c == -1 {
+            std::raw::store(sym + 8 * high, s)
+            high -= 1
+            std::raw::store(nxt + 8 * s, 1)
+        } else {
+            if c >= large {
+                fast = 0
+            }
+            std::raw::store(nxt + 8 * s, c & 65535)
+        }
+        s += 1
+    }
+    let mask = size - 1
+    let step = std::raw::shr(size, 1) + std::raw::shr(size, 3) + 3
+    let mut pos = 0
+    if high == size - 1 {
+        // Reparto rápido: los símbolos en orden, colocados de dos en dos.
+        let mut sy = 0
+        let mut left = 0
+        if maxSV >= 0 {
+            left = std::raw::load(norm)
+        }
+        let mut u = 0
+        while u < size {
+            while left <= 0 && sy < maxSV {
+                sy += 1
+                left = std::raw::load(norm + 8 * sy)
+            }
+            let mut v = 0
+            if left > 0 {
+                v = sy
+            }
+            std::raw::store(sym + 8 * ((pos + (u & 1) * step) & mask), v)
+            if (u & 1) == 1 {
+                pos = (pos + 2 * step) & mask
+            }
+            left -= 1
+            u += 1
+        }
+    } else {
+        s = 0
+        while s <= maxSV {
+            let c = std::raw::load(norm + 8 * s)
+            let mut i = 0
+            while i < c {
+                std::raw::store(sym + 8 * pos, s)
+                pos = (pos + step) & mask
+                while pos > high {
+                    pos = (pos + step) & mask
+                }
+                i += 1
+            }
+            s += 1
+        }
+        if pos != 0 {
+            return -1
+        }
+    }
+    let mut u = 0
+    while u < size {
+        let sy = std::raw::load(sym + 8 * u)
+        let ns = std::raw::load(nxt + 8 * sy)
+        std::raw::store(nxt + 8 * sy, (ns + 1) & 65535)
+        let nb = (tableLog - zd_highbit(ns)) & 255
+        let st = (std::raw::shl(ns, nb) - size) & 65535
+        std::raw::store(dt + 8 * u, sy | std::raw::shl(nb, 8) | std::raw::shl(st, 16))
+        u += 1
+    }
+    fast
+}
+
+// División entera hacia abajo (como // de Python) para b > 0.
+fn zd_fdiv(a: int, b: int) -> int {
+    if a >= 0 {
+        return a / b
+    }
+    0 - ((0 - a + b - 1) / b)
+}
+
+// ------------------------------------------------------------ pesos de Huffman
+// Espacio de trabajo en el contexto d:
+//   + 984 flujo de bits de los pesos   + 1024 pesos w[256]   + 3072 rank[13]
+//   + 3200 rankStart   + 3328 rankVal0   + 3456 rankVal[12][13]
+//   + 4736 salida de readNCount (2)  + 4768 relleno (48 bytes)
+//   + 4864 norm[256]   + 6912 sym[512]   + 11008 next[256]   + 13056 sorted[256]
+//   + 15104 tabla FSE de los pesos (64)
+
+// FSE_decompress_wksp_bmi2(pesos, 255, src, n, 6, wksp, 876): escribe los
+// pesos en d+1024 y devuelve cuántos, o -código.
+fn zd_fse_weights(d: int, src: int, n: int) -> int {
+    let wk = zd_fse_wksp_u32(6, 11) * 4
+    let norm = d + 4864
+    let ncl = zd_read_ncount(norm, 255, src, n, d + 4736, d + 4768)
+    if ncl < 0 {
+        return ncl
+    }
+    let msv = zd_g(d, 4736)
+    let tl = zd_g(d, 4744)
+    if tl > 6 {
+        return -44
+    }
+    let ip = src + ncl
+    let csize = n - ncl
+    if zd_fse_wksp_u32(tl, msv) * 4 > wk {
+        return -44
+    }
+    let rest = wk - 512 - 4 * (1 + std::raw::shl(1, tl))
+    let dt = d + 15104
+    let fast = zd_fse_build(dt, norm, msv, tl, rest, d + 6912, d + 11008)
+    if fast < 0 {
+        return fast
+    }
+    let bd = d + 984
+    let r = zd_bit_init(bd, ip, csize)
+    if r < 0 {
+        return r
+    }
+    let mut s1 = zd_bit_read(bd, tl)
+    zd_bit_reload(bd)
+    let mut s2 = zd_bit_read(bd, tl)
+    zd_bit_reload(bd)
+    if zd_bit_reload(bd) == 3 {
+        return -20
+    }
+    let out = d + 1024
+    let omax = 255
+    let olimit = omax - 3
+    let mut op = 0
+    while zd_bit_reload(bd) == 0 && op < olimit {
+        let mut k = 0
+        while k < 4 {
+            let mut s = s1
+            if (k & 1) == 1 {
+                s = s2
+            }
+            let cell = std::raw::load(dt + 8 * s)
+            let nb = std::raw::shr(cell, 8) & 255
+            let mut low = 0
+            if fast == 1 {
+                low = zd_bit_readf(bd, nb)
+            } else {
+                low = zd_bit_read(bd, nb)
+            }
+            std::raw::store(out + 8 * op, cell & 255)
+            op += 1
+            if (k & 1) == 1 {
+                s2 = std::raw::shr(cell, 16) + low
+            } else {
+                s1 = std::raw::shr(cell, 16) + low
+            }
+            k += 1
+        }
+    }
+    let mut which = 0
+    while true {
+        if op > omax - 2 {
+            return -70
+        }
+        let mut s = s1
+        if which == 1 {
+            s = s2
+        }
+        let cell = std::raw::load(dt + 8 * s)
+        let nb = std::raw::shr(cell, 8) & 255
+        let mut low = 0
+        if fast == 1 {
+            low = zd_bit_readf(bd, nb)
+        } else {
+            low = zd_bit_read(bd, nb)
+        }
+        std::raw::store(out + 8 * op, cell & 255)
+        op += 1
+        if which == 1 {
+            s2 = std::raw::shr(cell, 16) + low
+        } else {
+            s1 = std::raw::shr(cell, 16) + low
+        }
+        if zd_bit_reload(bd) == 3 {
+            // El otro estado da un último símbolo.
+            let mut t = s2
+            if which == 1 {
+                t = s1
+            }
+            let c2 = std::raw::load(dt + 8 * t)
+            let nb2 = std::raw::shr(c2, 8) & 255
+            if fast == 1 {
+                zd_bit_readf(bd, nb2)
+            } else {
+                zd_bit_read(bd, nb2)
+            }
+            std::raw::store(out + 8 * op, c2 & 255)
+            op += 1
+            break
+        }
+        which = 1 - which
+    }
+    op
+}
+
+// HUF_readStats_wksp: pesos en d+1024 (w[nbSymbols-1] incluido), rankStats en
+// d+3072; deja nbSymbols en d+16000 y tableLog en d+16008. Devuelve el tamaño
+// leído o -código.
+fn zd_read_stats(d: int, src: int, n: int) -> int {
+    if n == 0 {
+        return -72
+    }
+    let w = d + 1024
+    let mut i = 0
+    while i < 256 {
+        std::raw::store(w + 8 * i, 0)
+        i += 1
+    }
+    let mut iSize = zd_b(src)
+    let mut oSize = 0
+    if iSize >= 128 {
+        oSize = iSize - 127
+        iSize = (oSize + 1) / 2
+        if iSize + 1 > n {
+            return -72
+        }
+        if oSize >= 256 {
+            return -20
+        }
+        let mut k = 0
+        while k < oSize {
+            let b = zd_b(src + 1 + k / 2)
+            std::raw::store(w + 8 * k, std::raw::shr(b, 4))
+            std::raw::store(w + 8 * (k + 1), b & 15)
+            k += 2
+        }
+    } else {
+        if iSize + 1 > n {
+            return -72
+        }
+        oSize = zd_fse_weights(d, src + 1, iSize)
+        if oSize < 0 {
+            return oSize
+        }
+    }
+    let rank = d + 3072
+    i = 0
+    while i < 13 {
+        std::raw::store(rank + 8 * i, 0)
+        i += 1
+    }
+    let mut total = 0
+    i = 0
+    while i < oSize {
+        let x = std::raw::load(w + 8 * i)
+        if x > 12 {
+            return -20
+        }
+        std::raw::store(rank + 8 * x, std::raw::load(rank + 8 * x) + 1)
+        total += std::raw::shr(std::raw::shl(1, x), 1)
+        i += 1
+    }
+    if total == 0 {
+        return -20
+    }
+    let tableLog = zd_highbit(total) + 1
+    if tableLog > 12 {
+        return -20
+    }
+    let rest = std::raw::shl(1, tableLog) - total
+    let verif = std::raw::shl(1, zd_highbit(rest))
+    let last = zd_highbit(rest) + 1
+    if verif != rest {
+        return -20
+    }
+    std::raw::store(w + 8 * oSize, last)
+    std::raw::store(rank + 8 * last, std::raw::load(rank + 8 * last) + 1)
+    let r1 = std::raw::load(rank + 8)
+    if r1 < 2 || (r1 & 1) == 1 {
+        return -20
+    }
+    zd_s(d, 16000, oSize + 1)
+    zd_s(d, 16008, tableLog)
+    iSize + 1
+}
+
+// ------------------------------------------------------------ huf_decompress.c
+// Tabla HUF_DTable en ht: 4 bytes de descriptor (maxTableLog, tableType,
+// tableLog, reservado) y después entradas X1 de 2 bytes (nbBits, byte) o X2 de
+// 4 bytes (secuencia u16, nbBits, longitud).
+
+fn zd_huf_read_x1(d: int, ht: int, src: int, n: int) -> int {
+    let iSize = zd_read_stats(d, src, n)
+    if iSize < 0 {
+        return iSize
+    }
+    let w = d + 1024
+    let rank = d + 3072
+    let nbSym = zd_g(d, 16000)
+    let mut tableLog = zd_g(d, 16008)
+    let maxTL = zd_b(ht)
+    let target = zd_min(maxTL + 1, 11)
+    if tableLog <= target {
+        if tableLog < target {
+            let scale = target - tableLog
+            let mut s = 0
+            while s < nbSym {
+                let x = std::raw::load(w + 8 * s)
+                if x != 0 {
+                    std::raw::store(w + 8 * s, x + scale)
+                }
+                s += 1
+            }
+            s = target
+            while s > scale {
+                std::raw::store(rank + 8 * s, std::raw::load(rank + 8 * (s - scale)))
+                s -= 1
+            }
+            s = scale
+            while s > 0 {
+                std::raw::store(rank + 8 * s, 0)
+                s -= 1
+            }
+        }
+        tableLog = target
+    }
+    if tableLog > maxTL + 1 {
+        return -44
+    }
+    std::raw::store8(ht + 1, 0)
+    std::raw::store8(ht + 2, tableLog)
+    let rstart = d + 3200
+    let mut nxt = 0
+    let mut k = 0
+    while k <= tableLog {
+        std::raw::store(rstart + 8 * k, nxt)
+        nxt += std::raw::load(rank + 8 * k)
+        k += 1
+    }
+    let syms = d + 13056
+    k = 0
+    while k < nbSym {
+        let x = std::raw::load(w + 8 * k)
+        let r = std::raw::load(rstart + 8 * x)
+        std::raw::store(syms + 8 * r, k)
+        std::raw::store(rstart + 8 * x, r + 1)
+        k += 1
+    }
+    let mut symbol = std::raw::load(rank)
+    let mut pos = 0
+    let dt = ht + 4
+    let mut ww = 1
+    while ww <= tableLog {
+        let cnt = std::raw::load(rank + 8 * ww)
+        let length = std::raw::shr(std::raw::shl(1, ww), 1)
+        let nbBits = tableLog + 1 - ww
+        let mut u = pos
+        let mut s = 0
+        while s < cnt {
+            let b = std::raw::load(syms + 8 * (symbol + s))
+            let mut j = 0
+            while j < length {
+                std::raw::store8(dt + 2 * u, nbBits)
+                std::raw::store8(dt + 2 * u + 1, b)
+                u += 1
+                j += 1
+            }
+            s += 1
+        }
+        symbol += cnt
+        pos += cnt * length
+        ww += 1
+    }
+    iSize
+}
+
+fn zd_x2_u32(symbol: int, nbBits: int, baseSeq: int, level: int) -> int {
+    let mut sq = symbol
+    if level != 1 {
+        sq = baseSeq + std::raw::shl(symbol, 8)
+    }
+    let r = sq + std::raw::shl(nbBits, 16) + std::raw::shl(level, 24)
+    r & 4294967295
+}
+
+// Símbolos sorted[b0..e0) a partir de la posición p.
+fn zd_x2_fill_weight(dt: int, p0: int, sorted: int, b0: int, e0: int, nbBits: int, tableLog: int, baseSeq: int, level: int) {
+    let length = std::raw::shl(1, (tableLog - nbBits) & 31)
+    let mut p = p0
+    let mut i = b0
+    while i < e0 {
+        let e = zd_x2_u32(std::raw::load(sorted + 8 * i), nbBits, baseSeq, level)
+        let mut j = 0
+        while j < length {
+            zd_w32(dt + 4 * (p + j), e)
+            j += 1
+        }
+        p += length
+        i += 1
+    }
+}
+
+fn zd_x2_fill_level2(dt: int, base: int, targetLog: int, consumed: int, rankVal: int, minWeight: int, maxWeight1: int, sorted: int, rs0: int, nbBase: int, baseSeq: int) {
+    if minWeight > 1 {
+        let length = std::raw::shl(1, (targetLog - consumed) & 31)
+        let e = zd_x2_u32(baseSeq, consumed, 0, 1)
+        let skip = std::raw::load(rankVal + 8 * minWeight)
+        let mut n = 0
+        if length == 2 {
+            n = 2
+        } else if length == 4 {
+            n = 4
+        } else {
+            let mut i = 0
+            while i < skip {
+                n = i + 8
+                i += 8
+            }
+        }
+        let mut j = 0
+        while j < n {
+            zd_w32(dt + 4 * (base + j), e)
+            j += 1
+        }
+    }
+    let mut ww = minWeight
+    while ww < maxWeight1 {
+        let b0 = std::raw::load(rs0 + 8 * ww)
+        let e0 = std::raw::load(rs0 + 8 * (ww + 1))
+        let nbBits = nbBase - ww
+        zd_x2_fill_weight(dt, base + std::raw::load(rankVal + 8 * ww), sorted, b0, e0, nbBits + consumed, targetLog, baseSeq, 2)
+        ww += 1
+    }
+}
+
+fn zd_huf_read_x2(d: int, ht: int, src: int, n: int) -> int {
+    let mut maxTL = zd_b(ht)
+    if maxTL > 12 {
+        return -44
+    }
+    let iSize = zd_read_stats(d, src, n)
+    if iSize < 0 {
+        return iSize
+    }
+    let w = d + 1024
+    let rankStats = d + 3072
+    let nbSym = zd_g(d, 16000)
+    let tableLog = zd_g(d, 16008)
+    if tableLog > maxTL {
+        return -44
+    }
+    if tableLog <= 11 && maxTL > 11 {
+        maxTL = 11
+    }
+    let mut maxW = tableLog
+    while std::raw::load(rankStats + 8 * maxW) == 0 {
+        maxW -= 1
+    }
+    let rs0 = d + 3200
+    let mut i = 0
+    while i < 15 {
+        std::raw::store(rs0 + 8 * i, 0)
+        i += 1
+    }
+    let mut nxt = 0
+    let mut ww = 1
+    while ww <= maxW {
+        std::raw::store(rs0 + 8 * (ww + 1), nxt)
+        nxt += std::raw::load(rankStats + 8 * ww)
+        ww += 1
+    }
+    std::raw::store(rs0 + 8, nxt)
+    std::raw::store(rs0 + 8 * (maxW + 2), nxt)
+    let sorted = d + 13056
+    let mut s = 0
+    while s < nbSym {
+        let x = std::raw::load(w + 8 * s)
+        let r = std::raw::load(rs0 + 8 * (x + 1))
+        std::raw::store(rs0 + 8 * (x + 1), r + 1)
+        std::raw::store(sorted + 8 * r, s)
+        s += 1
+    }
+    std::raw::store(rs0 + 8, 0)
+    // rankVal[c] en d+3456+104*c (13 palabras); rankVal[0] = rv0.
+    let rv0 = d + 3456
+    i = 0
+    while i < 13 * 12 {
+        std::raw::store(rv0 + 8 * i, 0)
+        i += 1
+    }
+    let rescale = (maxTL - tableLog) - 1
+    let mut nv = 0
+    ww = 1
+    while ww <= maxW {
+        std::raw::store(rv0 + 8 * ww, nv)
+        nv += std::raw::shl(std::raw::load(rankStats + 8 * ww), ww + rescale)
+        ww += 1
+    }
+    let minBits = tableLog + 1 - maxW
+    let mut consumed = minBits
+    while consumed <= maxTL - minBits {
+        let row = rv0 + 104 * consumed
+        ww = 1
+        while ww <= maxW {
+            std::raw::store(row + 8 * ww, std::raw::shr(std::raw::load(rv0 + 8 * ww), consumed))
+            ww += 1
+        }
+        consumed += 1
+    }
+    let dt = ht + 4
+    let targetLog = maxTL
+    let nbBase = tableLog + 1
+    let scaleLog = nbBase - targetLog
+    let minBits2 = nbBase - maxW
+    let wEnd = maxW + 1
+    ww = 1
+    while ww < wEnd {
+        let b0 = std::raw::load(rs0 + 8 * ww)
+        let e0 = std::raw::load(rs0 + 8 * (ww + 1))
+        let nbBits = nbBase - ww
+        if targetLog - nbBits >= minBits2 {
+            let mut start = std::raw::load(rv0 + 8 * ww)
+            let length = std::raw::shl(1, (targetLog - nbBits) & 31)
+            let mut minWeight = nbBits + scaleLog
+            if minWeight < 1 {
+                minWeight = 1
+            }
+            let row = rv0 + 104 * nbBits
+            s = b0
+            while s < e0 {
+                zd_x2_fill_level2(dt, start, targetLog, nbBits, row, minWeight, wEnd, sorted, rs0, nbBase, std::raw::load(sorted + 8 * s))
+                start += length
+                s += 1
+            }
+        } else {
+            zd_x2_fill_weight(dt, std::raw::load(rv0 + 8 * ww), sorted, b0, e0, nbBits, targetLog, 0, 1)
+        }
+        ww += 1
+    }
+    std::raw::store8(ht + 2, maxTL)
+    std::raw::store8(ht + 1, 1)
+    iSize
+}
+
+fn zd_huf_stream_x1(p0: int, bd: int, pEnd: int, dt: int, dtLog: int) -> int {
+    let mut p = p0
+    if pEnd - p > 3 {
+        while zd_bit_reload(bd) == 0 && p < pEnd - 3 {
+            let mut k = 0
+            while k < 4 {
+                let cont = std::raw::load(bd + 24)
+                let cons = std::raw::load(bd + 32)
+                let v = std::raw::shr(std::raw::shl(cont, cons & 63), (64 - dtLog) & 63)
+                let e = dt + 2 * v
+                std::raw::store(bd + 32, cons + std::raw::load8(e))
+                std::raw::store8(p, std::raw::load8(e + 1))
+                p += 1
+                k += 1
+            }
+        }
+    } else {
+        zd_bit_reload(bd)
+    }
+    while p < pEnd {
+        let cont = std::raw::load(bd + 24)
+        let cons = std::raw::load(bd + 32)
+        let v = std::raw::shr(std::raw::shl(cont, cons & 63), (64 - dtLog) & 63)
+        let e = dt + 2 * v
+        std::raw::store(bd + 32, cons + std::raw::load8(e))
+        std::raw::store8(p, std::raw::load8(e + 1))
+        p += 1
+    }
+    pEnd - p0
+}
+
+// Un símbolo X2: escribe 2 bytes en op y devuelve la longitud (1 o 2).
+fn zd_x2_sym(op: int, bd: int, dt: int, dtLog: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    let v = std::raw::shr(std::raw::shl(cont, cons & 63), (64 - dtLog) & 63)
+    let e = dt + 4 * v
+    std::raw::store8(op, std::raw::load8(e))
+    std::raw::store8(op + 1, std::raw::load8(e + 1))
+    std::raw::store(bd + 32, cons + std::raw::load8(e + 2))
+    std::raw::load8(e + 3)
+}
+
+fn zd_x2_last(op: int, bd: int, dt: int, dtLog: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    let v = std::raw::shr(std::raw::shl(cont, cons & 63), (64 - dtLog) & 63)
+    let e = dt + 4 * v
+    std::raw::store8(op, std::raw::load8(e))
+    if std::raw::load8(e + 3) == 1 {
+        std::raw::store(bd + 32, cons + std::raw::load8(e + 2))
+    } else if cons < 64 {
+        let mut c = cons + std::raw::load8(e + 2)
+        if c > 64 {
+            c = 64
+        }
+        std::raw::store(bd + 32, c)
+    }
+    1
+}
+
+fn zd_huf_stream_x2(p0: int, bd: int, pEnd: int, dt: int, dtLog: int) -> int {
+    let mut p = p0
+    if pEnd - p >= 8 {
+        if dtLog <= 11 {
+            while zd_bit_reload(bd) == 0 && p < pEnd - 9 {
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+            }
+        } else {
+            while zd_bit_reload(bd) == 0 && p < pEnd - 7 {
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+                p += zd_x2_sym(p, bd, dt, dtLog)
+            }
+        }
+    } else {
+        zd_bit_reload(bd)
+    }
+    if pEnd - p >= 2 {
+        while zd_bit_reload(bd) == 0 && p <= pEnd - 2 {
+            p += zd_x2_sym(p, bd, dt, dtLog)
+        }
+        while p <= pEnd - 2 {
+            p += zd_x2_sym(p, bd, dt, dtLog)
+        }
+    }
+    if p < pEnd {
+        p += zd_x2_last(p, bd, dt, dtLog)
+    }
+    p - p0
+}
+
+// HUF_decompress1X{1,2}_usingDTable_internal.
+fn zd_huf_1x_using(d: int, ht: int, dst: int, dstSize: int, src: int, n: int) -> int {
+    let ttype = zd_b(ht + 1)
+    let dtLog = zd_b(ht + 2)
+    let bd = d + 640
+    let r = zd_bit_init(bd, src, n)
+    if r < 0 {
+        return r
+    }
+    if ttype != 0 {
+        zd_huf_stream_x2(dst, bd, dst + dstSize, ht + 4, dtLog)
+    } else {
+        zd_huf_stream_x1(dst, bd, dst + dstSize, ht + 4, dtLog)
+    }
+    if !zd_bit_end(bd) {
+        return -20
+    }
+    dstSize
+}
+
+// Camino rápido (HUF_decompress4X{1,2}_usingDTable_internal_fast, bucle de
+// huf_decompress_amd64.S). Estado en d: ip[4] +800, op[4] +832, bits[4] +864,
+// iend[4] +896, ilowest +928, oend +936. Devuelve 0 si no aplica, 1 si se
+// preparó, o -código.
+fn zd_fast_init(d: int, ht: int, dst: int, dstSize: int, src: int, n: int) -> int {
+    let dtLog = zd_b(ht + 2)
+    let oend = dst + dstSize
+    if dstSize == 0 {
+        return 0
+    }
+    if n < 10 {
+        return -20
+    }
+    if dtLog != 11 {
+        return 0
+    }
+    let l1 = zd_r16(src)
+    let l2 = zd_r16(src + 2)
+    let l3 = zd_r16(src + 4)
+    let l4 = n - (l1 + l2 + l3 + 6)
+    zd_s(d, 896, src + 6)
+    zd_s(d, 904, src + 6 + l1)
+    zd_s(d, 912, src + 6 + l1 + l2)
+    zd_s(d, 920, src + 6 + l1 + l2 + l3)
+    if l1 < 8 || l2 < 8 || l3 < 8 || zd_ult(l4, 8) {
+        return 0
+    }
+    if zd_ult(n, l4) {
+        return -20
+    }
+    zd_s(d, 800, zd_g(d, 904) - 8)
+    zd_s(d, 808, zd_g(d, 912) - 8)
+    zd_s(d, 816, zd_g(d, 920) - 8)
+    zd_s(d, 824, src + n - 8)
+    let seg = (dstSize + 3) / 4
+    zd_s(d, 832, dst)
+    zd_s(d, 840, dst + seg)
+    zd_s(d, 848, dst + 2 * seg)
+    zd_s(d, 856, dst + 3 * seg)
+    if dst + 3 * seg >= oend {
+        return 0
+    }
+    let mut k = 0
+    while k < 4 {
+        let ip = zd_g(d, 800 + 8 * k)
+        let last = zd_b(ip + 7)
+        let mut bc = 0
+        if last != 0 {
+            bc = 8 - zd_highbit(last)
+        }
+        zd_s(d, 864 + 8 * k, std::raw::shl(std::raw::load(ip) | 1, bc))
+        k += 1
+    }
+    zd_s(d, 928, src)
+    zd_s(d, 936, oend)
+    1
+}
+
+fn zd_fast_loop_x1(d: int, dt: int) {
+    let oend = zd_g(d, 936)
+    let ilow = zd_g(d, 928)
+    let mut ip0 = zd_g(d, 800)
+    let mut ip1 = zd_g(d, 808)
+    let mut ip2 = zd_g(d, 816)
+    let mut ip3 = zd_g(d, 824)
+    let mut op0 = zd_g(d, 832)
+    let mut op1 = zd_g(d, 840)
+    let mut op2 = zd_g(d, 848)
+    let mut op3 = zd_g(d, 856)
+    let mut b0 = zd_g(d, 864)
+    let mut b1 = zd_g(d, 872)
+    let mut b2 = zd_g(d, 880)
+    let mut b3 = zd_g(d, 888)
+    while true {
+        let oiters = zd_fdiv(oend - op3, 5)
+        let iiters = zd_fdiv(ip0 - ilow, 7)
+        let olimit = op3 + zd_min(oiters, iiters) * 5
+        if op3 == olimit {
+            break
+        }
+        if ip1 < ip0 || ip2 < ip1 || ip3 < ip2 {
+            break
+        }
+        while true {
+            let mut sy = 0
+            while sy < 5 {
+                let mut e = zd_r16(dt + 2 * std::raw::shr(b0, 53))
+                b0 = std::raw::shl(b0, e & 63)
+                std::raw::store8(op0 + sy, std::raw::shr(e, 8))
+                e = zd_r16(dt + 2 * std::raw::shr(b1, 53))
+                b1 = std::raw::shl(b1, e & 63)
+                std::raw::store8(op1 + sy, std::raw::shr(e, 8))
+                e = zd_r16(dt + 2 * std::raw::shr(b2, 53))
+                b2 = std::raw::shl(b2, e & 63)
+                std::raw::store8(op2 + sy, std::raw::shr(e, 8))
+                e = zd_r16(dt + 2 * std::raw::shr(b3, 53))
+                b3 = std::raw::shl(b3, e & 63)
+                std::raw::store8(op3 + sy, std::raw::shr(e, 8))
+                sy += 1
+            }
+            let mut c = zd_ctz(b0)
+            op0 += 5
+            ip0 -= std::raw::shr(c, 3)
+            b0 = std::raw::shl(std::raw::load(ip0) | 1, c & 7)
+            c = zd_ctz(b1)
+            op1 += 5
+            ip1 -= std::raw::shr(c, 3)
+            b1 = std::raw::shl(std::raw::load(ip1) | 1, c & 7)
+            c = zd_ctz(b2)
+            op2 += 5
+            ip2 -= std::raw::shr(c, 3)
+            b2 = std::raw::shl(std::raw::load(ip2) | 1, c & 7)
+            c = zd_ctz(b3)
+            op3 += 5
+            ip3 -= std::raw::shr(c, 3)
+            b3 = std::raw::shl(std::raw::load(ip3) | 1, c & 7)
+            if !(op3 < olimit) {
+                break
+            }
+        }
+    }
+    zd_s(d, 800, ip0)
+    zd_s(d, 808, ip1)
+    zd_s(d, 816, ip2)
+    zd_s(d, 824, ip3)
+    zd_s(d, 832, op0)
+    zd_s(d, 840, op1)
+    zd_s(d, 848, op2)
+    zd_s(d, 856, op3)
+    zd_s(d, 864, b0)
+    zd_s(d, 872, b1)
+    zd_s(d, 880, b2)
+    zd_s(d, 888, b3)
+}
+
+fn zd_fast_loop_x2(d: int, dt: int) {
+    let ilow = zd_g(d, 928)
+    let oe0 = zd_g(d, 840)
+    let oe1 = zd_g(d, 848)
+    let oe2 = zd_g(d, 856)
+    let oe3 = zd_g(d, 936)
+    while true {
+        let mut iters = zd_fdiv(zd_g(d, 800) - ilow, 7)
+        iters = zd_min(iters, zd_fdiv(oe0 - zd_g(d, 832), 10))
+        iters = zd_min(iters, zd_fdiv(oe1 - zd_g(d, 840), 10))
+        iters = zd_min(iters, zd_fdiv(oe2 - zd_g(d, 848), 10))
+        iters = zd_min(iters, zd_fdiv(oe3 - zd_g(d, 856), 10))
+        let olimit = zd_g(d, 856) + iters * 5
+        if zd_g(d, 856) == olimit {
+            break
+        }
+        if zd_g(d, 808) < zd_g(d, 800) || zd_g(d, 816) < zd_g(d, 808) || zd_g(d, 824) < zd_g(d, 816) {
+            break
+        }
+        while true {
+            let mut r = 0
+            while r < 5 {
+                let mut s = 0
+                while s < 4 {
+                    let bits = zd_g(d, 864 + 8 * s)
+                    let op = zd_g(d, 832 + 8 * s)
+                    let e = dt + 4 * std::raw::shr(bits, 53)
+                    std::raw::store8(op, std::raw::load8(e))
+                    std::raw::store8(op + 1, std::raw::load8(e + 1))
+                    zd_s(d, 864 + 8 * s, std::raw::shl(bits, std::raw::load8(e + 2) & 63))
+                    zd_s(d, 832 + 8 * s, op + std::raw::load8(e + 3))
+                    s += 1
+                }
+                r += 1
+            }
+            let mut s = 0
+            while s < 4 {
+                let c = zd_ctz(zd_g(d, 864 + 8 * s))
+                let ip = zd_g(d, 800 + 8 * s) - std::raw::shr(c, 3)
+                zd_s(d, 800 + 8 * s, ip)
+                zd_s(d, 864 + 8 * s, std::raw::shl(std::raw::load(ip) | 1, c & 7))
+                s += 1
+            }
+            if !(zd_g(d, 856) < olimit) {
+                break
+            }
+        }
+    }
+}
+
+fn zd_huf_4x_fast(d: int, ht: int, dst: int, dstSize: int, src: int, n: int, x2: bool) -> int {
+    let a = zd_fast_init(d, ht, dst, dstSize, src, n)
+    if a <= 0 {
+        return a
+    }
+    let dt = ht + 4
+    if x2 {
+        zd_fast_loop_x2(d, dt)
+    } else {
+        zd_fast_loop_x1(d, dt)
+    }
+    let seg = (dstSize + 3) / 4
+    let mut segEnd = dst
+    let oend = dst + dstSize
+    let mut i = 0
+    while i < 4 {
+        if seg <= oend - segEnd {
+            segEnd += seg
+        } else {
+            segEnd = oend
+        }
+        let op = zd_g(d, 832 + 8 * i)
+        let ip = zd_g(d, 800 + 8 * i)
+        if op > segEnd {
+            return -20
+        }
+        if ip < zd_g(d, 896 + 8 * i) - 8 {
+            return -20
+        }
+        let bd = d + 640
+        zd_s(bd, 24, std::raw::load(ip))
+        zd_s(bd, 32, zd_ctz(zd_g(d, 864 + 8 * i)))
+        zd_s(bd, 0, zd_g(d, 928))
+        zd_s(bd, 8, zd_g(d, 928) + 8)
+        zd_s(bd, 16, ip)
+        let mut got = 0
+        if x2 {
+            got = zd_huf_stream_x2(op, bd, segEnd, dt, 11)
+        } else {
+            got = zd_huf_stream_x1(op, bd, segEnd, dt, 11)
+        }
+        if op + got != segEnd {
+            return -20
+        }
+        i += 1
+    }
+    dstSize
+}
+
+fn zd_huf_4x_body(d: int, ht: int, dst: int, dstSize: int, src: int, n: int, x2: bool) -> int {
+    if n < 10 {
+        return -20
+    }
+    if dstSize < 6 {
+        return -20
+    }
+    let oend = dst + dstSize
+    let dt = ht + 4
+    let dtLog = zd_b(ht + 2)
+    let l1 = zd_r16(src)
+    let l2 = zd_r16(src + 2)
+    let l3 = zd_r16(src + 4)
+    let l4 = n - (l1 + l2 + l3 + 6)
+    let is1 = src + 6
+    let is2 = is1 + l1
+    let is3 = is2 + l2
+    let is4 = is3 + l3
+    let seg = (dstSize + 3) / 4
+    let o2 = dst + seg
+    let o3 = o2 + seg
+    let o4 = o3 + seg
+    if zd_ult(n, l4) {
+        return -20
+    }
+    if o4 > oend {
+        return -20
+    }
+    let bd0 = d + 640
+    let bd1 = d + 680
+    let bd2 = d + 720
+    let bd3 = d + 760
+    let mut r = zd_bit_init(bd0, is1, l1)
+    if r < 0 {
+        return r
+    }
+    r = zd_bit_init(bd1, is2, l2)
+    if r < 0 {
+        return r
+    }
+    r = zd_bit_init(bd2, is3, l3)
+    if r < 0 {
+        return r
+    }
+    r = zd_bit_init(bd3, is4, l4)
+    if r < 0 {
+        return r
+    }
+    let mut op0 = dst
+    let mut op1 = o2
+    let mut op2 = o3
+    let mut op3 = o4
+    let mut endSignal = true
+    let mut olimit = oend - 3
+    if x2 {
+        olimit = oend - 7
+    }
+    if oend - o4 >= 8 {
+        while endSignal && op3 < olimit {
+            let mut k = 0
+            while k < 4 {
+                if x2 {
+                    op0 += zd_x2_sym(op0, bd0, dt, dtLog)
+                    op1 += zd_x2_sym(op1, bd1, dt, dtLog)
+                    op2 += zd_x2_sym(op2, bd2, dt, dtLog)
+                    op3 += zd_x2_sym(op3, bd3, dt, dtLog)
+                } else {
+                    op0 += zd_x1_one(op0, bd0, dt, dtLog)
+                    op1 += zd_x1_one(op1, bd1, dt, dtLog)
+                    op2 += zd_x1_one(op2, bd2, dt, dtLog)
+                    op3 += zd_x1_one(op3, bd3, dt, dtLog)
+                }
+                k += 1
+            }
+            if zd_bit_reload_fast(bd0) != 0 {
+                endSignal = false
+            }
+            if zd_bit_reload_fast(bd1) != 0 {
+                endSignal = false
+            }
+            if zd_bit_reload_fast(bd2) != 0 {
+                endSignal = false
+            }
+            if zd_bit_reload_fast(bd3) != 0 {
+                endSignal = false
+            }
+        }
+    }
+    if op0 > o2 || op1 > o3 || op2 > o4 {
+        return -20
+    }
+    if x2 {
+        zd_huf_stream_x2(op0, bd0, o2, dt, dtLog)
+        zd_huf_stream_x2(op1, bd1, o3, dt, dtLog)
+        zd_huf_stream_x2(op2, bd2, o4, dt, dtLog)
+        zd_huf_stream_x2(op3, bd3, oend, dt, dtLog)
+    } else {
+        zd_huf_stream_x1(op0, bd0, o2, dt, dtLog)
+        zd_huf_stream_x1(op1, bd1, o3, dt, dtLog)
+        zd_huf_stream_x1(op2, bd2, o4, dt, dtLog)
+        zd_huf_stream_x1(op3, bd3, oend, dt, dtLog)
+    }
+    if !(zd_bit_end(bd0) && zd_bit_end(bd1) && zd_bit_end(bd2) && zd_bit_end(bd3)) {
+        return -20
+    }
+    dstSize
+}
+
+// Un símbolo X1 (sin recarga): escribe 1 byte y devuelve 1.
+fn zd_x1_one(p: int, bd: int, dt: int, dtLog: int) -> int {
+    let cont = std::raw::load(bd + 24)
+    let cons = std::raw::load(bd + 32)
+    let v = std::raw::shr(std::raw::shl(cont, cons & 63), (64 - dtLog) & 63)
+    let e = dt + 2 * v
+    std::raw::store(bd + 32, cons + std::raw::load8(e))
+    std::raw::store8(p, std::raw::load8(e + 1))
+    1
+}
+
+fn zd_huf_4x_using(d: int, ht: int, dst: int, dstSize: int, src: int, n: int) -> int {
+    let x2 = zd_b(ht + 1) != 0
+    let r = zd_huf_4x_fast(d, ht, dst, dstSize, src, n, x2)
+    if r != 0 {
+        return r
+    }
+    zd_huf_4x_body(d, ht, dst, dstSize, src, n, x2)
+}
+
+// HUF_selectDecoder (algoTime[Q][0|1] = {tableTime, decode256Time}).
+fn zd_algo(q: int, k: int) -> int {
+    let t = [0, 0, 1, 1, 0, 0, 1, 1, 150, 216, 381, 119, 170, 205, 514, 112, 177, 199, 539, 110, 197, 194, 644, 107, 221, 192, 735, 107, 256, 189, 881, 106, 359, 188, 1167, 109, 582, 187, 1570, 114, 688, 187, 1712, 122, 825, 186, 1965, 136, 976, 185, 2131, 150, 1180, 186, 2070, 175, 1377, 185, 1731, 202, 1412, 185, 1695, 202]
+    t[4 * q + k]
+}
+
+fn zd_huf_select(dstSize: int, cSrcSize: int) -> int {
+    let mut q = 15
+    if cSrcSize < dstSize {
+        q = cSrcSize * 16 / dstSize
+    }
+    let d256 = std::raw::shr(dstSize, 8)
+    let t0 = zd_algo(q, 0) + zd_algo(q, 1) * d256
+    let mut t1 = zd_algo(q, 2) + zd_algo(q, 3) * d256
+    t1 += std::raw::shr(t1, 5)
+    if (t1 & 4294967295) < (t0 & 4294967295) {
+        return 1
+    }
+    0
+}
+
+fn zd_huf_1x1(d: int, ht: int, dst: int, dstSize: int, src: int, n: int) -> int {
+    let h = zd_huf_read_x1(d, ht, src, n)
+    if h < 0 {
+        return h
+    }
+    if h >= n {
+        return -72
+    }
+    zd_huf_1x_using(d, ht, dst, dstSize, src + h, n - h)
+}
+
+fn zd_huf_4x_only(d: int, ht: int, dst: int, dstSize: int, src: int, n: int) -> int {
+    if dstSize == 0 {
+        return -70
+    }
+    if n == 0 {
+        return -20
+    }
+    let mut h = 0
+    if zd_huf_select(dstSize, n) == 1 {
+        h = zd_huf_read_x2(d, ht, src, n)
+    } else {
+        h = zd_huf_read_x1(d, ht, src, n)
+    }
+    if h < 0 {
+        return h
+    }
+    if h >= n {
+        return -72
+    }
+    zd_huf_4x_using(d, ht, dst, dstSize, src + h, n - h)
+}
+
+// ------------------------------------------------------------ tablas de secuencias
+// Tabla (bloque t): +0 tableLog, +8.. celdas de 8 bytes:
+// baseValue | nbAdditionalBits << 32 | nbBits << 40 | nextState << 48.
+// Tipos: 0 literales (LL), 1 distancias (OF), 2 coincidencias (ML).
+
+fn zd_base(kind: int, s: int) -> int {
+    if kind == 0 {
+        if s < 16 {
+            return s
+        }
+        let t = [16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+        return t[s - 16]
+    }
+    if kind == 1 {
+        if s == 0 {
+            return 0
+        }
+        if s <= 2 {
+            return 1
+        }
+        if s == 3 {
+            return 5
+        }
+        return std::raw::shl(1, s) - 3
+    }
+    if s < 32 {
+        return s + 3
+    }
+    let t = [35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539]
+    t[s - 32]
+}
+
+fn zd_bits(kind: int, s: int) -> int {
+    if kind == 0 {
+        if s < 16 {
+            return 0
+        }
+        let t = [1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        return t[s - 16]
+    }
+    if kind == 1 {
+        return s
+    }
+    if s < 32 {
+        return 0
+    }
+    let t = [1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    t[s - 32]
+}
+
+// ZSTD_buildFSETable_body. sym y nxt: espacio de trabajo.
+fn zd_seq_build(t: int, norm: int, maxSV: int, kind: int, tableLog: int, sym: int, nxt: int) {
+    let size = std::raw::shl(1, tableLog)
+    let mut high = size - 1
+    let mut s = 0
+    while s <= maxSV {
+        let c = std::raw::load(norm + 8 * s)
+        if c == -1 {
+            std::raw::store(sym + 8 * high, s)
+            high -= 1
+            std::raw::store(nxt + 8 * s, 1)
+        } else {
+            std::raw::store(nxt + 8 * s, c & 65535)
+        }
+        s += 1
+    }
+    let mask = size - 1
+    let step = std::raw::shr(size, 1) + std::raw::shr(size, 3) + 3
+    let mut pos = 0
+    if high == size - 1 {
+        let mut sy = 0
+        let mut left = std::raw::load(norm)
+        let mut u = 0
+        while u < size {
+            while left <= 0 && sy < maxSV {
+                sy += 1
+                left = std::raw::load(norm + 8 * sy)
+            }
+            let mut v = 0
+            if left > 0 {
+                v = sy
+            }
+            std::raw::store(sym + 8 * ((pos + (u & 1) * step) & mask), v)
+            if (u & 1) == 1 {
+                pos = (pos + 2 * step) & mask
+            }
+            left -= 1
+            u += 1
+        }
+    } else {
+        s = 0
+        while s <= maxSV {
+            let c = std::raw::load(norm + 8 * s)
+            let mut i = 0
+            while i < c {
+                std::raw::store(sym + 8 * pos, s)
+                pos = (pos + step) & mask
+                while pos > high {
+                    pos = (pos + step) & mask
+                }
+                i += 1
+            }
+            s += 1
+        }
+    }
+    std::raw::store(t, tableLog)
+    let mut u = 0
+    while u < size {
+        let sy = std::raw::load(sym + 8 * u)
+        let ns = std::raw::load(nxt + 8 * sy)
+        std::raw::store(nxt + 8 * sy, (ns + 1) & 65535)
+        let nb = (tableLog - zd_highbit(ns)) & 255
+        let st = (std::raw::shl(ns, nb) - size) & 65535
+        let cell = zd_base(kind, sy) | std::raw::shl(zd_bits(kind, sy), 32) | std::raw::shl(nb, 40) | std::raw::shl(st, 48)
+        std::raw::store(t + 8 + 8 * u, cell)
+        u += 1
+    }
+}
+
+// Tablas por defecto (las mismas distribuciones que zstd_decompress_block.c).
+fn zd_default_table(d: int, kind: int) -> int {
+    let t = zd_alloc(8 + 8 * 64)
+    let norm = d + 4864
+    let mut ll = [4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1]
+    let mut maxSV = 35
+    let mut log = 6
+    if kind == 1 {
+        ll = [1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1]
+        maxSV = 28
+        log = 5
+    } else if kind == 2 {
+        ll = [1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1]
+        maxSV = 52
+    }
+    let mut i = 0
+    while i <= maxSV {
+        std::raw::store(norm + 8 * i, ll[i])
+        i += 1
+    }
+    zd_seq_build(t, norm, maxSV, kind, log, d + 6912, d + 11008)
+    t
+}
+
+// Una de las tres tablas (kind) de la cabecera de secuencias. Devuelve el
+// tamaño leído o -código.
+fn zd_seq_slot(d: int, kind: int, typ: int, src: int, n: int) -> int {
+    let mut mx = 35
+    let mut maxLog = 9
+    if kind == 1 {
+        mx = 31
+        maxLog = 8
+    } else if kind == 2 {
+        mx = 52
+    }
+    let slot = 304 + 8 * kind
+    let space = zd_g(d, 328 + 8 * kind)
+    if typ == 1 {
+        if n == 0 {
+            return -72
+        }
+        let sy = zd_b(src)
+        if sy > mx {
+            return -20
+        }
+        std::raw::store(space, 0)
+        std::raw::store(space + 8, zd_base(kind, sy) | std::raw::shl(zd_bits(kind, sy), 32))
+        zd_s(d, slot, space)
+        return 1
+    }
+    if typ == 0 {
+        zd_s(d, slot, zd_g(d, 432 + 8 * kind))
+        return 0
+    }
+    if typ == 3 {
+        if zd_g(d, 264) == 0 {
+            return -20
+        }
+        return 0
+    }
+    let norm = d + 4864
+    let hs = zd_read_ncount(norm, mx, src, n, d + 4736, d + 4768)
+    if hs < 0 {
+        return hs
+    }
+    let msv = zd_g(d, 4736)
+    let tl = zd_g(d, 4744)
+    if tl > maxLog {
+        return -20
+    }
+    zd_seq_build(space, norm, msv, kind, tl, d + 6912, d + 11008)
+    zd_s(d, slot, space)
+    hs
+}
+
+// Devuelve el tamaño de la cabecera; nbSeq queda en d+16016.
+fn zd_seq_headers(d: int, src: int, n: int) -> int {
+    let iend = src + n
+    let mut ip = src
+    if n < 1 {
+        return -72
+    }
+    let mut nbSeq = zd_b(ip)
+    ip += 1
+    if nbSeq > 127 {
+        if nbSeq == 255 {
+            if ip + 2 > iend {
+                return -72
+            }
+            nbSeq = zd_r16(ip) + 32512
+            ip += 2
+        } else {
+            if ip >= iend {
+                return -72
+            }
+            nbSeq = std::raw::shl(nbSeq - 128, 8) + zd_b(ip)
+            ip += 1
+        }
+    }
+    zd_s(d, 16016, nbSeq)
+    if nbSeq == 0 {
+        if ip != iend {
+            return -20
+        }
+        return ip - src
+    }
+    if ip + 1 > iend {
+        return -72
+    }
+    let b = zd_b(ip)
+    if (b & 3) != 0 {
+        return -20
+    }
+    ip += 1
+    let mut h = zd_seq_slot(d, 0, std::raw::shr(b, 6), ip, iend - ip)
+    if h < 0 {
+        return -20
+    }
+    ip += h
+    h = zd_seq_slot(d, 1, std::raw::shr(b, 4) & 3, ip, iend - ip)
+    if h < 0 {
+        return -20
+    }
+    ip += h
+    h = zd_seq_slot(d, 2, std::raw::shr(b, 2) & 3, ip, iend - ip)
+    if h < 0 {
+        return -20
+    }
+    ip += h
+    ip - src
+}
+
+// ------------------------------------------------------------ literales
+
+fn zd_alloc_lit(d: int, dst: int, dstCap: int, litSize: int, streaming: bool, ews: int, splitNow: bool) {
+    let bsm = zd_g(d, 48)
+    if !streaming && dstCap > bsm + 32 + litSize + 32 {
+        zd_s(d, 400, dst + bsm + 32)
+        zd_s(d, 408, dst + bsm + 32 + litSize)
+        zd_s(d, 360, 1)
+    } else if litSize <= 65536 {
+        zd_s(d, 400, zd_g(d, 0))
+        zd_s(d, 408, zd_g(d, 0) + litSize)
+        zd_s(d, 360, 0)
+    } else {
+        if splitNow {
+            zd_s(d, 400, dst + ews - litSize + 65536 - 32)
+            zd_s(d, 408, zd_g(d, 400) + litSize - 65536)
+        } else {
+            zd_s(d, 400, dst + ews - litSize)
+            zd_s(d, 408, dst + ews)
+        }
+        zd_s(d, 360, 2)
+    }
+}
+
+fn zd_literals(d: int, src: int, n: int, dst: int, dstCap: int, streaming: bool) -> int {
+    if n < 2 {
+        return -20
+    }
+    let b0 = zd_b(src)
+    let enc = b0 & 3
+    let bsm = zd_g(d, 48)
+    let lhl = std::raw::shr(b0, 2) & 3
+    let ews = zd_min(bsm, dstCap)
+    let litExtra = zd_g(d, 0)
+    if enc == 3 || enc == 2 {
+        if enc == 3 && zd_g(d, 256) == 0 {
+            return -30
+        }
+        if n < 5 {
+            return -20
+        }
+        let lhc = zd_r32(src)
+        let mut single = false
+        let mut lhSize = 0
+        let mut litSize = 0
+        let mut litCSize = 0
+        if lhl <= 1 {
+            single = lhl == 0
+            lhSize = 3
+            litSize = std::raw::shr(lhc, 4) & 1023
+            litCSize = std::raw::shr(lhc, 14) & 1023
+        } else if lhl == 2 {
+            lhSize = 4
+            litSize = std::raw::shr(lhc, 4) & 16383
+            litCSize = std::raw::shr(lhc, 18)
+        } else {
+            lhSize = 5
+            litSize = std::raw::shr(lhc, 4) & 262143
+            litCSize = std::raw::shr(lhc, 22) + std::raw::shl(zd_b(src + 4), 10)
+        }
+        if litSize > 0 && dst == 0 {
+            return -70
+        }
+        if litSize > bsm {
+            return -20
+        }
+        if !single && litSize < 6 {
+            return -24
+        }
+        if litCSize + lhSize > n {
+            return -20
+        }
+        if ews < litSize {
+            return -70
+        }
+        zd_alloc_lit(d, dst, dstCap, litSize, streaming, ews, false)
+        let lb = zd_g(d, 400)
+        let ht = zd_g(d, 16)
+        let mut r = 0
+        if enc == 3 {
+            if single {
+                r = zd_huf_1x_using(d, ht, lb, litSize, src + lhSize, litCSize)
+            } else {
+                r = zd_huf_4x_using(d, ht, lb, litSize, src + lhSize, litCSize)
+            }
+        } else {
+            if single {
+                r = zd_huf_1x1(d, ht, lb, litSize, src + lhSize, litCSize)
+            } else {
+                r = zd_huf_4x_only(d, ht, lb, litSize, src + lhSize, litCSize)
+            }
+        }
+        if zd_g(d, 360) == 2 {
+            zd_move(litExtra, zd_g(d, 408) - 65536, 65536)
+            zd_move(lb + 65536 - 32, lb, litSize - 65536)
+            zd_s(d, 400, lb + 65536 - 32)
+            zd_s(d, 408, zd_g(d, 408) - 32)
+        }
+        if r < 0 {
+            return -20
+        }
+        zd_s(d, 416, zd_g(d, 400))
+        zd_s(d, 424, litSize)
+        zd_s(d, 256, 1)
+        return litCSize + lhSize
+    }
+    let mut lhSize = 0
+    let mut litSize = 0
+    if lhl == 0 || lhl == 2 {
+        lhSize = 1
+        litSize = std::raw::shr(b0, 3)
+    } else if lhl == 1 {
+        lhSize = 2
+        if enc == 1 && n < 3 {
+            return -20
+        }
+        litSize = std::raw::shr(zd_r16(src), 4)
+    } else {
+        lhSize = 3
+        if enc == 0 && n < 3 {
+            return -20
+        }
+        if enc == 1 && n < 4 {
+            return -20
+        }
+        litSize = std::raw::shr(zd_r24(src), 4)
+    }
+    if litSize > 0 && dst == 0 {
+        return -70
+    }
+    if litSize > bsm {
+        return -20
+    }
+    if ews < litSize {
+        return -70
+    }
+    zd_alloc_lit(d, dst, dstCap, litSize, streaming, ews, true)
+    let lb = zd_g(d, 400)
+    if enc == 0 {
+        if lhSize + litSize + 32 > n {
+            if litSize + lhSize > n {
+                return -20
+            }
+            if zd_g(d, 360) == 2 {
+                zd_move(lb, src + lhSize, litSize - 65536)
+                zd_move(litExtra, src + lhSize + litSize - 65536, 65536)
+            } else {
+                zd_move(lb, src + lhSize, litSize)
+            }
+            zd_s(d, 416, lb)
+            zd_s(d, 424, litSize)
+            return lhSize + litSize
+        }
+        zd_s(d, 416, src + lhSize)
+        zd_s(d, 424, litSize)
+        zd_s(d, 408, src + lhSize + litSize)
+        zd_s(d, 360, 0)
+        return lhSize + litSize
+    }
+    let v = zd_b(src + lhSize)
+    if zd_g(d, 360) == 2 {
+        zd_fill(lb, v, litSize - 65536)
+        zd_fill(litExtra, v, 65536)
+    } else {
+        zd_fill(lb, v, litSize)
+    }
+    zd_s(d, 416, lb)
+    zd_s(d, 424, litSize)
+    lhSize + 1
+}
+
+// ------------------------------------------------------------ secuencias
+// Estado en d: flujo de bits +512, estados +560 (LL) +568 (OF) +576 (ML),
+// distancias previas +584/+592/+600, tablas +608/+616/+624. Última secuencia
+// decodificada: +16024 ll, +16032 ml, +16040 off. Puntero de literales +16048.
+// Cola de 8 secuencias (seqs_long): +15616.
+
+fn zd_decode_seq(d: int, isLast: bool) {
+    let bd = d + 512
+    let tl = zd_g(d, 608)
+    let to = zd_g(d, 616)
+    let tm = zd_g(d, 624)
+    let cl = std::raw::load(tl + 8 + 8 * zd_g(d, 560))
+    let co = std::raw::load(to + 8 + 8 * zd_g(d, 568))
+    let cm = std::raw::load(tm + 8 + 8 * zd_g(d, 576))
+    let mut ml = cm & 4294967295
+    let mut ll = cl & 4294967295
+    let ofBase = co & 4294967295
+    let llBits = std::raw::shr(cl, 32) & 255
+    let mlBits = std::raw::shr(cm, 32) & 255
+    let ofBits = std::raw::shr(co, 32) & 255
+    let total = llBits + mlBits + ofBits
+    let mut off = 0
+    if ofBits > 1 {
+        off = ofBase + zd_bit_readf(bd, ofBits)
+        zd_s(d, 600, zd_g(d, 592))
+        zd_s(d, 592, zd_g(d, 584))
+        zd_s(d, 584, off)
+    } else {
+        let mut ll0 = 0
+        if ll == 0 {
+            ll0 = 1
+        }
+        if ofBits == 0 {
+            off = zd_g(d, 584 + 8 * ll0)
+            zd_s(d, 592, zd_g(d, 584 + 8 * (1 - ll0)))
+            zd_s(d, 584, off)
+        } else {
+            off = ofBase + ll0 + zd_bit_readf(bd, 1)
+            let mut temp = 0
+            if off == 3 {
+                temp = zd_g(d, 584) - 1
+            } else {
+                temp = zd_g(d, 584 + 8 * off)
+            }
+            if temp == 0 {
+                temp = -1
+            }
+            if off != 1 {
+                zd_s(d, 600, zd_g(d, 592))
+            }
+            zd_s(d, 592, zd_g(d, 584))
+            zd_s(d, 584, temp)
+            off = temp
+        }
+    }
+    if mlBits > 0 {
+        ml += zd_bit_readf(bd, mlBits)
+    }
+    if total >= 31 {
+        zd_bit_reload(bd)
+    }
+    if llBits > 0 {
+        ll += zd_bit_readf(bd, llBits)
+    }
+    if !isLast {
+        zd_s(d, 560, std::raw::shr(cl, 48) + zd_bit_read(bd, std::raw::shr(cl, 40) & 255))
+        zd_s(d, 576, std::raw::shr(cm, 48) + zd_bit_read(bd, std::raw::shr(cm, 40) & 255))
+        zd_s(d, 568, std::raw::shr(co, 48) + zd_bit_read(bd, std::raw::shr(co, 40) & 255))
+        zd_bit_reload(bd)
+    }
+    zd_s(d, 16024, ll)
+    zd_s(d, 16032, ml)
+    zd_s(d, 16040, off)
+}
+
+fn zd_copy16(d: int, s: int) {
+    let a = std::raw::load(s)
+    let b = std::raw::load(s + 8)
+    std::raw::store(d, a)
+    std::raw::store(d + 8, b)
+}
+
+fn zd_wild(dst: int, src: int, length: int, overlap: bool) {
+    let diff = dst - src
+    let mut op = dst
+    let mut ip = src
+    let oend = op + length
+    if overlap && diff < 16 {
+        while true {
+            std::raw::store(op, std::raw::load(ip))
+            op += 8
+            ip += 8
+            if !(op < oend) {
+                break
+            }
+        }
+        return
+    }
+    zd_copy16(op, ip)
+    if 16 >= length {
+        return
+    }
+    op += 16
+    ip += 16
+    while true {
+        zd_copy16(op, ip)
+        op += 16
+        ip += 16
+        zd_copy16(op, ip)
+        op += 16
+        ip += 16
+        if !(op < oend) {
+            break
+        }
+    }
+}
+
+// ZSTD_overlapCopy8: copia 8 bytes en op y devuelve el nuevo ip (op avanza 8).
+fn zd_ov8(op: int, ip0: int, off: int) -> int {
+    let mut ip = ip0
+    if off < 8 {
+        let mut sub2 = 8
+        if off == 3 {
+            sub2 = 7
+        } else if off > 3 {
+            sub2 = off + 4
+        }
+        std::raw::store8(op, std::raw::load8(ip))
+        std::raw::store8(op + 1, std::raw::load8(ip + 1))
+        std::raw::store8(op + 2, std::raw::load8(ip + 2))
+        std::raw::store8(op + 3, std::raw::load8(ip + 3))
+        if off == 3 {
+            ip += 1
+        } else if off < 3 {
+            ip += off
+        } else {
+            ip += 4
+        }
+        let v = zd_r32(ip)
+        zd_w32(op + 4, v)
+        ip -= sub2
+    } else {
+        std::raw::store(op, std::raw::load(ip))
+    }
+    ip + 8
+}
+
+fn zd_bytecopy(op: int, ip: int, n: int) {
+    let mut k = 0
+    while k < n {
+        std::raw::store8(op + k, std::raw::load8(ip + k))
+        k += 1
+    }
+}
+
+fn zd_safecopy(op0: int, oend_w: int, ip0: int, length0: int, overlap: bool) {
+    let mut op = op0
+    let mut ip = ip0
+    let mut length = length0
+    let diff = op - ip
+    let oend = op + length
+    if length < 8 {
+        zd_bytecopy(op, ip, oend - op)
+        return
+    }
+    if overlap {
+        ip = zd_ov8(op, ip, diff)
+        op += 8
+        length -= 8
+    }
+    if oend <= oend_w {
+        zd_wild(op, ip, length, overlap)
+        return
+    }
+    if op <= oend_w {
+        zd_wild(op, ip, oend_w - op, overlap)
+        ip += oend_w - op
+        op = oend_w
+    }
+    zd_bytecopy(op, ip, oend - op)
+}
+
+fn zd_safecopy_dbs(op0: int, ip0: int, length: int) {
+    let mut op = op0
+    let mut ip = ip0
+    let diff = op - ip
+    let oend = op + length
+    if length < 8 || diff > -8 {
+        zd_bytecopy(op, ip, oend - op)
+        return
+    }
+    if op <= oend - 32 && diff < -16 {
+        zd_wild(op, ip, oend - 32 - op, false)
+        ip += oend - 32 - op
+        op = oend - 32
+    }
+    zd_bytecopy(op, ip, oend - op)
+}
+
+// Parte de la coincidencia (común a las cuatro variantes de execSequence).
+fn zd_match_tail(d: int, oLitEnd: int, ll: int, ml0: int, off: int, oend_w: int, fast: bool) -> int {
+    let prefixStart = zd_g(d, 232)
+    let vStart = zd_g(d, 240)
+    let dictEnd = zd_g(d, 248)
+    let seqLen = ll + ml0
+    let mut ml = ml0
+    let mut op = oLitEnd
+    let mut mt = oLitEnd - off
+    if zd_ult(oLitEnd - prefixStart, off) {
+        if zd_ult(oLitEnd - vStart, off) {
+            return -20
+        }
+        mt = dictEnd + (mt - prefixStart)
+        if mt + ml <= dictEnd {
+            zd_move(oLitEnd, mt, ml)
+            return seqLen
+        }
+        let length1 = dictEnd - mt
+        zd_move(oLitEnd, mt, length1)
+        op = oLitEnd + length1
+        ml -= length1
+        mt = prefixStart
+    }
+    if !fast {
+        zd_safecopy(op, oend_w, mt, ml, true)
+        return seqLen
+    }
+    if off >= 16 {
+        zd_wild(op, mt, ml, false)
+        return seqLen
+    }
+    mt = zd_ov8(op, mt, off)
+    op += 8
+    if ml > 8 {
+        zd_wild(op, mt, ml - 8, true)
+    }
+    seqLen
+}
+
+fn zd_exec_end(d: int, op: int, oend: int, ll: int, ml: int, off: int, litLimit: int) -> int {
+    let litp = zd_g(d, 16048)
+    let oLitEnd = op + ll
+    let seqLen = ll + ml
+    let oend_w = oend - 32
+    if seqLen > oend - op {
+        return -70
+    }
+    if zd_ult(litLimit - litp, ll) {
+        return -20
+    }
+    zd_safecopy(op, oend_w, litp, ll, false)
+    zd_s(d, 16048, litp + ll)
+    zd_match_tail(d, oLitEnd, ll, ml, off, oend_w, false)
+}
+
+fn zd_exec_end_split(d: int, op: int, oend: int, oend_w: int, ll: int, ml: int, off: int, litLimit: int) -> int {
+    let litp = zd_g(d, 16048)
+    let oLitEnd = op + ll
+    let seqLen = ll + ml
+    if seqLen > oend - op {
+        return -70
+    }
+    if zd_ult(litLimit - litp, ll) {
+        return -20
+    }
+    if op > litp && op < litp + ll {
+        return -70
+    }
+    zd_safecopy_dbs(op, litp, ll)
+    zd_s(d, 16048, litp + ll)
+    zd_match_tail(d, oLitEnd, ll, ml, off, oend_w, false)
+}
+
+fn zd_exec(d: int, op: int, oend: int, ll: int, ml: int, off: int, litLimit: int) -> int {
+    let litp = zd_g(d, 16048)
+    let oLitEnd = op + ll
+    let oMatchEnd = op + ll + ml
+    let oend_w = oend - 32
+    let iLitEnd = litp + ll
+    if iLitEnd > litLimit || oMatchEnd > oend_w {
+        return zd_exec_end(d, op, oend, ll, ml, off, litLimit)
+    }
+    zd_copy16(op, litp)
+    if ll > 16 {
+        zd_wild(op + 16, litp + 16, ll - 16, false)
+    }
+    zd_s(d, 16048, iLitEnd)
+    zd_match_tail(d, oLitEnd, ll, ml, off, oend_w, true)
+}
+
+fn zd_exec_split(d: int, op: int, oend: int, oend_w: int, ll: int, ml: int, off: int, litLimit: int) -> int {
+    let litp = zd_g(d, 16048)
+    let oLitEnd = op + ll
+    let oMatchEnd = op + ll + ml
+    let iLitEnd = litp + ll
+    if iLitEnd > litLimit || oMatchEnd > oend_w {
+        return zd_exec_end_split(d, op, oend, oend_w, ll, ml, off, litLimit)
+    }
+    zd_copy16(op, litp)
+    if ll > 16 {
+        zd_wild(op + 16, litp + 16, ll - 16, false)
+    }
+    zd_s(d, 16048, iLitEnd)
+    zd_match_tail(d, oLitEnd, ll, ml, off, oend_w, true)
+}
+
+fn zd_init_seq_state(d: int, ip: int, size: int) -> int {
+    zd_s(d, 584, zd_g(d, 280))
+    zd_s(d, 592, zd_g(d, 288))
+    zd_s(d, 600, zd_g(d, 296))
+    let bd = d + 512
+    if zd_bit_init(bd, ip, size) < 0 {
+        return -20
+    }
+    zd_s(d, 608, zd_g(d, 304))
+    zd_s(d, 616, zd_g(d, 312))
+    zd_s(d, 624, zd_g(d, 320))
+    zd_s(d, 560, zd_bit_read(bd, std::raw::load(zd_g(d, 608))))
+    zd_bit_reload(bd)
+    zd_s(d, 568, zd_bit_read(bd, std::raw::load(zd_g(d, 616))))
+    zd_bit_reload(bd)
+    zd_s(d, 576, zd_bit_read(bd, std::raw::load(zd_g(d, 624))))
+    zd_bit_reload(bd)
+    0
+}
+
+fn zd_save_rep(d: int) {
+    zd_s(d, 280, zd_g(d, 584) & 4294967295)
+    zd_s(d, 288, zd_g(d, 592) & 4294967295)
+    zd_s(d, 296, zd_g(d, 600) & 4294967295)
+}
+
+fn zd_seqs_body(d: int, dst: int, maxDst: int, ip: int, seqSize: int, nbSeq0: int) -> int {
+    let ostart = dst
+    let mut oend = ostart + maxDst
+    if zd_g(d, 360) != 0 {
+        oend = zd_g(d, 400)
+    }
+    let mut op = ostart
+    zd_s(d, 16048, zd_g(d, 416))
+    let litEnd = zd_g(d, 416) + zd_g(d, 424)
+    let mut nbSeq = nbSeq0
+    if nbSeq != 0 {
+        zd_s(d, 264, 1)
+        let r = zd_init_seq_state(d, ip, seqSize)
+        if r < 0 {
+            return r
+        }
+        while nbSeq != 0 {
+            zd_decode_seq(d, nbSeq == 1)
+            let n = zd_exec(d, op, oend, zd_g(d, 16024), zd_g(d, 16032), zd_g(d, 16040), litEnd)
+            if n < 0 {
+                return n
+            }
+            op += n
+            nbSeq -= 1
+        }
+        if !zd_bit_end(d + 512) {
+            return -20
+        }
+        zd_save_rep(d)
+    }
+    let litp = zd_g(d, 16048)
+    let last = litEnd - litp
+    if last > oend - op {
+        return -70
+    }
+    zd_move(op, litp, last)
+    op += last
+    op - ostart
+}
+
+// Copia lo que queda del trozo de literales en dst antes de pasar a litExtra
+// (común a seqs_body_split y seqs_long). Devuelve lo copiado o -código.
+fn zd_split_switch(d: int, op: int, oend: int) -> int {
+    let litp = zd_g(d, 16048)
+    let left = zd_g(d, 408) - litp
+    if left != 0 {
+        if left > oend - op {
+            return -70
+        }
+        zd_safecopy_dbs(op, litp, left)
+    }
+    zd_s(d, 16048, zd_g(d, 0))
+    zd_s(d, 360, 0)
+    left
+}
+
+fn zd_seqs_split(d: int, dst: int, maxDst: int, ip: int, seqSize: int, nbSeq0: int) -> int {
+    let ostart = dst
+    let oend = ostart + maxDst
+    let mut op = ostart
+    zd_s(d, 16048, zd_g(d, 416))
+    let mut litBufferEnd = zd_g(d, 408)
+    let mut nbSeq = nbSeq0
+    if nbSeq != 0 {
+        zd_s(d, 264, 1)
+        let r = zd_init_seq_state(d, ip, seqSize)
+        if r < 0 {
+            return r
+        }
+        let mut ll = 0
+        let mut ml = 0
+        let mut off = 0
+        while nbSeq != 0 {
+            zd_decode_seq(d, nbSeq == 1)
+            ll = zd_g(d, 16024)
+            ml = zd_g(d, 16032)
+            off = zd_g(d, 16040)
+            let litp = zd_g(d, 16048)
+            if litp + ll > zd_g(d, 408) {
+                break
+            }
+            let n = zd_exec_split(d, op, oend, litp + ll - 32, ll, ml, off, litBufferEnd)
+            if n < 0 {
+                return n
+            }
+            op += n
+            nbSeq -= 1
+        }
+        if nbSeq > 0 {
+            let left = zd_split_switch(d, op, oend)
+            if left < 0 {
+                return left
+            }
+            ll -= left
+            op += left
+            litBufferEnd = zd_g(d, 0) + 65536
+            let n = zd_exec(d, op, oend, ll, ml, off, litBufferEnd)
+            if n < 0 {
+                return n
+            }
+            op += n
+            nbSeq -= 1
+        }
+        while nbSeq > 0 {
+            zd_decode_seq(d, nbSeq == 1)
+            let n = zd_exec(d, op, oend, zd_g(d, 16024), zd_g(d, 16032), zd_g(d, 16040), litBufferEnd)
+            if n < 0 {
+                return n
+            }
+            op += n
+            nbSeq -= 1
+        }
+        if !zd_bit_end(d + 512) {
+            return -20
+        }
+        zd_save_rep(d)
+    }
+    if zd_g(d, 360) == 2 {
+        let litp = zd_g(d, 16048)
+        let last = litBufferEnd - litp
+        if last > oend - op {
+            return -70
+        }
+        zd_move(op, litp, last)
+        op += last
+        zd_s(d, 16048, zd_g(d, 0))
+        litBufferEnd = zd_g(d, 0) + 65536
+        zd_s(d, 360, 0)
+    }
+    let litp = zd_g(d, 16048)
+    let last = litBufferEnd - litp
+    if last > oend - op {
+        return -70
+    }
+    zd_move(op, litp, last)
+    op += last
+    op - ostart
+}
+
+// Ejecuta la secuencia k de la cola (seqs_long). Devuelve lo escrito o -código;
+// litBufferEnd actual en d+16056.
+fn zd_long_run(d: int, k: int, op: int, oend: int) -> int {
+    let q = d + 15616 + 24 * k
+    let mut ll = std::raw::load(q)
+    let ml = std::raw::load(q + 8)
+    let off = std::raw::load(q + 16)
+    let litp = zd_g(d, 16048)
+    if zd_g(d, 360) == 2 && litp + ll > zd_g(d, 408) {
+        let left = zd_split_switch(d, op, oend)
+        if left < 0 {
+            return left
+        }
+        ll -= left
+        zd_s(d, 16056, zd_g(d, 0) + 65536)
+        let n = zd_exec(d, op + left, oend, ll, ml, off, zd_g(d, 16056))
+        if n < 0 {
+            return n
+        }
+        return left + n
+    }
+    if zd_g(d, 360) == 2 {
+        return zd_exec_split(d, op, oend, litp + ll - 32, ll, ml, off, zd_g(d, 16056))
+    }
+    zd_exec(d, op, oend, ll, ml, off, zd_g(d, 16056))
+}
+
+fn zd_queue_put(d: int, k: int) {
+    let q = d + 15616 + 24 * k
+    std::raw::store(q, zd_g(d, 16024))
+    std::raw::store(q + 8, zd_g(d, 16032))
+    std::raw::store(q + 16, zd_g(d, 16040))
+}
+
+fn zd_seqs_long(d: int, dst: int, maxDst: int, ip: int, seqSize: int, nbSeq: int) -> int {
+    let ostart = dst
+    let mut oend = ostart + maxDst
+    if zd_g(d, 360) == 1 {
+        oend = zd_g(d, 400)
+    }
+    let mut op = ostart
+    zd_s(d, 16048, zd_g(d, 416))
+    zd_s(d, 16056, zd_g(d, 408))
+    if nbSeq != 0 {
+        let adv = zd_min(nbSeq, 8)
+        zd_s(d, 264, 1)
+        let r = zd_init_seq_state(d, ip, seqSize)
+        if r < 0 {
+            return r
+        }
+        let mut seqNb = 0
+        while seqNb < adv {
+            zd_decode_seq(d, seqNb == nbSeq - 1)
+            zd_queue_put(d, seqNb)
+            seqNb += 1
+        }
+        while seqNb < nbSeq {
+            zd_decode_seq(d, seqNb == nbSeq - 1)
+            let n = zd_long_run(d, (seqNb - 8) & 7, op, oend)
+            if n < 0 {
+                return n
+            }
+            zd_queue_put(d, seqNb & 7)
+            op += n
+            seqNb += 1
+        }
+        if !zd_bit_end(d + 512) {
+            return -20
+        }
+        seqNb -= adv
+        while seqNb < nbSeq {
+            let n = zd_long_run(d, seqNb & 7, op, oend)
+            if n < 0 {
+                return n
+            }
+            op += n
+            seqNb += 1
+        }
+        zd_save_rep(d)
+    }
+    let mut litBufferEnd = zd_g(d, 16056)
+    if zd_g(d, 360) == 2 {
+        let litp = zd_g(d, 16048)
+        let last = litBufferEnd - litp
+        if last > oend - op {
+            return -70
+        }
+        zd_move(op, litp, last)
+        op += last
+        zd_s(d, 16048, zd_g(d, 0))
+        litBufferEnd = zd_g(d, 0) + 65536
+    }
+    let litp = zd_g(d, 16048)
+    let last = litBufferEnd - litp
+    if last > oend - op {
+        return -70
+    }
+    zd_move(op, litp, last)
+    op += last
+    op - ostart
+}
+
+fn zd_block(d: int, dst: int, dstCap: int, src: int, n0: int, streaming: bool) -> int {
+    let mut ip = src
+    let mut n = n0
+    if n > zd_g(d, 48) {
+        return -72
+    }
+    let lc = zd_literals(d, src, n, dst, dstCap, streaming)
+    if lc < 0 {
+        return lc
+    }
+    ip += lc
+    n -= lc
+    let bsm = zd_min(dstCap, zd_g(d, 48))
+    let history = (dst + bsm) - zd_g(d, 240)
+    let mut usePrefetch = zd_g(d, 352) != 0
+    let sh = zd_seq_headers(d, ip, n)
+    if sh < 0 {
+        return sh
+    }
+    let nbSeq = zd_g(d, 16016)
+    ip += sh
+    n -= sh
+    if (dst == 0 || dstCap == 0) && nbSeq > 0 {
+        return -70
+    }
+    if !usePrefetch && history > 16777216 && nbSeq > 8 {
+        let t = zd_g(d, 312)
+        let log = std::raw::load(t)
+        let mut share = 0
+        let mut u = 0
+        while u < std::raw::shl(1, log) {
+            if (std::raw::shr(std::raw::load(t + 8 + 8 * u), 32) & 255) > 22 {
+                share += 1
+            }
+            u += 1
+        }
+        share = std::raw::shl(share, 8 - log)
+        usePrefetch = share >= 7
+    }
+    zd_s(d, 352, 0)
+    if usePrefetch {
+        return zd_seqs_long(d, dst, dstCap, ip, n, nbSeq)
+    }
+    if zd_g(d, 360) == 2 {
+        return zd_seqs_split(d, dst, dstCap, ip, n, nbSeq)
+    }
+    zd_seqs_body(d, dst, dstCap, ip, n, nbSeq)
+}
+
+// ------------------------------------------------------------ xxhash.h (XXH64, semilla 0, por partes)
+// Estado en x: +0..+24 v1..v4, +32 longitud total, +40 bytes guardados,
+// +48 los bytes guardados (32).
+
+fn zd_rotl(x: int, r: int) -> int {
+    std::raw::shl(x, r) | std::raw::shr(x, 64 - r)
+}
+
+fn zd_xround(acc: int, v: int) -> int {
+    let a = std::raw::wadd(acc, std::raw::wmul(v, -4417276706812531889))
+    std::raw::wmul(zd_rotl(a, 31), -7046029288634856825)
+}
+
+fn zd_xmerge(acc: int, v: int) -> int {
+    let a = acc ^ zd_xround(0, v)
+    std::raw::wadd(std::raw::wmul(a, -7046029288634856825), -8796714831421723037)
+}
+
+fn zd_xxh_reset(x: int) {
+    std::raw::store(x, std::raw::wadd(-7046029288634856825, -4417276706812531889))
+    std::raw::store(x + 8, -4417276706812531889)
+    std::raw::store(x + 16, 0)
+    std::raw::store(x + 24, 7046029288634856825)
+    std::raw::store(x + 32, 0)
+    std::raw::store(x + 40, 0)
+}
+
+fn zd_xxh_lanes(x: int, p: int) {
+    std::raw::store(x, zd_xround(std::raw::load(x), std::raw::load(p)))
+    std::raw::store(x + 8, zd_xround(std::raw::load(x + 8), std::raw::load(p + 8)))
+    std::raw::store(x + 16, zd_xround(std::raw::load(x + 16), std::raw::load(p + 16)))
+    std::raw::store(x + 24, zd_xround(std::raw::load(x + 24), std::raw::load(p + 24)))
+}
+
+fn zd_xxh_update(x: int, src: int, n: int) {
+    if n <= 0 {
+        return
+    }
+    std::raw::store(x + 32, std::raw::load(x + 32) + n)
+    let mem = x + 48
+    let ms = std::raw::load(x + 40)
+    if ms + n < 32 {
+        zd_move(mem + ms, src, n)
+        std::raw::store(x + 40, ms + n)
+        return
+    }
+    let mut p = src
+    let end = src + n
+    if ms != 0 {
+        zd_move(mem + ms, src, 32 - ms)
+        zd_xxh_lanes(x, mem)
+        p += 32 - ms
+        std::raw::store(x + 40, 0)
+    }
+    while p + 32 <= end {
+        zd_xxh_lanes(x, p)
+        p += 32
+    }
+    if p < end {
+        zd_move(mem, p, end - p)
+        std::raw::store(x + 40, end - p)
+    }
+}
+
+fn zd_xxh_digest(x: int) -> int {
+    let total = std::raw::load(x + 32)
+    let mut h = 0
+    if total >= 32 {
+        let v1 = std::raw::load(x)
+        let v2 = std::raw::load(x + 8)
+        let v3 = std::raw::load(x + 16)
+        let v4 = std::raw::load(x + 24)
+        h = std::raw::wadd(std::raw::wadd(zd_rotl(v1, 1), zd_rotl(v2, 7)), std::raw::wadd(zd_rotl(v3, 12), zd_rotl(v4, 18)))
+        h = zd_xmerge(h, v1)
+        h = zd_xmerge(h, v2)
+        h = zd_xmerge(h, v3)
+        h = zd_xmerge(h, v4)
+    } else {
+        h = std::raw::wadd(std::raw::load(x + 16), 2870177450012600261)
+    }
+    h = std::raw::wadd(h, total)
+    let mut p = x + 48
+    let end = p + std::raw::load(x + 40)
+    while p + 8 <= end {
+        h = h ^ zd_xround(0, std::raw::load(p))
+        h = std::raw::wadd(std::raw::wmul(zd_rotl(h, 27), -7046029288634856825), -8796714831421723037)
+        p += 8
+    }
+    if p + 4 <= end {
+        h = h ^ std::raw::wmul(zd_r32(p), -7046029288634856825)
+        h = std::raw::wadd(std::raw::wmul(zd_rotl(h, 23), -4417276706812531889), 1609587929392839161)
+        p += 4
+    }
+    while p < end {
+        h = h ^ std::raw::wmul(std::raw::load8(p), 2870177450012600261)
+        h = std::raw::wmul(zd_rotl(h, 11), -7046029288634856825)
+        p += 1
+    }
+    h = h ^ std::raw::shr(h, 33)
+    h = std::raw::wmul(h, -4417276706812531889)
+    h = h ^ std::raw::shr(h, 29)
+    h = std::raw::wmul(h, 1609587929392839161)
+    h = h ^ std::raw::shr(h, 32)
+    h
+}
+
+// ------------------------------------------------------------ zstd_decompress.c
+// Contexto d (palabras):
+//   0 litExtra (65536+32)   8 headerBuffer (32)   16 hufTable (4*(1+4096))
+//   24.. parámetros del marco: 24 frameType  32 frameContentSize  40 windowSize
+//        48 blockSizeMax  56 dictID  64 checksumFlag  72 headerSize
+//   80 maxWindowSize  88 streamStage  96 noForwardProgress  104 oversizedDuration
+//   112 inBuff  120 inBuffSize  128 outBuff  136 outBuffSize  144 stage
+//   152 expected  160 lhSize  168 inPos  176 outStart  184 outEnd  192 hostageByte
+//   200 dictID  208 processedCSize  216 decodedSize  224 previousDstEnd
+//   232 prefixStart  240 virtualStart  248 dictEnd  256 litEntropy  264 fseEntropy
+//   272 bType  280/288/296 rep  304/312/320 tablas LL/OF/ML  328/336/344 su
+//   espacio  352 ddictIsCold  360 litBufferLocation (0 fuera, 1 en dst, 2 partido)
+//   368 validateChecksum  376 estado xxh64  384 headerSize (etapas)  392 rleSize
+//   400 litBuffer  408 litBufferEnd  416 litPtr  424 litSize  432/440/448 tablas
+//   por defecto
+//   Espacio de trabajo 512..15808 (ver más arriba) y, desde 16000, valores
+//   sueltos: 16000 nbSymbols  16008 tableLog  16016 nbSeq  16024..16056
+//   secuencia y literales  16080 búfer de entrada (src, size, pos)  16104 de
+//   salida  16136 salida acumulada  16160.. cabecera de bloque  16184 src
+//   restante de un marco  16200.. parámetros de marco auxiliares
+//   (findFrameCompressedSize)
+// Etapas: 0 getFrameHeaderSize 1 decodeFrameHeader 2 decodeBlockHeader
+// 3 decompressBlock 4 decompressLastBlock 5 checkChecksum 6 decodeSkippableHeader
+// 7 skipFrame. Flujo: 0 init 1 loadHeader 2 read 3 load 4 flush.
+
+fn zd_new() -> int {
+    let d = zd_alloc(16384)
+    zd_s(d, 0, zd_alloc(65536 + 32))
+    zd_s(d, 8, zd_alloc(32))
+    zd_s(d, 16, zd_alloc(4 * 4097))
+    zd_s(d, 80, 134217729)
+    zd_s(d, 328, zd_alloc(8 + 8 * 512))
+    zd_s(d, 336, zd_alloc(8 + 8 * 512))
+    zd_s(d, 344, zd_alloc(8 + 8 * 512))
+    zd_s(d, 376, zd_alloc(96))
+    zd_s(d, 432, zd_default_table(d, 0))
+    zd_s(d, 440, zd_default_table(d, 1))
+    zd_s(d, 448, zd_default_table(d, 2))
+    d
+}
+
+fn zd_free(d: int) {
+    let ks = [0, 8, 16, 328, 336, 344, 376, 432, 440, 448]
+    let mut i = 0
+    while i < 10 {
+        rt_free_block(zd_g(d, ks[i]))
+        i += 1
+    }
+    if zd_g(d, 112) != 0 {
+        rt_free_block(zd_g(d, 112))
+    }
+    rt_free_block(d)
+}
+
+fn zd_begin(d: int) {
+    zd_s(d, 152, 5)
+    zd_s(d, 144, 0)
+    zd_s(d, 208, 0)
+    zd_s(d, 216, 0)
+    zd_s(d, 224, 0)
+    zd_s(d, 232, 0)
+    zd_s(d, 240, 0)
+    zd_s(d, 248, 0)
+    zd_w32(zd_g(d, 16), 201326604)
+    zd_s(d, 256, 0)
+    zd_s(d, 264, 0)
+    zd_s(d, 200, 0)
+    zd_s(d, 272, 3)
+    zd_s(d, 280, 1)
+    zd_s(d, 288, 4)
+    zd_s(d, 296, 8)
+    zd_s(d, 304, 0)
+    zd_s(d, 312, 0)
+    zd_s(d, 320, 0)
+    zd_s(d, 352, 0)
+    zd_s(d, 360, 0)
+}
+
+fn zd_continuity(d: int, dst: int, dstSize: int) {
+    if dst != zd_g(d, 224) && dstSize > 0 {
+        zd_s(d, 248, zd_g(d, 224))
+        zd_s(d, 240, dst - (zd_g(d, 224) - zd_g(d, 232)))
+        zd_s(d, 232, dst)
+        zd_s(d, 224, dst)
+    }
+}
+
+// Cabecera de bloque: deja en d+16160 last, +16168 bType, +16176 tamaño original;
+// devuelve el tamaño en la entrada (1 para RLE) o -código.
+fn zd_cblock_size(d: int, src: int, n: int) -> int {
+    if n < 3 {
+        return -72
+    }
+    let h = zd_r24(src)
+    let cSize = std::raw::shr(h, 3)
+    zd_s(d, 16160, h & 1)
+    let bt = std::raw::shr(h, 1) & 3
+    zd_s(d, 16168, bt)
+    zd_s(d, 16176, cSize)
+    if bt == 1 {
+        return 1
+    }
+    if bt == 3 {
+        return -20
+    }
+    cSize
+}
+
+fn zd_fh_size(src: int, n: int) -> int {
+    if n < 5 {
+        return -72
+    }
+    let fhd = zd_b(src + 4)
+    let did = fhd & 3
+    let single = std::raw::shr(fhd, 5) & 1
+    let fcs = std::raw::shr(fhd, 6)
+    let mut r = 5
+    if single == 0 {
+        r += 1
+    }
+    if did == 1 {
+        r += 1
+    } else if did == 2 {
+        r += 2
+    } else if did == 3 {
+        r += 4
+    }
+    if fcs == 1 {
+        r += 2
+    } else if fcs == 2 {
+        r += 4
+    } else if fcs == 3 {
+        r += 8
+    }
+    if single == 1 && fcs == 0 {
+        r += 1
+    }
+    r
+}
+
+// ZSTD_getFrameHeader_advanced: 0 y parámetros en fp (7 palabras como en
+// d+24), o los bytes que faltan (> 0), o -código.
+fn zd_frame_header(fp: int, src: int, n: int) -> int {
+    if n < 5 {
+        if n > 0 {
+            let k = zd_min(4, n)
+            let mut v = 4247762216
+            let mut w = 407710288
+            let mut i = 0
+            while i < k {
+                let sh = 8 * i
+                let m = std::raw::shl(255, sh) ^ 4294967295
+                v = (v & m) | std::raw::shl(zd_b(src + i), sh)
+                w = (w & m) | std::raw::shl(zd_b(src + i), sh)
+                i += 1
+            }
+            if v != 4247762216 {
+                if (w & 4294967280) != 407710288 {
+                    return -10
+                }
+            }
+        }
+        return 5
+    }
+    let mg = zd_r32(src)
+    if mg != 4247762216 {
+        if (mg & 4294967280) == 407710288 {
+            if n < 8 {
+                return 8
+            }
+            std::raw::store(fp, 1)
+            std::raw::store(fp + 32, mg - 407710288)
+            std::raw::store(fp + 48, 8)
+            std::raw::store(fp + 8, zd_r32(src + 4))
+            std::raw::store(fp + 16, 0)
+            std::raw::store(fp + 24, 0)
+            std::raw::store(fp + 40, 0)
+            return 0
+        }
+        return -10
+    }
+    let fhs = zd_fh_size(src, n)
+    if n < fhs {
+        return fhs
+    }
+    let fhd = zd_b(src + 4)
+    let mut pos = 5
+    let didc = fhd & 3
+    let chk = std::raw::shr(fhd, 2) & 1
+    let single = std::raw::shr(fhd, 5) & 1
+    let fcsID = std::raw::shr(fhd, 6)
+    let mut ws = 0
+    let mut dictID = 0
+    let mut fcs = -1
+    if (fhd & 8) != 0 {
+        return -14
+    }
+    if single == 0 {
+        let wl = zd_b(src + pos)
+        pos += 1
+        let wlog = std::raw::shr(wl, 3) + 10
+        if wlog > 31 {
+            return -16
+        }
+        ws = std::raw::shl(1, wlog)
+        ws += std::raw::shr(ws, 3) * (wl & 7)
+    }
+    if didc == 1 {
+        dictID = zd_b(src + pos)
+        pos += 1
+    } else if didc == 2 {
+        dictID = zd_r16(src + pos)
+        pos += 2
+    } else if didc == 3 {
+        dictID = zd_r32(src + pos)
+        pos += 4
+    }
+    if fcsID == 0 {
+        if single == 1 {
+            fcs = zd_b(src + pos)
+        }
+    } else if fcsID == 1 {
+        fcs = zd_r16(src + pos) + 256
+    } else if fcsID == 2 {
+        fcs = zd_r32(src + pos)
+    } else {
+        fcs = std::raw::load(src + pos)
+    }
+    if single == 1 {
+        ws = fcs
+    }
+    std::raw::store(fp, 0)
+    std::raw::store(fp + 8, fcs)
+    std::raw::store(fp + 16, ws)
+    std::raw::store(fp + 24, zd_umin(ws, 131072))
+    std::raw::store(fp + 32, dictID)
+    std::raw::store(fp + 40, chk)
+    std::raw::store(fp + 48, fhs)
+    0
+}
+
+fn zd_decode_fh(d: int, src: int, headerSize: int) -> int {
+    let r = zd_frame_header(d + 24, src, headerSize)
+    if r < 0 {
+        return r
+    }
+    if r > 0 {
+        return -72
+    }
+    if zd_g(d, 56) != 0 && zd_g(d, 200) != zd_g(d, 56) {
+        return -32
+    }
+    let chk = zd_g(d, 64)
+    zd_s(d, 368, chk)
+    if chk != 0 {
+        zd_xxh_reset(zd_g(d, 376))
+    }
+    zd_s(d, 208, zd_g(d, 208) + headerSize)
+    0
+}
+
+fn zd_skippable_size(src: int, n: int) -> int {
+    if n < 8 {
+        return -72
+    }
+    let s32 = zd_r32(src + 4)
+    if ((s32 + 8) & 4294967295) < s32 {
+        return -14
+    }
+    let sk = 8 + s32
+    if sk > n {
+        return -72
+    }
+    sk
+}
+
+// ZSTD_findFrameCompressedSize (error = -código).
+fn zd_find_csize(d: int, src: int, n: int) -> int {
+    if n >= 8 && (zd_r32(src) & 4294967280) == 407710288 {
+        return zd_skippable_size(src, n)
+    }
+    let fp = d + 16200
+    let r = zd_frame_header(fp, src, n)
+    if r < 0 {
+        return r
+    }
+    if r > 0 {
+        return -72
+    }
+    let mut ip = src + std::raw::load(fp + 48)
+    let mut rem = n - std::raw::load(fp + 48)
+    while true {
+        let cb = zd_cblock_size(d, ip, rem)
+        if cb < 0 {
+            return cb
+        }
+        if 3 + cb > rem {
+            return -72
+        }
+        ip += 3 + cb
+        rem -= 3 + cb
+        if zd_g(d, 16160) != 0 {
+            break
+        }
+    }
+    if std::raw::load(fp + 40) != 0 {
+        if rem < 4 {
+            return -72
+        }
+        ip += 4
+    }
+    ip - src
+}
+
+fn zd_raw_block(dst: int, dstCap: int, src: int, n: int) -> int {
+    if n > dstCap {
+        return -70
+    }
+    if dst == 0 {
+        if n == 0 {
+            return 0
+        }
+        return -74
+    }
+    zd_move(dst, src, n)
+    n
+}
+
+fn zd_rle_block(dst: int, dstCap: int, b: int, n: int) -> int {
+    if n > dstCap {
+        return -70
+    }
+    if dst == 0 {
+        if n == 0 {
+            return 0
+        }
+        return -74
+    }
+    zd_fill(dst, b, n)
+    n
+}
+
+// ZSTD_decompressFrame: devuelve lo decodificado; deja el nuevo src en d+16184
+// y lo que queda en d+16192.
+fn zd_frame(d: int, dst: int, dstCap: int, src: int, n: int) -> int {
+    let mut ip = src
+    let ostart = dst
+    let mut oend = ostart
+    if dstCap != 0 {
+        oend = ostart + dstCap
+    }
+    let mut op = ostart
+    let mut rem = n
+    if rem < 9 {
+        return -72
+    }
+    let fhs = zd_fh_size(ip, 5)
+    if rem < fhs + 3 {
+        return -72
+    }
+    let r = zd_decode_fh(d, ip, fhs)
+    if r < 0 {
+        return r
+    }
+    ip += fhs
+    rem -= fhs
+    while true {
+        let mut oBlockEnd = oend
+        let cb = zd_cblock_size(d, ip, rem)
+        if cb < 0 {
+            return cb
+        }
+        let last = zd_g(d, 16160)
+        let bt = zd_g(d, 16168)
+        let orig = zd_g(d, 16176)
+        ip += 3
+        rem -= 3
+        if cb > rem {
+            return -72
+        }
+        if ip >= op && ip < oBlockEnd {
+            oBlockEnd = op + (ip - op)
+        }
+        let mut ds = 0
+        if bt == 2 {
+            ds = zd_block(d, op, oBlockEnd - op, ip, cb, false)
+        } else if bt == 0 {
+            ds = zd_raw_block(op, oend - op, ip, cb)
+        } else if bt == 1 {
+            ds = zd_rle_block(op, oBlockEnd - op, zd_b(ip), orig)
+        } else {
+            return -20
+        }
+        if ds < 0 {
+            return ds
+        }
+        if zd_g(d, 368) != 0 {
+            zd_xxh_update(zd_g(d, 376), op, ds)
+        }
+        op += ds
+        ip += cb
+        rem -= cb
+        if last != 0 {
+            break
+        }
+    }
+    let fcs = zd_g(d, 32)
+    if fcs != -1 && op - ostart != fcs {
+        return -20
+    }
+    if zd_g(d, 64) != 0 {
+        if rem < 4 {
+            return -22
+        }
+        let calc = zd_xxh_digest(zd_g(d, 376)) & 4294967295
+        if zd_r32(ip) != calc {
+            return -22
+        }
+        ip += 4
+        rem -= 4
+    }
+    zd_s(d, 16184, ip)
+    zd_s(d, 16192, rem)
+    op - ostart
+}
+
+fn zd_multi_frame(d: int, dst0: int, dstCap0: int, src0: int, n0: int) -> int {
+    let mut dst = dst0
+    let mut dstCap = dstCap0
+    let mut src = src0
+    let mut n = n0
+    let mut more = false
+    while n >= 5 {
+        let mg = zd_r32(src)
+        if (mg & 4294967280) == 407710288 {
+            let sk = zd_skippable_size(src, n)
+            if sk < 0 {
+                return sk
+            }
+            src += sk
+            n -= sk
+            continue
+        }
+        zd_begin(d)
+        zd_continuity(d, dst, dstCap)
+        let res = zd_frame(d, dst, dstCap, src, n)
+        if res < 0 {
+            if res == -10 && more {
+                return -72
+            }
+            return res
+        }
+        src = zd_g(d, 16184)
+        n = zd_g(d, 16192)
+        dst += res
+        dstCap -= res
+        more = true
+    }
+    if n != 0 {
+        return -72
+    }
+    dst - dst0
+}
+
+fn zd_next_src(d: int, inputSize: int) -> int {
+    let st = zd_g(d, 144)
+    if !(st == 3 || st == 4) {
+        return zd_g(d, 152)
+    }
+    if zd_g(d, 272) != 0 {
+        return zd_g(d, 152)
+    }
+    zd_max(1, zd_min(inputSize, zd_g(d, 152)))
+}
+
+fn zd_continue(d: int, dst: int, dstCap: int, src: int, n: int) -> int {
+    if n != zd_next_src(d, n) {
+        return -72
+    }
+    zd_continuity(d, dst, dstCap)
+    zd_s(d, 208, zd_g(d, 208) + n)
+    let st = zd_g(d, 144)
+    let hdr = zd_g(d, 8)
+    if st == 0 {
+        if (zd_r32(src) & 4294967280) == 407710288 {
+            zd_move(hdr, src, n)
+            zd_s(d, 152, 8 - n)
+            zd_s(d, 144, 6)
+            return 0
+        }
+        let hs = zd_fh_size(src, n)
+        if hs < 0 {
+            return hs
+        }
+        zd_s(d, 384, hs)
+        zd_move(hdr, src, n)
+        zd_s(d, 152, hs - n)
+        zd_s(d, 144, 1)
+        return 0
+    }
+    if st == 1 {
+        let hs = zd_g(d, 384)
+        zd_move(hdr + (hs - n), src, n)
+        let r = zd_decode_fh(d, hdr, hs)
+        if r < 0 {
+            return r
+        }
+        zd_s(d, 152, 3)
+        zd_s(d, 144, 2)
+        return 0
+    }
+    if st == 2 {
+        let cb = zd_cblock_size(d, src, 3)
+        if cb < 0 {
+            return cb
+        }
+        if cb > zd_g(d, 48) {
+            return -20
+        }
+        let last = zd_g(d, 16160)
+        zd_s(d, 152, cb)
+        zd_s(d, 272, zd_g(d, 16168))
+        zd_s(d, 392, zd_g(d, 16176))
+        if cb != 0 {
+            if last != 0 {
+                zd_s(d, 144, 4)
+            } else {
+                zd_s(d, 144, 3)
+            }
+            return 0
+        }
+        if last != 0 {
+            if zd_g(d, 64) != 0 {
+                zd_s(d, 152, 4)
+                zd_s(d, 144, 5)
+            } else {
+                zd_s(d, 152, 0)
+                zd_s(d, 144, 0)
+            }
+        } else {
+            zd_s(d, 152, 3)
+            zd_s(d, 144, 2)
+        }
+        return 0
+    }
+    if st == 3 || st == 4 {
+        let bt = zd_g(d, 272)
+        let mut rSize = 0
+        if bt == 2 {
+            rSize = zd_block(d, dst, dstCap, src, n, true)
+            if rSize < 0 {
+                return rSize
+            }
+            zd_s(d, 152, 0)
+        } else if bt == 0 {
+            rSize = zd_raw_block(dst, dstCap, src, n)
+            if rSize < 0 {
+                return rSize
+            }
+            zd_s(d, 152, zd_g(d, 152) - rSize)
+        } else if bt == 1 {
+            rSize = zd_rle_block(dst, dstCap, zd_b(src), zd_g(d, 392))
+            if rSize < 0 {
+                return rSize
+            }
+            zd_s(d, 152, 0)
+        } else {
+            return -20
+        }
+        if rSize > zd_g(d, 48) {
+            return -20
+        }
+        zd_s(d, 216, zd_g(d, 216) + rSize)
+        if zd_g(d, 368) != 0 {
+            zd_xxh_update(zd_g(d, 376), dst, rSize)
+        }
+        zd_s(d, 224, dst + rSize)
+        if zd_g(d, 152) > 0 {
+            return rSize
+        }
+        if st == 4 {
+            let fcs = zd_g(d, 32)
+            if fcs != -1 && zd_g(d, 216) != fcs {
+                return -20
+            }
+            if zd_g(d, 64) != 0 {
+                zd_s(d, 152, 4)
+                zd_s(d, 144, 5)
+            } else {
+                zd_s(d, 152, 0)
+                zd_s(d, 144, 0)
+            }
+        } else {
+            zd_s(d, 144, 2)
+            zd_s(d, 152, 3)
+        }
+        return rSize
+    }
+    if st == 5 {
+        if zd_g(d, 368) != 0 {
+            if zd_r32(src) != (zd_xxh_digest(zd_g(d, 376)) & 4294967295) {
+                return -22
+            }
+        }
+        zd_s(d, 152, 0)
+        zd_s(d, 144, 0)
+        return 0
+    }
+    if st == 6 {
+        zd_move(hdr + (8 - n), src, n)
+        zd_s(d, 152, zd_r32(hdr + 4))
+        zd_s(d, 144, 7)
+        return 0
+    }
+    if st == 7 {
+        zd_s(d, 152, 0)
+        zd_s(d, 144, 0)
+        return 0
+    }
+    -1
+}
+
+fn zd_buffer_size(ws: int, fcs: int, bsm: int) -> int {
+    let bs = zd_min(zd_min(ws, 131072), bsm)
+    let need = ws + bs * 2 + 64
+    zd_umin(fcs, need)
+}
+
+fn zd_continue_stream(d: int, src: int, n: int) -> int {
+    let skip = zd_g(d, 144) == 7
+    let mut dstSize = 0
+    if !skip {
+        dstSize = zd_g(d, 136) - zd_g(d, 176)
+    }
+    let ds = zd_continue(d, zd_g(d, 128) + zd_g(d, 176), dstSize, src, n)
+    if ds < 0 {
+        return ds
+    }
+    if ds == 0 && !skip {
+        zd_s(d, 88, 2)
+    } else {
+        zd_s(d, 184, zd_g(d, 176) + ds)
+        zd_s(d, 88, 4)
+    }
+    0
+}
+
+// ZSTD_decompressStream. Búferes (puntero, tamaño, posición) en d+16080
+// (entrada) y d+16104 (salida). Devuelve la pista de tamaño o -código.
+fn zd_stream(d: int) -> int {
+    let ib = d + 16080
+    let ob = d + 16104
+    let src = std::raw::load(ib)
+    let mut istart = src
+    if std::raw::load(ib + 16) != 0 {
+        istart = src + std::raw::load(ib + 16)
+    }
+    let mut iend = src
+    if std::raw::load(ib + 8) != 0 {
+        iend = src + std::raw::load(ib + 8)
+    }
+    let mut ip = istart
+    let dst = std::raw::load(ob)
+    let mut ostart = dst
+    if std::raw::load(ob + 16) != 0 {
+        ostart = dst + std::raw::load(ob + 16)
+    }
+    let mut oend = dst
+    if std::raw::load(ob + 8) != 0 {
+        oend = dst + std::raw::load(ob + 8)
+    }
+    let mut op = ostart
+    let hdr = zd_g(d, 8)
+    if std::raw::load(ib + 16) > std::raw::load(ib + 8) {
+        return -72
+    }
+    if std::raw::load(ob + 16) > std::raw::load(ob + 8) {
+        return -70
+    }
+    while true {
+        let mut ss = zd_g(d, 88)
+        if ss == 0 {
+            zd_s(d, 88, 1)
+            zd_s(d, 160, 0)
+            zd_s(d, 168, 0)
+            zd_s(d, 176, 0)
+            zd_s(d, 184, 0)
+            zd_s(d, 192, 0)
+            ss = 1
+        }
+        if ss == 1 {
+            let lh = zd_g(d, 160)
+            let hSize = zd_frame_header(d + 24, hdr, lh)
+            if hSize < 0 {
+                return hSize
+            }
+            if hSize != 0 {
+                let toLoad = hSize - lh
+                let remIn = iend - ip
+                if toLoad > remIn {
+                    if remIn > 0 {
+                        zd_move(hdr + lh, ip, remIn)
+                        zd_s(d, 160, lh + remIn)
+                    }
+                    std::raw::store(ib + 16, std::raw::load(ib + 8))
+                    let e = zd_frame_header(d + 16200, hdr, zd_g(d, 160))
+                    if e < 0 {
+                        return e
+                    }
+                    return (zd_max(6, hSize) - zd_g(d, 160)) + 3
+                }
+                zd_move(hdr + lh, ip, toLoad)
+                zd_s(d, 160, hSize)
+                ip += toLoad
+                continue
+            }
+            let fcs = zd_g(d, 32)
+            if fcs != -1 && zd_g(d, 24) != 1 && !zd_ult(oend - op, fcs) {
+                let cSize = zd_find_csize(d, istart, iend - istart)
+                if cSize >= 0 && cSize <= iend - istart {
+                    let ds = zd_multi_frame(d, op, oend - op, istart, cSize)
+                    if ds < 0 {
+                        return ds
+                    }
+                    ip = istart + cSize
+                    op = op + ds
+                    zd_s(d, 152, 0)
+                    zd_s(d, 88, 0)
+                    break
+                }
+            }
+            // decompress_begin no toca los parámetros del marco.
+            zd_begin(d)
+            if (zd_r32(hdr) & 4294967280) == 407710288 {
+                zd_s(d, 152, zd_r32(hdr + 4))
+                zd_s(d, 144, 7)
+            } else {
+                let r = zd_decode_fh(d, hdr, zd_g(d, 160))
+                if r < 0 {
+                    return r
+                }
+                zd_s(d, 152, 3)
+                zd_s(d, 144, 2)
+            }
+            zd_s(d, 40, zd_umax(zd_g(d, 40), 1024))
+            if zd_ult(zd_g(d, 80), zd_g(d, 40)) {
+                return -16
+            }
+            let needIn = zd_umax(zd_g(d, 48), 4)
+            let needOut = zd_buffer_size(zd_g(d, 40), zd_g(d, 32), zd_g(d, 48))
+            if zd_g(d, 120) + zd_g(d, 136) >= (needIn + needOut) * 3 {
+                zd_s(d, 104, zd_g(d, 104) + 1)
+            } else {
+                zd_s(d, 104, 0)
+            }
+            let tooSmall = zd_g(d, 120) < needIn || zd_g(d, 136) < needOut
+            let tooLarge = zd_g(d, 104) >= 128
+            if tooSmall || tooLarge {
+                if zd_g(d, 112) != 0 {
+                    rt_free_block(zd_g(d, 112))
+                }
+                let b = zd_alloc(needIn + needOut)
+                zd_s(d, 112, b)
+                zd_s(d, 120, needIn)
+                zd_s(d, 128, b + needIn)
+                zd_s(d, 136, needOut)
+            }
+            zd_s(d, 88, 2)
+            ss = 2
+        }
+        if ss == 2 {
+            let need = zd_next_src(d, iend - ip)
+            if need == 0 {
+                zd_s(d, 88, 0)
+                break
+            }
+            if iend - ip >= need {
+                let r = zd_continue_stream(d, ip, need)
+                if r < 0 {
+                    return r
+                }
+                ip += need
+                continue
+            }
+            if ip == iend {
+                break
+            }
+            zd_s(d, 88, 3)
+            ss = 3
+        }
+        if ss == 3 {
+            let need = zd_g(d, 152)
+            let inPos = zd_g(d, 168)
+            let toLoad = need - inPos
+            let skip = zd_g(d, 144) == 7
+            let mut loaded = 0
+            if skip {
+                loaded = zd_min(toLoad, iend - ip)
+            } else {
+                if toLoad > zd_g(d, 120) - inPos {
+                    return -20
+                }
+                loaded = zd_min(toLoad, iend - ip)
+                if loaded > 0 {
+                    zd_move(zd_g(d, 112) + inPos, ip, loaded)
+                }
+            }
+            if loaded != 0 {
+                ip += loaded
+                zd_s(d, 168, inPos + loaded)
+            }
+            if loaded < toLoad {
+                break
+            }
+            zd_s(d, 168, 0)
+            let r = zd_continue_stream(d, zd_g(d, 112), need)
+            if r < 0 {
+                return r
+            }
+            continue
+        }
+        if ss == 4 {
+            let toFlush = zd_g(d, 184) - zd_g(d, 176)
+            let fl = zd_min(oend - op, toFlush)
+            if fl > 0 {
+                zd_move(op, zd_g(d, 128) + zd_g(d, 176), fl)
+            }
+            op += fl
+            zd_s(d, 176, zd_g(d, 176) + fl)
+            if fl == toFlush {
+                zd_s(d, 88, 2)
+                if zd_ult(zd_g(d, 136), zd_g(d, 32)) && zd_g(d, 176) + zd_g(d, 48) > zd_g(d, 136) {
+                    zd_s(d, 176, 0)
+                    zd_s(d, 184, 0)
+                }
+                continue
+            }
+            break
+        }
+        break
+    }
+    std::raw::store(ib + 16, ip - src)
+    std::raw::store(ob + 16, op - dst)
+    if ip == istart && op == ostart {
+        zd_s(d, 96, zd_g(d, 96) + 1)
+        if zd_g(d, 96) >= 16 {
+            if op == oend {
+                return -80
+            }
+            if ip == iend {
+                return -82
+            }
+        }
+    } else {
+        zd_s(d, 96, 0)
+    }
+    let mut hint = zd_g(d, 152)
+    if hint == 0 {
+        if zd_g(d, 184) == zd_g(d, 176) {
+            if zd_g(d, 192) != 0 {
+                if std::raw::load(ib + 16) >= std::raw::load(ib + 8) {
+                    zd_s(d, 88, 2)
+                    return 1
+                }
+                std::raw::store(ib + 16, std::raw::load(ib + 16) + 1)
+            }
+            return 0
+        }
+        if zd_g(d, 192) == 0 {
+            std::raw::store(ib + 16, std::raw::load(ib + 16) - 1)
+            zd_s(d, 192, 1)
+        }
+        return 1
+    }
+    if zd_g(d, 144) == 3 {
+        hint += 3
+    }
+    hint - zd_g(d, 168)
+}
+
+fn zd_umax(a: int, b: int) -> int {
+    if zd_ult(a, b) {
+        return b
+    }
+    a
+}
+
+// ------------------------------------------------------------ conductor
+// zstd::stream::decode_all(datos) = io::copy(Decoder(BufReader(&[u8])),
+// &mut Vec): lecturas de 8192 bytes (stack_buffer_copy); cada lectura llama a
+// ZSTD_decompressStream (la primera, con entrada vacía) hasta sacar algo o
+// llegar al final. Devuelve 0 y deja la salida en out (+0 puntero, +8
+// longitud, +16 capacidad), o -código (-1000 = "incomplete frame").
+
+fn zd_out_add(out: int, src: int, n: int) {
+    let len = std::raw::load(out + 8)
+    let cap = std::raw::load(out + 16)
+    if len + n > cap {
+        let mut nc = cap * 2
+        while nc < len + n {
+            nc = nc * 2
+        }
+        let p = rt_alloc(nc)
+        rt_copy(p, std::raw::load(out), len)
+        rt_free_block(std::raw::load(out))
+        std::raw::store(out, p)
+        std::raw::store(out + 16, nc)
+    }
+    rt_copy(std::raw::load(out) + len, src, n)
+    std::raw::store(out + 8, len + n)
+}
+
+fn zd_decode_all(d: int, data: int, n: int, br: int, cbuf: int, out: int) -> int {
+    let cap = 131075
+    let mut spos = 0
+    let mut brPos = 0
+    let mut brFilled = 0
+    let mut state = 0
+    let mut finished = false
+    while true {
+        let mut first = true
+        let mut got = 0 - 1
+        while got < 0 {
+            if state == 0 {
+                let mut ia = cbuf
+                let mut il = 0
+                if !first {
+                    if brPos >= brFilled {
+                        let k = zd_min(cap, n - spos)
+                        zd_move(br, data + spos, k)
+                        spos += k
+                        brPos = 0
+                        brFilled = k
+                    }
+                    ia = br + brPos
+                    il = brFilled - brPos
+                }
+                if !first && il == 0 {
+                    state = 1
+                    continue
+                }
+                first = false
+                zd_s(d, 16080, ia)
+                zd_s(d, 16088, il)
+                zd_s(d, 16096, 0)
+                zd_s(d, 16104, cbuf)
+                zd_s(d, 16112, 8192)
+                zd_s(d, 16120, 0)
+                if finished && il != 0 {
+                    zd_s(d, 88, 0)
+                    zd_s(d, 96, 0)
+                    finished = false
+                }
+                let hint = zd_stream(d)
+                if hint < 0 {
+                    return hint
+                }
+                if hint == 0 {
+                    finished = true
+                }
+                brPos = zd_min(brPos + zd_g(d, 16096), brFilled)
+                if zd_g(d, 16120) > 0 {
+                    got = zd_g(d, 16120)
+                }
+            } else if state == 1 {
+                if !finished {
+                    return -1000
+                }
+                state = 2
+                got = 0
+            } else {
+                got = 0
+            }
+        }
+        if got == 0 {
+            return 0
+        }
+        zd_out_add(out, cbuf, got)
+    }
+    0
+}
+
+fn std__compress__zstd_decode(b: any) -> any {
+    let function = "std::compress::zstd_decode"
+    rt_expect_bytes(b, function)
+    let d = zd_new()
+    let br = zd_alloc(131075)
+    let cbuf = zd_alloc(8192)
+    let out = d + 16136
+    zd_s(d, 16136, rt_alloc(8192))
+    zd_s(d, 16144, 0)
+    zd_s(d, 16152, 8192)
+    let r = zd_decode_all(d, rt_bdata(b), rt_slen(b), br, cbuf, out)
+    rt_free_block(br)
+    rt_free_block(cbuf)
+    let o = zd_g(d, 16136)
+    let len = zd_g(d, 16144)
+    if r < 0 {
+        rt_free_block(o)
+        zd_free(d)
+        rt_native_fail(function, "Zstd error: " + zd_message(0 - r))
+    }
+    let p = rt_str_alloc(len)
+    rt_copy(p + 16, o, len)
+    rt_free_block(o)
+    zd_free(d)
+    std::raw::adopt(6, p)
+}

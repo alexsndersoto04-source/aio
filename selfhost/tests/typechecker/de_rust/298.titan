@@ -1,0 +1,1 @@
+fn read(flag: bool) -> int { let value = match flag { true => return 1, false => 2 } value + 1 } fn main() {}

@@ -1,0 +1,210 @@
+// Escritor VP8L sin pérdida. Usa árboles Huffman completos para los canales,
+// sin tablas externas ni procesos auxiliares.
+fn im_webp_bits(state: int, bits: int, count: int) {
+    let mut value = bits
+    let mut left = count
+    let mut acc = std::raw::load(state + 8)
+    let mut used = std::raw::load(state + 16)
+    while left > 0 {
+        let room = 8 - used
+        let take = if left < room { left } else { room }
+        let mask = std::raw::shl(1, take) - 1
+        acc = acc | std::raw::shl(value & mask, used)
+        value = std::raw::shr(value, take)
+        used += take
+        left -= take
+        if used == 8 {
+            sb_byte(std::raw::load(state), acc)
+            acc = 0
+            used = 0
+        }
+    }
+    std::raw::store(state + 8, acc)
+    std::raw::store(state + 16, used)
+}
+
+fn im_webp_bits_finish(state: int) {
+    let used = std::raw::load(state + 16)
+    if used > 0 {
+        sb_byte(std::raw::load(state), std::raw::load(state + 8))
+    }
+}
+
+fn im_webp_reverse8(value: int) -> int {
+    let mut v = value
+    let mut reversed = 0
+    let mut i = 0
+    while i < 8 {
+        reversed = std::raw::shl(reversed, 1) | (v & 1)
+        v = std::raw::shr(v, 1)
+        i += 1
+    }
+    reversed
+}
+
+fn im_webp_single_tree(state: int, symbol: int) {
+    im_webp_bits(state, 1, 2)
+    if symbol <= 1 {
+        im_webp_bits(state, 0, 1)
+        im_webp_bits(state, symbol, 1)
+    } else {
+        im_webp_bits(state, 1, 1)
+        im_webp_bits(state, symbol, 8)
+    }
+}
+
+fn im_webp_full_tree(state: int) {
+    let order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    im_webp_bits(state, 0, 1)
+    im_webp_bits(state, 15, 4)
+    let mut i = 0
+    while i < len(order) {
+        im_webp_bits(state, if order[i] == 8 { 1 } else { 0 }, 3)
+        i += 1
+    }
+    im_webp_bits(state, 1, 1)
+    im_webp_bits(state, 3, 3)
+    im_webp_bits(state, 254, 8)
+}
+
+fn im_webp_green_tree(state: int) {
+    let order = [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    im_webp_bits(state, 0, 1)
+    im_webp_bits(state, 15, 4)
+    let mut i = 0
+    while i < len(order) {
+        let symbol = order[i]
+        im_webp_bits(state, if symbol == 0 || symbol == 8 { 1 } else { 0 }, 3)
+        i += 1
+    }
+    im_webp_bits(state, 0, 1)
+    i = 0
+    while i < 256 {
+        im_webp_bits(state, 1, 1)
+        i += 1
+    }
+    i = 0
+    while i < 24 {
+        im_webp_bits(state, 0, 1)
+        i += 1
+    }
+}
+
+fn im_webp_pixel(e: int, pixel: int, out: int) {
+    let color = std::raw::load(e + 24)
+    let channels = im_channels(color)
+    let sample_bytes = im_sample_bytes(color)
+    let source = std::raw::load(e + 32) + pixel * channels * sample_bytes
+    let mut r = 0
+    let mut g = 0
+    let mut b = 0
+    let mut a = 255
+    if color == 1 || color == 5 {
+        let value = im_sample_get(source, sample_bytes)
+        r = value
+        g = value
+        b = value
+    } else if color == 2 || color == 6 {
+        let value = im_sample_get(source, sample_bytes)
+        r = value
+        g = value
+        b = value
+        a = im_sample_get(source + sample_bytes, sample_bytes)
+    } else if color == 3 || color == 7 {
+        r = im_sample_get(source, sample_bytes)
+        g = im_sample_get(source + sample_bytes, sample_bytes)
+        b = im_sample_get(source + 2 * sample_bytes, sample_bytes)
+    } else {
+        r = im_sample_get(source, sample_bytes)
+        g = im_sample_get(source + sample_bytes, sample_bytes)
+        b = im_sample_get(source + 2 * sample_bytes, sample_bytes)
+        a = im_sample_get(source + 3 * sample_bytes, sample_bytes)
+    }
+    if sample_bytes == 2 {
+        r = (r + 128) / 257
+        g = (g + 128) / 257
+        b = (b + 128) / 257
+        a = (a + 128) / 257
+    }
+    std::raw::store8(out, r)
+    std::raw::store8(out + 1, g)
+    std::raw::store8(out + 2, b)
+    std::raw::store8(out + 3, a)
+}
+
+fn im_webp_encode(function: string, e: int) -> any {
+    let width = std::raw::load(e + 8)
+    let height = std::raw::load(e + 16)
+    let color = std::raw::load(e + 24)
+    if width <= 0 || height <= 0 || width > 16384 || height > 16384 {
+        im_img_err(function, "ParameterError: WebP dimensions must be within 1..16384")
+    }
+    if color < 1 || color > 8 {
+        im_img_err(function, "UnsupportedError: WebP encoding requires an 8- or 16-bit integer image")
+    }
+    let has_alpha = color == 2 || color == 4 || color == 6 || color == 8
+    let pixels = width * height
+    if pixels > 16777216 {
+        im_lim(function, "encoded image pixels", 16777216)
+    }
+
+    let frame_state = rt_alloc_zero(24)
+    let frame = sb_new(pixels * 5 + 128)
+    std::raw::store(frame_state, frame)
+    im_webp_bits(frame_state, 47, 8)
+    im_webp_bits(frame_state, width - 1, 14)
+    im_webp_bits(frame_state, height - 1, 14)
+    im_webp_bits(frame_state, if has_alpha { 1 } else { 0 }, 1)
+    im_webp_bits(frame_state, 0, 3)
+
+    // No predictor, color, or indexing transforms; no color cache or meta groups.
+    im_webp_bits(frame_state, 0, 1)
+    im_webp_bits(frame_state, 0, 1)
+    im_webp_bits(frame_state, 0, 1)
+
+    // VP8L has four literal trees and one distance tree.
+    im_webp_green_tree(frame_state)
+    im_webp_full_tree(frame_state)
+    im_webp_full_tree(frame_state)
+    if has_alpha {
+        im_webp_full_tree(frame_state)
+    } else {
+        im_webp_single_tree(frame_state, 0)
+    }
+    im_webp_single_tree(frame_state, 1)
+
+    let pixel_data = rt_alloc(4)
+    let mut i = 0
+    while i < pixels {
+        im_webp_pixel(e, i, pixel_data)
+        im_webp_bits(frame_state, im_webp_reverse8(std::raw::load8(pixel_data + 1)), 8)
+        im_webp_bits(frame_state, im_webp_reverse8(std::raw::load8(pixel_data)), 8)
+        im_webp_bits(frame_state, im_webp_reverse8(std::raw::load8(pixel_data + 2)), 8)
+        if has_alpha {
+            im_webp_bits(frame_state, im_webp_reverse8(std::raw::load8(pixel_data + 3)), 8)
+        }
+        i += 1
+    }
+    im_webp_bits_finish(frame_state)
+    rt_free_block(pixel_data)
+    let frame_bytes = sb_finish_bytes(frame)
+    rt_free_block(frame_state)
+
+    let frame_len = rt_slen(frame_bytes)
+    let pad = frame_len & 1
+    let total = 20 + frame_len + pad
+    if total > 67108864 {
+        std::raw::release(6, std::raw::bits(frame_bytes))
+        im_lim(function, "encoded image output bytes", 67108864)
+    }
+    let out = sb_new(total)
+    sb_str(out, "RIFF")
+    im_le32(out, 12 + frame_len + pad)
+    sb_str(out, "WEBP")
+    sb_str(out, "VP8L")
+    im_le32(out, frame_len)
+    sb_raw(out, std::raw::bits(frame_bytes) + 16, frame_len)
+    if pad != 0 { sb_byte(out, 0) }
+    std::raw::release(6, std::raw::bits(frame_bytes))
+    sb_finish_bytes(out)
+}

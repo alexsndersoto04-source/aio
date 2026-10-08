@@ -1,0 +1,5 @@
+// read_key sin terminal: el lector de eventos no se puede crear.
+fn main() {
+    print("[" + std::term::read_key(0) + "]")
+    print("no llega")
+}

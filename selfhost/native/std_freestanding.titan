@@ -1,0 +1,187 @@
+// std::freestanding: textos para programas sin sistema operativo (guion de
+// enlazado y arranque _start), igual que crates/titan_stdlib/src/freestanding.rs
+// letra por letra (ya corregido: nombres de formato que aceptan GNU ld y
+// ld.lld, error con un objetivo desconocido en vez de usar otro en silencio,
+// comparaciones sin signo y arranque de RISC-V de verdad).
+// El objetivo activo (init / get_active_target / shutdown) va en
+// globales + 3016 (referencia al string; 0 = sin iniciar). Prefijo `fs_`.
+
+fn fs_slot() -> int {
+    std::raw::globals() + 3016
+}
+
+fn fs_known(t: any) -> bool {
+    rt_str_eq(t, "aarch64-unknown-none") || rt_str_eq(t, "x86_64-unknown-none") || rt_str_eq(t, "riscv64gc-unknown-none")
+}
+
+fn fs_unsupported(t: any) -> any {
+    "unsupported freestanding target '" + t + "' (aarch64-unknown-none, x86_64-unknown-none or riscv64gc-unknown-none)"
+}
+
+// Como `format!("{:x}", v)` con v >= 0.
+fn fs_hex(v: int) -> any {
+    if v == 0 {
+        return "0"
+    }
+    let digits = "0123456789abcdef"
+    let b = sb_new(16)
+    let mut shift = 60
+    let mut started = false
+    while shift >= 0 {
+        let d = std::raw::shr(v, shift) & 15
+        if d != 0 || started {
+            started = true
+            sb_byte(b, std::raw::load8(std::raw::bits(digits) + 16 + d))
+        }
+        shift -= 4
+    }
+    sb_finish(b)
+}
+
+fn std__freestanding__validate_target_spec(target: any) -> any {
+    rt_expect_str(target, "std::freestanding::validate_target_spec")
+    fs_known(std__text__trim(target))
+}
+
+fn std__freestanding__init(target: any) -> any {
+    rt_expect_str(target, "std::freestanding::init")
+    if !fs_known(std__text__trim(target)) {
+        return false
+    }
+    let slot = fs_slot()
+    let old = std::raw::load(slot)
+    std::raw::store(slot, std::raw::keep(target))
+    if old != 0 {
+        std::raw::release(5, old)
+    }
+    true
+}
+
+fn std__freestanding__get_active_target() -> any {
+    let p = std::raw::load(fs_slot())
+    if p == 0 {
+        return ""
+    }
+    rt_sref(p)
+}
+
+fn std__freestanding__shutdown() -> any {
+    let slot = fs_slot()
+    let old = std::raw::load(slot)
+    std::raw::store(slot, 0)
+    if old != 0 {
+        std::raw::release(5, old)
+    }
+    true
+}
+
+fn std__freestanding__generate_linker_script(target: any, base: any, stack: any) -> any {
+    let fname = "std::freestanding::generate_linker_script"
+    rt_expect_str(target, fname)
+    rt_expect_int(base, fname)
+    rt_expect_int(stack, fname)
+    let mut format = ""
+    if rt_str_eq(target, "aarch64-unknown-none") {
+        format = "elf64-littleaarch64"
+    } else if rt_str_eq(target, "x86_64-unknown-none") {
+        format = "elf64-x86-64"
+    } else if rt_str_eq(target, "riscv64gc-unknown-none") {
+        format = "elf64-littleriscv"
+    } else {
+        rt_native_fail(fname, fs_unsupported(target))
+    }
+    let b0: int = std::raw::bits(base)
+    let s0: int = std::raw::bits(stack)
+    if b0 < 0 {
+        rt_native_fail(fname, "base address must be nonnegative, got " + rt_int_to_str(b0))
+    }
+    if s0 < 0 {
+        rt_native_fail(fname, "stack size must be nonnegative, got " + rt_int_to_str(s0))
+    }
+    let open = std::text::from_char_code(123)
+    let close = std::text::from_char_code(125)
+    let q = std::text::from_char_code(34)
+    let mut ld = "/* Titan Freestanding Linker Script for " + target + " */\n"
+    ld = ld + "OUTPUT_FORMAT(" + q + format + q + ")\n"
+    ld = ld + "ENTRY(_start)\n"
+    ld = ld + "SECTIONS\n" + open + "\n"
+    ld = ld + "    . = 0x" + fs_hex(b0) + ";\n"
+    ld = ld + "    __kernel_start = .;\n"
+    ld = ld + "    .text : ALIGN(0x1000) " + open + "\n        *(.text._start)\n        *(.text*)\n    " + close + "\n"
+    ld = ld + "    .rodata : ALIGN(0x1000) " + open + "\n        *(.rodata*)\n    " + close + "\n"
+    ld = ld + "    .data : ALIGN(0x1000) " + open + "\n        *(.data*)\n    " + close + "\n"
+    ld = ld + "    .bss : ALIGN(0x1000) " + open + "\n        __bss_start = .;\n"
+    ld = ld + "        *(.bss*)\n        *(COMMON)\n        __bss_end = .;\n"
+    ld = ld + "    " + close + "\n"
+    ld = ld + "    . = ALIGN(0x1000);\n"
+    ld = ld + "    _stack_bottom = .;\n"
+    ld = ld + "    . += 0x" + fs_hex(s0) + ";\n"
+    ld = ld + "    _stack_top = .;\n"
+    ld = ld + "    __kernel_end = .;\n"
+    ld + close + "\n"
+}
+
+// Como valid_symbol de Rust: [A-Za-z_.$][A-Za-z0-9_.$]* (solo ASCII).
+fn fs_symbol(s: any) -> bool {
+    let n = rt_slen(s)
+    if n == 0 {
+        return false
+    }
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 46 || c == 36
+        let digit = c >= 48 && c <= 57
+        if !alpha && !(digit && i > 0) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn std__freestanding__generate_startup_asm(target: any, entry: any) -> any {
+    let fname = "std::freestanding::generate_startup_asm"
+    rt_expect_str(target, fname)
+    rt_expect_str(entry, fname)
+    if !fs_known(target) {
+        rt_native_fail(fname, fs_unsupported(target))
+    }
+    if !fs_symbol(entry) {
+        rt_native_fail(fname, "invalid entry symbol '" + entry + "'")
+    }
+    let mut asm = "/* Titan Bare-Metal Startup (_start) for " + target + " */\n"
+    asm = asm + ".global _start\n.section .text._start\n_start:\n"
+    if rt_str_eq(target, "aarch64-unknown-none") {
+        asm = asm + "    /* Setup Stack Pointer */\n"
+        asm = asm + "    adrp x0, _stack_top\n"
+        asm = asm + "    add x0, x0, :lo12:_stack_top\n"
+        asm = asm + "    mov sp, x0\n"
+        asm = asm + "    /* Zero-out BSS section */\n"
+        asm = asm + "    adrp x1, __bss_start\n    add x1, x1, :lo12:__bss_start\n"
+        asm = asm + "    adrp x2, __bss_end\n    add x2, x2, :lo12:__bss_end\n"
+        asm = asm + "1:  cmp x1, x2\n    b.hs 2f\n    str xzr, [x1], #8\n    b 1b\n"
+        asm = asm + "2:  bl " + entry + "\n"
+        asm = asm + "3:  wfe\n    b 3b\n"
+    } else if rt_str_eq(target, "x86_64-unknown-none") {
+        asm = asm + "    /* Entered in 64-bit long mode by the loader */\n"
+        asm = asm + "    /* Setup Stack Pointer */\n"
+        asm = asm + "    lea _stack_top(%rip), %rsp\n"
+        asm = asm + "    /* Zero-out BSS section */\n"
+        asm = asm + "    lea __bss_start(%rip), %rdi\n"
+        asm = asm + "    lea __bss_end(%rip), %rsi\n"
+        asm = asm + "1:  cmp %rsi, %rdi\n    jae 2f\n    movq $0, (%rdi)\n    addq $8, %rdi\n    jmp 1b\n"
+        asm = asm + "2:  call " + entry + "\n3:  cli\n    hlt\n    jmp 3b\n"
+    } else {
+        asm = asm + "    /* Setup Stack Pointer */\n"
+        asm = asm + "    la sp, _stack_top\n"
+        asm = asm + "    /* Zero-out BSS section */\n"
+        asm = asm + "    la t0, __bss_start\n"
+        asm = asm + "    la t1, __bss_end\n"
+        asm = asm + "1:  bgeu t0, t1, 2f\n    sd zero, 0(t0)\n    addi t0, t0, 8\n    j 1b\n"
+        asm = asm + "2:  call " + entry + "\n"
+        asm = asm + "3:  wfi\n    j 3b\n"
+    }
+    asm
+}

@@ -1,0 +1,30 @@
+// Interfaces que necesitan recursos del sistema: en aarch64-none se comprueba
+// el rechazo real de ENOSYS/sin entropía, no se simula un resultado exitoso.
+fn expect_error_contains(label: string, result: Result, expected: string) {
+    match result {
+        Result::Ok(_) => std::testing::assert(false, label + " unexpectedly succeeded without an OS"),
+        Result::Err(message) => {
+            let matched = std::text::contains(message, expected)
+            std::testing::assert(matched, label + " must report " + expected)
+        },
+    }
+    println(label + " unavailable")
+}
+
+fn main() {
+    let hello = std::bytes::from_array([104, 101, 108, 108, 111])
+    let ws_result = std::try::catch(|| { std::ws::encode(1, hello, true) })
+    expect_error_contains("ws masked encode", ws_result, "secure random masking key generation failed")
+
+    let scan_result = std::try::catch(|| { std::wifi::scan() })
+    expect_error_contains("wifi scan", scan_result, "Function not implemented")
+    let info_result = std::try::catch(|| { std::wifi::connection_info() })
+    expect_error_contains("wifi connection info", info_result, "Function not implemented")
+    let enable_result = std::try::catch(|| { std::wifi::set_enabled(true) })
+    expect_error_contains("wifi enable", enable_result, "Function not implemented")
+    let disable_result = std::try::catch(|| { std::wifi::set_enabled(false) })
+    expect_error_contains("wifi disable", disable_result, "Function not implemented")
+
+    let qrcode_result = std::try::catch(|| { std::qrcode::save_png("x", "M", 40, "/no/existe/qr.png") })
+    expect_error_contains("qrcode save", qrcode_result, "Function not implemented")
+}

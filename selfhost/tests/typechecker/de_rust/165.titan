@@ -1,0 +1,1 @@
+fn literal() -> int { if false { "unreachable" } else { 1 } }

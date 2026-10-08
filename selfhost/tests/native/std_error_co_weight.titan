@@ -1,0 +1,4 @@
+fn main() {
+    let g = std::collections::graph_new(true)
+    std::collections::graph_add_edge(g, "a", "b", -1)
+}

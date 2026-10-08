@@ -1,0 +1,218 @@
+// std::wifi (4 nativas). Reproduce crates/titan_stdlib/src/wifi_mod.rs:
+// llama de verdad a termux-wifi-* (Command de Rust). Prefijo `wf_`.
+// Si el CLI no está, el mismo mensaje que la VM.
+
+fn wf_fail(function: string, message: any) {
+    rt_native_fail(function, message)
+}
+
+fn wf_bars(rssi: int) -> int {
+    if rssi >= 0 - 50 {
+        return 4
+    }
+    if rssi >= 0 - 60 {
+        return 3
+    }
+    if rssi >= 0 - 70 {
+        return 2
+    }
+    if rssi >= 0 - 80 {
+        return 1
+    }
+    0
+}
+
+fn wf_output(function: string, tool: any, argv: any) -> any {
+    if ps_argv_nul(argv) {
+        wf_fail(function, "I/O error running termux-api: " + "nul byte found in provided data")
+    }
+    let in_r = ps_devnull()
+    if in_r < 0 {
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(0 - in_r))
+    }
+    let po = ps_pipe()
+    if po < 0 {
+        ps_close(in_r)
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(0 - po))
+    }
+    let pe = ps_pipe()
+    if pe < 0 {
+        ps_close(in_r)
+        tm_close_pair(po)
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(0 - pe))
+    }
+    let s = ps_streams(2)
+    std::raw::store(s, tm_ld32(po))
+    std::raw::store(s + 32, tm_ld32(pe))
+    let out_w = tm_ld32(po + 4)
+    let err_w = tm_ld32(pe + 4)
+    rt_free_block(po)
+    rt_free_block(pe)
+    let pid = ps_spawn(argv, in_r, out_w, err_w)
+    ps_close(in_r)
+    ps_close(out_w)
+    ps_close(err_w)
+    if pid < 0 {
+        ps_close(std::raw::load(s))
+        ps_close(std::raw::load(s + 32))
+        rt_free_block(s)
+        if pid == 0 - 2 {
+            wf_fail(function, "termux-api CLI '" + tool + "' is not installed. Run: pkg install termux-api")
+        }
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(0 - pid))
+    }
+    let budget = ps_budget()
+    std::raw::store(budget + 16, 16777216)
+    ps_pump(s, 2, 0, budget, -1)
+    let status = ps_waitpid(pid, 0)
+    let out = sb_finish(std::raw::load(s + 8))
+    let err = sb_finish(std::raw::load(s + 40))
+    let out_e = std::raw::load(s + 16)
+    let err_e = std::raw::load(s + 48)
+    rt_free_block(s)
+    rt_free_block(budget)
+    if status < 0 {
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(0 - status))
+    }
+    if out_e != 0 {
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(out_e))
+    }
+    if err_e != 0 {
+        wf_fail(function, "I/O error running termux-api: " + rt_os_error(err_e))
+    }
+    let code = ps_exit_code(status)
+    if code != 0 {
+        wf_fail(function, "termux-api '" + tool + "' failed with status " + rt_int_to_str(code) + ": " + dr_lossy(err))
+    }
+    out
+}
+
+fn wf_json(function: string, tool: any, argv: any) -> any {
+    let bytes = wf_output(function, tool, argv)
+    let text = dr_lossy(bytes)
+    let trimmed = std__text__trim(text)
+    if rt_slen(trimmed) == 0 {
+        return nil
+    }
+    std__json__parse(trimmed)
+}
+
+fn wf_str(v: any, key: any) -> any {
+    if std::raw::tag(v) != 9 {
+        return ""
+    }
+    let pos = rt_map_find(v, key)
+    if pos < 0 {
+        return ""
+    }
+    let x = rt_map_value_at(v, pos)
+    if std::raw::tag(x) != 5 {
+        return ""
+    }
+    x
+}
+
+fn wf_int(v: any, key: any, missing: int) -> int {
+    if std::raw::tag(v) != 9 {
+        return missing
+    }
+    let pos = rt_map_find(v, key)
+    if pos < 0 {
+        return missing
+    }
+    let x = rt_map_value_at(v, pos)
+    if std::raw::tag(x) != 1 {
+        return missing
+    }
+    std::raw::bits(x)
+}
+
+fn wf_bool(v: any, key: any) -> int {
+    if std::raw::tag(v) != 9 {
+        return 0
+    }
+    let pos = rt_map_find(v, key)
+    if pos < 0 {
+        return 0
+    }
+    let x = rt_map_value_at(v, pos)
+    if std::raw::tag(x) != 3 {
+        return 0
+    }
+    if std::raw::bits(x) != 0 {
+        return 1
+    }
+    0
+}
+
+fn wf_ap(item: any) -> any {
+    let mut m = rt_map_alloc(0, 8)
+    m = std__map__insert(m, "bssid", wf_str(item, "bssid"))
+    m = std__map__insert(m, "center_frequency_mhz", wf_int(item, "center_frequency_mhz", 0))
+    m = std__map__insert(m, "channel_bandwidth_mhz", wf_str(item, "channel_bandwidth_mhz"))
+    m = std__map__insert(m, "frequency_mhz", wf_int(item, "frequency_mhz", 0))
+    m = std__map__insert(m, "rssi", wf_int(item, "rssi", 0))
+    m = std__map__insert(m, "ssid", wf_str(item, "ssid"))
+    std__map__insert(m, "timestamp", wf_int(item, "timestamp", 0))
+}
+
+fn std__wifi__scan() -> any {
+    let function = "std::wifi::scan"
+    let argv = std::array::push([], "termux-wifi-scaninfo")
+    let value = wf_json(function, "termux-wifi-scaninfo", argv)
+    let mut out = []
+    if std::raw::tag(value) == 7 {
+        let n = len(value)
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, wf_ap(value[i]))
+            i += 1
+        }
+    }
+    out
+}
+
+fn std__wifi__connection_info() -> any {
+    let function = "std::wifi::connection_info"
+    let argv = std::array::push([], "termux-wifi-connectioninfo")
+    let value = wf_json(function, "termux-wifi-connectioninfo", argv)
+    let ssid = wf_str(value, "ssid")
+    if rt_slen(ssid) == 0 || ssid == "<unknown ssid>" || ssid == "0x" {
+        return nil
+    }
+    let mut hid: any = false
+    if wf_bool(value, "ssid_hidden") != 0 {
+        hid = true
+    }
+    let mut m = rt_map_alloc(0, 8)
+    m = std__map__insert(m, "bssid", wf_str(value, "bssid"))
+    m = std__map__insert(m, "frequency_mhz", wf_int(value, "frequency_mhz", 0))
+    m = std__map__insert(m, "hidden_ssid", hid)
+    m = std__map__insert(m, "ip", wf_str(value, "ip"))
+    m = std__map__insert(m, "link_speed_mbps", wf_int(value, "link_speed_mbps", 0))
+    m = std__map__insert(m, "mac_address", wf_str(value, "mac_address"))
+    m = std__map__insert(m, "network_id", wf_int(value, "network_id", 0 - 1))
+    m = std__map__insert(m, "rssi", wf_int(value, "rssi", 0))
+    m = std__map__insert(m, "ssid", ssid)
+    std__map__insert(m, "supplicant_state", wf_str(value, "supplicant_state"))
+}
+
+fn std__wifi__set_enabled(enabled: any) -> any {
+    let function = "std::wifi::set_enabled"
+    if std::raw::tag(enabled) != 3 {
+        rt_native_fail(function, "expected bool")
+    }
+    let mut arg = "false"
+    if std::raw::bits(enabled) != 0 {
+        arg = "true"
+    }
+    let argv = std::array::push(std::array::push([], "termux-wifi-enable"), arg)
+    wf_output(function, "termux-wifi-enable", argv)
+    nil
+}
+
+fn std__wifi__signal_bars(rssi: any) -> any {
+    let function = "std::wifi::signal_bars"
+    rt_expect_int(rssi, function)
+    wf_bars(std::raw::bits(rssi))
+}

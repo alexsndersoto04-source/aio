@@ -1,0 +1,1 @@
+const LIMIT: int = 20 fn main() { print("limit={LIMIT}") }

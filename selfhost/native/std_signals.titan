@@ -1,0 +1,261 @@
+// std::signals: señales de Unix.
+//
+// La VM de Rust usa signal-hook: instala un manejador que escribe en una
+// tubería y un hilo que cuenta cada señal recibida. El runtime nativo no tiene
+// hilos ni punteros a funciones, así que usa el mecanismo que Linux ofrece
+// para lo mismo: las señales instaladas se bloquean (rt_sigprocmask) y se leen
+// como datos desde un descriptor `signalfd`. El efecto para el programa es el
+// mismo: la señal ya no termina el proceso y queda contada hasta que se
+// consulta con `pending` o `wait_any`.
+//
+// Estado (globals + 2536 -> bloque de 80 bytes):
+//   0 descriptor signalfd (-1 si no hay), 1 máscara instalada,
+//   2..9 contadores pendientes (uno por señal de la tabla sg_names).
+//
+// Nota para std::process: la máscara de señales bloqueadas se hereda con
+// execve; el hijo tiene que desbloquearlas antes (sg_mask()).
+
+fn sg_state() -> int {
+    let g = std::raw::globals() + 2536
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let st = rt_alloc(80)
+    std::raw::store(st, -1)
+    let mut i = 1
+    while i < 10 {
+        std::raw::store(st + 8 * i, 0)
+        i += 1
+    }
+    std::raw::store(g, st)
+    st
+}
+
+// Máscara de las señales instaladas (0 si ninguna).
+fn sg_mask() -> int {
+    let st = std::raw::load(std::raw::globals() + 2536)
+    if st == 0 {
+        return 0
+    }
+    std::raw::load(st + 8)
+}
+
+// Número de señal de Linux x86-64 para cada posición de la tabla.
+fn sg_signo(k: int) -> int {
+    if k == 0 {
+        return 2
+    }
+    if k == 1 {
+        return 15
+    }
+    if k == 2 {
+        return 1
+    }
+    if k == 3 {
+        return 10
+    }
+    if k == 4 {
+        return 12
+    }
+    if k == 5 {
+        return 3
+    }
+    if k == 6 {
+        return 13
+    }
+    17
+}
+
+fn sg_name(k: int) -> string {
+    if k == 0 {
+        return "SIGINT"
+    }
+    if k == 1 {
+        return "SIGTERM"
+    }
+    if k == 2 {
+        return "SIGHUP"
+    }
+    if k == 3 {
+        return "SIGUSR1"
+    }
+    if k == 4 {
+        return "SIGUSR2"
+    }
+    if k == 5 {
+        return "SIGQUIT"
+    }
+    if k == 6 {
+        return "SIGPIPE"
+    }
+    "SIGCHLD"
+}
+
+// resolve(): nombre en mayúsculas ASCII, con o sin "SIG". Falla con el mismo
+// mensaje que SignalError::Unknown.
+fn sg_resolve(fname: string, name: any) -> int {
+    let n = rt_slen(name)
+    let b = sb_new(n)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(std::raw::bits(name) + 16 + i)
+        if c >= 97 && c <= 122 {
+            sb_byte(b, c - 32)
+        } else {
+            sb_byte(b, c)
+        }
+        i += 1
+    }
+    let up = sb_finish(b)
+    let mut k = 0
+    while k < 8 {
+        let full = sg_name(k)
+        if up == full || up == rt_substr_bytes(full, 3, rt_slen(full)) {
+            return k
+        }
+        k += 1
+    }
+    rt_native_fail(fname, "unknown signal '" + up + "' (try SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGUSR2, SIGQUIT)")
+    -1
+}
+
+// Lee del signalfd todo lo que haya llegado y lo suma a los contadores.
+fn sg_drain(st: int) {
+    let fd = std::raw::load(st)
+    if fd < 0 {
+        return
+    }
+    // signalfd_siginfo mide 128 bytes; ssi_signo es el primer u32.
+    let buf = rt_alloc(1024)
+    loop {
+        let r = std::raw::syscall(0, fd, buf, 1024, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            break
+        }
+        let mut off = 0
+        while off + 128 <= r {
+            let signo = std::raw::load(buf + off) & 4294967295
+            let mut k = 0
+            while k < 8 {
+                if sg_signo(k) == signo {
+                    let p = st + 16 + 8 * k
+                    let v = std::raw::load(p)
+                    // checked_add: al llegar al máximo se queda ahí
+                    if v != -1 {
+                        std::raw::store(p, v + 1)
+                    }
+                }
+                k += 1
+            }
+            off += 128
+        }
+    }
+    rt_free_block(buf)
+}
+
+fn std__signals__install(name: any) -> any {
+    rt_expect_str(name, "std::signals::install")
+    let k = sg_resolve("std::signals::install", name)
+    let st = sg_state()
+    let bit = std::raw::shl(1, sg_signo(k) - 1)
+    let mask = std::raw::load(st + 8)
+    if (mask & bit) != 0 {
+        return nil
+    }
+    let newmask = mask | bit
+    let set = rt_alloc(8)
+    std::raw::store(set, newmask)
+    // Primero se bloquea: lo que llegue desde ahora queda pendiente y el
+    // signalfd lo entrega.
+    let r1 = std::raw::syscall(14, 0, set, 0, 8, 0, 0)
+    if r1 < 0 {
+        rt_free_block(set)
+        rt_native_fail("std::signals::install", "signal-hook error: " + rt_os_error(0 - r1))
+    }
+    // signalfd4(fd, &mask, 8, SFD_NONBLOCK | SFD_CLOEXEC)
+    let fd = std::raw::syscall(289, std::raw::load(st), set, 8, 526336, 0, 0)
+    rt_free_block(set)
+    if fd < 0 {
+        rt_native_fail("std::signals::install", "signal-hook error: " + rt_os_error(0 - fd))
+    }
+    std::raw::store(st, fd)
+    std::raw::store(st + 8, newmask)
+    nil
+}
+
+fn std__signals__pending(name: any) -> any {
+    rt_expect_str(name, "std::signals::pending")
+    let k = sg_resolve("std::signals::pending", name)
+    let st = sg_state()
+    if (std::raw::load(st + 8) & std::raw::shl(1, sg_signo(k) - 1)) == 0 {
+        return 0
+    }
+    sg_drain(st)
+    let p = st + 16 + 8 * k
+    let v = std::raw::load(p)
+    std::raw::store(p, 0)
+    v
+}
+
+fn sg_now_ns() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+fn std__signals__wait_any(timeout0: any) -> any {
+    rt_expect_int(timeout0, "std::signals::wait_any")
+    let mut timeout = std::raw::bits(timeout0)
+    if timeout < 0 {
+        timeout = 1000
+    }
+    // En nanosegundos, como Instant/Duration. Más de ~292 años no cabe; en la
+    // práctica es esperar para siempre.
+    let mut limit = 9223372036854775807
+    if timeout < 9223372036854 {
+        limit = timeout * 1000000
+    }
+    let st = sg_state()
+    let started = sg_now_ns()
+    let pfd = rt_alloc(8)
+    loop {
+        sg_drain(st)
+        let mut k = 0
+        while k < 8 {
+            let p = st + 16 + 8 * k
+            let v = std::raw::load(p)
+            if v != 0 {
+                std::raw::store(p, v - 1)
+                rt_free_block(pfd)
+                return sg_name(k)
+            }
+            k += 1
+        }
+        let elapsed = sg_now_ns() - started
+        if elapsed >= limit {
+            rt_free_block(pfd)
+            return "timeout"
+        }
+        // milisegundos que faltan, redondeados hacia arriba
+        let mut wait = (limit - elapsed + 999999) / 1000000
+        if limit - elapsed > 9000000000000000000 || wait > 1000000 {
+            wait = 1000000
+        }
+        let fd = std::raw::load(st)
+        if fd >= 0 {
+            // poll(fd, POLLIN): despierta en cuanto llega una señal instalada
+            std::raw::store(pfd, fd | std::raw::shl(1, 32))
+            std::raw::syscall(7, pfd, 1, wait, 0, 0, 0)
+        } else {
+            let ts = rt_alloc(16)
+            std::raw::store(ts, wait / 1000)
+            std::raw::store(ts + 8, (wait % 1000) * 1000000)
+            std::raw::syscall(35, ts, 0, 0, 0, 0, 0)
+            rt_free_block(ts)
+        }
+    }
+    "timeout"
+}

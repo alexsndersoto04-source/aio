@@ -1,0 +1,25 @@
+// Errores de std::fswatch (ruta, tiempo, manejador).
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn long_path() -> string {
+    let mut s = "x"
+    while std::text::length(s) < 16385 {
+        s = s + s
+    }
+    std::text::substring(s, 0, 16385)
+}
+
+fn main() {
+    show("falta", std::try::catch(|| { std::fswatch::watch_once("/no/existe/fw_xyz", 50, false) }))
+    show("ruta", std::try::catch(|| { std::fswatch::watch_once(long_path(), 50, false) }))
+    show("tiempo", std::try::catch(|| { std::fswatch::next_event(1, 86400001) }))
+    show("manejador", std::try::catch(|| { std::fswatch::next_event(9999999, 10) }))
+    std::fswatch::close(9999999)
+    println("close ok")
+    show("abrir falta", std::try::catch(|| { std::fswatch::open("/no/existe/fw_xyz", false) }))
+}

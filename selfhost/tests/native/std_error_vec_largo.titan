@@ -1,0 +1,4 @@
+// Longitudes distintas.
+fn main() {
+    print(std::vector::cosine_similarity([1, 2], [1, 2, 3]))
+}

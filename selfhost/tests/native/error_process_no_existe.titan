@@ -1,0 +1,3 @@
+fn main() {
+    std::process::run("titan_programa_que_no_existe arg")
+}

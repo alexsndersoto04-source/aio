@@ -1,0 +1,70 @@
+// std::freestanding_memory sin sistema operativo: map_page escribe las tablas
+// de páginas del procesador y translate_page las recorre. Se comprueba de
+// verdad: lo que se escribe por la dirección virtual nueva se lee por la
+// dirección física del marco (y al revés).
+
+fn main() {
+    let mb = 1048576
+    print(std::freestanding_memory::map_page(268435456, 1342177280, 1))
+    print(std::freestanding_memory::init_frame_allocator(1342177280 + 5, 65536))
+    print(std::freestanding_memory::init_frame_allocator(1342177280, 65536))
+    let fr = std::freestanding_memory::allocate_frame()
+    let fr2 = std::freestanding_memory::allocate_frame()
+    print(fr)
+    print(fr2 - fr)
+    print(std::freestanding_memory::free_frames_count())
+    // Sin mapear: la RAM y los dispositivos están en identidad (bloques de 1 GiB).
+    print(std::freestanding_memory::translate_page(fr + 42) - fr)
+    print(std::freestanding_memory::translate_page(150994944 + 24))
+    print(std::freestanding_memory::translate_page(549755813888))
+    print(std::freestanding_memory::translate_page(-4096))
+    // Argumentos no válidos.
+    print(std::freestanding_memory::map_page(268435456 + 1, fr, 1))
+    print(std::freestanding_memory::map_page(268435456, fr + 8, 1))
+    print(std::freestanding_memory::map_page(268435456, fr, 16))
+    print(std::freestanding_memory::map_page(268435456, fr, -1))
+    print(std::freestanding_memory::map_page(549755813888, fr, 1))
+    print(std::freestanding_memory::map_page(-4096, fr, 1))
+    // 256 MiB (dentro del bloque de dispositivos) -> marco de RAM, escribible.
+    let va = 256 * mb
+    print(std::freestanding_memory::map_page(va, fr, 1))
+    print(std::freestanding_memory::translate_page(va + 100) - fr)
+    print(std::freestanding_memory::translate_page(va + 4096) - va)
+    print(std::freestanding_mmio::init_mmio_region(va, 12288))
+    print(std::freestanding_mmio::init_mmio_region(fr, 8192))
+    print(std::freestanding_mmio::write_mmio_u32(va + 8, 123456))
+    print(std::freestanding_mmio::read_mmio_u32(fr + 8))
+    print(std::freestanding_mmio::write_mmio_u32(fr + 12, 4294967295))
+    print(std::freestanding_mmio::read_mmio_u32(va + 12))
+    // Otra dirección virtual para el mismo marco (dos nombres, un sitio).
+    print(std::freestanding_memory::map_page(va + 4096, fr, 3))
+    print(std::freestanding_mmio::read_mmio_u32(va + 4096 + 8))
+    // Cambiar el destino: ahora va apunta al segundo marco.
+    print(std::freestanding_mmio::write_mmio_u32(fr2 + 8, 777))
+    print(std::freestanding_memory::map_page(va, fr2, 1))
+    print(std::freestanding_memory::translate_page(va) - fr2)
+    print(std::freestanding_mmio::read_mmio_u32(va + 8))
+    print(std::freestanding_mmio::read_mmio_u32(va + 4096 + 8))
+    // Memoria de dispositivo (flag 8) sobre el mismo marco.
+    print(std::freestanding_memory::map_page(va + 8192, fr, 9))
+    print(std::freestanding_mmio::read_mmio_u32(va + 8192 + 12))
+    // Una página dentro de la RAM en identidad (parte un bloque de 1 GiB y
+    // uno de 2 MiB: lo de alrededor sigue igual).
+    let va2 = fr + 64 * mb
+    print(std::freestanding_memory::map_page(va2, fr2, 1))
+    print(std::freestanding_memory::translate_page(va2 + 5) - fr2)
+    print(std::freestanding_memory::translate_page(va2 + 4096) - va2)
+    print(std::freestanding_memory::translate_page(va2 - 1) - va2)
+    print(std::freestanding_memory::translate_page(va2 + 2 * mb) - va2)
+    // Marcos: devolver y volver a pedir.
+    print(std::freestanding_memory::deallocate_frame(fr2 + 1))
+    print(std::freestanding_memory::deallocate_frame(fr2))
+    print(std::freestanding_memory::deallocate_frame(fr2))
+    print(std::freestanding_memory::free_frames_count())
+    print(std::freestanding_memory::allocate_frame() - fr2)
+    print(std::freestanding_memory::shutdown())
+    print(std::freestanding_memory::free_frames_count())
+    print(std::freestanding_memory::map_page(va, fr, 1))
+    // Las tablas siguen: la traducción no depende del reparto de marcos.
+    print(std::freestanding_memory::translate_page(va + 4096 + 3) - fr)
+}

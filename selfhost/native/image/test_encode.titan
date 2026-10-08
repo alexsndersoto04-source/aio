@@ -1,0 +1,9 @@
+// Adaptador EXCLUSIVO para verificar los dos codificadores en desarrollo.
+// No forma parte de la API publicada de imágenes.
+fn std__image__encode(handle: any, format: any) -> any {
+    let e = im_need("std::image::encode", im_int(handle, "std::image::encode"))
+    if rt_str_eq(format, "bmp") { return im_bmp_encode(e) }
+    if rt_str_eq(format, "png") { return im_png_encode(e) }
+    std::raw::fail("prueba interna: solo PNG y BMP")
+    nil
+}

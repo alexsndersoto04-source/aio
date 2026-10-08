@@ -1,0 +1,52 @@
+// std::freestanding_mmio sin sistema operativo: registros de dispositivo con
+// accesos volátiles de 32 bits y un UART PL011 programado de verdad (reloj de
+// 24 MHz de la máquina virt). El texto sale por el puerto serie y además
+// queda en el búfer (bytes exactos; UTF-8 inválido se lee como U+FFFD).
+
+fn main() {
+    let uart = 150994944
+    print(std::freestanding_mmio::serial_write_str("nada"))
+    print(std::freestanding_mmio::serial_get_buffer() == "")
+    print(std::freestanding_mmio::read_mmio_u32(uart + 24))
+    print(std::freestanding_mmio::serial_init(uart, 0))
+    print(std::freestanding_mmio::serial_init(uart, 1))
+    print(std::freestanding_mmio::serial_init(uart, 5000000))
+    print(std::freestanding_mmio::serial_init(uart + 2, 115200))
+    print(std::freestanding_mmio::serial_init(-4096, 115200))
+    print(std::freestanding_mmio::serial_init(uart, 115200))
+    // IBRD, FBRD, LCRH (8 bits, FIFO) y CR (UART, TX y RX encendidos).
+    print(std::freestanding_mmio::read_mmio_u32(uart + 36))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 40))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 44))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 48))
+    print(std::freestanding_mmio::serial_init(uart, 9600))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 36))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 40))
+    print(std::freestanding_mmio::serial_write_str("hola ñ\n"))
+    print(std::freestanding_mmio::write_mmio_u32(uart, 65))
+    print(std::freestanding_mmio::write_mmio_u32(uart, 10))
+    // Un byte suelto que no es UTF-8 válido.
+    print(std::freestanding_mmio::write_mmio_u32(uart, 195))
+    print(std::freestanding_mmio::write_mmio_u32(uart, 4294967296))
+    print(std::freestanding_mmio::write_mmio_u32(uart, -1))
+    print(std::freestanding_mmio::write_mmio_u32(uart + 2, 65))
+    print(std::freestanding_mmio::write_mmio_u32(uart + 4096, 65))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 4096))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 1))
+    let b = std::freestanding_mmio::serial_get_buffer()
+    print(std::text::length(b))
+    print(b == "hola ñ\nA\n" + std::text::from_char_code(65533))
+    // Regiones: tamaño 0, desbordamiento, negativos.
+    print(std::freestanding_mmio::init_mmio_region(uart, 0))
+    print(std::freestanding_mmio::init_mmio_region(9223372036854775807, 2))
+    print(std::try::catch(|| std::freestanding_mmio::init_mmio_region(-1, 16)))
+    print(std::try::catch(|| std::freestanding_mmio::init_mmio_region(0, -16)))
+    // Volver a iniciar vacía el búfer; shutdown lo quita todo.
+    print(std::freestanding_mmio::serial_init(uart, 115200))
+    print(std::freestanding_mmio::serial_get_buffer() == "")
+    print(std::freestanding_mmio::shutdown())
+    print(std::freestanding_mmio::write_mmio_u32(uart, 65))
+    print(std::freestanding_mmio::read_mmio_u32(uart + 48))
+    print(std::freestanding_mmio::serial_write_str("x"))
+    print(std::freestanding_mmio::serial_get_buffer() == "")
+}

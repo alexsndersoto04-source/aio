@@ -1,0 +1,69 @@
+// Logical windows are process-local state, matching std::window in Rust.
+// This test needs no X server; live X11 windows have separate live_* tests.
+fn error_text(result: any) -> string {
+    match result {
+        Result::Ok(_) => "<unexpected success>",
+        Result::Err(message) => message,
+        _ => "<unexpected result>",
+    }
+}
+
+fn main() {
+    let handle = std::window::create("state test", 320, 200)
+    std::testing::assert(handle > 0, "create returns a positive handle")
+    std::testing::assert(std::window::is_open(handle), "new handle is open")
+    std::testing::assert(std::window::set_title(handle, "renamed"), "title update reaches an open handle")
+    std::testing::assert(std::window::resize(handle, 640, 480), "valid resize succeeds")
+    std::testing::assert(std::window::resize(handle, 800, 600), "second resize succeeds")
+    std::testing::assert(!std::window::resize(handle, 0, 600), "zero dimension is rejected")
+    std::testing::assert(!std::window::resize(handle, 16385, 600), "dimension above limit is rejected")
+
+    let events = std::window::poll_events(handle)
+    std::testing::assert_eq(len(events), 2, "both successful resizes are queued")
+    std::testing::assert_eq(events[0], "Resized(640, 480)", "first resize event preserves order")
+    std::testing::assert_eq(events[1], "Resized(800, 600)", "second resize event preserves order")
+    std::testing::assert_eq(len(std::window::poll_events(handle)), 0, "poll drains the queue")
+
+    std::testing::assert(std::window::close(handle), "close removes an open handle")
+    std::testing::assert(!std::window::is_open(handle), "closed handle is no longer open")
+    std::testing::assert(!std::window::close(handle), "closing an unknown handle returns false")
+    std::testing::assert(!std::window::set_title(handle, "too late"), "closed handle rejects title update")
+    std::testing::assert(!std::window::resize(handle, 100, 100), "closed handle rejects resize")
+    std::testing::assert_eq(len(std::window::poll_events(handle)), 0, "closed handle has no queued events")
+    std::testing::assert_eq(len(std::window::poll_events(999999)), 0, "unknown handle has no events")
+
+    let negative = error_text(std::try::catch(|| std::window::is_open(-1)))
+    std::testing::assert_eq(negative, "native function 'std::window::is_open' failed: window handle must be nonnegative", "negative handles are rejected")
+    let width_error = error_text(std::try::catch(|| std::window::create("bad", -1, 100)))
+    std::testing::assert_eq(width_error, "native function 'std::window::create' failed: window width out of range", "negative width reports the API error")
+    let dimensions_error = error_text(std::try::catch(|| std::window::create("bad", 0, 100)))
+    std::testing::assert_eq(dimensions_error, "native function 'std::window::create' failed: window dimensions must be between 1 and 16384", "zero-sized window reports the API error")
+
+    let mut handles = []
+    let mut i = 0
+    while i < 64 {
+        handles = std::array::push(handles, std::window::create("quota", 1, 1))
+        i += 1
+    }
+    let quota_error = error_text(std::try::catch(|| std::window::create("over quota", 1, 1)))
+    std::testing::assert_eq(quota_error, "native function 'std::window::create' failed: window handle quota exceeded (limit 64)", "the per-runtime handle quota is enforced")
+    for open_handle in handles {
+        std::testing::assert(std::window::close(open_handle), "quota-test handle closes")
+    }
+
+    let queue_handle = std::window::create("event limit", 1, 1)
+    let mut event_index = 0
+    while event_index < 1024 {
+        std::testing::assert(std::window::resize(queue_handle, event_index + 1, 10), "resize fits while the event queue has room")
+        event_index += 1
+    }
+    std::testing::assert(!std::window::resize(queue_handle, 1025, 10), "full event queue rejects another resize")
+    let queued = std::window::poll_events(queue_handle)
+    std::testing::assert_eq(len(queued), 1024, "event queue never exceeds its documented limit")
+    std::testing::assert_eq(queued[0], "Resized(1, 10)", "first queued event remains first")
+    std::testing::assert_eq(queued[1023], "Resized(1024, 10)", "last queued event is retained")
+    std::testing::assert(std::window::resize(queue_handle, 1025, 10), "draining the queue permits later resizes")
+    std::testing::assert_eq(std::window::poll_events(queue_handle)[0], "Resized(1025, 10)", "post-drain event is correct")
+    std::testing::assert(std::window::close(queue_handle), "event-limit handle closes")
+    println("logical window lifecycle, quotas, and events ok")
+}

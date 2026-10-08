@@ -1,0 +1,1187 @@
+// std::plot (5 nativas). Reproduce crates/titan_stdlib/src/plot_mod.rs
+// sobre plotters 0.3.7 (SVG, sin TTF): ChartBuilder, malla, ejes, series.
+// Prefijo `pl_`. Nada fingido: el SVG tiene que ser el mismo byte a byte.
+
+// Constantes f64 (bits IEEE).
+fn pl_0() -> int { 0 }
+fn pl_1() -> int { 4607182418800017408 }
+fn pl_half() -> int { 4602678819172646912 }
+fn pl_2() -> int { 4611686018427387904 }
+fn pl_5() -> int { 4617315517961601024 }
+fn pl_10() -> int { 4621819117588971520 }
+fn pl_05() -> int { 4587366580439587226 }
+fn pl_01() -> int { 4591870180066957722 }
+fn pl_02() -> int { 4596373779694328218 }
+fn pl_024() -> int { 4597814931575086776 }
+fn pl_07() -> int { 4604480259023595110 }
+fn pl_08() -> int { 4605380978949069210 }
+fn pl_15() -> int { 4594572339843380019 }
+fn pl_85() -> int { 4605831338911806259 }
+fn pl_11() -> int { 4607632778762754458 }
+fn pl_124() -> int { 4608263282710586327 }
+fn pl_125() -> int { 4608308318706860032 }
+fn pl_1e3() -> int { 4562254508917369340 }
+fn pl_eps() -> int { 4372995238176751616 }
+fn pl_14() -> int { 4624070917402656768 }
+fn pl_16() -> int { 4625196817309499392 }
+fn pl_24() -> int { 4627448617123184640 }
+fn pl_mhalf() -> int { 0 - 4620693217682128896 }
+fn pl_inf() -> int { 9218868437227405312 }
+
+fn pl_g(c: int, i: int) -> int { std::raw::load(c + 8 * i) }
+fn pl_s(c: int, i: int, v: int) { std::raw::store(c + 8 * i, v) }
+
+fn pl_in(f: string, msg: string) {
+    rt_native_fail(f, "plot input error: " + msg)
+}
+
+fn pl_abs(x: int) -> int { x & 9223372036854775807 }
+
+fn pl_floor(b: int) -> int {
+    let t = rt_trunc(b)
+    if b < 0 && rt_has_fraction(b) {
+        return std::raw::fsub(t, pl_1())
+    }
+    t
+}
+
+fn pl_ceil(b: int) -> int {
+    let t = rt_trunc(b)
+    if b >= 0 && rt_has_fraction(b) {
+        return std::raw::fadd(t, pl_1())
+    }
+    t
+}
+
+fn pl_round(b: int) -> int {
+    if !rt_has_fraction(b) {
+        return b
+    }
+    let a = pl_abs(b)
+    let t = rt_trunc(a)
+    let mut r = t
+    if std::raw::fcmp(std::raw::fsub(a, t), pl_half()) >= 0 {
+        r = std::raw::fadd(t, pl_1())
+    }
+    if b < 0 {
+        r = r | (0 - 9223372036854775807 - 1)
+    }
+    r
+}
+
+fn pl_floor_i(b: int) -> int { std::raw::ftoint(pl_floor(b)) }
+fn pl_ceil_i(b: int) -> int { std::raw::ftoint(pl_ceil(b)) }
+fn pl_round_i(b: int) -> int { std::raw::ftoint(pl_round(b)) }
+
+fn pl_log10(x: int) -> int {
+    lm_d(lm_log(x), lm_log(pl_10()))
+}
+
+fn pl_rem_euclid(a: int, b: int) -> int {
+    let q = lm_d(a, b)
+    let mut ret = 0
+    if lm_gt(b, pl_0()) {
+        ret = lm_s(a, lm_m(pl_floor(q), b))
+    } else {
+        ret = lm_s(a, lm_m(pl_ceil(q), b))
+    }
+    if lm_lt(pl_abs(lm_s(ret, b)), pl_eps()) {
+        return pl_0()
+    }
+    ret
+}
+
+fn pl_nums(a: any, f: string) -> array {
+    rt_expect_array(a, f)
+    let mut out = []
+    for x in a {
+        out = std::array::push(out, rt_expect_number(x, f))
+    }
+    out
+}
+
+fn pl_hexd(n: int) -> int {
+    if n < 10 {
+        return 48 + n
+    }
+    55 + n
+}
+
+fn pl_esc(b: int, s: any) {
+    let n = rt_slen(s)
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(p + i)
+        if x == 60 {
+            sb_str(b, "&lt;")
+        } else if x == 62 {
+            sb_str(b, "&gt;")
+        } else if x == 38 {
+            sb_str(b, "&amp;")
+        } else if x == 34 {
+            sb_str(b, "&quot;")
+        } else if x == 39 {
+            sb_str(b, "&apos;")
+        } else {
+            sb_byte(b, x)
+        }
+        i += 1
+    }
+}
+
+fn pl_attr(b: int, key: any, val: any) {
+    sb_str(b, " ")
+    sb_str(b, key)
+    sb_str(b, "=\"")
+    pl_esc(b, val)
+    sb_str(b, "\"")
+}
+
+fn pl_color(r: int, g: int, bl: int) -> any {
+    let b = sb_new(8)
+    sb_byte(b, 35)
+    sb_byte(b, pl_hexd(r / 16))
+    sb_byte(b, pl_hexd(r % 16))
+    sb_byte(b, pl_hexd(g / 16))
+    sb_byte(b, pl_hexd(g % 16))
+    sb_byte(b, pl_hexd(bl / 16))
+    sb_byte(b, pl_hexd(bl % 16))
+    sb_finish(b)
+}
+
+fn pl_fstr(x: int) -> any { fl_to_string(x) }
+fn pl_istr(x: int) -> any { rt_int_to_str(x) }
+
+fn pl_open(b: int, name: string, close: bool) {
+    sb_str(b, "<")
+    sb_str(b, name)
+    if close {
+        sb_str(b, "/>\n")
+    } else {
+        sb_str(b, ">\n")
+    }
+}
+
+fn pl_rect(b: int, x0: int, y0: int, x1: int, y1: int, r: int, g: int, bl: int, a: int, fill: bool) {
+    if lm_eq(a, pl_0()) {
+        return
+    }
+    let mut fill_s = "none"
+    let mut stroke_s = "none"
+    let col = pl_color(r, g, bl)
+    if fill {
+        fill_s = col
+    } else {
+        stroke_s = col
+    }
+    sb_str(b, "<rect")
+    pl_attr(b, "x", pl_istr(x0))
+    pl_attr(b, "y", pl_istr(y0))
+    pl_attr(b, "width", pl_istr(x1 - x0))
+    pl_attr(b, "height", pl_istr(y1 - y0))
+    pl_attr(b, "opacity", pl_fstr(a))
+    pl_attr(b, "fill", fill_s)
+    pl_attr(b, "stroke", stroke_s)
+    sb_str(b, "/>\n")
+}
+
+fn pl_line(b: int, x1: int, y1: int, x2: int, y2: int, r: int, g: int, bl: int, a: int, sw: int) {
+    if lm_eq(a, pl_0()) {
+        return
+    }
+    sb_str(b, "<line")
+    pl_attr(b, "opacity", pl_fstr(a))
+    pl_attr(b, "stroke", pl_color(r, g, bl))
+    pl_attr(b, "stroke-width", pl_istr(sw))
+    pl_attr(b, "x1", pl_istr(x1))
+    pl_attr(b, "y1", pl_istr(y1))
+    pl_attr(b, "x2", pl_istr(x2))
+    pl_attr(b, "y2", pl_istr(y2))
+    sb_str(b, "/>\n")
+}
+
+fn pl_poly(b: int, pts: array, r: int, g: int, bl: int, a: int, sw: int) {
+    if lm_eq(a, pl_0()) {
+        return
+    }
+    let pb = sb_new(32)
+    let mut i = 0
+    while i < len(pts) {
+        let p = pts[i]
+        sb_str(pb, pl_istr(p[0]))
+        sb_str(pb, ",")
+        sb_str(pb, pl_istr(p[1]))
+        sb_str(pb, " ")
+        i += 1
+    }
+    let ps = sb_finish(pb)
+    sb_str(b, "<polyline")
+    pl_attr(b, "fill", "none")
+    pl_attr(b, "opacity", pl_fstr(a))
+    pl_attr(b, "stroke", pl_color(r, g, bl))
+    pl_attr(b, "stroke-width", pl_istr(sw))
+    pl_attr(b, "points", ps)
+    sb_str(b, "/>\n")
+}
+
+fn pl_circle(b: int, cx: int, cy: int, rad: int, r: int, g: int, bl: int, a: int, sw: int, fill: bool) {
+    if lm_eq(a, pl_0()) {
+        return
+    }
+    let col = pl_color(r, g, bl)
+    let mut fill_s = "none"
+    let mut stroke_s = "none"
+    if fill {
+        fill_s = col
+    } else {
+        stroke_s = col
+    }
+    sb_str(b, "<circle")
+    pl_attr(b, "cx", pl_istr(cx))
+    pl_attr(b, "cy", pl_istr(cy))
+    pl_attr(b, "r", pl_istr(rad))
+    pl_attr(b, "opacity", pl_fstr(a))
+    pl_attr(b, "fill", fill_s)
+    pl_attr(b, "stroke", stroke_s)
+    pl_attr(b, "stroke-width", pl_istr(sw))
+    sb_str(b, "/>\n")
+}
+
+fn pl_text(b: int, x: int, y: int, s: any, size: int, r: int, g: int, bl: int, a: int, hpos: string, vpos: string, rot: int) {
+    if lm_eq(a, pl_0()) {
+        return
+    }
+    let mut ta = "middle"
+    if hpos == "left" {
+        ta = "start"
+    } else if hpos == "right" {
+        ta = "end"
+    }
+    let mut dy = "-0.5ex"
+    if vpos == "top" {
+        dy = "0.76em"
+    } else if vpos == "center" {
+        dy = "0.5ex"
+    }
+    sb_str(b, "<text")
+    pl_attr(b, "x", pl_istr(x))
+    pl_attr(b, "y", pl_istr(y))
+    pl_attr(b, "dy", dy)
+    pl_attr(b, "text-anchor", ta)
+    pl_attr(b, "font-family", "sans-serif")
+    pl_attr(b, "font-size", pl_fstr(lm_d(size, pl_124())))
+    pl_attr(b, "opacity", pl_fstr(a))
+    pl_attr(b, "fill", pl_color(r, g, bl))
+    if rot == 90 {
+        let tb = sb_new(24)
+        sb_str(tb, "rotate(90, ")
+        sb_str(tb, pl_istr(x))
+        sb_str(tb, ", ")
+        sb_str(tb, pl_istr(y))
+        sb_str(tb, ")")
+        pl_attr(b, "transform", sb_finish(tb))
+    } else if rot == 270 {
+        let tb = sb_new(24)
+        sb_str(tb, "rotate(270, ")
+        sb_str(tb, pl_istr(x))
+        sb_str(tb, ", ")
+        sb_str(tb, pl_istr(y))
+        sb_str(tb, ")")
+        pl_attr(b, "transform", sb_finish(tb))
+    }
+    sb_str(b, ">\n")
+    pl_esc(b, s)
+    sb_str(b, "\n</text>\n")
+}
+
+fn pl_est(size: int, text: any) -> (int, int) {
+    let em = lm_d(lm_d(size, pl_124()), pl_124())
+    let n = rt_slen(text)
+    let w = pl_round_i(lm_m(lm_m(em, pl_07()), std::raw::ffromint(n)))
+    let h0 = 0 - pl_round_i(em)
+    let h1 = pl_round_i(lm_m(em, pl_024()))
+    return (w, h1 - h0)
+}
+
+fn pl_box(size: int, text: any) -> (int, int) {
+    let em = lm_d(lm_d(size, pl_124()), pl_124())
+    let n = rt_slen(text)
+    let w = pl_round_i(lm_m(lm_m(em, pl_07()), std::raw::ffromint(n)))
+    let h0 = 0 - pl_round_i(em)
+    let h1 = pl_round_i(lm_m(em, pl_024()))
+    let mut dw = w
+    if dw < 0 {
+        dw = 0 - dw
+    }
+    let mut dh = h1 - h0
+    if dh < 0 {
+        dh = 0 - dh
+    }
+    return (dw, dh)
+}
+
+fn pl_pow10i(p: int) -> int {
+    let mut s = pl_1()
+    let mut i = 0
+    while i < p {
+        s = lm_m(s, pl_10())
+        i += 1
+    }
+    s
+}
+
+fn pl_min_repr(n: int, eps: int) -> (int, int) {
+    if !lm_lt(eps, pl_1()) {
+        return (n, 0)
+    }
+    let fl = pl_floor(n)
+    if lm_lt(lm_s(n, fl), eps) {
+        return (fl, 0)
+    }
+    let cl = pl_ceil(n)
+    if lm_lt(lm_s(cl, n), eps) {
+        return (cl, 0)
+    }
+    let (rem, pre) = pl_min_repr(lm_m(lm_s(n, fl), pl_10()), lm_m(eps, pl_10()))
+    return (lm_a(fl, lm_d(rem, pl_10())), pre + 1)
+}
+
+fn pl_f2s(n: int, maxp: int, mind: int) -> any {
+    let mut sign = ""
+    let mut nn = n
+    if lm_lt(n, pl_0()) {
+        sign = "-"
+        nn = pl_abs(n)
+    }
+    let intp = pl_floor(nn)
+    let decf = lm_m(lm_s(nn, intp), pl_pow10i(maxp))
+    let dec_part = pl_round_i(decf)
+    let mut result = ""
+    let mut count = 0
+    if dec_part == 0 || maxp == 0 {
+        result = sign + pl_istr(pl_floor_i(intp))
+        count = 0
+    } else {
+        let mut leading = ""
+        let mut dec_result = pl_istr(dec_part)
+        let mut k = 0
+        let need = maxp - rt_slen(dec_result)
+        while k < need {
+            leading = leading + "0"
+            k += 1
+        }
+        while rt_slen(dec_result) > 0 && std::text::substring(dec_result, rt_slen(dec_result) - 1, rt_slen(dec_result)) == "0" {
+            dec_result = std::text::substring(dec_result, 0, rt_slen(dec_result) - 1)
+        }
+        result = sign + pl_istr(pl_floor_i(intp)) + "." + leading + dec_result
+        count = std::text::length(leading) + std::text::length(dec_result)
+    }
+    if count == 0 && mind > 0 {
+        result = result + "."
+    }
+    while count < mind {
+        result = result + "0"
+        count += 1
+    }
+    result
+}
+
+fn pl_pretty(n: int) -> any {
+    let (tn, p) = pl_min_repr(n, lm_d(pl_1(), pl_pow10i(5)))
+    pl_f2s(tn, p, 1)
+}
+
+fn pl_keypoints(lo: int, hi: int, max_points: int) -> array {
+    if max_points == 0 {
+        return []
+    }
+    let mut r0 = lo
+    let mut r1 = hi
+    if lm_gt(r0, r1) {
+        r0 = hi
+        r1 = lo
+    }
+    if lm_lt(pl_abs(lm_s(r0, r1)), pl_eps()) {
+        return [r0]
+    }
+    let span = lm_s(r1, r0)
+    let mut scale = lm_pow(pl_10(), pl_floor(pl_log10(span)))
+    let mut gran = lm_d(scale, pl_10())
+    if 1 + pl_floor_i(lm_d(span, scale)) > max_points {
+        scale = lm_m(scale, pl_10())
+        gran = lm_m(gran, pl_10())
+    }
+    let nxts = [pl_2(), pl_5(), pl_10()]
+    let mut guard = 0
+    while true {
+        guard += 1
+        if guard > 40 {
+            break
+        }
+        let old = scale
+        let mut stop = false
+        let mut i = 0
+        while i < 3 {
+            let nxt = nxts[i]
+            let step = lm_d(old, nxt)
+            let mut new_left = lm_s(r0, pl_rem_euclid(r0, step))
+            if lm_lt(new_left, r0) {
+                new_left = lm_a(new_left, step)
+            }
+            let new_right = lm_s(r1, pl_rem_euclid(r1, step))
+            let npoints = lm_a(pl_1(), lm_m(lm_d(lm_s(new_right, new_left), old), nxt))
+            if pl_round_i(npoints) > max_points {
+                stop = true
+                break
+            }
+            scale = step
+            i += 1
+        }
+        if stop {
+            break
+        }
+        scale = lm_d(old, pl_10())
+        gran = lm_d(gran, pl_10())
+    }
+    let mut left = lm_s(r0, pl_rem_euclid(r0, scale))
+    if lm_lt(left, r0) {
+        left = lm_a(left, scale)
+    }
+    let left_base = lm_m(pl_floor(lm_d(left, gran)), gran)
+    let mut left_rel = lm_s(left, left_base)
+    let right = lm_s(r1, pl_rem_euclid(r1, scale))
+    let mut ret = []
+    while !lm_lt(lm_s(lm_s(right, left_rel), left_base), lm_neg(pl_eps())) {
+        let nlr = lm_m(pl_round(lm_d(left_rel, gran)), gran)
+        if lm_lt(nlr, pl_0()) {
+            left_rel = lm_a(left_rel, gran)
+        }
+        ret = std::array::push(ret, lm_a(left_rel, left_base))
+        left_rel = lm_a(left_rel, scale)
+    }
+    ret
+}
+
+fn pl_map(v: int, v0: int, v1: int, lim0: int, lim1: int) -> int {
+    if lm_eq(v1, v0) {
+        return (lim1 - lim0) / 2
+    }
+    let logic = lm_d(lm_s(v, v0), lm_s(v1, v0))
+    let actual = lim1 - lim0
+    if actual == 0 {
+        return lim1
+    }
+    if !rt_is_finite(logic) {
+        if lm_gt(logic, pl_0()) {
+            return lim1
+        }
+        return lim0
+    }
+    let af = std::raw::ffromint(actual)
+    if actual > 0 {
+        return lim0 + pl_floor_i(lm_a(lm_m(af, logic), pl_1e3()))
+    }
+    lim0 + pl_ceil_i(lm_s(lm_m(af, logic), pl_1e3()))
+}
+
+fn pl_range(values: array) -> (int, int) {
+    if len(values) == 0 {
+        return (pl_0(), pl_1())
+    }
+    let mut lo = values[0]
+    let mut hi = values[0]
+    let mut i = 1
+    while i < len(values) {
+        let v = values[i]
+        if lm_lt(v, lo) {
+            lo = v
+        }
+        if lm_gt(v, hi) {
+            hi = v
+        }
+        i += 1
+    }
+    if lm_eq(lo, hi) {
+        lo = lm_s(lo, pl_half())
+        hi = lm_a(hi, pl_half())
+    }
+    let pad = lm_m(lm_s(hi, lo), pl_05())
+    return (lm_s(lo, pad), lm_a(hi, pad))
+}
+
+fn pl_sort4(a0: int, a1: int, a2: int, a3: int) -> array {
+    let mut a = [a0, a1, a2, a3]
+    let mut i = 0
+    while i < 4 {
+        let mut j = i + 1
+        while j < 4 {
+            if a[j] < a[i] {
+                let t = a[i]
+                a = std::array::set(a, i, a[j])
+                a = std::array::set(a, j, t)
+            }
+            j += 1
+        }
+        i += 1
+    }
+    a
+}
+
+fn pl_imin(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    b
+}
+fn pl_imax(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    b
+}
+
+fn pl_svg_begin(b: int) {
+    sb_str(b, "<svg")
+    pl_attr(b, "width", "900")
+    pl_attr(b, "height", "500")
+    pl_attr(b, "viewBox", "0 0 900 500")
+    pl_attr(b, "xmlns", "http://www.w3.org/2000/svg")
+    sb_str(b, ">\n")
+}
+
+// Construye el recuadro (margen 15, título, zonas de etiquetas).
+fn pl_build(b: int, title: any, x_lab_h: int, y_lab_w: int, xlo: int, xhi: int, ylo: int, yhi: int) -> int {
+    let c = rt_alloc(216)
+    pl_rect(b, 0, 0, 900, 500, 255, 255, 255, pl_1(), true)
+    let mx0 = 15
+    let my0 = 15
+    let mx1 = 885
+    let my1 = 485
+    let cap = pl_24()
+    let xpad = (mx1 - mx0) / 2
+    let (tw, th) = pl_est(cap, title)
+    let mut ypad = th / 2
+    if ypad > 5 {
+        ypad = 5
+    }
+    pl_text(b, mx0 + xpad, my0 + ypad, title, cap, 0, 0, 0, pl_1(), "center", "top", 0)
+    let title_dy = ypad * 2 + th
+    let dx0 = mx0
+    let dy0 = my0 + title_dy
+    let dx1 = mx1
+    let dy1 = my1
+    let w = dx1 - dx0
+    let h = dy1 - dy0
+    let xb0 = y_lab_w
+    let xb1 = w
+    let yb0 = 0
+    let yb1 = h - x_lab_h
+    // split_grid
+    let xs = pl_sort4(dx0, dx1, dx0 + xb0, dx0 + xb1)
+    let ys = pl_sort4(dy0, dy1, dy0 + yb0, dy0 + yb1)
+    // cells row-major y then x: index 4 is plot, 3 left, 7 bottom
+    // ysegs 3, xsegs 3 → 9 cells
+    let xsegs = [[xs[0], xs[1]], [xs[1], xs[2]], [xs[2], xs[3]]]
+    let ysegs = [[ys[0], ys[1]], [ys[1], ys[2]], [ys[2], ys[3]]]
+    let plot = [xsegs[1][0], ysegs[1][0], xsegs[1][1], ysegs[1][1]]
+    let left = [xsegs[0][0], ysegs[1][0], xsegs[0][1], ysegs[1][1]]
+    let bot = [xsegs[1][0], ysegs[2][0], xsegs[1][1], ysegs[2][1]]
+    pl_s(c, 0, b)
+    pl_s(c, 1, plot[0])
+    pl_s(c, 2, plot[1])
+    pl_s(c, 3, plot[2])
+    pl_s(c, 4, plot[3])
+    pl_s(c, 5, plot[0])
+    pl_s(c, 6, plot[2] - 1)
+    pl_s(c, 7, plot[3] - 1)
+    pl_s(c, 8, plot[1])
+    pl_s(c, 9, xlo)
+    pl_s(c, 10, xhi)
+    pl_s(c, 11, ylo)
+    pl_s(c, 12, yhi)
+    pl_s(c, 13, left[0])
+    pl_s(c, 14, left[1])
+    pl_s(c, 15, left[2])
+    pl_s(c, 16, left[3])
+    pl_s(c, 17, bot[0])
+    pl_s(c, 18, bot[1])
+    pl_s(c, 19, bot[2])
+    pl_s(c, 20, bot[3])
+    pl_s(c, 21, 5)
+    pl_s(c, 22, pl_14())
+    pl_s(c, 23, pl_16())
+    c
+}
+
+fn pl_mx(c: int, v: int) -> int {
+    pl_map(v, pl_g(c, 9), pl_g(c, 10), pl_g(c, 5), pl_g(c, 6))
+}
+fn pl_my(c: int, v: int) -> int {
+    pl_map(v, pl_g(c, 11), pl_g(c, 12), pl_g(c, 7), pl_g(c, 8))
+}
+
+fn pl_axis(c: int, ax0: int, ay0: int, ax1: int, ay1: int, axis: bool, labels: array, ox: int, oy: int, desc: any, tick: int) {
+    let b = pl_g(c, 0)
+    let tw = ax1 - ax0
+    let th = ay1 - ay0
+    if tw <= 0 || th <= 0 {
+        return
+    }
+    let x0b = pl_g(c, 1)
+    let y0b = pl_g(c, 2)
+    let mut label_dist = tick
+    if label_dist < 0 {
+        label_dist = 0 - label_dist
+    }
+    label_dist = label_dist * 2
+    let mut ar0 = 0
+    let mut ar1 = 0
+    if ox == 0 {
+        ar0 = pl_g(c, 5)
+        ar1 = pl_g(c, 6)
+        if ar0 > ar1 {
+            let t = ar0
+            ar0 = ar1
+            ar1 = t
+        }
+        ar0 = ar0 - x0b
+        ar1 = ar1 - x0b
+    } else {
+        ar0 = pl_g(c, 7)
+        ar1 = pl_g(c, 8)
+        if ar0 > ar1 {
+            let t = ar0
+            ar0 = ar1
+            ar1 = t
+        }
+        ar0 = ar0 - y0b
+        ar1 = ar1 - y0b
+    }
+    if axis {
+        let mut xx0 = tw - 1
+        if ox > 0 {
+            xx0 = 0
+        }
+        let mut yy0 = th - 1
+        if oy > 0 {
+            yy0 = 0
+        }
+        let mut xx1 = tw - 1
+        if ox >= 0 {
+            xx1 = 0
+        }
+        let mut yy1 = th - 1
+        if oy >= 0 {
+            yy1 = 0
+        }
+        if ox == 0 {
+            xx0 = ar0
+            xx1 = ar1
+        } else {
+            yy0 = ar0
+            yy1 = ar1
+        }
+        pl_poly(b, [[ax0 + xx0, ay0 + yy0], [ax0 + xx1, ay0 + yy1]], 0, 0, 0, pl_1(), 1)
+    }
+    let labsz = pl_g(c, 22)
+    let mut i = 0
+    while i < len(labels) {
+        let lab = labels[i]
+        let p = lab[0]
+        let t = lab[1]
+        let mut rp = p - y0b
+        if ox == 0 {
+            rp = p - x0b
+        }
+        let mn = ar0
+        let mx = ar1
+        let mut lo = mn
+        let mut hi = mx
+        if lo > hi {
+            lo = mx
+            hi = mn
+        }
+        if rp < lo || hi < rp {
+            i += 1
+            continue
+        }
+        let mut cx = 0
+        let mut cy = 0
+        let mut hp = "center"
+        let mut vp = "top"
+        if tick >= 0 {
+            if ox < 0 && oy == 0 {
+                cx = tw - label_dist
+                cy = p - y0b
+                hp = "right"
+                vp = "center"
+            } else if ox == 0 && oy > 0 {
+                cx = p - x0b
+                cy = label_dist
+                hp = "center"
+                vp = "top"
+            } else {
+                i += 1
+                continue
+            }
+        } else {
+            i += 1
+            continue
+        }
+        pl_text(b, ax0 + cx, ay0 + cy, t, labsz, 0, 0, 0, pl_1(), hp, vp, 0)
+        if tick != 0 && axis {
+            let xmax = tw - 1
+            let mut kx0 = 0
+            let mut ky0 = 0
+            let mut kx1 = 0
+            let mut ky1 = 0
+            if ox < 0 && oy == 0 {
+                kx0 = xmax - tick
+                ky0 = p - y0b
+                kx1 = xmax
+                ky1 = p - y0b
+            } else if ox == 0 && oy > 0 {
+                kx0 = p - x0b
+                ky0 = 0
+                kx1 = p - x0b
+                ky1 = tick
+            }
+            pl_poly(b, [[ax0 + kx0, ay0 + ky0], [ax0 + kx1, ay0 + ky1]], 0, 0, 0, pl_1(), 1)
+        }
+        i += 1
+    }
+    if desc != "" {
+        let descsz = pl_g(c, 23)
+        let mut rot = 0
+        if ox == 0 - 1 {
+            rot = 270
+        } else if ox != 0 {
+            rot = 90
+        }
+        let mut x0 = 0
+        let mut y0 = 0
+        let mut hp = "center"
+        let mut vp = "top"
+        if ox < 0 && oy == 0 {
+            x0 = 0
+            y0 = th / 2
+            hp = "center"
+            vp = "top"
+        } else if ox == 0 && oy > 0 {
+            x0 = tw / 2
+            y0 = th
+            hp = "center"
+            vp = "bottom"
+        } else {
+            return
+        }
+        pl_text(b, ax0 + x0, ay0 + y0, desc, descsz, 0, 0, 0, pl_1(), hp, vp, rot)
+    }
+}
+
+fn pl_mesh(c: int, x_desc: any, y_desc: any, nx: int, ny: int, draw_x: bool, xfmt: array, yfmt: array) {
+    let b = pl_g(c, 0)
+    let xlo = pl_g(c, 9)
+    let xhi = pl_g(c, 10)
+    let ylo = pl_g(c, 11)
+    let yhi = pl_g(c, 12)
+    let bx0 = pl_g(c, 5)
+    let bx1 = pl_g(c, 6)
+    let by0 = pl_g(c, 7)
+    let by1 = pl_g(c, 8)
+    let x_light = pl_keypoints(xlo, xhi, nx * 10)
+    let y_light = pl_keypoints(ylo, yhi, ny * 10)
+    let x_bold = pl_keypoints(xlo, xhi, nx)
+    let y_bold = pl_keypoints(ylo, yhi, ny)
+    let light = pl_01()
+    let bold = pl_02()
+    if draw_x {
+        let mut i = 0
+        while i < len(x_light) {
+            let x = pl_mx(c, x_light[i])
+            pl_line(b, x, by0, x, by1, 0, 0, 0, light, 1)
+            i += 1
+        }
+    }
+    let mut i = 0
+    while i < len(y_light) {
+        let y = pl_my(c, y_light[i])
+        pl_line(b, bx0, y, bx1, y, 0, 0, 0, light, 1)
+        i += 1
+    }
+    let tick = pl_g(c, 21)
+    pl_axis(c, pl_g(c, 13), pl_g(c, 14), pl_g(c, 15), pl_g(c, 16), false, [], 0 - 1, 0, y_desc, tick)
+    pl_axis(c, pl_g(c, 17), pl_g(c, 18), pl_g(c, 19), pl_g(c, 20), false, [], 0, 1, x_desc, tick)
+    let mut x_labels = []
+    i = 0
+    while i < len(x_bold) {
+        let xv = x_bold[i]
+        let x = pl_mx(c, xv)
+        if draw_x {
+            pl_line(b, x, by0, x, by1, 0, 0, 0, bold, 1)
+        }
+        let mut lab = pl_pretty(xv)
+        if len(xfmt) == len(x_bold) {
+            lab = xfmt[i]
+        }
+        x_labels = std::array::push(x_labels, [x, lab])
+        i += 1
+    }
+    let mut y_labels = []
+    i = 0
+    while i < len(y_bold) {
+        let yv = y_bold[i]
+        let y = pl_my(c, yv)
+        pl_line(b, bx0, y, bx1, y, 0, 0, 0, bold, 1)
+        let mut lab = pl_pretty(yv)
+        if len(yfmt) == len(y_bold) {
+            lab = yfmt[i]
+        }
+        y_labels = std::array::push(y_labels, [y, lab])
+        i += 1
+    }
+    pl_axis(c, pl_g(c, 13), pl_g(c, 14), pl_g(c, 15), pl_g(c, 16), true, y_labels, 0 - 1, 0, "", tick)
+    pl_axis(c, pl_g(c, 17), pl_g(c, 18), pl_g(c, 19), pl_g(c, 20), true, x_labels, 0, 1, "", tick)
+}
+
+fn pl_legend(c: int, items: array) {
+    let b = pl_g(c, 0)
+    let font = pl_14()
+    let margin = 10
+    let las = 30
+    let mut mx = 0
+    let mut my = 0
+    let mut layouts = []
+    let mut i = 0
+    while i < len(items) {
+        let lab = items[i][0]
+        let x = 0
+        let y = pl_round_i(lm_m(std::raw::ffromint(i), lm_m(font, pl_125())))
+        let (dx, dy) = pl_box(font, lab)
+        if x + dx > mx {
+            mx = x + dx
+        }
+        if y + dy > my {
+            my = y + dy
+        }
+        layouts = std::array::push(layouts, [x, y, x + dx, y + dy])
+        i += 1
+    }
+    let w = mx + las + margin * 2
+    let h = my + margin * 2
+    let area_w = pl_g(c, 3) - pl_g(c, 1)
+    let label_x = area_w - w - 5
+    let label_y = 5
+    let px0 = pl_g(c, 1)
+    let py0 = pl_g(c, 2)
+    pl_rect(b, px0 + label_x, py0 + label_y, px0 + label_x + w, py0 + label_y + h, 255, 255, 255, pl_08(), true)
+    pl_rect(b, px0 + label_x, py0 + label_y, px0 + label_x + w, py0 + label_y + h, 0, 0, 0, pl_1(), false)
+    let tx = label_x + las + margin
+    let ty = label_y + margin
+    i = 0
+    while i < len(items) {
+        let lab = items[i][0]
+        let y = ty + pl_round_i(lm_m(std::raw::ffromint(i), lm_m(font, pl_125())))
+        pl_text(b, px0 + tx, py0 + y, lab, font, 0, 0, 0, pl_1(), "left", "top", 0)
+        i += 1
+    }
+    i = 0
+    while i < len(items) {
+        let col = items[i][1]
+        let lay = layouts[i]
+        let gy0 = ty + lay[1]
+        let gy1 = ty + lay[3]
+        let py = (gy0 + gy1) / 2
+        let px = label_x + margin
+        pl_poly(b, [[px0 + px, py0 + py], [px0 + px + 18, py0 + py]], col[0], col[1], col[2], pl_1(), 2)
+        i += 1
+    }
+}
+
+fn pl_finish(b: int, c: int, path: any, f: string) {
+    sb_str(b, "</svg>\n")
+    let s = sb_finish(b)
+    rt_free_block(c)
+    rt_write_file(path, s, f)
+}
+
+fn pl_as_usize(x: int) -> int {
+    if lm_lt(x, pl_0()) {
+        return 0
+    }
+    // saturación tosca: si no cabe en i64 positivo, 0 (las etiquetas vacías)
+    if !rt_is_finite(x) {
+        return 0
+    }
+    std::raw::ftoint(x)
+}
+
+fn std__plot__line(path: any, title: any, xa: any, ya: any, xs0: any, ys0: any) -> any {
+    let f = "std::plot::line"
+    rt_expect_str(path, f)
+    rt_expect_str(title, f)
+    rt_expect_str(xa, f)
+    rt_expect_str(ya, f)
+    let xs = pl_nums(xs0, f)
+    let ys = pl_nums(ys0, f)
+    if len(xs) != len(ys) {
+        pl_in(f, "xs and ys must have the same length")
+    }
+    if len(xs) == 0 {
+        pl_in(f, "need at least one point")
+    }
+    let (xlo, xhi) = pl_range(xs)
+    let (ylo, yhi) = pl_range(ys)
+    let b = sb_new(8192)
+    pl_svg_begin(b)
+    let c = pl_build(b, title, 45, 60, xlo, xhi, ylo, yhi)
+    pl_mesh(c, xa, ya, 11, 11, true, [], [])
+    let mut pts = []
+    let mut i = 0
+    while i < len(xs) {
+        pts = std::array::push(pts, [pl_mx(c, xs[i]), pl_my(c, ys[i])])
+        i += 1
+    }
+    pl_poly(pl_g(c, 0), pts, 0, 0, 255, pl_1(), 2)
+    i = 0
+    while i < len(pts) {
+        let p = pts[i]
+        pl_circle(pl_g(c, 0), p[0], p[1], 3, 0, 0, 255, pl_1(), 1, true)
+        i += 1
+    }
+    pl_finish(b, c, path, f)
+    nil
+}
+
+fn std__plot__scatter(path: any, title: any, xa: any, ya: any, xs0: any, ys0: any) -> any {
+    let f = "std::plot::scatter"
+    rt_expect_str(path, f)
+    rt_expect_str(title, f)
+    rt_expect_str(xa, f)
+    rt_expect_str(ya, f)
+    let xs = pl_nums(xs0, f)
+    let ys = pl_nums(ys0, f)
+    if len(xs) != len(ys) {
+        pl_in(f, "xs and ys must have the same length")
+    }
+    if len(xs) == 0 {
+        pl_in(f, "need at least one point")
+    }
+    let (xlo, xhi) = pl_range(xs)
+    let (ylo, yhi) = pl_range(ys)
+    let b = sb_new(8192)
+    pl_svg_begin(b)
+    let c = pl_build(b, title, 45, 60, xlo, xhi, ylo, yhi)
+    pl_mesh(c, xa, ya, 11, 11, true, [], [])
+    let mut i = 0
+    while i < len(xs) {
+        pl_circle(pl_g(c, 0), pl_mx(c, xs[i]), pl_my(c, ys[i]), 4, 214, 39, 40, pl_1(), 1, true)
+        i += 1
+    }
+    pl_finish(b, c, path, f)
+    nil
+}
+
+fn std__plot__bar(path: any, title: any, ya: any, labels0: any, values0: any) -> any {
+    let f = "std::plot::bar"
+    rt_expect_str(path, f)
+    rt_expect_str(title, f)
+    rt_expect_str(ya, f)
+    rt_expect_array(labels0, f)
+    let mut labels = []
+    for x in labels0 {
+        rt_expect_str(x, f)
+        labels = std::array::push(labels, x)
+    }
+    let values = pl_nums(values0, f)
+    if len(labels) != len(values) {
+        pl_in(f, "labels and values must have the same length")
+    }
+    if len(labels) == 0 {
+        pl_in(f, "need at least one bar")
+    }
+    let n = len(values)
+    let (ylo0, yhi0) = pl_range(values)
+    let mut ylo = ylo0
+    let mut yhi = yhi0
+    if lm_gt(ylo, pl_0()) {
+        ylo = pl_0()
+    }
+    if !lm_gt(yhi, pl_0()) {
+        yhi = pl_1()
+    }
+    let b = sb_new(8192)
+    pl_svg_begin(b)
+    let c = pl_build(b, title, 55, 60, pl_0(), std::raw::ffromint(n), ylo, yhi)
+    let x_bold = pl_keypoints(pl_0(), std::raw::ffromint(n), n)
+    let mut xfmt = []
+    let mut i = 0
+    while i < len(x_bold) {
+        let idx = pl_as_usize(x_bold[i])
+        let mut lab = ""
+        if idx >= 0 && idx < len(labels) {
+            lab = labels[idx]
+        }
+        xfmt = std::array::push(xfmt, lab)
+        i += 1
+    }
+    pl_mesh(c, "", ya, n, 11, false, xfmt, [])
+    i = 0
+    while i < n {
+        let x0 = pl_mx(c, lm_a(std::raw::ffromint(i), pl_15()))
+        let y0 = pl_my(c, pl_0())
+        let x1 = pl_mx(c, lm_a(std::raw::ffromint(i), pl_85()))
+        let y1 = pl_my(c, values[i])
+        pl_rect(pl_g(c, 0), pl_imin(x0, x1), pl_imin(y0, y1), pl_imax(x0, x1), pl_imax(y0, y1), 31, 119, 180, pl_1(), true)
+        i += 1
+    }
+    pl_finish(b, c, path, f)
+    nil
+}
+
+fn std__plot__histogram(path: any, title: any, xa: any, values0: any, bins0: any) -> any {
+    let f = "std::plot::histogram"
+    rt_expect_str(path, f)
+    rt_expect_str(title, f)
+    rt_expect_str(xa, f)
+    let values = pl_nums(values0, f)
+    rt_expect_int(bins0, f)
+    let mut bins = std::raw::bits(bins0)
+    if bins < 0 {
+        rt_native_fail(f, "expected nonnegative integer")
+    }
+    if len(values) == 0 {
+        pl_in(f, "need at least one value")
+    }
+    if bins < 1 {
+        bins = 1
+    }
+    let (lo, hi) = pl_range(values)
+    let width = lm_d(lm_s(hi, lo), std::raw::ffromint(bins))
+    let mut counts = []
+    let mut i = 0
+    while i < bins {
+        counts = std::array::push(counts, 0)
+        i += 1
+    }
+    i = 0
+    while i < len(values) {
+        let mut idx = pl_as_usize(lm_d(lm_s(values[i], lo), width))
+        if idx >= bins {
+            idx = bins - 1
+        }
+        counts = std::array::set(counts, idx, counts[idx] + 1)
+        i += 1
+    }
+    let mut maxc = 0
+    i = 0
+    while i < bins {
+        if counts[i] > maxc {
+            maxc = counts[i]
+        }
+        i += 1
+    }
+    let b = sb_new(8192)
+    pl_svg_begin(b)
+    let c = pl_build(b, title, 45, 60, lo, hi, pl_0(), lm_m(std::raw::ffromint(maxc), pl_11()))
+    pl_mesh(c, xa, "count", 11, 11, true, [], [])
+    i = 0
+    while i < bins {
+        let x0v = lm_a(lo, lm_m(std::raw::ffromint(i), width))
+        let x1v = lm_a(x0v, width)
+        let a0 = pl_mx(c, x0v)
+        let a1 = pl_my(c, pl_0())
+        let b0 = pl_mx(c, x1v)
+        let b1 = pl_my(c, std::raw::ffromint(counts[i]))
+        pl_rect(pl_g(c, 0), pl_imin(a0, b0), pl_imin(a1, b1), pl_imax(a0, b0), pl_imax(a1, b1), 44, 160, 44, pl_1(), true)
+        i += 1
+    }
+    pl_finish(b, c, path, f)
+    nil
+}
+
+fn pl_palette(i: int) -> array {
+    let p = [
+        [31, 119, 180],
+        [255, 127, 14],
+        [44, 160, 44],
+        [214, 39, 40],
+        [148, 103, 189],
+        [140, 86, 75],
+        [227, 119, 194],
+        [127, 127, 127]
+    ]
+    p[i % 8]
+}
+
+fn std__plot__multi_line(path: any, title: any, xa: any, ya: any, labels0: any, xss0: any, yss0: any) -> any {
+    let f = "std::plot::multi_line"
+    rt_expect_str(path, f)
+    rt_expect_str(title, f)
+    rt_expect_str(xa, f)
+    rt_expect_str(ya, f)
+    rt_expect_array(labels0, f)
+    rt_expect_array(xss0, f)
+    rt_expect_array(yss0, f)
+    if len(labels0) != len(xss0) || len(labels0) != len(yss0) {
+        rt_native_fail(f, "multi_line: labels, xs and ys arrays must all have the same length")
+    }
+    if len(labels0) == 0 {
+        pl_in(f, "need at least one series")
+    }
+    let mut labels = []
+    let mut xss = []
+    let mut yss = []
+    let mut i = 0
+    while i < len(labels0) {
+        rt_expect_str(labels0[i], f)
+        labels = std::array::push(labels, labels0[i])
+        let xs = pl_nums(xss0[i], f)
+        let ys = pl_nums(yss0[i], f)
+        if len(xs) != len(ys) {
+            pl_in(f, "each series xs/ys must match")
+        }
+        if len(xs) == 0 {
+            pl_in(f, "series cannot be empty")
+        }
+        xss = std::array::push(xss, xs)
+        yss = std::array::push(yss, ys)
+        i += 1
+    }
+    let mut allx = []
+    let mut ally = []
+    i = 0
+    while i < len(xss) {
+        let mut j = 0
+        while j < len(xss[i]) {
+            allx = std::array::push(allx, xss[i][j])
+            ally = std::array::push(ally, yss[i][j])
+            j += 1
+        }
+        i += 1
+    }
+    let (xlo, xhi) = pl_range(allx)
+    let (ylo, yhi) = pl_range(ally)
+    let b = sb_new(8192)
+    pl_svg_begin(b)
+    let c = pl_build(b, title, 45, 60, xlo, xhi, ylo, yhi)
+    pl_mesh(c, xa, ya, 11, 11, true, [], [])
+    let mut items = []
+    i = 0
+    while i < len(xss) {
+        let col = pl_palette(i)
+        let mut pts = []
+        let mut j = 0
+        while j < len(xss[i]) {
+            pts = std::array::push(pts, [pl_mx(c, xss[i][j]), pl_my(c, yss[i][j])])
+            j += 1
+        }
+        pl_poly(pl_g(c, 0), pts, col[0], col[1], col[2], pl_1(), 2)
+        items = std::array::push(items, [labels[i], col])
+        i += 1
+    }
+    pl_legend(c, items)
+    pl_finish(b, c, path, f)
+    nil
+}

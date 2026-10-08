@@ -1,0 +1,4 @@
+// Hora inexistente.
+fn main() {
+    print(std::datetime::from_ymd_hms(2024, 1, 1, 24, 0, 0))
+}

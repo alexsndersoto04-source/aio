@@ -1,0 +1,1 @@
+fn sink(first: any, second: any) {} fn halt() -> ! { loop { sink(loop {}, { break }) } } fn main() {}

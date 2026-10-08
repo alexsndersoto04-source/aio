@@ -1,0 +1,36 @@
+// Validate message construction errors before any real network connection.
+fn main() {
+    let bad_sender = std::try::catch(|| std::email::send_simple(
+        "smtp.example.invalid", 587, "", "", "not-an-address", "ok@example.com", "subject", "body"
+    ))
+    match bad_sender {
+        Result::Ok(_) => std::testing::assert(false, "invalid sender must be rejected"),
+        Result::Err(error) => std::testing::assert(std::text::contains(error, "email build error:"), "invalid sender is a build error"),
+    }
+
+    let bad_mime = std::try::catch(|| std::email::send_with_attachment(
+        "smtp.example.invalid", 587, "", "", "from@example.com", "to@example.com", "subject",
+        "<p>body</p>", "file.txt", "not-a-mime-type", std::encoding::utf8_encode("data")
+    ))
+    match bad_mime {
+        Result::Ok(_) => std::testing::assert(false, "invalid MIME type must be rejected"),
+        Result::Err(error) => std::testing::assert(std::text::contains(error, "email build error:"), "invalid MIME type is a build error"),
+    }
+
+    let bad_header = std::try::catch(|| std::email::send_html(
+        "smtp.example.invalid", 587, "", "", "from@example.com", "to@example.com", "subject\r\nBcc: attacker@example.com", "text", "<p>body</p>"
+    ))
+    match bad_header {
+        Result::Ok(_) => std::testing::assert(false, "header injection must be rejected"),
+        Result::Err(error) => std::testing::assert(std::text::contains(error, "email build error:"), "header injection is rejected before network access"),
+    }
+
+    let bad_port = std::try::catch(|| std::email::send_simple(
+        "smtp.example.invalid", -1, "", "", "from@example.com", "to@example.com", "subject", "body"
+    ))
+    match bad_port {
+        Result::Ok(_) => std::testing::assert(false, "negative SMTP port must be rejected"),
+        Result::Err(error) => std::testing::assert(std::text::contains(error, "port out of range"), "port range is validated"),
+    }
+    println("email build validation ok")
+}

@@ -1,0 +1,44 @@
+// std::fswatch: timeout en carpeta quieta, create al escribir, y recursive.
+fn gone(p: string) {
+    if std::fs::exists(p) {
+        std::fs::remove_file(p)
+    }
+}
+
+fn prep(dir: string) {
+    let sub = dir + "/sub"
+    if std::fs::exists(dir) {
+        gone(dir + "/a.txt")
+        gone(dir + "/b.txt")
+        if std::fs::exists(sub) {
+            gone(sub + "/c.txt")
+        }
+    } else {
+        std::fs::create_dir(dir)
+    }
+    if !std::fs::exists(sub) {
+        std::fs::create_dir(sub)
+    }
+}
+
+fn main() {
+    let dir = "/tmp/titan_fw_std"
+    let sub = dir + "/sub"
+    prep(dir)
+    println("idle " + std::fswatch::watch_once(dir, 80, false))
+    let h = std::fswatch::open(dir, false)
+    std::fs::write_text(dir + "/a.txt", "hola")
+    println("ev " + std::fswatch::next_event(h, 2000))
+    std::fswatch::close(h)
+    std::fs::write_text(dir + "/b.txt", "x")
+    println("file " + std::fswatch::watch_once(dir + "/b.txt", 60, false))
+    let h2 = std::fswatch::open(dir, true)
+    std::fs::write_text(sub + "/c.txt", "z")
+    println("rec " + std::fswatch::next_event(h2, 2000))
+    std::fswatch::close(h2)
+    gone(dir + "/a.txt")
+    gone(dir + "/b.txt")
+    gone(sub + "/c.txt")
+    std::fs::remove_dir(sub)
+    std::fs::remove_dir(dir)
+}

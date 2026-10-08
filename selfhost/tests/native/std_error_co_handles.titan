@@ -1,0 +1,7 @@
+fn main() {
+    let mut k = 0
+    while k < 300 {
+        std::collections::set_new()
+        k += 1
+    }
+}

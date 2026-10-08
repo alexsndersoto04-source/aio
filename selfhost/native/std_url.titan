@@ -1,0 +1,1953 @@
+// std::url escrito en Titan. Traducción de url 2.5.8 (parser.rs, host.rs y
+// las partes de lib.rs que usa url_mod.rs), form_urlencoded 1.2.2 y
+// percent-encoding 2.3.2; fuentes en selfhost/fuentes/*.crate.
+// Los nombres de dominio no ASCII pasan por std_idna.titan (idna 1.1.0).
+//
+// Estado del analizador (bloque P):
+//   +0 constructor de la serialización (sb_*), +8 puntos de código de la
+//   entrada, +16 cuántos, +24 URL base (bloque U, o 0), +32 has_host.
+// Una URL (bloque U, 80 bytes):
+//   +0 serialización (sb_*), +8 scheme_end, +16 username_end, +24 host_start,
+//   +32 host_end, +40 host (0 ninguno, 1 dominio, 2 IPv4, 3 IPv6), +48 port,
+//   +56 path_start, +64 query_start, +72 fragment_start (-1 = None).
+// Los errores (ParseError) son números negativos: ver ur_error_text.
+//
+// Como en la crate, la entrada se recorre saltando tabuladores y saltos de
+// línea (Input::next), salvo donde la crate mira el texto original
+// (parse_path, parse_query, parse_fragment, parse_host y file_host).
+
+fn ur_error_text(code: int) -> string {
+    if code == -1 {
+        return "empty host"
+    }
+    if code == -2 {
+        return "invalid international domain name"
+    }
+    if code == -3 {
+        return "invalid port number"
+    }
+    if code == -4 {
+        return "invalid IPv4 address"
+    }
+    if code == -5 {
+        return "invalid IPv6 address"
+    }
+    if code == -6 {
+        return "invalid domain character"
+    }
+    if code == -7 {
+        return "relative URL without a base"
+    }
+    return "relative URL with a cannot-be-a-base base"
+}
+
+// ------------------------------------------------------------ entrada
+
+fn ur_n(p: int) -> int {
+    std::raw::load(p + 16)
+}
+
+fn ur_cp(p: int, j: int) -> int {
+    std::raw::load(std::raw::load(p + 8) + 8 * j)
+}
+
+fn ur_tabnl(c: int) -> bool {
+    c == 9 || c == 10 || c == 13
+}
+
+// Posición del siguiente carácter que no es tabulador ni salto de línea
+// (n si no queda ninguno): Input::next.
+fn ur_skip(p: int, i: int) -> int {
+    let n = ur_n(p)
+    let mut j = i
+    while j < n {
+        if !ur_tabnl(ur_cp(p, j)) {
+            return j
+        }
+        j += 1
+    }
+    n
+}
+
+// Siguiente carácter desde i (-1 = fin).
+fn ur_peek(p: int, i: int) -> int {
+    let j = ur_skip(p, i)
+    if j >= ur_n(p) {
+        return -1
+    }
+    ur_cp(p, j)
+}
+
+// Posición tras el siguiente carácter.
+fn ur_after(p: int, i: int) -> int {
+    let j = ur_skip(p, i)
+    if j >= ur_n(p) {
+        return j
+    }
+    j + 1
+}
+
+fn ur_alpha(c: int) -> bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn ur_digit(c: int) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn ur_hexdigit(c: int) -> bool {
+    ur_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+// ------------------------------------------------------------ serialización
+
+fn ur_sb(p: int) -> int {
+    std::raw::load(p)
+}
+
+fn ur_len(p: int) -> int {
+    std::raw::load(std::raw::load(p))
+}
+
+fn ur_byte(p: int, k: int) -> int {
+    std::raw::load8(std::raw::load(std::raw::load(p) + 16) + k)
+}
+
+fn ur_push(p: int, x: int) {
+    sb_byte(ur_sb(p), x)
+}
+
+fn ur_pushs(p: int, s: any) {
+    sb_str(ur_sb(p), s)
+}
+
+fn ur_trunc(p: int, k: int) {
+    std::raw::store(ur_sb(p), k)
+}
+
+fn ur_ends(p: int, x: int) -> bool {
+    let n = ur_len(p)
+    n > 0 && ur_byte(p, n - 1) == x
+}
+
+// Copia los bytes [a, b) de la serialización de la URL u.
+fn ur_push_from(p: int, u: int, a: int, b: int) {
+    let s = std::raw::load(u)
+    sb_raw(ur_sb(p), std::raw::load(s + 16) + a, b - a)
+}
+
+// Inserta el texto s en la posición at.
+fn ur_insert(p: int, at: int, s: any) {
+    let b = ur_sb(p)
+    let n = std::raw::load(b)
+    let k = rt_slen(s)
+    sb_reserve(b, k)
+    let data = std::raw::load(b + 16)
+    let mut i = n - 1
+    while i >= at {
+        std::raw::store8(data + i + k, std::raw::load8(data + i))
+        i -= 1
+    }
+    rt_copy(data + at, std::raw::bits(s) + 16, k)
+    std::raw::store(b, n + k)
+}
+
+// Quita los bytes [a, b).
+fn ur_remove(p: int, a: int, b: int) {
+    let sb = ur_sb(p)
+    let n = std::raw::load(sb)
+    let data = std::raw::load(sb + 16)
+    let mut i = b
+    while i < n {
+        std::raw::store8(data + a + i - b, std::raw::load8(data + i))
+        i += 1
+    }
+    std::raw::store(sb, n - (b - a))
+}
+
+// Los bytes [a, b) de la serialización como string.
+fn ur_slice(p: int, a: int, b: int) -> any {
+    let s = rt_str_alloc(b - a)
+    rt_copy(s + 16, std::raw::load(std::raw::load(p) + 16) + a, b - a)
+    rt_sval(s)
+}
+
+// ¿Los bytes [a, b) son exactamente la palabra w?
+fn ur_ser_is(p: int, a: int, b: int, w: string) -> bool {
+    let k = rt_slen(w)
+    if b - a != k {
+        return false
+    }
+    let wp = std::raw::bits(w) + 16
+    let mut i = 0
+    while i < k {
+        if ur_byte(p, a + i) != std::raw::load8(wp + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Último '/' en [a, len) (-1 si no hay).
+fn ur_rfind_slash(p: int, a: int, end: int) -> int {
+    let mut i = end - 1
+    while i >= a {
+        if ur_byte(p, i) == 47 {
+            return i
+        }
+        i -= 1
+    }
+    -1
+}
+
+// ------------------------------------------------------------ percent-encoding
+
+// Conjuntos (AsciiSet): 0 CONTROLS, 1 FRAGMENT, 2 PATH, 3 USERINFO, 4 QUERY,
+// 5 SPECIAL_QUERY. Los bytes no ASCII se codifican siempre.
+fn ur_in_set(b: int, set: int) -> bool {
+    if b < 32 || b >= 127 {
+        return true
+    }
+    if set == 0 {
+        return false
+    }
+    if set >= 4 {
+        if b == 32 || b == 34 || b == 35 || b == 60 || b == 62 {
+            return true
+        }
+        return set == 5 && b == 39
+    }
+    if b == 32 || b == 34 || b == 60 || b == 62 || b == 96 {
+        return true
+    }
+    if set == 1 {
+        return false
+    }
+    if b == 35 || b == 63 || b == 123 || b == 125 {
+        return true
+    }
+    if set == 2 {
+        return false
+    }
+    b == 47 || b == 58 || b == 59 || b == 61 || b == 64 || b == 91 || b == 92 || b == 93 || b == 94 || b == 124
+}
+
+fn ur_hex_upper(d: int) -> int {
+    if d < 10 {
+        return 48 + d
+    }
+    55 + d
+}
+
+fn ur_enc_byte(sb: int, b: int, set: int) {
+    if ur_in_set(b, set) {
+        sb_byte(sb, 37)
+        sb_byte(sb, ur_hex_upper(b / 16))
+        sb_byte(sb, ur_hex_upper(b & 15))
+    } else {
+        sb_byte(sb, b)
+    }
+}
+
+// utf8_percent_encode de un carácter.
+fn ur_enc_cp(sb: int, c: int, set: int) {
+    if c < 128 {
+        ur_enc_byte(sb, c, set)
+    } else if c < 2048 {
+        ur_enc_byte(sb, 192 + c / 64, set)
+        ur_enc_byte(sb, 128 + (c & 63), set)
+    } else if c < 65536 {
+        ur_enc_byte(sb, 224 + c / 4096, set)
+        ur_enc_byte(sb, 128 + ((c / 64) & 63), set)
+        ur_enc_byte(sb, 128 + (c & 63), set)
+    } else {
+        ur_enc_byte(sb, 240 + c / 262144, set)
+        ur_enc_byte(sb, 128 + ((c / 4096) & 63), set)
+        ur_enc_byte(sb, 128 + ((c / 64) & 63), set)
+        ur_enc_byte(sb, 128 + (c & 63), set)
+    }
+}
+
+// Codifica los caracteres [a, b) de la entrada.
+fn ur_enc_range(p: int, a: int, b: int, set: int) {
+    let sb = ur_sb(p)
+    let mut i = a
+    while i < b {
+        ur_enc_cp(sb, ur_cp(p, i), set)
+        i += 1
+    }
+}
+
+// percent_decode (sin errores: un '%' sin dos cifras se queda como está).
+fn ur_percent_decode(s: any) -> any {
+    let n = rt_slen(s)
+    let src = std::raw::bits(s) + 16
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(src + i)
+        if x == 37 && i + 2 < n {
+            let h = rt_hex_value(std::raw::load8(src + i + 1))
+            let l = rt_hex_value(std::raw::load8(src + i + 2))
+            if h >= 0 && l >= 0 {
+                sb_byte(b, h * 16 + l)
+                i += 3
+                continue
+            }
+        }
+        sb_byte(b, x)
+        i += 1
+    }
+    sb_finish(b)
+}
+
+// ------------------------------------------------------------ esquemas
+
+// SchemeType: 0 NotSpecial, 1 SpecialNotFile, 2 File.
+fn ur_scheme_type(p: int, a: int, b: int) -> int {
+    if ur_ser_is(p, a, b, "http") || ur_ser_is(p, a, b, "https") || ur_ser_is(p, a, b, "ws") || ur_ser_is(p, a, b, "wss") || ur_ser_is(p, a, b, "ftp") {
+        return 1
+    }
+    if ur_ser_is(p, a, b, "file") {
+        return 2
+    }
+    0
+}
+
+fn ur_default_port(p: int, a: int, b: int) -> int {
+    if ur_ser_is(p, a, b, "http") || ur_ser_is(p, a, b, "ws") {
+        return 80
+    }
+    if ur_ser_is(p, a, b, "https") || ur_ser_is(p, a, b, "wss") {
+        return 443
+    }
+    if ur_ser_is(p, a, b, "ftp") {
+        return 21
+    }
+    -1
+}
+
+// ------------------------------------------------------------ URL (bloque U)
+
+fn ur_f(u: int, k: int) -> int {
+    std::raw::load(u + 8 * k)
+}
+
+fn ur_make(p: int, scheme_end: int, username_end: int, host_start: int, host_end: int, host: int, port: int, path_start: int, query_start: int, fragment_start: int) -> int {
+    let u = rt_alloc(80)
+    std::raw::store(u, ur_sb(p))
+    std::raw::store(p, 0)
+    std::raw::store(u + 8, scheme_end)
+    std::raw::store(u + 16, username_end)
+    std::raw::store(u + 24, host_start)
+    std::raw::store(u + 32, host_end)
+    std::raw::store(u + 40, host)
+    std::raw::store(u + 48, port)
+    std::raw::store(u + 56, path_start)
+    std::raw::store(u + 64, query_start)
+    std::raw::store(u + 72, fragment_start)
+    u
+}
+
+// Copia de los campos de la URL base con otra serialización.
+fn ur_make_like(p: int, b: int, query_start: int, fragment_start: int) -> int {
+    ur_make(p, ur_f(b, 1), ur_f(b, 2), ur_f(b, 3), ur_f(b, 4), ur_f(b, 5), ur_f(b, 6), ur_f(b, 7), query_start, fragment_start)
+}
+
+fn ur_free(u: int) {
+    let s = std::raw::load(u)
+    rt_free_block(std::raw::load(s + 16))
+    rt_free_block(s)
+    rt_free_block(u)
+}
+
+fn ur_ulen(u: int) -> int {
+    std::raw::load(std::raw::load(u))
+}
+
+fn ur_ubyte(u: int, k: int) -> int {
+    std::raw::load8(std::raw::load(std::raw::load(u) + 16) + k)
+}
+
+fn ur_uslice(u: int, a: int, b: int) -> any {
+    let s = rt_str_alloc(b - a)
+    rt_copy(s + 16, std::raw::load(std::raw::load(u) + 16) + a, b - a)
+    rt_sval(s)
+}
+
+// Fin de la parte antes de la consulta (o del fragmento, o todo).
+fn ur_before_query(u: int) -> int {
+    if ur_f(u, 8) >= 0 {
+        return ur_f(u, 8)
+    }
+    if ur_f(u, 9) >= 0 {
+        return ur_f(u, 9)
+    }
+    ur_ulen(u)
+}
+
+fn ur_before_fragment(u: int) -> int {
+    if ur_f(u, 9) >= 0 {
+        return ur_f(u, 9)
+    }
+    ur_ulen(u)
+}
+
+fn ur_cannot_be_a_base(u: int) -> bool {
+    let k = ur_f(u, 1) + 1
+    !(k < ur_ulen(u) && ur_ubyte(u, k) == 47)
+}
+
+fn ur_uscheme_type(u: int) -> int {
+    let s = std::raw::load(u)
+    let q = rt_alloc(8)
+    std::raw::store(q, s)
+    let t = ur_scheme_type(q, 0, ur_f(u, 1))
+    rt_free_block(q)
+    t
+}
+
+// Fin de url.path().
+fn ur_path_end(u: int) -> int {
+    ur_before_query(u)
+}
+
+// ------------------------------------------------------------ letras de unidad (Windows)
+
+// starts_with_windows_drive_letter sobre los bytes [a, end) de la serialización.
+fn ur_starts_drive(p: int, a: int, end: int) -> bool {
+    if end - a < 2 {
+        return false
+    }
+    let c1 = ur_byte(p, a + 1)
+    if !ur_alpha(ur_byte(p, a)) || (c1 != 58 && c1 != 124) {
+        return false
+    }
+    if end - a == 2 {
+        return true
+    }
+    let c2 = ur_byte(p, a + 2)
+    c2 == 47 || c2 == 92 || c2 == 63 || c2 == 35
+}
+
+fn ur_is_drive(p: int, a: int, end: int) -> bool {
+    end - a == 2 && ur_starts_drive(p, a, end)
+}
+
+fn ur_is_norm_drive(p: int, a: int, end: int) -> bool {
+    ur_is_drive(p, a, end) && ur_byte(p, a + 1) == 58
+}
+
+fn ur_path_starts_drive(p: int, a: int, end: int) -> bool {
+    if a >= end {
+        return false
+    }
+    let c = ur_byte(p, a)
+    return (c == 47 || c == 92 || c == 63 || c == 35) && ur_starts_drive(p, a + 1, end)
+}
+
+// Lo mismo sobre un string.
+fn ur_str_is_drive(s: any) -> bool {
+    if rt_slen(s) != 2 {
+        return false
+    }
+    let sp = std::raw::bits(s) + 16
+    let c1 = std::raw::load8(sp + 1)
+    ur_alpha(std::raw::load8(sp)) && (c1 == 58 || c1 == 124)
+}
+
+// starts_with_windows_drive_letter_segment sobre la entrada.
+fn ur_input_drive_segment(p: int, i: int) -> bool {
+    let a = ur_peek(p, i)
+    let i1 = ur_after(p, i)
+    let b = ur_peek(p, i1)
+    let c = ur_peek(p, ur_after(p, i1))
+    if !ur_alpha(a) || (b != 58 && b != 124) {
+        return false
+    }
+    c == -1 || c == 47 || c == 92 || c == 63 || c == 35
+}
+
+// ------------------------------------------------------------ análisis
+
+fn ur_parse_url(p: int) -> int {
+    let r = ur_parse_scheme(p, 0)
+    if r >= 0 {
+        return ur_with_scheme(p, r)
+    }
+    let b = std::raw::load(p + 24)
+    if b == 0 {
+        return -7
+    }
+    if ur_peek(p, 0) == 35 {
+        return ur_fragment_only(p, b, 0)
+    }
+    if ur_cannot_be_a_base(b) {
+        return -8
+    }
+    let st = ur_uscheme_type(b)
+    if st == 2 {
+        return ur_parse_file(p, 0, st, b)
+    }
+    ur_parse_relative(p, 0, st, b)
+}
+
+// Devuelve la posición tras ':' o -1.
+fn ur_parse_scheme(p: int, i0: int) -> int {
+    if !ur_alpha(ur_peek(p, i0)) {
+        return -1
+    }
+    let mut i = i0
+    while true {
+        let c = ur_peek(p, i)
+        if c < 0 {
+            ur_trunc(p, 0)
+            return -1
+        }
+        i = ur_after(p, i)
+        if (c >= 97 && c <= 122) || ur_digit(c) || c == 43 || c == 45 || c == 46 {
+            ur_push(p, c)
+        } else if c >= 65 && c <= 90 {
+            ur_push(p, c + 32)
+        } else if c == 58 {
+            return i
+        } else {
+            ur_trunc(p, 0)
+            return -1
+        }
+    }
+    -1
+}
+
+// (cuántos '/' o '\' seguidos, posición tras ellos)
+fn ur_count_slashes(p: int, i0: int) -> (int, int) {
+    let mut count = 0
+    let mut i = i0
+    while true {
+        let c = ur_peek(p, i)
+        if c == 47 || c == 92 {
+            count += 1
+            i = ur_after(p, i)
+        } else {
+            return (count, i)
+        }
+    }
+    return (count, i)
+}
+
+fn ur_with_scheme(p: int, i: int) -> int {
+    let scheme_end = ur_len(p)
+    let st = ur_scheme_type(p, 0, scheme_end)
+    ur_push(p, 58)
+    let b = std::raw::load(p + 24)
+    if st == 2 {
+        let mut base_file = 0
+        if b != 0 && ur_uscheme_is_file(b) {
+            base_file = b
+        }
+        ur_trunc(p, 0)
+        return ur_parse_file(p, i, st, base_file)
+    }
+    if st == 1 {
+        let (count, rest) = ur_count_slashes(p, i)
+        if b != 0 && count < 2 && ur_same_scheme(p, b, scheme_end) {
+            ur_trunc(p, 0)
+            return ur_parse_relative(p, i, st, b)
+        }
+        return ur_after_double_slash(p, rest, st, scheme_end)
+    }
+    ur_parse_non_special(p, i, st, scheme_end)
+}
+
+fn ur_uscheme_is_file(u: int) -> bool {
+    ur_f(u, 1) == 4 && ur_ubyte(u, 0) == 102 && ur_ubyte(u, 1) == 105 && ur_ubyte(u, 2) == 108 && ur_ubyte(u, 3) == 101
+}
+
+fn ur_same_scheme(p: int, u: int, scheme_end: int) -> bool {
+    if ur_f(u, 1) != scheme_end {
+        return false
+    }
+    let mut k = 0
+    while k < scheme_end {
+        if ur_ubyte(u, k) != ur_byte(p, k) {
+            return false
+        }
+        k += 1
+    }
+    true
+}
+
+// Posición tras "//" o -1.
+fn ur_split_2slash(p: int, i: int) -> int {
+    if ur_peek(p, i) != 47 {
+        return -1
+    }
+    let j = ur_after(p, i)
+    if ur_peek(p, j) != 47 {
+        return -1
+    }
+    ur_after(p, j)
+}
+
+fn ur_parse_non_special(p: int, i: int, st: int, scheme_end: int) -> int {
+    let after = ur_split_2slash(p, i)
+    if after >= 0 {
+        return ur_after_double_slash(p, after, st, scheme_end)
+    }
+    let path_start = ur_len(p)
+    let mut rest = i
+    if ur_peek(p, i) == 47 {
+        ur_push(p, 47)
+        std::raw::store(p + 32, 0)
+        rest = ur_parse_path(p, st, path_start, ur_after(p, i))
+    } else {
+        rest = ur_parse_cannot_be_a_base_path(p, i)
+    }
+    ur_with_query_and_fragment(p, st, scheme_end, path_start, path_start, path_start, 0, -1, path_start, rest)
+}
+
+fn ur_parse_file(p: int, input: int, st: int, base: int) -> int {
+    let first = ur_peek(p, input)
+    let after_first = ur_after(p, input)
+    if first == 47 || first == 92 {
+        let next = ur_peek(p, after_first)
+        let after_next = ur_after(p, after_first)
+        if next == 47 || next == 92 {
+            ur_pushs(p, "file://")
+            let scheme_end = 4
+            let host_start = 7
+            let (err, flag, host0, rest0) = ur_parse_file_host(p, after_next)
+            if err < 0 {
+                return err
+            }
+            let mut host = host0
+            let mut host_end = ur_len(p)
+            if host != 0 {
+                std::raw::store(p + 32, 1)
+            } else {
+                std::raw::store(p + 32, 0)
+            }
+            let mut rest = rest0
+            if flag {
+                rest = ur_parse_path_start(p, 2, rest0)
+            } else {
+                let path_start = ur_len(p)
+                ur_push(p, 47)
+                rest = ur_parse_path(p, 2, path_start, rest0)
+            }
+            if std::raw::load(p + 32) == 0 {
+                ur_remove(p, host_start, host_end)
+                host_end = host_start
+                host = 0
+            }
+            let (qerr, q, f) = ur_parse_query_and_fragment(p, st, scheme_end, rest)
+            return ur_make(p, scheme_end, host_start, host_start, host_end, host, -1, host_end, q, f)
+        }
+        ur_pushs(p, "file://")
+        let scheme_end = 4
+        let host_start = 7
+        let mut host_end = host_start
+        let mut host = 0
+        if !ur_input_drive_segment(p, after_first) && base != 0 {
+            // Primer segmento del camino de la base.
+            let ps = ur_f(base, 7)
+            let pe = ur_path_end(base)
+            let mut se = ps + 1
+            while se < pe && ur_ubyte(base, se) != 47 {
+                se += 1
+            }
+            let seg = ur_uslice(base, ps + 1, se)
+            let sp = std::raw::bits(seg) + 16
+            if rt_slen(seg) == 2 && ur_alpha(std::raw::load8(sp)) && std::raw::load8(sp + 1) == 58 {
+                ur_push(p, 47)
+                ur_pushs(p, seg)
+            } else if ur_f(base, 5) != 0 {
+                ur_push_from(p, base, ur_f(base, 3), ur_f(base, 4))
+                host_end = ur_len(p)
+                host = ur_f(base, 5)
+            }
+        }
+        let mut path_input = after_first
+        if first == 47 || first == 92 || first == 63 || first == 35 {
+            path_input = input
+        }
+        std::raw::store(p + 32, 0)
+        let rest = ur_parse_path(p, 2, host_end, path_input)
+        let (qerr, q, f) = ur_parse_query_and_fragment(p, st, scheme_end, rest)
+        return ur_make(p, scheme_end, host_start, host_start, host_end, host, -1, host_end, q, f)
+    }
+    if base != 0 {
+        if first < 0 {
+            ur_push_from(p, base, 0, ur_before_fragment(base))
+            return ur_make_like(p, base, ur_f(base, 8), -1)
+        }
+        if first == 63 {
+            ur_push_from(p, base, 0, ur_before_query(base))
+            let (qerr, q, f) = ur_parse_query_and_fragment(p, st, ur_f(base, 1), input)
+            return ur_make_like(p, base, q, f)
+        }
+        if first == 35 {
+            return ur_fragment_only(p, base, input)
+        }
+        if !ur_input_drive_segment(p, input) {
+            ur_push_from(p, base, 0, ur_before_query(base))
+            ur_shorten_path(p, 2, ur_f(base, 7))
+            std::raw::store(p + 32, 1)
+            let rest = ur_parse_path(p, 2, ur_f(base, 7), input)
+            return ur_with_query_and_fragment(p, 2, ur_f(base, 1), ur_f(base, 2), ur_f(base, 3), ur_f(base, 4), ur_f(base, 5), ur_f(base, 6), ur_f(base, 7), rest)
+        }
+    }
+    ur_pushs(p, "file:///")
+    std::raw::store(p + 32, 0)
+    let rest = ur_parse_path(p, 2, 7, input)
+    let (qerr, q, f) = ur_parse_query_and_fragment(p, 2, 4, rest)
+    ur_make(p, 4, 7, 7, 7, 0, -1, 7, q, f)
+}
+
+fn ur_parse_relative(p: int, input: int, st: int, base: int) -> int {
+    let first = ur_peek(p, input)
+    if first < 0 {
+        ur_push_from(p, base, 0, ur_before_fragment(base))
+        return ur_make_like(p, base, ur_f(base, 8), -1)
+    }
+    if first == 63 {
+        ur_push_from(p, base, 0, ur_before_query(base))
+        let (qerr, q, f) = ur_parse_query_and_fragment(p, st, ur_f(base, 1), input)
+        return ur_make_like(p, base, q, f)
+    }
+    if first == 35 {
+        return ur_fragment_only(p, base, input)
+    }
+    if first == 47 || first == 92 {
+        let (count, rest) = ur_count_slashes(p, input)
+        if count >= 2 {
+            let scheme_end = ur_f(base, 1)
+            ur_push_from(p, base, 0, scheme_end + 1)
+            let after = ur_split_2slash(p, input)
+            if after >= 0 {
+                return ur_after_double_slash(p, after, st, scheme_end)
+            }
+            return ur_after_double_slash(p, rest, st, scheme_end)
+        }
+        let path_start = ur_f(base, 7)
+        ur_push_from(p, base, 0, path_start)
+        ur_push(p, 47)
+        std::raw::store(p + 32, 1)
+        let rest2 = ur_parse_path(p, st, path_start, ur_after(p, input))
+        return ur_with_query_and_fragment(p, st, ur_f(base, 1), ur_f(base, 2), ur_f(base, 3), ur_f(base, 4), ur_f(base, 5), ur_f(base, 6), ur_f(base, 7), rest2)
+    }
+    ur_push_from(p, base, 0, ur_before_query(base))
+    ur_pop_path(p, st, ur_f(base, 7))
+    if ur_len(p) == ur_f(base, 7) && (ur_uscheme_type(base) != 0 || ur_peek(p, input) >= 0) {
+        ur_push(p, 47)
+    }
+    std::raw::store(p + 32, 1)
+    let mut rest = 0
+    if ur_peek(p, input) == 47 {
+        rest = ur_parse_path(p, st, ur_f(base, 7), ur_after(p, input))
+    } else {
+        rest = ur_parse_path(p, st, ur_f(base, 7), input)
+    }
+    ur_with_query_and_fragment(p, st, ur_f(base, 1), ur_f(base, 2), ur_f(base, 3), ur_f(base, 4), ur_f(base, 5), ur_f(base, 6), ur_f(base, 7), rest)
+}
+
+fn ur_after_double_slash(p: int, input: int, st: int, scheme_end: int) -> int {
+    ur_push(p, 47)
+    ur_push(p, 47)
+    let before_authority = ur_len(p)
+    let (uerr, username_end, rest) = ur_parse_userinfo(p, input, st)
+    if uerr < 0 {
+        return uerr
+    }
+    let has_authority = before_authority != ur_len(p)
+    let host_start = ur_len(p)
+    let (herr, host_end, host, port, rest2) = ur_parse_host_and_port(p, rest, scheme_end, st)
+    if herr < 0 {
+        return herr
+    }
+    if host == 0 && has_authority {
+        return -1
+    }
+    let path_start = ur_len(p)
+    std::raw::store(p + 32, 1)
+    let rest3 = ur_parse_path_start(p, st, rest2)
+    ur_with_query_and_fragment(p, st, scheme_end, username_end, host_start, host_end, host, port, path_start, rest3)
+}
+
+// (error, username_end, resto)
+fn ur_parse_userinfo(p: int, input: int, st: int) -> (int, int, int) {
+    let mut last_at = -1
+    let mut last_rest = 0
+    let mut count = 0
+    let mut i = input
+    while true {
+        let c = ur_peek(p, i)
+        if c < 0 {
+            break
+        }
+        i = ur_after(p, i)
+        if c == 64 {
+            last_at = count
+            last_rest = i
+        } else if c == 47 || c == 63 || c == 35 {
+            break
+        } else if c == 92 && st != 0 {
+            break
+        }
+        count += 1
+    }
+    if last_at < 0 {
+        return (0, ur_len(p), input)
+    }
+    if last_at == 0 {
+        let c = ur_peek(p, last_rest)
+        if c == 47 || c == 63 || c == 35 || (st != 0 && c == 92) {
+            return (-1, 0, 0)
+        }
+        return (0, ur_len(p), last_rest)
+    }
+    let mut left = last_at
+    let mut username_end = -1
+    let mut has_password = false
+    let mut has_username = false
+    let mut j = input
+    let sb = ur_sb(p)
+    while left > 0 {
+        let k = ur_skip(p, j)
+        let c = ur_cp(p, k)
+        j = k + 1
+        left -= 1
+        if c == 58 && username_end < 0 {
+            username_end = ur_len(p)
+            if left > 0 {
+                ur_push(p, 58)
+                has_password = true
+            }
+        } else {
+            if !has_password {
+                has_username = true
+            }
+            ur_enc_cp(sb, c, 3)
+        }
+    }
+    if username_end < 0 {
+        username_end = ur_len(p)
+    }
+    if has_username || has_password {
+        ur_push(p, 64)
+    }
+    return (0, username_end, last_rest)
+}
+
+// (error, host_end, host, port, resto)
+fn ur_parse_host_and_port(p: int, input: int, scheme_end: int, st: int) -> (int, int, int, int, int) {
+    let (err, kind, text, rest) = ur_parse_host(p, input, st)
+    if err < 0 {
+        return (err, 0, 0, 0, 0)
+    }
+    ur_pushs(p, text)
+    let host_end = ur_len(p)
+    if kind == 1 && rt_slen(text) == 0 {
+        if ur_peek(p, rest) == 58 {
+            return (-1, 0, 0, 0, 0)
+        }
+        if st != 0 {
+            return (-1, 0, 0, 0, 0)
+        }
+    }
+    let mut host = kind
+    if kind == 1 && rt_slen(text) == 0 {
+        host = 0
+    }
+    if ur_peek(p, rest) != 58 {
+        return (0, host_end, host, -1, rest)
+    }
+    // parse_port (contexto UrlParser)
+    let mut i = ur_after(p, rest)
+    let mut port = 0
+    let mut any = false
+    while true {
+        let c = ur_peek(p, i)
+        if c < 0 {
+            break
+        }
+        if ur_digit(c) {
+            port = port * 10 + (c - 48)
+            if port > 65535 {
+                return (-3, 0, 0, 0, 0)
+            }
+            any = true
+        } else if c != 47 && c != 92 && c != 63 && c != 35 {
+            return (-3, 0, 0, 0, 0)
+        } else {
+            break
+        }
+        i = ur_after(p, i)
+    }
+    if !any || port == ur_default_port(p, 0, scheme_end) {
+        port = -1
+    }
+    if port >= 0 {
+        ur_push(p, 58)
+        ur_pushs(p, rt_int_to_str(port))
+    }
+    return (0, host_end, host, port, i)
+}
+
+// Parser::parse_host (esquemas que no son file):
+// (error, tipo, texto del host, resto). Tipo 1 = dominio (vacío = ninguno).
+fn ur_parse_host(p: int, input: int, st: int) -> (int, int, any, int) {
+    let n = ur_n(p)
+    let mut inside = false
+    let mut k = input
+    let b = sb_new(16)
+    while k < n {
+        let c = ur_cp(p, k)
+        if c == 58 && !inside {
+            break
+        }
+        if c == 92 && st != 0 {
+            break
+        }
+        if c == 47 || c == 63 || c == 35 {
+            break
+        }
+        if !ur_tabnl(c) {
+            if c == 91 {
+                inside = true
+            } else if c == 93 {
+                inside = false
+            }
+            sb_cp(b, c)
+        }
+        k += 1
+    }
+    let text = sb_finish(b)
+    if st == 1 && rt_slen(text) == 0 {
+        return (-1, 0, "", 0)
+    }
+    if st == 0 {
+        let (err, kind, out) = ur_host_opaque(text)
+        return (err, kind, out, k)
+    }
+    let (err, kind, out) = ur_host_parse(text)
+    return (err, kind, out, k)
+}
+
+// file_host: (hay host, texto, resto)
+fn ur_file_host(p: int, input: int) -> (bool, any, int) {
+    let n = ur_n(p)
+    let mut k = input
+    let b = sb_new(16)
+    while k < n {
+        let c = ur_cp(p, k)
+        if c == 47 || c == 92 || c == 63 || c == 35 {
+            break
+        }
+        if !ur_tabnl(c) {
+            sb_cp(b, c)
+        }
+        k += 1
+    }
+    let text = sb_finish(b)
+    if ur_str_is_drive(text) {
+        return (false, "", input)
+    }
+    return (true, text, k)
+}
+
+// parse_file_host: (error, has_host, host, resto); escribe el host.
+fn ur_parse_file_host(p: int, input: int) -> (int, bool, int, int) {
+    let (flag, text, rest) = ur_file_host(p, input)
+    if rt_slen(text) == 0 {
+        return (0, false, 0, rest)
+    }
+    let (err, kind, out) = ur_host_parse(text)
+    if err < 0 {
+        return (err, false, 0, 0)
+    }
+    if kind == 1 && rt_str_eq(out, "localhost") {
+        return (0, false, 0, rest)
+    }
+    ur_pushs(p, out)
+    return (0, true, kind, rest)
+}
+
+fn ur_parse_path_start(p: int, st: int, input: int) -> int {
+    let path_start = ur_len(p)
+    let c = ur_peek(p, input)
+    let rest = ur_after(p, input)
+    if st != 0 {
+        if !ur_ends(p, 47) {
+            ur_push(p, 47)
+            if c == 47 || c == 92 {
+                return ur_parse_path(p, st, path_start, rest)
+            }
+        }
+        return ur_parse_path(p, st, path_start, input)
+    }
+    if c == 63 || c == 35 {
+        return input
+    }
+    if c >= 0 && c != 47 {
+        ur_push(p, 47)
+    }
+    ur_parse_path(p, st, path_start, input)
+}
+
+// ¿El segmento [a, b) es "." (1), ".." (2) o ninguno (0)? Acepta %2e / %2E.
+fn ur_dots(p: int, a: int, b: int) -> int {
+    let mut k = a
+    let mut count = 0
+    while k < b {
+        if ur_byte(p, k) == 46 {
+            k += 1
+        } else if k + 3 <= b && ur_byte(p, k) == 37 && ur_byte(p, k + 1) == 50 && (ur_byte(p, k + 2) == 101 || ur_byte(p, k + 2) == 69) {
+            k += 3
+        } else {
+            return 0
+        }
+        count += 1
+        if count > 2 {
+            return 0
+        }
+    }
+    count
+}
+
+// has_host está en P+32 (lo puede poner a 0 una letra de unidad).
+fn ur_parse_path(p: int, st: int, path_start: int, input: int) -> int {
+    let n = ur_n(p)
+    let mut i = input
+    while true {
+        let mut segment_start = ur_len(p)
+        let mut ends_with_slash = false
+        let mut start = i
+        while true {
+            let before = i
+            if i >= n {
+                ur_enc_range(p, start, i, 2)
+                break
+            }
+            let c = ur_cp(p, i)
+            i += 1
+            if ur_tabnl(c) {
+                ur_enc_range(p, start, before, 2)
+                start = i
+            } else if c == 47 {
+                ur_enc_range(p, start, before, 2)
+                ur_push(p, 47)
+                ends_with_slash = true
+                break
+            } else if c == 92 && st != 0 {
+                ur_enc_range(p, start, before, 2)
+                ur_push(p, 47)
+                ends_with_slash = true
+                break
+            } else if c == 63 || c == 35 {
+                ur_enc_range(p, start, before, 2)
+                i = before
+                break
+            } else if st == 2 && ur_len(p) > path_start && ur_is_norm_drive(p, path_start + 1, ur_len(p)) {
+                ur_enc_range(p, start, before, 2)
+                start = before
+                ur_push(p, 47)
+                segment_start += 1
+            }
+        }
+        let mut seg_end = ur_len(p)
+        if ends_with_slash {
+            seg_end -= 1
+        }
+        let dots = ur_dots(p, segment_start, seg_end)
+        if dots == 2 {
+            ur_trunc(p, segment_start)
+            if ur_ends(p, 47) && ur_last_slash_can_be_removed(p, path_start) {
+                ur_trunc(p, ur_len(p) - 1)
+            }
+            ur_shorten_path(p, st, path_start)
+            if ends_with_slash && !ur_ends(p, 47) {
+                ur_push(p, 47)
+            }
+        } else if dots == 1 {
+            ur_trunc(p, segment_start)
+            if !ur_ends(p, 47) {
+                ur_push(p, 47)
+            }
+        } else if st == 2 && segment_start == path_start + 1 && ur_is_drive(p, segment_start, seg_end) {
+            let c0 = ur_byte(p, segment_start)
+            ur_trunc(p, segment_start)
+            ur_push(p, c0)
+            ur_push(p, 58)
+            if ends_with_slash {
+                ur_push(p, 47)
+            }
+            std::raw::store(p + 32, 0)
+        }
+        if !ends_with_slash {
+            break
+        }
+    }
+    if st == 2 {
+        // Quita las barras del principio del camino y deja una.
+        let len = ur_len(p)
+        let mut k = path_start
+        while k < len && ur_byte(p, k) == 47 {
+            k += 1
+        }
+        let tail = ur_slice(p, k, len)
+        ur_trunc(p, path_start)
+        ur_push(p, 47)
+        ur_pushs(p, tail)
+    }
+    i
+}
+
+fn ur_last_slash_can_be_removed(p: int, path_start: int) -> bool {
+    let len = ur_len(p)
+    let pos = ur_rfind_slash(p, 0, len - 1)
+    if pos < 0 {
+        return false
+    }
+    pos >= path_start && !ur_path_starts_drive(p, pos, len)
+}
+
+fn ur_shorten_path(p: int, st: int, path_start: int) {
+    if ur_len(p) == path_start {
+        return
+    }
+    if st == 2 && ur_is_norm_drive(p, path_start, ur_len(p)) {
+        return
+    }
+    ur_pop_path(p, st, path_start)
+}
+
+fn ur_pop_path(p: int, st: int, path_start: int) {
+    let len = ur_len(p)
+    if len > path_start {
+        let slash = ur_rfind_slash(p, path_start, len)
+        if slash < 0 {
+            return
+        }
+        let segment_start = slash + 1
+        if !(st == 2 && ur_is_norm_drive(p, segment_start, len)) {
+            ur_trunc(p, segment_start)
+        }
+    }
+}
+
+fn ur_parse_cannot_be_a_base_path(p: int, input: int) -> int {
+    let n = ur_n(p)
+    let sb = ur_sb(p)
+    let mut i = input
+    while true {
+        let before = i
+        let j = ur_skip(p, i)
+        if j >= n {
+            return j
+        }
+        let c = ur_cp(p, j)
+        if c == 63 || c == 35 {
+            return before
+        }
+        ur_enc_cp(sb, c, 0)
+        i = j + 1
+    }
+    i
+}
+
+fn ur_with_query_and_fragment(p: int, st: int, scheme_end: int, username_end: int, host_start: int, host_end: int, host: int, port: int, path_start0: int, rest: int) -> int {
+    let mut path_start = path_start0
+    if path_start == scheme_end + 1 {
+        let len = ur_len(p)
+        if path_start + 1 < len && ur_byte(p, path_start) == 47 && ur_byte(p, path_start + 1) == 47 {
+            ur_insert(p, path_start, "/.")
+            path_start += 2
+        }
+    } else if path_start == scheme_end + 3 && ur_ser_is(p, scheme_end, path_start, ":/.") {
+        if !(path_start + 1 < ur_len(p) && ur_byte(p, path_start + 1) == 47) {
+            ur_remove(p, scheme_end + 1, path_start)
+            path_start -= 2
+        }
+    }
+    let (qerr, q, f) = ur_parse_query_and_fragment(p, st, scheme_end, rest)
+    ur_make(p, scheme_end, username_end, host_start, host_end, host, port, path_start, q, f)
+}
+
+// (error, query_start, fragment_start)
+fn ur_parse_query_and_fragment(p: int, st: int, scheme_end: int, input: int) -> (int, int, int) {
+    let c = ur_peek(p, input)
+    let mut i = ur_after(p, input)
+    let mut q = -1
+    if c < 0 {
+        return (0, -1, -1)
+    }
+    if c == 63 {
+        q = ur_len(p)
+        ur_push(p, 63)
+        let r = ur_parse_query(p, st, i)
+        if r < 0 {
+            return (0, q, -1)
+        }
+        i = r
+    }
+    let f = ur_len(p)
+    ur_push(p, 35)
+    ur_parse_fragment(p, i)
+    return (0, q, f)
+}
+
+// Devuelve la posición tras '#' o -1 si se acaba la entrada.
+fn ur_parse_query(p: int, st: int, input: int) -> int {
+    let n = ur_n(p)
+    let mut set = 4
+    if st != 0 {
+        set = 5
+    }
+    let mut start = input
+    let mut k = input
+    while k < n {
+        let c = ur_cp(p, k)
+        if ur_tabnl(c) {
+            ur_enc_range(p, start, k, set)
+            start = k + 1
+        } else if c == 35 {
+            ur_enc_range(p, start, k, set)
+            return k + 1
+        }
+        k += 1
+    }
+    ur_enc_range(p, start, n, set)
+    -1
+}
+
+fn ur_parse_fragment(p: int, input: int) {
+    let n = ur_n(p)
+    let sb = ur_sb(p)
+    let mut k = input
+    while k < n {
+        let c = ur_cp(p, k)
+        if !ur_tabnl(c) {
+            ur_enc_cp(sb, c, 1)
+        }
+        k += 1
+    }
+}
+
+fn ur_fragment_only(p: int, base: int, input: int) -> int {
+    let bf = ur_before_fragment(base)
+    ur_push_from(p, base, 0, bf)
+    ur_push(p, 35)
+    ur_parse_fragment(p, ur_after(p, input))
+    ur_make_like(p, base, ur_f(base, 8), bf)
+}
+
+// ------------------------------------------------------------ hosts
+
+// Host::parse_cow: (error, tipo, texto). Tipos: 1 dominio, 2 IPv4, 3 IPv6.
+fn ur_host_parse(text: any) -> (int, int, any) {
+    let n = rt_slen(text)
+    let tp = std::raw::bits(text) + 16
+    if n > 0 && std::raw::load8(tp) == 91 {
+        if std::raw::load8(tp + n - 1) != 93 || n < 2 {
+            return (-5, 0, "")
+        }
+        return ur_ipv6(text, 1, n - 1)
+    }
+    let decoded = ur_percent_decode(text)
+    let (ok, domain) = id_domain_to_ascii_url(decoded)
+    if !ok {
+        return (-2, 0, "")
+    }
+    if rt_slen(domain) == 0 {
+        return (-1, 0, "")
+    }
+    if ur_ends_in_number(domain) {
+        return ur_ipv4(domain)
+    }
+    return (0, 1, domain)
+}
+
+// Host::parse_opaque_cow
+fn ur_host_opaque(text: any) -> (int, int, any) {
+    let n = rt_slen(text)
+    let tp = std::raw::bits(text) + 16
+    if n > 0 && std::raw::load8(tp) == 91 {
+        if std::raw::load8(tp + n - 1) != 93 || n < 2 {
+            return (-5, 0, "")
+        }
+        return ur_ipv6(text, 1, n - 1)
+    }
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(tp + i)
+        if c == 0 || c == 9 || c == 10 || c == 13 || c == 32 || c == 35 || c == 47 || c == 58 || c == 60 || c == 62 || c == 63 || c == 64 || c == 91 || c == 92 || c == 93 || c == 94 || c == 124 {
+            return (-6, 0, "")
+        }
+        i += 1
+    }
+    let b = sb_new(n + 8)
+    i = 0
+    while i < n {
+        ur_enc_byte(b, std::raw::load8(tp + i), 0)
+        i += 1
+    }
+    return (0, 1, sb_finish(b))
+}
+
+// ends_in_a_number
+fn ur_ends_in_number(s: any) -> bool {
+    let n = rt_slen(s)
+    let sp = std::raw::bits(s) + 16
+    let mut end = n
+    let mut a = n
+    while a > 0 && std::raw::load8(sp + a - 1) != 46 {
+        a -= 1
+    }
+    if a == end {
+        // Último trozo vacío: se mira el anterior (si lo hay).
+        if a == 0 {
+            return false
+        }
+        end = a - 1
+        a = end
+        while a > 0 && std::raw::load8(sp + a - 1) != 46 {
+            a -= 1
+        }
+    }
+    if end > a {
+        let mut all = true
+        let mut k = a
+        while k < end {
+            if !ur_digit(std::raw::load8(sp + k)) {
+                all = false
+            }
+            k += 1
+        }
+        if all {
+            return true
+        }
+    }
+    ur_ipv4_number(sp, a, end) != -2
+}
+
+// parse_ipv4number sobre los bytes [a, b): -2 = Err, -1 = Ok(None)
+// (desborda u32), si no el valor.
+fn ur_ipv4_number(sp: int, a0: int, b: int) -> int {
+    if a0 >= b {
+        return -2
+    }
+    let mut a = a0
+    let mut r = 10
+    if b - a >= 2 && std::raw::load8(sp + a) == 48 && (std::raw::load8(sp + a + 1) == 120 || std::raw::load8(sp + a + 1) == 88) {
+        a += 2
+        r = 16
+    } else if b - a >= 2 && std::raw::load8(sp + a) == 48 {
+        a += 1
+        r = 8
+    }
+    if a >= b {
+        return 0
+    }
+    let mut k = a
+    while k < b {
+        let c = std::raw::load8(sp + k)
+        if r == 8 && !(c >= 48 && c <= 55) {
+            return -2
+        }
+        if r == 10 && !ur_digit(c) {
+            return -2
+        }
+        if r == 16 && !ur_hexdigit(c) {
+            return -2
+        }
+        k += 1
+    }
+    let mut v = 0
+    k = a
+    while k < b {
+        v = v * r + rt_hex_value(std::raw::load8(sp + k))
+        if v > 4294967295 {
+            return -1
+        }
+        k += 1
+    }
+    v
+}
+
+fn ur_ipv4(s: any) -> (int, int, any) {
+    let n = rt_slen(s)
+    let sp = std::raw::bits(s) + 16
+    // Trozos separados por '.': inicio y fin de cada uno (como máximo se
+    // miran 5 más el vacío final).
+    let parts = rt_alloc(16 * (n + 2))
+    let mut count = 0
+    let mut a = 0
+    let mut k = 0
+    while k <= n {
+        if k == n || std::raw::load8(sp + k) == 46 {
+            std::raw::store(parts + 16 * count, a)
+            std::raw::store(parts + 16 * count + 8, k)
+            count += 1
+            a = k + 1
+        }
+        k += 1
+    }
+    if std::raw::load(parts + 16 * (count - 1)) == std::raw::load(parts + 16 * (count - 1) + 8) {
+        count -= 1
+    }
+    if count > 4 {
+        rt_free_block(parts)
+        return (-4, 0, "")
+    }
+    let numbers = rt_alloc(32)
+    let mut t = 0
+    while t < count {
+        let v = ur_ipv4_number(sp, std::raw::load(parts + 16 * t), std::raw::load(parts + 16 * t + 8))
+        if v < 0 {
+            rt_free_block(parts)
+            rt_free_block(numbers)
+            return (-4, 0, "")
+        }
+        std::raw::store(numbers + 8 * t, v)
+        t += 1
+    }
+    rt_free_block(parts)
+    let rest = count - 1
+    let mut ipv4 = std::raw::load(numbers + 8 * rest)
+    let mut limit = 4294967295
+    t = 0
+    while t < rest {
+        limit = limit / 256
+        t += 1
+    }
+    let mut bad = ipv4 > limit
+    t = 0
+    while t < rest {
+        if std::raw::load(numbers + 8 * t) > 255 {
+            bad = true
+        }
+        t += 1
+    }
+    if bad {
+        rt_free_block(numbers)
+        return (-4, 0, "")
+    }
+    t = 0
+    while t < rest {
+        let mut shifted = std::raw::load(numbers + 8 * t)
+        let mut e = 0
+        while e < 3 - t {
+            shifted = shifted * 256
+            e += 1
+        }
+        ipv4 = ipv4 + shifted
+        t += 1
+    }
+    rt_free_block(numbers)
+    let b = sb_new(16)
+    sb_str(b, rt_int_to_str(ipv4 / 16777216))
+    sb_byte(b, 46)
+    sb_str(b, rt_int_to_str((ipv4 / 65536) & 255))
+    sb_byte(b, 46)
+    sb_str(b, rt_int_to_str((ipv4 / 256) & 255))
+    sb_byte(b, 46)
+    sb_str(b, rt_int_to_str(ipv4 & 255))
+    return (0, 2, sb_finish(b))
+}
+
+fn ur_pc(pieces: int, k: int) -> int {
+    std::raw::load(pieces + 8 * k)
+}
+
+fn ur_pset(pieces: int, k: int, v: int) {
+    std::raw::store(pieces + 8 * k, v)
+}
+
+// parse_ipv6addr sobre los bytes [a, b) de s; devuelve el host escrito
+// entre corchetes.
+fn ur_ipv6(s: any, a: int, b: int) -> (int, int, any) {
+    let pieces = rt_alloc(64)
+    let mut k = 0
+    while k < 8 {
+        ur_pset(pieces, k, 0)
+        k += 1
+    }
+    let code = ur_ipv6_into(std::raw::bits(s) + 16 + a, b - a, pieces)
+    if code < 0 {
+        rt_free_block(pieces)
+        return (code, 0, "")
+    }
+    let out = ur_write_ipv6(pieces)
+    rt_free_block(pieces)
+    return (0, 3, out)
+}
+
+fn ur_ipv6_into(sp: int, len: int, pieces: int) -> int {
+    let mut pp = 0
+    let mut compress = -1
+    let mut i = 0
+    let mut is_v4 = false
+    if len < 2 {
+        return -5
+    }
+    if std::raw::load8(sp) == 58 {
+        if std::raw::load8(sp + 1) != 58 {
+            return -5
+        }
+        i = 2
+        pp = 1
+        compress = 1
+    }
+    while i < len {
+        if pp == 8 {
+            return -5
+        }
+        if std::raw::load8(sp + i) == 58 {
+            if compress >= 0 {
+                return -5
+            }
+            i += 1
+            pp += 1
+            compress = pp
+            continue
+        }
+        let start = i
+        let mut end = start + 4
+        if end > len {
+            end = len
+        }
+        let mut value = 0
+        while i < end {
+            let d = rt_hex_value(std::raw::load8(sp + i))
+            if d < 0 {
+                break
+            }
+            value = value * 16 + d
+            i += 1
+        }
+        if i < len {
+            let c = std::raw::load8(sp + i)
+            if c == 46 {
+                if i == start {
+                    return -5
+                }
+                i = start
+                if pp > 6 {
+                    return -5
+                }
+                is_v4 = true
+            } else if c == 58 {
+                i += 1
+                if i == len {
+                    return -5
+                }
+            } else {
+                return -5
+            }
+        }
+        if is_v4 {
+            break
+        }
+        ur_pset(pieces, pp, value)
+        pp += 1
+    }
+    if is_v4 {
+        if pp > 6 {
+            return -5
+        }
+        let mut seen = 0
+        while i < len {
+            if seen > 0 {
+                if seen < 4 && std::raw::load8(sp + i) == 46 {
+                    i += 1
+                } else {
+                    return -5
+                }
+            }
+            let mut piece = -1
+            while i < len {
+                let c = std::raw::load8(sp + i)
+                if !ur_digit(c) {
+                    break
+                }
+                let digit = c - 48
+                if piece < 0 {
+                    piece = digit
+                } else if piece == 0 {
+                    return -5
+                } else {
+                    piece = piece * 10 + digit
+                    if piece > 255 {
+                        return -5
+                    }
+                }
+                i += 1
+            }
+            if piece < 0 {
+                return -5
+            }
+            ur_pset(pieces, pp, ur_pc(pieces, pp) * 256 + piece)
+            seen += 1
+            if seen == 2 || seen == 4 {
+                pp += 1
+            }
+        }
+        if seen != 4 {
+            return -5
+        }
+    }
+    if i < len {
+        return -5
+    }
+    if compress >= 0 {
+        let mut swaps = pp - compress
+        pp = 7
+        while swaps > 0 {
+            let x = ur_pc(pieces, pp)
+            ur_pset(pieces, pp, ur_pc(pieces, compress + swaps - 1))
+            ur_pset(pieces, compress + swaps - 1, x)
+            swaps -= 1
+            pp -= 1
+        }
+    } else if pp != 8 {
+        return -5
+    }
+    0
+}
+
+fn ur_hex_lower_into(b: int, v: int) {
+    let mut shift = 4096
+    let mut started = false
+    while shift >= 1 {
+        let d = (v / shift) & 15
+        if d != 0 || started || shift == 1 {
+            if d < 10 {
+                sb_byte(b, 48 + d)
+            } else {
+                sb_byte(b, 87 + d)
+            }
+            started = true
+        }
+        shift = shift / 16
+    }
+}
+
+fn ur_write_ipv6(pieces: int) -> any {
+    // longest_zero_sequence
+    let mut longest = -1
+    let mut longest_len = -1
+    let mut start = -1
+    let mut i = 0
+    while i < 9 {
+        if i < 8 && ur_pc(pieces, i) == 0 {
+            if start < 0 {
+                start = i
+            }
+        } else {
+            if start >= 0 {
+                let length = i - start
+                if length > longest_len {
+                    longest = start
+                    longest_len = length
+                }
+            }
+            start = -1
+        }
+        i += 1
+    }
+    let mut cs = -1
+    let mut ce = -2
+    if longest_len >= 2 {
+        cs = longest
+        ce = longest + longest_len
+    }
+    let b = sb_new(48)
+    sb_byte(b, 91)
+    i = 0
+    while i < 8 {
+        if i == cs {
+            sb_byte(b, 58)
+            if i == 0 {
+                sb_byte(b, 58)
+            }
+            if ce < 8 {
+                i = ce
+            } else {
+                break
+            }
+        }
+        ur_hex_lower_into(b, ur_pc(pieces, i))
+        if i < 7 {
+            sb_byte(b, 58)
+        }
+        i += 1
+    }
+    sb_byte(b, 93)
+    sb_finish(b)
+}
+
+// ------------------------------------------------------------ Url::parse
+
+// Puntos de código del texto sin los controles C0 ni espacios de los
+// extremos (Input::new_trim_c0_control_and_space).
+fn ur_decode_input(p: int, text: any) {
+    let n = rt_slen(text)
+    let tp = std::raw::bits(text) + 16
+    let buf = rt_alloc(8 * n + 8)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        let c = tx_decode(tp + i)
+        std::raw::store(buf + 8 * count, c)
+        count += 1
+        i += rt_utf8_width(std::raw::load8(tp + i))
+    }
+    let mut a = 0
+    while a < count && std::raw::load(buf + 8 * a) <= 32 {
+        a += 1
+    }
+    let mut z = count
+    while z > a && std::raw::load(buf + 8 * (z - 1)) <= 32 {
+        z -= 1
+    }
+    std::raw::store(p + 8, buf + 8 * a)
+    std::raw::store(p + 16, z - a)
+    std::raw::store(p + 40, buf)
+}
+
+// URL (bloque U) o el código de error (negativo).
+fn ur_parse(text: any, base: int) -> int {
+    let p = rt_alloc(48)
+    std::raw::store(p, sb_new(rt_slen(text) + 8))
+    std::raw::store(p + 24, base)
+    std::raw::store(p + 32, 0)
+    ur_decode_input(p, text)
+    let u = ur_parse_url(p)
+    let sb = std::raw::load(p)
+    if sb != 0 {
+        rt_free_block(std::raw::load(sb + 16))
+        rt_free_block(sb)
+    }
+    rt_free_block(std::raw::load(p + 40))
+    rt_free_block(p)
+    u
+}
+
+fn ur_fail(function: string, text: any, code: int) {
+    rt_native_fail(function, rt_concat(rt_concat(rt_concat(rt_concat("invalid URL '", text), "': "), ur_error_text(code)), ""))
+}
+
+fn ur_parse_or_fail(function: string, text: any) -> int {
+    rt_expect_str(text, function)
+    let u = ur_parse(text, 0)
+    if u < 0 {
+        ur_fail(function, text, u)
+    }
+    u
+}
+
+// ------------------------------------------------------------ std::url
+
+fn std__url__is_valid(text: any) -> any {
+    rt_expect_str(text, "std::url::is_valid")
+    let u = ur_parse(text, 0)
+    if u < 0 {
+        return false
+    }
+    ur_free(u)
+    true
+}
+
+fn std__url__scheme(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::scheme", text)
+    let out = ur_uslice(u, 0, ur_f(u, 1))
+    ur_free(u)
+    out
+}
+
+fn std__url__host(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::host", text)
+    if ur_f(u, 5) == 0 {
+        ur_free(u)
+        rt_native_fail("std::url::host", rt_concat(rt_concat("URL has no host: '", text), "'"))
+    }
+    let out = ur_uslice(u, ur_f(u, 3), ur_f(u, 4))
+    ur_free(u)
+    out
+}
+
+fn std__url__port(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::port", text)
+    let mut port = ur_f(u, 6)
+    if port < 0 {
+        let s = std::raw::load(u)
+        let q = rt_alloc(8)
+        std::raw::store(q, s)
+        port = ur_default_port(q, 0, ur_f(u, 1))
+        rt_free_block(q)
+    }
+    ur_free(u)
+    port
+}
+
+fn std__url__path(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::path", text)
+    let out = ur_uslice(u, ur_f(u, 7), ur_path_end(u))
+    ur_free(u)
+    out
+}
+
+fn std__url__query(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::query", text)
+    let q = ur_f(u, 8)
+    let mut out = ""
+    if q >= 0 {
+        out = ur_uslice(u, q + 1, ur_before_fragment(u))
+    }
+    ur_free(u)
+    out
+}
+
+fn std__url__fragment(text: any) -> any {
+    let u = ur_parse_or_fail("std::url::fragment", text)
+    let f = ur_f(u, 9)
+    let mut out = ""
+    if f >= 0 {
+        out = ur_uslice(u, f + 1, ur_ulen(u))
+    }
+    ur_free(u)
+    out
+}
+
+fn std__url__join(base: any, relative: any) -> any {
+    let b = ur_parse_or_fail("std::url::join", base)
+    rt_expect_str(relative, "std::url::join")
+    let u = ur_parse(relative, b)
+    ur_free(b)
+    if u < 0 {
+        ur_fail("std::url::join", relative, u)
+    }
+    let out = ur_uslice(u, 0, ur_ulen(u))
+    ur_free(u)
+    out
+}
+
+// ------------------------------------------------------------ form_urlencoded
+
+// decode: '+' → ' ', percent_decode y from_utf8_lossy.
+fn ur_form_decode(sp: int, a: int, b: int) -> any {
+    let sb = sb_new(b - a + 8)
+    let mut i = a
+    while i < b {
+        let x = std::raw::load8(sp + i)
+        if x == 43 {
+            sb_byte(sb, 32)
+            i += 1
+            continue
+        }
+        if x == 37 && i + 2 < b {
+            let h = ur_form_hex(std::raw::load8(sp + i + 1))
+            let l = ur_form_hex(std::raw::load8(sp + i + 2))
+            if h >= 0 && l >= 0 {
+                sb_byte(sb, h * 16 + l)
+                i += 3
+                continue
+            }
+        }
+        sb_byte(sb, x)
+        i += 1
+    }
+    dr_lossy(sb_finish(sb))
+}
+
+// Como rt_hex_value, pero '+' ya se cambió por ' ' antes de decodificar:
+// "%2+" no es un escape, y "%+2" tampoco.
+fn ur_form_hex(b: int) -> int {
+    if b == 43 {
+        return -1
+    }
+    rt_hex_value(b)
+}
+
+fn std__url__parse_query(text: any) -> any {
+    rt_expect_str(text, "std::url::parse_query")
+    let n = rt_slen(text)
+    let sp = std::raw::bits(text) + 16
+    let mut a = 0
+    if n > 0 && std::raw::load8(sp) == 63 {
+        a = 1
+    }
+    let mut out = std__map__new()
+    while a < n {
+        let mut e = a
+        while e < n && std::raw::load8(sp + e) != 38 {
+            e += 1
+        }
+        if e > a {
+            let mut eq = a
+            while eq < e && std::raw::load8(sp + eq) != 61 {
+                eq += 1
+            }
+            let key = ur_form_decode(sp, a, eq)
+            let mut value = ""
+            if eq < e {
+                value = ur_form_decode(sp, eq + 1, e)
+            }
+            out = std__map__insert(out, key, value)
+        }
+        a = e + 1
+    }
+    out
+}
+
+fn ur_form_serialize(sb: int, s: any) {
+    let n = rt_slen(s)
+    let sp = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(sp + i)
+        if x == 42 || x == 45 || x == 46 || x == 95 || ur_digit(x) || ur_alpha(x) {
+            sb_byte(sb, x)
+        } else if x == 32 {
+            sb_byte(sb, 43)
+        } else {
+            sb_byte(sb, 37)
+            sb_byte(sb, ur_hex_upper(x / 16))
+            sb_byte(sb, ur_hex_upper(x & 15))
+        }
+        i += 1
+    }
+}
+
+fn std__url__build_query(pairs: any) -> any {
+    rt_expect_array(pairs, "std::url::build_query")
+    let n = rt_seq_len(pairs)
+    // Primero se comprueban todos (como el collect de native.rs).
+    let mut i = 0
+    while i < n {
+        let item = rt_seq_get(pairs, i)
+        rt_expect_array(item, "std::url::build_query")
+        if rt_seq_len(item) != 2 {
+            rt_native_fail("std::url::build_query", "build_query expects an array of [key, value] pairs")
+        }
+        if std::raw::tag(rt_seq_get(item, 1)) != 5 || std::raw::tag(rt_seq_get(item, 0)) != 5 {
+            rt_native_fail("std::url::build_query", "expected string")
+        }
+        i += 1
+    }
+    let sb = sb_new(64)
+    i = 0
+    while i < n {
+        let item = rt_seq_get(pairs, i)
+        if sb_len(sb) > 0 {
+            sb_byte(sb, 38)
+        }
+        ur_form_serialize(sb, rt_seq_get(item, 0))
+        sb_byte(sb, 61)
+        ur_form_serialize(sb, rt_seq_get(item, 1))
+        i += 1
+    }
+    sb_finish(sb)
+}

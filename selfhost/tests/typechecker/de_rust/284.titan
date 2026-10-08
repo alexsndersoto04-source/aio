@@ -1,0 +1,1 @@
+trait Measure { fn value(self, scale: int) -> int; } struct Item { value: int } impl Measure for Item { fn value(self, scale: string) -> int { 0 } } fn main() {}

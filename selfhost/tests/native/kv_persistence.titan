@@ -1,0 +1,99 @@
+// Comprueba operaciones locales del KV nativo: bytes, CAS, árboles, cierre y
+// reapertura. La matriz compara el comportamiento observable con la VM Sled,
+// pero cada lado usa una ruta distinta; esta prueba no demuestra intercambio
+// de los mismos datos entre ambos formatos.
+fn error_text(result: Result) -> string {
+    match result {
+        Result::Ok(_) => "unexpected success",
+        Result::Err(message) => message,
+    }
+}
+
+fn main() {
+    let pid = std::json::stringify(std::process::self_pid())
+    let path = "/tmp/titan-kv-selfhost-" + pid
+    let _ = std::try::catch(|| std::fs::remove_dir(path))
+
+    let db = std::kv::open(path)
+    let alpha = std::encoding::utf8_encode("alpha")
+    let binary = std::bytes::from_array([0, 255, 42, 0])
+    let empty = std::bytes::from_array([])
+    std::testing::assert(std::kv::insert(db, alpha, binary) == nil, "first insert has no previous value")
+    std::testing::assert(std::kv::get(db, alpha) == binary, "arbitrary binary value round-trips")
+    std::testing::assert(std::kv::insert(db, alpha, empty) == binary, "insert returns the previous value")
+    std::testing::assert(std::kv::contains(db, alpha), "an empty value is still present")
+    std::testing::assert(std::kv::get(db, alpha) == empty, "empty value round-trips distinctly from missing")
+
+    let binary_key = std::bytes::from_array([255])
+    std::kv::insert(db, binary_key, std::bytes::from_array([1]))
+    std::testing::assert(std::kv::len(db) == 2, "len counts binary and UTF-8 keys")
+    std::testing::assert(std::kv::keys(db) == ["alpha"], "keys lists sorted UTF-8 keys and omits invalid UTF-8")
+    let remove_key = std::encoding::utf8_encode("remove-me")
+    let remove_value = std::encoding::utf8_encode("old")
+    std::kv::insert(db, remove_key, remove_value)
+    std::testing::assert(std::kv::remove(db, remove_key) == remove_value, "remove returns the prior bytes")
+    std::testing::assert(std::kv::get(db, remove_key) == nil, "remove deletes the key")
+
+    let cas_key = std::encoding::utf8_encode("cas")
+    let one = std::encoding::utf8_encode("one")
+    let two = std::encoding::utf8_encode("two")
+    std::testing::assert(std::kv::compare_and_swap(db, cas_key, empty, one), "CAS inserts an absent key")
+    std::testing::assert(!std::kv::compare_and_swap(db, cas_key, empty, two), "CAS rejects a mismatched expected value")
+    std::testing::assert(std::kv::compare_and_swap(db, cas_key, one, two), "CAS replaces the expected value")
+    std::testing::assert(std::kv::compare_and_swap(db, cas_key, two, empty), "empty replacement removes the key")
+    std::testing::assert(std::kv::get(db, cas_key) == nil, "CAS removal is visible")
+
+    // Sled reserves this tree name for its default keyspace. Opening it by
+    // name must share data and cached lengths with the database handle.
+    let default_alias = std::kv::open_tree(db, "__sled__default")
+    let alias_key = std::encoding::utf8_encode("written-through-default-alias")
+    let alias_value = std::encoding::utf8_encode("alias")
+    std::kv::tree_insert(default_alias, alias_key, alias_value)
+    std::testing::assert(std::kv::get(db, alias_key) == alias_value, "default tree reads writes through its Sled alias")
+    std::testing::assert(std::kv::len(db) == 3 && std::kv::tree_len(default_alias) == 3, "default-tree alias shares length accounting")
+    let regular_key = std::encoding::utf8_encode("written-through-database")
+    let regular_value = std::encoding::utf8_encode("database")
+    std::kv::insert(db, regular_key, regular_value)
+    std::testing::assert(std::kv::tree_get(default_alias, regular_key) == regular_value, "Sled alias reads writes through the database handle")
+    std::testing::assert(std::kv::len(db) == 4 && std::kv::tree_len(default_alias) == 4, "both handles share default-tree length")
+
+    let tree = std::kv::open_tree(db, "cache")
+    let tree_key = std::encoding::utf8_encode("entry")
+    let tree_value = std::bytes::from_array([9, 0, 8, 7])
+    std::testing::assert(std::kv::tree_insert(tree, tree_key, tree_value) == nil, "tree insert")
+    std::testing::assert(std::kv::tree_get(tree, tree_key) == tree_value, "named tree stores independent bytes")
+    std::testing::assert(std::kv::tree_len(tree) == 1, "named tree length")
+    std::testing::assert(std::kv::tree_keys(tree) == ["entry"], "named tree keys")
+    std::testing::assert(std::kv::len(db) == 4, "named tree does not affect default-tree length")
+    std::kv::flush(db)
+    std::kv::close(db)
+    std::kv::close(db)
+
+    let closed_tree = error_text(std::try::catch(|| std::kv::tree_get(tree, tree_key)))
+    std::testing::assert(closed_tree == "native function 'std::kv::tree_get' failed: unknown tree handle " + std::json::stringify(tree), "closing a database invalidates its trees")
+
+    let reopened = std::kv::open(path)
+    std::testing::assert(std::kv::get(reopened, alpha) == empty, "default tree survives close and reopen")
+    std::testing::assert(std::kv::get(reopened, binary_key) == std::bytes::from_array([1]), "binary keys survive close and reopen")
+    let reopened_tree = std::kv::open_tree(reopened, "cache")
+    std::testing::assert(std::kv::tree_get(reopened_tree, tree_key) == tree_value, "named tree survives close and reopen")
+    let reopened_default_alias = std::kv::open_tree(reopened, "__sled__default")
+    std::testing::assert(std::kv::tree_get(reopened_default_alias, alias_key) == alias_value, "default alias survives close and reopen")
+    std::testing::assert(std::kv::tree_len(reopened_default_alias) == 4, "reopened default alias shares the default-tree length")
+    std::kv::clear(reopened)
+    std::testing::assert(std::kv::len(reopened) == 0, "clear removes default-tree entries")
+    std::testing::assert(std::kv::tree_len(reopened_default_alias) == 0, "clear is visible through the default alias")
+    std::testing::assert(std::kv::tree_get(reopened_tree, tree_key) == tree_value, "clear leaves named trees unchanged")
+    std::testing::assert(std::kv::tree_remove(reopened_tree, tree_key) == tree_value, "tree remove returns the old value")
+
+    let empty_path = error_text(std::try::catch(|| std::kv::open("")))
+    std::testing::assert(empty_path == "native function 'std::kv::open' failed: invalid key-value argument: database path must not be empty", "open rejects an empty path")
+    let empty_tree = error_text(std::try::catch(|| std::kv::open_tree(reopened, "")))
+    std::testing::assert(empty_tree == "native function 'std::kv::open_tree' failed: invalid key-value argument: tree name must not be empty", "open_tree rejects an empty name")
+    let unknown = error_text(std::try::catch(|| std::kv::get(-1, alpha)))
+    std::testing::assert(unknown == "native function 'std::kv::get' failed: unknown database handle -1", "unknown handles are rejected")
+
+    std::kv::close(reopened)
+    std::fs::remove_dir(path)
+    println("KV persistence, CAS, default-tree alias, named trees, and binary values: ok")
+}

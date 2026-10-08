@@ -1,0 +1,151 @@
+// Prueba del ancho de texto (native/std_uwidth.titan) con la batería de pruebas
+// original de unicode-width 0.2.2:
+//   - casos.txt: las aserciones literales de tests/tests.rs y todos los emoji
+//     "fully-qualified"/"component" de tests/emoji-test.txt (gen_casos.py);
+//   - abajo: las pruebas con bucles de tests.rs, traducidas a mano.
+// Compilar con el compilador de pruebas (expone std::prueba::*):
+//   cd selfhost && zett run prueba_interna.titan native/uwidth/prueba.titan /tmp/uwp
+//   /tmp/uwp native/uwidth/casos.txt
+
+fn num(s: string) -> int {
+    match std::text::parse_int(s) {
+        Option::Some(v) => v,
+        Option::None => {
+            print("número inválido: " + s)
+            -1000
+        },
+    }
+}
+
+fn cps_of(s: string) -> array {
+    let mut out = []
+    if s == "-" {
+        return out
+    }
+    for w in std::text::words(std::text::replace(s, ",", " ")) {
+        out = std::array::push(out, num(w))
+    }
+    out
+}
+
+// c.width().unwrap_or(1)
+fn cw1(c: int) -> int {
+    let w = std::prueba::uw_char_width(c)
+    if w < 0 {
+        return 1
+    }
+    w
+}
+
+fn is_surrogate(c: int) -> bool {
+    c >= 55296 && c <= 57343
+}
+
+fn khmer_coeng_eligible(c: int) -> bool {
+    (c >= 6016 && c <= 6018) || (c >= 6020 && c <= 6023) || (c >= 6025 && c <= 6028) || (c >= 6030 && c <= 6035) || (c >= 6037 && c <= 6040) || (c >= 6043 && c <= 6045) || c == 6048 || c == 6050 || c == 6055 || (c >= 6059 && c <= 6060) || c == 6063
+}
+
+fn check(fallos: int, what: string, got: int, want: int) -> int {
+    if got != want {
+        if fallos < 40 {
+            print("FALLO {what}: da {got}, se esperaba {want}")
+        }
+        return fallos + 1
+    }
+    fallos
+}
+
+fn main() {
+    let args = std::env::args()
+    let path = args[len(args) - 1]
+    let mut fallos = 0
+    let mut total = 0
+    for line in std::text::lines(std::fs::read_text(path)) {
+        let p = std::text::words(line)
+        if len(p) == 3 {
+            let want = num(p[2])
+            if p[0] == "C" {
+                let got = std::prueba::uw_char_width(num(p[1]))
+                fallos = check(fallos, line, got, want)
+            } else {
+                let got = std::prueba::uw_cps_width(cps_of(p[1]))
+                fallos = check(fallos, line, got, want)
+            }
+            total += 1
+        }
+    }
+    print("casos de casos.txt: {total}")
+
+    // test_str / test_emoji con cadenas de verdad (no arreglos).
+    fallos = check(fallos, "str hello", std::prueba::uw_str_width("ｈｅｌｌｏ"), 10)
+    fallos = check(fallos, "str vacía", std::prueba::uw_str_width(""), 0)
+    fallos = check(fallos, "str científica", std::prueba::uw_str_width("👩‍🔬"), 2)
+    fallos = check(fallos, "str क्ष", std::prueba::uw_str_width("क्ष"), 2)
+    fallos = check(fallos, "str ꓪꓹꓼ", std::prueba::uw_str_width("ꓪꓹꓼ"), 2)
+    total += 5
+
+    // test_prepended_concatenation_marks
+    for c in [1536, 1537, 1538, 1539, 1540, 1757, 69821, 69837] {
+        fallos = check(fallos, "marca {c}", std::prueba::uw_char_width(c), 1)
+        total += 1
+    }
+    for c in [1541, 1807, 2192, 2193, 2274] {
+        fallos = check(fallos, "marca {c}", std::prueba::uw_char_width(c), 0)
+        total += 1
+    }
+
+    // test_lisu_tones
+    let mut c1 = 42232
+    while c1 <= 42237 {
+        fallos = check(fallos, "lisu {c1}", std::prueba::uw_char_width(c1), 1)
+        fallos = check(fallos, "lisu str {c1}", std::prueba::uw_cps_width([c1]), 1)
+        total += 2
+        let mut c2 = 42232
+        while c2 <= 42237 {
+            let mut want = 2
+            if c1 <= 42235 && c2 >= 42236 {
+                want = 1
+            }
+            fallos = check(fallos, "lisu {c1} {c2}", std::prueba::uw_cps_width([c1, c2]), want)
+            total += 1
+            c2 += 1
+        }
+        c1 += 1
+    }
+
+    // char_str_consistent, test_khmer_coeng y test_vs1_vs2_vs3: todos los
+    // caracteres de '\0' a char::MAX.
+    let mut c = 0
+    while c <= 1114111 {
+        if !is_surrogate(c) {
+            let w1 = cw1(c)
+            fallos = check(fallos, "char_str {c}", std::prueba::uw_cps_width([c]), w1)
+            if khmer_coeng_eligible(c) {
+                fallos = check(fallos, "khmer {c}", std::prueba::uw_cps_width([6098, c]), 0)
+                fallos = check(fallos, "khmer zwj {c}", std::prueba::uw_cps_width([6098, 8205, 8205, c]), 0)
+                total += 1
+            } else {
+                fallos = check(fallos, "khmer {c}", std::prueba::uw_cps_width([6098, c]), w1)
+            }
+            if c == 8216 || c == 8217 || c == 8220 || c == 8221 {
+                fallos = check(fallos, "vs {c}", std::prueba::uw_char_width(c), 1)
+                fallos = check(fallos, "vs {c} fe00", std::prueba::uw_cps_width([c, 65024]), 1)
+                fallos = check(fallos, "vs {c} fe00 fe01", std::prueba::uw_cps_width([c, 65024, 65025]), 1)
+                fallos = check(fallos, "vs {c} fe01", std::prueba::uw_cps_width([c, 65025]), 2)
+                fallos = check(fallos, "vs {c} fe01 fe00", std::prueba::uw_cps_width([c, 65025, 65024]), 2)
+                fallos = check(fallos, "vs {c} fe02", std::prueba::uw_cps_width([c, 65026]), 1)
+                fallos = check(fallos, "vs {c} fe02 fe01", std::prueba::uw_cps_width([c, 65026, 65025]), 1)
+                total += 6
+            } else {
+                fallos = check(fallos, "vs {c} fe00", std::prueba::uw_cps_width([c, 65024]), w1)
+                fallos = check(fallos, "vs {c} fe01", std::prueba::uw_cps_width([c, 65025]), w1)
+                fallos = check(fallos, "vs {c} fe02", std::prueba::uw_cps_width([c, 65026]), w1)
+                total += 2
+            }
+            total += 3
+        }
+        c += 1
+    }
+    print("comprobaciones: {total}")
+    print("fallos: {fallos}")
+}

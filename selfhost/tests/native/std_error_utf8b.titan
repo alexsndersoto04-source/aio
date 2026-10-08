@@ -1,0 +1,6 @@
+// Error de la biblioteca estándar: debe dar el mismo mensaje que la VM.
+fn main() {
+    print("antes")
+    let r = std::encoding::utf8_decode(std::bytes::from_array([104, 237, 160, 128]))
+    print(r)
+}

@@ -1,0 +1,226 @@
+// std::input: estado real de teclado, ratón y multitáctil para el runtime nativo.
+// Reproduce crates/titan_stdlib/src/input.rs: límites, casts Rust a u8/u32/i32,
+// nombres de tecla sensibles a mayúsculas y ciclo exacto de activación.
+// Registro persistente en globals + 3176; no crea eventos ni simula hardware.
+
+const IP_SLOT: int = 3176
+const IP_STATE_BYTES: int = 3168
+const IP_MAX_KEYS: int = 256
+const IP_MAX_KEY_BYTES: int = 256
+const IP_MAX_TOUCH_POINTS: int = 32
+const IP_BUTTONS_OFFSET: int = 64
+const IP_KEYS_OFFSET: int = 96
+const IP_TOUCHES_OFFSET: int = 2144
+const IP_TOUCH_SLOT_BYTES: int = 32
+
+fn ip_state() -> int {
+    let slot = std::raw::globals() + IP_SLOT
+    let state = std::raw::load(slot)
+    if state != 0 { return state }
+    let created = rt_alloc_zero(IP_STATE_BYTES)
+    std::raw::store(slot, created)
+    created
+}
+
+fn ip_bool(value: any, function: string) -> bool {
+    if std::raw::tag(value) != 3 {
+        rt_native_fail(function, "expected bool")
+    }
+    std::raw::bits(value) != 0
+}
+
+// Los dispatches Rust convierten i64 con `as u8`, `as u32` y `as i32`.
+fn ip_u8(value: any, function: string) -> int {
+    rt_expect_int(value, function)
+    std::raw::bits(value) & 255
+}
+
+fn ip_u32(value: any, function: string) -> int {
+    rt_expect_int(value, function)
+    std::raw::bits(value) & 4294967295
+}
+
+fn ip_i32(value: any, function: string) -> int {
+    rt_expect_int(value, function)
+    let bits = std::raw::bits(value) & 4294967295
+    if bits >= 2147483648 { return bits - 4294967296 }
+    bits
+}
+
+fn ip_key_find(state: int, key: any) -> int {
+    let count = std::raw::load(state)
+    let keys = state + IP_KEYS_OFFSET
+    let key_data = std::raw::bits(key)
+    let mut i = 0
+    while i < count {
+        if rt_cmp_raw(std::raw::load(keys + 8 * i), key_data) == 0 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn std__input__is_key_pressed(key: any) -> any {
+    let function = "std::input::is_key_pressed"
+    rt_expect_str(key, function)
+    let state = ip_state()
+    if rt_slen(key) > IP_MAX_KEY_BYTES { return false }
+    ip_key_find(state, key) >= 0
+}
+
+fn std__input__set_key_state(key: any, pressed_value: any) -> any {
+    let function = "std::input::set_key_state"
+    rt_expect_str(key, function)
+    let pressed = ip_bool(pressed_value, function)
+    let key_bytes = rt_slen(key)
+    if key_bytes == 0 || key_bytes > IP_MAX_KEY_BYTES { return false }
+
+    let state = ip_state()
+    let count = std::raw::load(state)
+    let found = ip_key_find(state, key)
+    if pressed {
+        if found >= 0 { return true }
+        if count >= IP_MAX_KEYS { return false }
+        let keys = state + IP_KEYS_OFFSET
+        std::raw::store(keys + 8 * count, std::raw::keep(key))
+        std::raw::store(state, count + 1)
+        return true
+    }
+    if found < 0 { return true }
+
+    let keys = state + IP_KEYS_OFFSET
+    std::raw::release(5, std::raw::load(keys + 8 * found))
+    let mut i = found
+    while i + 1 < count {
+        std::raw::store(keys + 8 * i, std::raw::load(keys + 8 * (i + 1)))
+        i += 1
+    }
+    std::raw::store(keys + 8 * (count - 1), 0)
+    std::raw::store(state, count - 1)
+    true
+}
+
+fn std__input__set_mouse_pos(x_value: any, y_value: any) -> any {
+    let function = "std::input::set_mouse_pos"
+    let x = ip_i32(x_value, function)
+    let y = ip_i32(y_value, function)
+    let state = ip_state()
+    std::raw::store(state + 8, x)
+    std::raw::store(state + 16, y)
+    true
+}
+
+fn std__input__mouse_pos() -> any {
+    let state = ip_state()
+    let position = rt_seq_alloc(7, 2, 2)
+    let data = rt_seq_data(position)
+    rt_seq_put(data, 0, std::raw::load(state + 8))
+    rt_seq_put(data, 1, std::raw::load(state + 16))
+    position
+}
+
+fn std__input__set_mouse_button(button_value: any, pressed_value: any) -> any {
+    let function = "std::input::set_mouse_button"
+    let button = ip_u8(button_value, function)
+    let pressed = ip_bool(pressed_value, function)
+    let state = ip_state()
+    let byte = state + IP_BUTTONS_OFFSET + button / 8
+    let mask = std::raw::shl(1, button & 7)
+    let current = std::raw::load8(byte)
+    if pressed {
+        if (current & mask) == 0 { std::raw::store8(byte, current + mask) }
+    } else {
+        if (current & mask) != 0 { std::raw::store8(byte, current - mask) }
+    }
+    true
+}
+
+fn std__input__is_mouse_button_pressed(button_value: any) -> any {
+    let function = "std::input::is_mouse_button_pressed"
+    let button = ip_u8(button_value, function)
+    let state = ip_state()
+    let byte = state + IP_BUTTONS_OFFSET + button / 8
+    let mask = std::raw::shl(1, button & 7)
+    let current = std::raw::load8(byte)
+    let active = current & mask
+    active != 0
+}
+
+fn ip_touch_find(state: int, index: int) -> int {
+    let touches = state + IP_TOUCHES_OFFSET
+    let mut i = 0
+    while i < IP_MAX_TOUCH_POINTS {
+        let slot = touches + IP_TOUCH_SLOT_BYTES * i
+        if std::raw::load(slot) != 0 && std::raw::load(slot + 8) == index {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn std__input__set_touch_point(index_value: any, x_value: any, y_value: any, active_value: any) -> any {
+    let function = "std::input::set_touch_point"
+    let index = ip_u32(index_value, function)
+    let x = ip_i32(x_value, function)
+    let y = ip_i32(y_value, function)
+    let active = ip_bool(active_value, function)
+    let state = ip_state()
+    let found = ip_touch_find(state, index)
+    let count = std::raw::load(state + 24)
+
+    if active {
+        if found >= 0 {
+            let slot = state + IP_TOUCHES_OFFSET + IP_TOUCH_SLOT_BYTES * found
+            std::raw::store(slot + 16, x)
+            std::raw::store(slot + 24, y)
+            return true
+        }
+        if count >= IP_MAX_TOUCH_POINTS { return false }
+        let mut i = 0
+        while i < IP_MAX_TOUCH_POINTS {
+            let slot = state + IP_TOUCHES_OFFSET + IP_TOUCH_SLOT_BYTES * i
+            if std::raw::load(slot) == 0 {
+                std::raw::store(slot, 1)
+                std::raw::store(slot + 8, index)
+                std::raw::store(slot + 16, x)
+                std::raw::store(slot + 24, y)
+                std::raw::store(state + 24, count + 1)
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    if found >= 0 {
+        let slot = state + IP_TOUCHES_OFFSET + IP_TOUCH_SLOT_BYTES * found
+        std::raw::store(slot, 0)
+        std::raw::store(slot + 8, 0)
+        std::raw::store(slot + 16, 0)
+        std::raw::store(slot + 24, 0)
+        std::raw::store(state + 24, count - 1)
+    }
+    true
+}
+
+fn std__input__touch_pos(index_value: any) -> any {
+    let function = "std::input::touch_pos"
+    let index = ip_u32(index_value, function)
+    let state = ip_state()
+    let found = ip_touch_find(state, index)
+    let position = rt_seq_alloc(7, 3, 3)
+    let data = rt_seq_data(position)
+    if found < 0 {
+        rt_seq_put(data, 0, 0)
+        rt_seq_put(data, 1, 0)
+        rt_seq_put(data, 2, false)
+    } else {
+        let slot = state + IP_TOUCHES_OFFSET + IP_TOUCH_SLOT_BYTES * found
+        rt_seq_put(data, 0, std::raw::load(slot + 16))
+        rt_seq_put(data, 1, std::raw::load(slot + 24))
+        rt_seq_put(data, 2, true)
+    }
+    position
+}

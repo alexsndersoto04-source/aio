@@ -1,0 +1,4 @@
+fn main() {
+    let q = std::collections::pq_new_min()
+    std::collections::pq_push(q, "a", -9223372036854775807 - 1)
+}

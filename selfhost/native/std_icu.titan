@@ -1,0 +1,1012 @@
+// Datos y normalización Unicode de ICU4X escritos en Titan, lo que usa
+// idna_adapter 1.2.2 (y por lo tanto url 2.5.8):
+//   * CodePointTrie::get (icu_collections 2.2.0, codepointtrie/cptrie.rs);
+//   * Char16Trie (icu_collections 2.2.0, char16trie/trie.rs);
+//   * Uts46Mapper::map_normalize / normalize_validate / is_virama
+//     (icu_normalizer 2.2.0, lib.rs y uts46.rs): los iteradores
+//     Decomposition y Composition traducidos paso a paso;
+//   * bidi_class, joining_type e is_mark (icu_properties 2.2.0).
+// Las tablas vienen de std_icu_tab.titan (native/icu/gen_icu.py).
+
+// ------------------------------------------------------------ tablas
+
+// Todas las tablas pasadas a enteros de 8 bytes, una sola vez
+// (globals + 2648).
+fn icu_tab() -> int {
+    let g = std::raw::globals() + 2648
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        return cur
+    }
+    let hex = icu_tab_hex()
+    let h = std::raw::bits(hex) + 16
+    let t = rt_alloc(8 * icu_tab_count())
+    let mut pos = 0
+    let mut k = 0
+    while k < icu_tab_parts() {
+        let (first, n, w) = icu_tab_part(k)
+        let mut i = 0
+        while i < n {
+            let mut v = 0
+            let mut d = 0
+            while d < w {
+                v = v * 16 + rt_hex_value(std::raw::load8(h + pos))
+                pos += 1
+                d += 1
+            }
+            std::raw::store(t + 8 * (first + i), v)
+            i += 1
+        }
+        k += 1
+    }
+    std::raw::store(g, t)
+    t
+}
+
+fn icu_at(t: int, off: int, i: int) -> int {
+    std::raw::load(t + 8 * (off + i))
+}
+
+// CodePointTrie::get32 para un trie de tipo Small. -1 en `len` de datos =
+// fuera de rango -> error_value.
+fn icu_trie(t: int, ioff: int, ilen: int, doff: int, dlen: int, high_start: int, error: int, cp: int) -> int {
+    if cp < 0 || cp > 1114111 {
+        return error
+    }
+    let mut data_pos = 0
+    if cp <= 4095 {
+        data_pos = icu_at(t, ioff, std::raw::shr(cp, 6)) + (cp & 63)
+    } else if cp >= high_start {
+        data_pos = dlen - 2
+    } else {
+        data_pos = icu_small_index(t, ioff, ilen, dlen, cp)
+    }
+    if data_pos < 0 || data_pos >= dlen {
+        return error
+    }
+    icu_at(t, doff, data_pos)
+}
+
+fn icu_small_index(t: int, ioff: int, ilen: int, dlen: int, cp: int) -> int {
+    let err = dlen - 1
+    let i1 = std::raw::shr(cp, 14) + 64
+    if i1 >= ilen {
+        return err
+    }
+    let i1v = icu_at(t, ioff, i1)
+    let i3bi = i1v + (std::raw::shr(cp, 9) & 31)
+    if i3bi >= ilen {
+        return err
+    }
+    let mut i3b = icu_at(t, ioff, i3bi)
+    let mut i3p = std::raw::shr(cp, 4) & 31
+    let mut data_block = 0
+    if (i3b & 32768) == 0 {
+        if i3b + i3p >= ilen {
+            return err
+        }
+        data_block = icu_at(t, ioff, i3b + i3p)
+    } else {
+        i3b = (i3b & 32767) + (i3p - (i3p & 7)) + std::raw::shr(i3p, 3)
+        i3p = i3p & 7
+        if i3b >= ilen {
+            return err
+        }
+        data_block = std::raw::shl(icu_at(t, ioff, i3b), 2 + 2 * i3p) & 196608
+        i3b += 1
+        if i3b + i3p >= ilen {
+            return err
+        }
+        data_block = data_block | icu_at(t, ioff, i3b + i3p)
+    }
+    data_block + (cp & 15)
+}
+
+// Valor del trie de UTS 46 (descomposiciones con marcas).
+fn icu_u46(cp: int) -> int {
+    let t = icu_tab()
+    icu_trie(t, icu_off_u46_index(), icu_len_u46_index(), icu_off_u46_data(), icu_len_u46_data(), icu_u46_high_start(), 0, cp)
+}
+
+// Bidi_Class (valor ICU4C).
+fn icu_bidi_class(cp: int) -> int {
+    let t = icu_tab()
+    icu_trie(t, icu_off_bc_index(), icu_len_bc_index(), icu_off_bc_data(), icu_len_bc_data(), icu_bc_high_start(), 0, cp)
+}
+
+// Joining_Type (valor ICU4C).
+fn icu_joining_type(cp: int) -> int {
+    let t = icu_tab()
+    icu_trie(t, icu_off_jt_index(), icu_len_jt_index(), icu_off_jt_data(), icu_len_jt_data(), icu_jt_high_start(), 0, cp)
+}
+
+// General_Category (discriminante del enum de icu_properties).
+fn icu_general_category(cp: int) -> int {
+    let t = icu_tab()
+    icu_trie(t, icu_off_gc_index(), icu_len_gc_index(), icu_off_gc_data(), icu_len_gc_data(), icu_gc_high_start(), 0, cp)
+}
+
+// NonspacingMark (6), EnclosingMark (7) o SpacingMark (8).
+fn icu_is_mark(cp: int) -> bool {
+    let gc = icu_general_category(cp)
+    gc >= 6 && gc <= 8
+}
+
+fn icu_has_ccc(tv: int) -> bool {
+    return (tv & 1073741312) == 55296
+}
+
+fn icu_special_non_starter(tv: int) -> bool {
+    return (tv & 1073741568) == 55552
+}
+
+fn icu_ccc_of(tv: int) -> int {
+    if icu_has_ccc(tv) {
+        return tv & 255
+    }
+    0
+}
+
+// Uts46Mapper::is_virama: ccc 9.
+fn icu_is_virama(cp: int) -> bool {
+    let tv = icu_u46(cp)
+    icu_has_ccc(tv) && (tv & 255) == 9
+}
+
+// ------------------------------------------------------------ Char16Trie
+
+// Estado del iterador: bloque [pos (-1 = None), remaining_match_length
+// (-1 = None)]. Resultados: 0 NoMatch, 1 NoValue, 2 FinalValue,
+// 3 Intermediate (con el valor).
+fn ct_get(t: int, pos: int) -> int {
+    if pos < 0 || pos >= icu_len_nfc_trie() {
+        return -1
+    }
+    icu_at(t, icu_off_nfc_trie(), pos)
+}
+
+fn ct_skip_value_lead(pos: int, lead: int) -> int {
+    if lead < 16384 {
+        return pos
+    }
+    if lead < 32767 {
+        return pos + 1
+    }
+    pos + 2
+}
+
+fn ct_skip_node_value(pos: int, lead: int) -> int {
+    if lead < 16448 {
+        return pos
+    }
+    if lead < 32704 {
+        return pos + 1
+    }
+    pos + 2
+}
+
+fn ct_read_value(t: int, pos: int, lead: int) -> int {
+    if lead < 16384 {
+        return lead
+    }
+    if lead < 32767 {
+        let a = ct_get(t, pos)
+        if a < 0 {
+            return -1
+        }
+        return std::raw::shl(lead - 16384, 16) | a
+    }
+    let a = ct_get(t, pos)
+    let b = ct_get(t, pos + 1)
+    if a < 0 || b < 0 {
+        return -1
+    }
+    std::raw::shl(a, 16) | b
+}
+
+fn ct_read_node_value(t: int, pos: int, lead: int) -> int {
+    if lead < 16448 {
+        return std::raw::shr(lead, 6) - 1
+    }
+    if lead < 32704 {
+        let a = ct_get(t, pos)
+        if a < 0 {
+            return -1
+        }
+        return std::raw::shl((lead & 32704) - 16448, 10) | a
+    }
+    let a = ct_get(t, pos)
+    let b = ct_get(t, pos + 1)
+    if a < 0 || b < 0 {
+        return -1
+    }
+    std::raw::shl(a, 16) | b
+}
+
+fn ct_value_result(t: int, pos: int) -> (int, int) {
+    let lead = ct_get(t, pos)
+    if lead < 0 {
+        return (0, 0)
+    }
+    if (lead & 32768) != 0 {
+        let v = ct_read_value(t, pos + 1, lead & 32767)
+        if v < 0 {
+            return (0, 0)
+        }
+        return (2, v)
+    }
+    let v = ct_read_node_value(t, pos + 1, lead)
+    if v < 0 {
+        return (0, 0)
+    }
+    return (3, v)
+}
+
+fn ct_jump_by_delta(t: int, pos: int) -> int {
+    let delta = ct_get(t, pos)
+    if delta < 0 {
+        return -1
+    }
+    if delta < 64512 {
+        return pos + 1 + delta
+    }
+    if delta == 65535 {
+        let a = ct_get(t, pos + 1)
+        let b = ct_get(t, pos + 2)
+        if a < 0 || b < 0 {
+            return -1
+        }
+        return pos + (std::raw::shl(a, 16) | b) + 3
+    }
+    let a = ct_get(t, pos + 1)
+    if a < 0 {
+        return -1
+    }
+    pos + (std::raw::shl(delta - 64512, 16) | a) + 2
+}
+
+fn ct_skip_delta(t: int, pos: int) -> int {
+    let delta = ct_get(t, pos)
+    if delta < 0 {
+        return -1
+    }
+    if delta < 64512 {
+        return pos + 1
+    }
+    if delta == 65535 {
+        return pos + 3
+    }
+    pos + 2
+}
+
+fn ct_skip_value(t: int, pos: int) -> int {
+    let lead = ct_get(t, pos)
+    if lead < 0 {
+        return -1
+    }
+    ct_skip_value_lead(pos + 1, lead & 32767)
+}
+
+fn ct_branch_next(t: int, it: int, pos0: int, length0: int, c: int) -> (int, int) {
+    let mut pos = pos0
+    let mut length = length0
+    if length == 0 {
+        length = ct_get(t, pos)
+        if length < 0 {
+            return (0, 0)
+        }
+        pos += 1
+    }
+    length += 1
+    while length > 5 {
+        let u = ct_get(t, pos)
+        if u < 0 {
+            return (0, 0)
+        }
+        if c < u {
+            length = std::raw::shr(length, 1)
+            pos = ct_jump_by_delta(t, pos + 1)
+        } else {
+            length = length - std::raw::shr(length, 1)
+            pos = ct_skip_delta(t, pos + 1)
+        }
+        if pos < 0 {
+            return (0, 0)
+        }
+    }
+    while true {
+        let u = ct_get(t, pos)
+        if u < 0 {
+            return (0, 0)
+        }
+        if c == u {
+            pos += 1
+            let mut node = ct_get(t, pos)
+            if node < 0 {
+                return (0, 0)
+            }
+            if (node & 32768) != 0 {
+                std::raw::store(it, pos)
+                return ct_value_result(t, pos)
+            }
+            pos += 1
+            if node < 16384 {
+                pos += node
+            } else if node < 32767 {
+                let a = ct_get(t, pos)
+                if a < 0 {
+                    return (0, 0)
+                }
+                pos += std::raw::shl(node - 16384, 16) | a
+                pos += 1
+            } else {
+                let a = ct_get(t, pos)
+                let b = ct_get(t, pos + 1)
+                if a < 0 || b < 0 {
+                    return (0, 0)
+                }
+                pos += std::raw::shl(a, 16) | b
+                pos += 2
+            }
+            node = ct_get(t, pos)
+            if node < 0 {
+                return (0, 0)
+            }
+            std::raw::store(it, pos)
+            if node >= 64 {
+                return ct_value_result(t, pos)
+            }
+            return (1, 0)
+        }
+        length -= 1
+        pos = ct_skip_value(t, pos + 1)
+        if pos < 0 {
+            return (0, 0)
+        }
+        if length <= 1 {
+            break
+        }
+    }
+    let u = ct_get(t, pos)
+    if u < 0 {
+        return (0, 0)
+    }
+    if c == u {
+        pos += 1
+        std::raw::store(it, pos)
+        let node = ct_get(t, pos)
+        if node < 0 {
+            return (0, 0)
+        }
+        if node >= 64 {
+            return ct_value_result(t, pos)
+        }
+        return (1, 0)
+    }
+    std::raw::store(it, -1)
+    return (0, 0)
+}
+
+fn ct_next_impl(t: int, it: int, pos0: int, c: int) -> (int, int) {
+    let mut node = ct_get(t, pos0)
+    if node < 0 {
+        return (0, 0)
+    }
+    let mut pos = pos0 + 1
+    while true {
+        if node < 48 {
+            return ct_branch_next(t, it, pos, node, c)
+        } else if node < 64 {
+            let length = node - 48
+            let u = ct_get(t, pos)
+            if u < 0 {
+                return (0, 0)
+            }
+            if c == u {
+                pos += 1
+                if length == 0 {
+                    std::raw::store(it + 8, -1)
+                    std::raw::store(it, pos)
+                    node = ct_get(t, pos)
+                    if node < 0 {
+                        return (0, 0)
+                    }
+                    if node >= 64 {
+                        return ct_value_result(t, pos)
+                    }
+                    return (1, 0)
+                }
+                std::raw::store(it + 8, length - 1)
+                std::raw::store(it, pos)
+                return (1, 0)
+            }
+            break
+        } else if (node & 32768) != 0 {
+            break
+        } else {
+            pos = ct_skip_node_value(pos, node)
+            node = node & 63
+        }
+    }
+    std::raw::store(it, -1)
+    return (0, 0)
+}
+
+fn ct_next16(t: int, it: int, c: int) -> (int, int) {
+    let mut pos = std::raw::load(it)
+    if pos < 0 {
+        return (0, 0)
+    }
+    let length = std::raw::load(it + 8)
+    if length >= 0 {
+        let u = ct_get(t, pos)
+        if u < 0 {
+            return (0, 0)
+        }
+        if c == u {
+            pos += 1
+            std::raw::store(it, pos)
+            if length == 0 {
+                std::raw::store(it + 8, -1)
+                let node = ct_get(t, pos)
+                if node < 0 {
+                    return (0, 0)
+                }
+                if node >= 64 {
+                    return ct_value_result(t, pos)
+                }
+            } else {
+                std::raw::store(it + 8, length - 1)
+            }
+            return (1, 0)
+        }
+        std::raw::store(it, -1)
+        return (0, 0)
+    }
+    ct_next_impl(t, it, pos, c)
+}
+
+fn ct_next(t: int, it: int, c: int) -> (int, int) {
+    if c <= 65535 {
+        return ct_next16(t, it, c)
+    }
+    let (k, v) = ct_next16(t, it, std::raw::shr(c, 10) + 55232)
+    if k == 1 || k == 3 {
+        return ct_next16(t, it, (c & 1023) | 56320)
+    }
+    return (0, 0)
+}
+
+fn icu_valid_char(c: int) -> bool {
+    c >= 0 && c <= 1114111 && !(c >= 55296 && c <= 57343)
+}
+
+// compose_non_hangul: -1 = None.
+fn icu_compose_non_hangul(starter: int, second: int) -> int {
+    let t = icu_tab()
+    let it = rt_alloc(16)
+    std::raw::store(it, 0)
+    std::raw::store(it + 8, -1)
+    let mut out = -1
+    let (k1, v1) = ct_next(t, it, second)
+    if k1 == 1 {
+        let (k2, v2) = ct_next(t, it, starter)
+        if k2 == 2 && icu_valid_char(v2) {
+            out = v2
+        }
+    }
+    rt_free_block(it)
+    out
+}
+
+// compose (con Hangul): -1 = None.
+fn icu_compose(starter: int, second: int) -> int {
+    let v = second - 4449
+    if v < 0 || v >= 159 {
+        return icu_compose_non_hangul(starter, second)
+    }
+    if v < 21 {
+        let l = starter - 4352
+        if l >= 0 && l < 19 {
+            return 44032 + l * 588 + v * 28
+        }
+        return -1
+    }
+    if second >= 4520 && second <= 4546 {
+        let lv = starter - 44032
+        if lv >= 0 && lv < 11172 && lv % 28 == 0 {
+            return 44032 + lv + (second - 4519)
+        }
+    }
+    -1
+}
+
+// ------------------------------------------------------------ Decomposition
+
+// Estado (bloque de 72 bytes):
+//   +0 entrada (vector de enteros de std_idna), +8 posición en la entrada,
+//   +16 buffer (vector de CharacterAndClass: carácter | ccc << 24),
+//   +24 buffer_pos, +32 hay pending (0/1), +40 carácter pendiente,
+//   +48 trie_val pendiente, +56 ignorables (1 Ignored, 2 Replacement),
+//   +64 salida (vector).
+fn dm_cc(c: int, ccc: int) -> int {
+    c | std::raw::shl(ccc, 24)
+}
+
+fn dm_char(cc: int) -> int {
+    cc & 16777215
+}
+
+fn dm_ccc(cc: int) -> int {
+    std::raw::shr(cc, 24) & 255
+}
+
+fn dm_buf(d: int) -> int {
+    std::raw::load(d + 16)
+}
+
+fn dm_push(d: int, cc: int) {
+    iv_push(dm_buf(d), cc)
+}
+
+fn dm_set_pending(d: int, has: bool, c: int, tv: int) {
+    if has {
+        std::raw::store(d + 32, 1)
+    } else {
+        std::raw::store(d + 32, 0)
+    }
+    std::raw::store(d + 40, c)
+    std::raw::store(d + 48, tv)
+}
+
+// delegate_next_no_pending: (hay, carácter, trie_val).
+fn dm_delegate_no_pending(d: int) -> (bool, int, int) {
+    let input = std::raw::load(d)
+    while true {
+        let i = std::raw::load(d + 8)
+        if i >= iv_len(input) {
+            return (false, 0, 0)
+        }
+        std::raw::store(d + 8, i + 1)
+        let c = iv_get(input, i)
+        if c < 65 {
+            return (true, c, 0)
+        }
+        let tv = icu_u46(c)
+        if tv == 4294967295 {
+            if std::raw::load(d + 56) == 2 {
+                return (true, c, 65533 | 1073741824)
+            }
+            continue
+        }
+        return (true, c, tv)
+    }
+    return (false, 0, 0)
+}
+
+fn dm_delegate(d: int) -> (bool, int, int) {
+    if std::raw::load(d + 32) != 0 {
+        std::raw::store(d + 32, 0)
+        return (true, std::raw::load(d + 40), std::raw::load(d + 48))
+    }
+    dm_delegate_no_pending(d)
+}
+
+fn dm_from_u16(u: int) -> int {
+    if u >= 55296 && u <= 57343 {
+        return 65533
+    }
+    u
+}
+
+// push_decomposition16 / 32 sobre la tabla [toff, toff + tlen).
+fn dm_push_decomp(d: int, toff: int, tlen: int, offset: int, len: int, only_non_starters: bool) -> (int, int) {
+    let t = icu_tab()
+    if offset + len > tlen || len < 1 {
+        return (65533, 0)
+    }
+    let starter = dm_from_u16(icu_at(t, toff, offset))
+    let mut combining_start = 0
+    let mut i = 0
+    let mut k = 1
+    while k < len {
+        let ch = dm_from_u16(icu_at(t, toff, offset + k))
+        if only_non_starters {
+            dm_push(d, dm_cc(ch, 255))
+        } else {
+            let tv = icu_u46(ch)
+            dm_push(d, dm_cc(ch, icu_ccc_of(tv)))
+            i += 1
+            if !icu_has_ccc(tv) {
+                combining_start = i
+            }
+        }
+        k += 1
+    }
+    return (starter, combining_start)
+}
+
+// FDFA_NFKD
+fn dm_fdfa(q: int) -> int {
+    if q == 0 || q == 4 || q == 5 || q == 9 || q == 15 {
+        return 1604
+    }
+    if q == 1 {
+        return 1609
+    }
+    if q == 2 || q == 7 || q == 12 {
+        return 32
+    }
+    if q == 3 {
+        return 1575
+    }
+    if q == 6 || q == 11 {
+        return 1607
+    }
+    if q == 8 {
+        return 1593
+    }
+    if q == 10 {
+        return 1610
+    }
+    if q == 13 {
+        return 1608
+    }
+    if q == 14 {
+        return 1587
+    }
+    1605
+}
+
+fn dm_decomposing_next(d: int, c: int, tv: int) -> int {
+    let mut starter = c
+    let mut combining_start = 0
+    if (tv & 1073741823) != 0 {
+        let high_zeros = (tv & 1073676288) == 0
+        let low_zeros = (tv & 65504) == 0
+        if !high_zeros && !low_zeros {
+            dm_push(d, dm_cc(std::raw::shr(tv, 15) & 32767, 255))
+            starter = tv & 32767
+        } else if high_zeros {
+            let hangul = c - 44032
+            if hangul >= 0 && hangul < 11172 {
+                let l = hangul / 588
+                let v = (hangul % 588) / 28
+                let tt = hangul % 28
+                dm_push(d, dm_cc(4449 + v, 0))
+                starter = 4352 + l
+                if tt != 0 {
+                    dm_push(d, dm_cc(4519 + tt, 0))
+                    combining_start = 2
+                } else {
+                    combining_start = 1
+                }
+            } else {
+                let singleton = tv & 65535
+                if singleton != 1 {
+                    starter = dm_from_u16(singleton)
+                } else {
+                    let mut q = 0
+                    while q < 17 {
+                        dm_push(d, dm_cc(dm_fdfa(q), 0))
+                        q += 1
+                    }
+                    starter = 1589
+                    combining_start = 17
+                }
+            }
+        } else {
+            let offset = std::raw::shr(tv & 1073741823, 16) - 1
+            let len_bits = tv & 15
+            let only = (tv & 16) != 0
+            let n16 = icu_len_nfd_s16()
+            let n24 = icu_len_nfd_s24()
+            let m16 = icu_len_nfkd_s16()
+            let mut toff = icu_off_nfkd_s24()
+            let mut tlen = icu_len_nfkd_s24()
+            let mut rel = offset - (n16 + n24 + m16)
+            let mut len = len_bits + 1
+            if offset < n16 {
+                toff = icu_off_nfd_s16()
+                tlen = n16
+                rel = offset
+                len = len_bits + 2
+            } else if offset < n16 + n24 {
+                toff = icu_off_nfd_s24()
+                tlen = n24
+                rel = offset - n16
+            } else if offset < n16 + n24 + m16 {
+                toff = icu_off_nfkd_s16()
+                tlen = m16
+                rel = offset - (n16 + n24)
+                len = len_bits + 2
+            }
+            let (s0, cs0) = dm_push_decomp(d, toff, tlen, rel, len, only)
+            starter = s0
+            combining_start = cs0
+        }
+    }
+    dm_gather_and_sort(d, combining_start)
+    starter
+}
+
+fn dm_gather_and_sort(d: int, combining_start: int) {
+    while true {
+        let (has, c, tv) = dm_delegate(d)
+        if !has {
+            break
+        }
+        if !icu_has_ccc(tv) {
+            dm_set_pending(d, true, c, tv)
+            break
+        }
+        if !icu_special_non_starter(tv) {
+            dm_push(d, dm_cc(c, icu_ccc_of(tv)))
+        } else if c == 832 {
+            dm_push(d, dm_cc(768, 230))
+        } else if c == 833 {
+            dm_push(d, dm_cc(769, 230))
+        } else if c == 835 {
+            dm_push(d, dm_cc(787, 230))
+        } else if c == 836 {
+            dm_push(d, dm_cc(776, 230))
+            dm_push(d, dm_cc(769, 230))
+        } else if c == 3955 {
+            dm_push(d, dm_cc(3953, 129))
+            dm_push(d, dm_cc(3954, 130))
+        } else if c == 3957 {
+            dm_push(d, dm_cc(3953, 129))
+            dm_push(d, dm_cc(3956, 132))
+        } else if c == 3969 {
+            dm_push(d, dm_cc(3953, 129))
+            dm_push(d, dm_cc(3968, 130))
+        } else if c == 65438 {
+            dm_push(d, dm_cc(12441, 8))
+        } else if c == 65439 {
+            dm_push(d, dm_cc(12442, 8))
+        } else {
+            dm_push(d, dm_cc(65533, 255))
+        }
+    }
+    dm_sort(d, combining_start)
+}
+
+// sort_slice_by_ccc: si hay 2 o más, se completan los ccc pendientes (255)
+// y se ordena de forma estable por ccc.
+fn dm_sort(d: int, start: int) {
+    let b = dm_buf(d)
+    let n = iv_len(b)
+    if n - start < 2 {
+        return
+    }
+    let mut k = start
+    while k < n {
+        let cc = iv_get(b, k)
+        if dm_ccc(cc) == 255 {
+            let c = dm_char(cc)
+            iv_set(b, k, dm_cc(c, icu_ccc_of(icu_u46(c))))
+        }
+        k += 1
+    }
+    // inserción (estable)
+    k = start + 1
+    while k < n {
+        let x = iv_get(b, k)
+        let mut j = k - 1
+        while j >= start && dm_ccc(iv_get(b, j)) > dm_ccc(x) {
+            iv_set(b, j + 1, iv_get(b, j))
+            j -= 1
+        }
+        iv_set(b, j + 1, x)
+        k += 1
+    }
+}
+
+// Quita los primeros m elementos del buffer.
+fn dm_drain(d: int, m: int) {
+    let b = dm_buf(d)
+    let n = iv_len(b)
+    let mut k = m
+    while k < n {
+        iv_set(b, k - m, iv_get(b, k))
+        k += 1
+    }
+    iv_trunc(b, n - m)
+}
+
+fn dm_remove(d: int, i: int) {
+    let b = dm_buf(d)
+    let n = iv_len(b)
+    let mut k = i + 1
+    while k < n {
+        iv_set(b, k - 1, iv_get(b, k))
+        k += 1
+    }
+    iv_trunc(b, n - 1)
+}
+
+fn dm_clear(d: int) {
+    iv_trunc(dm_buf(d), 0)
+    std::raw::store(d + 24, 0)
+}
+
+// ------------------------------------------------------------ Composition
+
+// Composition::next. Devuelve (hay, carácter). El carácter de arranque sin
+// procesar (unprocessed_starter) está en el bloque c: +0 hay, +8 carácter.
+fn cm_next(d: int, u: int) -> (bool, int) {
+    let mut und_c = 0
+    let mut und_tv = 0
+    if std::raw::load(u) == 0 {
+        let b = dm_buf(d)
+        let bp = std::raw::load(d + 24)
+        if bp < iv_len(b) {
+            let cc = iv_get(b, bp)
+            std::raw::store(d + 24, bp + 1)
+            if bp + 1 == iv_len(b) {
+                dm_clear(d)
+            }
+            if dm_ccc(cc) == 0 {
+                std::raw::store(u, 1)
+                std::raw::store(u + 8, dm_char(cc))
+            } else {
+                return (true, dm_char(cc))
+            }
+        } else {
+            if std::raw::load(d + 32) == 0 {
+                return (false, 0)
+            }
+            std::raw::store(d + 32, 0)
+            und_c = std::raw::load(d + 40)
+            und_tv = std::raw::load(d + 48)
+            if und_c < 65 || (und_tv & 1073741824) == 0 {
+                let (has, uc, utv) = dm_delegate_no_pending(d)
+                if has {
+                    let cannot = uc < 65 || (utv & 2147483648) == 0
+                    dm_set_pending(d, true, uc, utv)
+                    if cannot {
+                        return (true, und_c)
+                    }
+                } else {
+                    return (true, und_c)
+                }
+            }
+        }
+    }
+    let mut starter = 0
+    let mut attempt = false
+    while true {
+        if std::raw::load(u) != 0 {
+            std::raw::store(u, 0)
+            starter = std::raw::load(u + 8)
+        } else {
+            let next_starter = dm_decomposing_next(d, und_c, und_tv)
+            if !attempt {
+                starter = next_starter
+            } else {
+                let composed = icu_compose(starter, next_starter)
+                if composed >= 0 {
+                    starter = composed
+                } else {
+                    std::raw::store(u, 1)
+                    std::raw::store(u + 8, next_starter)
+                    return (true, starter)
+                }
+            }
+        }
+        while true {
+            let b = dm_buf(d)
+            let bp = std::raw::load(d + 24)
+            if bp >= iv_len(b) {
+                dm_clear(d)
+                break
+            }
+            let cc = iv_get(b, bp)
+            let composed = icu_compose(starter, dm_char(cc))
+            if composed >= 0 {
+                starter = composed
+                std::raw::store(d + 24, bp + 1)
+                continue
+            }
+            let mut recent = dm_ccc(cc)
+            dm_drain(d, bp)
+            std::raw::store(d + 24, 0)
+            if recent == 0 {
+                return (true, starter)
+            }
+            let mut i = 1
+            while i < iv_len(b) {
+                let cc2 = iv_get(b, i)
+                let ccc = dm_ccc(cc2)
+                if ccc == 0 {
+                    return (true, starter)
+                }
+                if ccc != recent {
+                    let comp2 = icu_compose_non_hangul(starter, dm_char(cc2))
+                    if comp2 >= 0 {
+                        dm_remove(d, i)
+                        starter = comp2
+                        continue
+                    }
+                }
+                recent = ccc
+                i += 1
+            }
+            break
+        }
+        if iv_len(dm_buf(d)) > 0 {
+            return (true, starter)
+        }
+        if std::raw::load(d + 32) != 0 {
+            let pc = std::raw::load(d + 40)
+            let ptv = std::raw::load(d + 48)
+            if pc < 65 || (ptv & 2147483648) == 0 {
+                return (true, starter)
+            }
+            std::raw::store(d + 32, 0)
+            und_c = pc
+            und_tv = ptv
+            attempt = true
+            continue
+        }
+        return (true, starter)
+    }
+    return (true, starter)
+}
+
+// normalize_iter_private sobre todo el vector `input`; devuelve un vector
+// nuevo. ignorable: 1 Ignored (map_normalize), 2 ReplacementCharacter
+// (normalize_validate).
+fn icu_normalize(input: int, ignorable: int) -> int {
+    let d = rt_alloc(72)
+    std::raw::store(d, input)
+    std::raw::store(d + 8, 0)
+    std::raw::store(d + 16, iv_new(24))
+    std::raw::store(d + 24, 0)
+    std::raw::store(d + 56, ignorable)
+    // Decomposition::new_with_supplements: pending = U+FFFF y un next()
+    // que lo quita.
+    dm_set_pending(d, true, 65535, 0)
+    dm_decomp_next_discard(d)
+    let u = rt_alloc(16)
+    std::raw::store(u, 0)
+    std::raw::store(u + 8, 0)
+    let out = iv_new(iv_len(input) + 8)
+    while true {
+        let (has, c) = cm_next(d, u)
+        if !has {
+            break
+        }
+        iv_push(out, c)
+    }
+    rt_free_block(u)
+    iv_free(dm_buf(d))
+    rt_free_block(d)
+    out
+}
+
+// Decomposition::next (solo lo usa el constructor).
+fn dm_decomp_next_discard(d: int) {
+    let b = dm_buf(d)
+    let bp = std::raw::load(d + 24)
+    if bp < iv_len(b) {
+        std::raw::store(d + 24, bp + 1)
+        if bp + 1 == iv_len(b) {
+            dm_clear(d)
+        }
+        return
+    }
+    if std::raw::load(d + 32) == 0 {
+        return
+    }
+    std::raw::store(d + 32, 0)
+    dm_decomposing_next(d, std::raw::load(d + 40), std::raw::load(d + 48))
+}
+
+fn icu_map_normalize(input: int) -> int {
+    icu_normalize(input, 1)
+}
+
+fn icu_normalize_validate(input: int) -> int {
+    icu_normalize(input, 2)
+}

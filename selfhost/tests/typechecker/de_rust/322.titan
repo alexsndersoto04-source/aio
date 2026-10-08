@@ -1,0 +1,1 @@
+fn read(value: any) -> int { match value { Option::Some(inner) => 1, Option::None => 0, _ => -1 } } fn main() {}

@@ -1,0 +1,7 @@
+// Error de la biblioteca estándar: debe dar el mismo mensaje que la VM.
+fn main() {
+    print("antes")
+    let f = |x: int| x + 1
+    let m = std::map::insert(std::map::new(), "f", f)
+    print(std::json::pretty(m))
+}

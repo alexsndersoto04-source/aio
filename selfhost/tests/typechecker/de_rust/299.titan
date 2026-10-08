@@ -1,0 +1,1 @@
+fn read(flag: bool) -> int { match flag { true => 1, false => "bad" } } fn main() {}

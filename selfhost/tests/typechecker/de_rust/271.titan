@@ -1,0 +1,1 @@
+fn main() { let value: Missing = 1 let callback = |item: AlsoMissing| item }

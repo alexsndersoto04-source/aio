@@ -1,0 +1,1 @@
+fn work(first: any, second: any) -> int { 1 } fn inferred() { std::try::catch(work, loop {}, return 1) } fn main() { let impossible: ! = inferred() }

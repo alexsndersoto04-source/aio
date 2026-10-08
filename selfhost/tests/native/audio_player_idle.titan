@@ -1,0 +1,60 @@
+// Exercises real validation and idle-state behavior without requiring an
+// audio device. No playback is faked: commands requiring a live player must
+// return the same error in the VM and in the native runtime.
+fn error_text(result: any) -> string {
+    match result {
+        Result::Ok(_) => "<unexpected success>",
+        Result::Err(message) => message,
+        _ => "<unexpected result>",
+    }
+}
+
+fn assert_idle_error(name: string, result: any) {
+    std::testing::assert_eq(
+        error_text(result),
+        "native function 'std::audio::" + name + "' failed: nothing is playing right now",
+        name + " rejects an idle player"
+    )
+}
+
+fn main() {
+    std::testing::assert_eq(std::audio::player_stop(), "nothing was playing", "stopping an idle player is harmless")
+    std::testing::assert_eq(std::audio::player_position(), -1.0, "idle player position uses the documented sentinel")
+
+    assert_idle_error("player_pause", std::try::catch(|| std::audio::player_pause()))
+    assert_idle_error("player_resume", std::try::catch(|| std::audio::player_resume()))
+    assert_idle_error("player_queue_clear", std::try::catch(|| std::audio::player_queue_clear()))
+    assert_idle_error("player_next", std::try::catch(|| std::audio::player_next()))
+    assert_idle_error("player_prev", std::try::catch(|| std::audio::player_prev()))
+    assert_idle_error("player_current", std::try::catch(|| std::audio::player_current()))
+    assert_idle_error("player_seek", std::try::catch(|| std::audio::player_seek(0.0)))
+    assert_idle_error("player_set_volume", std::try::catch(|| std::audio::player_set_volume(50)))
+
+    let seek_error = error_text(std::try::catch(|| std::audio::player_seek(-1.0)))
+    std::testing::assert_eq(
+        seek_error,
+        "native function 'std::audio::player_seek' failed: invalid parameter: seek position must be a finite number >= 0",
+        "negative seek is rejected before checking the player state"
+    )
+    let volume_error = error_text(std::try::catch(|| std::audio::player_set_volume(101)))
+    std::testing::assert_eq(
+        volume_error,
+        "native function 'std::audio::player_set_volume' failed: invalid parameter: volume must be between 0 and 100",
+        "out-of-range volume is rejected before checking the player state"
+    )
+
+    let missing = "/__zett_audio_player_missing_test__.wav"
+    let play_error = error_text(std::try::catch(|| std::audio::player_play(missing)))
+    std::testing::assert_eq(
+        play_error,
+        "native function 'std::audio::player_play' failed: invalid parameter: file not found: " + missing,
+        "play rejects a missing file before backend discovery"
+    )
+    let queue_error = error_text(std::try::catch(|| std::audio::player_queue_add(missing)))
+    std::testing::assert_eq(
+        queue_error,
+        "native function 'std::audio::player_queue_add' failed: invalid parameter: file not found: " + missing,
+        "queue rejects a missing file before requiring a live player"
+    )
+    println("audio player idle and validation behavior ok")
+}

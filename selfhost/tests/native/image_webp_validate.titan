@@ -1,0 +1,26 @@
+fn fingerprint(data: any) -> any {
+    std::hash::sha256(data)
+}
+
+fn show_image(handle: int, label: string) {
+    println(label)
+    println(std::image::width(handle))
+    println(std::image::height(handle))
+    println(std::image::color_type(handle))
+    println(fingerprint(std::image::encode(handle, "png")))
+    println(fingerprint(std::image::encode(handle, "bmp")))
+}
+
+fn main() {
+    let args = std::env::args()
+    let base = args[len(args) - 1]
+    let files = ["rgb.webp", "save-rgb.webp", "rgba.webp", "gray.webp", "rgba16.webp"]
+    let mut i = 0
+    while i < len(files) {
+        let path = base + "." + files[i]
+        let image = std::image::load(path)
+        show_image(image, files[i])
+        std::image::close(image)
+        i += 1
+    }
+}

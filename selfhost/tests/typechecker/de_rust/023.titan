@@ -1,0 +1,1 @@
+fn main() { let endpoints = channel(1) select([endpoints[0]], 10) }

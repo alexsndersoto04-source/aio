@@ -1,0 +1,43 @@
+// std::hash: SHA-2, SHA-3, BLAKE3 y HMAC en los bordes de bloque y de trozo.
+fn repeat(n: int) -> bytes {
+    let mut a = []
+    let mut i = 0
+    while i < n {
+        a = std::array::push(a, (i * 7 + 3) % 251)
+        i += 1
+    }
+    std::bytes::from_array(a)
+}
+
+fn main() {
+    print(std::hash::sha256("abc"))
+    print(std::hash::sha384("abc"))
+    print(std::hash::sha512("abc"))
+    print(std::hash::sha3_256("abc"))
+    print(std::hash::sha3_512("abc"))
+    print(std::hash::blake3("abc"))
+    print(std::hash::sha256(""))
+    print(std::hash::blake3(""))
+    print(std::hash::sha3_256(""))
+    for n in [1, 55, 56, 63, 64, 65, 71, 72, 111, 112, 119, 127, 128, 135, 136, 137, 200, 1023, 1024, 1025, 2048, 2049, 3072, 3073, 4096, 5000, 8193, 17000] {
+        let b = repeat(n)
+        print("{n}")
+        print(std::hash::sha256(b))
+        print(std::hash::sha384(b))
+        print(std::hash::sha512(b))
+        print(std::hash::sha3_256(b))
+        print(std::hash::sha3_512(b))
+        print(std::hash::blake3(b))
+    }
+    print(std::bytes::to_array(std::hash::sha256_bytes("x")))
+    print(std::bytes::length(std::hash::sha512_bytes("x")))
+    print(std::bytes::to_array(std::hash::blake3_bytes("x")))
+    print(std::hash::hmac_sha256("key", "The quick brown fox jumps over the lazy dog"))
+    print(std::hash::hmac_sha512("key", "The quick brown fox jumps over the lazy dog"))
+    print(std::hash::hmac_sha256(repeat(64), "d"))
+    print(std::hash::hmac_sha256(repeat(65), "d"))
+    print(std::hash::hmac_sha512(repeat(128), repeat(300)))
+    print(std::hash::hmac_sha512(repeat(129), ""))
+    print(std::hash::hmac_sha256("", ""))
+    print(std::hash::sha256("año 😀"))
+}

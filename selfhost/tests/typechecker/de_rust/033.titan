@@ -1,0 +1,1 @@
+fn feed(decoder: WebSocketDecoder) { std::ws::decoder_push(decoder, "not bytes") } fn main() {}

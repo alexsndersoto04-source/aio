@@ -1,0 +1,1 @@
+fn value() -> int { 1 } fn require_never(callback: fn() -> !) { callback() } fn main() { require_never(value) }

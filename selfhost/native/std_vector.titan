@@ -1,0 +1,241 @@
+// std::vector escrito en Titan. La VM convierte cada número a f32 y hace las
+// cuentas en precisión simple; aquí se hace cada operación en f64 y se
+// redondea a f32 (para + - * / y raíz eso da exactamente el resultado f32,
+// porque 53 >= 2*24 + 2). Los valores se guardan como bits de f64.
+
+// Redondeo al f32 más cercano (empates al par), como `x as f32`, devuelto
+// como f64. Incluye subnormales de f32, desborde a infinito y NaN.
+fn vec_f32(bits: int) -> int {
+    let sign = bits & (-9223372036854775807 - 1)
+    let e = std::raw::shr(bits, 52) & 2047
+    let frac = bits & 4503599627370495
+    if e == 2047 {
+        if frac == 0 {
+            return bits
+        }
+        // NaN: se conserva el signo y los 23 bits altos, y queda silencioso.
+        return sign | 9221120237041090560 | (frac & 4503598553628672)
+    }
+    if e == 0 {
+        // Subnormales de f64: muy por debajo del mínimo de f32.
+        return sign
+    }
+    let exp = e - 1023
+    let m = frac | 4503599627370496
+    let mut s = 29
+    if exp < -126 {
+        s = 29 + (-126 - exp)
+    }
+    if s >= 60 {
+        return sign
+    }
+    let q = std::raw::shr(m, s)
+    let r = m & (std::raw::shl(1, s) - 1)
+    let half = std::raw::shl(1, s - 1)
+    let mut qq = q
+    if r > half || (r == half && (q & 1) == 1) {
+        qq = q + 1
+    }
+    if qq == 0 {
+        return sign
+    }
+    let mut mm = std::raw::shl(qq, s)
+    let mut ee = exp
+    if mm >= 9007199254740992 {
+        mm = std::raw::shr(mm, 1)
+        ee += 1
+    }
+    if ee > 127 {
+        return sign | 9218868437227405312
+    }
+    sign | std::raw::shl(ee + 1023, 52) | (mm - 4503599627370496)
+}
+
+// Array de números → bloque de bits f64 ya redondeados a f32.
+fn vec_numbers(v: any, function: string) -> int {
+    rt_expect_array(v, function)
+    let n = rt_seq_len(v)
+    let buf = rt_alloc(8 * n + 8)
+    let mut i = 0
+    while i < n {
+        let x = rt_seq_get(v, i)
+        let t = std::raw::tag(x)
+        if t == 2 {
+            std::raw::store(buf + 8 * i, vec_f32(std::raw::bits(x)))
+        } else if t == 1 {
+            std::raw::store(buf + 8 * i, vec_f32(std::raw::ffromint(std::raw::bits(x))))
+        } else {
+            rt_free_block(buf)
+            rt_native_fail(function, "expected number")
+        }
+        i += 1
+    }
+    buf
+}
+
+fn vec_same_len(a: any, b: any, function: string, short: string) {
+    let na = rt_seq_len(a)
+    let nb = rt_seq_len(b)
+    if na != nb {
+        rt_native_fail(function, rt_concat(rt_concat(rt_concat(rt_concat(rt_concat(function, ": length mismatch "), rt_int_to_str(na)), " vs "), rt_int_to_str(nb)), short))
+    }
+}
+
+fn vec_dot(a: int, b: int, n: int) -> int {
+    let mut sum = 0
+    let mut i = 0
+    while i < n {
+        let p = vec_f32(std::raw::fmul(std::raw::load(a + 8 * i), std::raw::load(b + 8 * i)))
+        sum = vec_f32(std::raw::fadd(sum, p))
+        i += 1
+    }
+    sum
+}
+
+// `iter().map(|x| x * x).sum::<f32>().sqrt()`: la suma empieza en -0.0.
+fn vec_norm(v: int, n: int) -> int {
+    let mut sum = -9223372036854775807 - 1
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load(v + 8 * i)
+        sum = vec_f32(std::raw::fadd(sum, vec_f32(std::raw::fmul(x, x))))
+        i += 1
+    }
+    vec_f32(std::raw::fsqrt(sum))
+}
+
+fn vec_is_zero(bits: int) -> bool {
+    std::raw::fcmp(bits, 0) == 0
+}
+
+fn vec_array(buf: int, n: int) -> any {
+    let out = rt_array_new(n)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        rt_seq_put(data, i, rt_float(std::raw::load(buf + 8 * i)))
+        i += 1
+    }
+    out
+}
+
+fn std__vector__dot(a: any, b: any) -> any {
+    let f = "std::vector::dot"
+    let pa = vec_numbers(a, f)
+    let pb = vec_numbers(b, f)
+    vec_same_len(a, b, f, "")
+    let r = vec_dot(pa, pb, rt_seq_len(a))
+    rt_free_block(pa)
+    rt_free_block(pb)
+    rt_float(r)
+}
+
+fn std__vector__norm(v: any) -> any {
+    let p = vec_numbers(v, "std::vector::norm")
+    let r = vec_norm(p, rt_seq_len(v))
+    rt_free_block(p)
+    rt_float(r)
+}
+
+fn std__vector__cosine_similarity(a: any, b: any) -> any {
+    let f = "std::vector::cosine_similarity"
+    let pa = vec_numbers(a, f)
+    let pb = vec_numbers(b, f)
+    vec_same_len(a, b, f, "")
+    let n = rt_seq_len(a)
+    let na = vec_norm(pa, n)
+    let nb = vec_norm(pb, n)
+    let mut r = 0
+    if !vec_is_zero(na) && !vec_is_zero(nb) {
+        r = vec_f32(std::raw::fdiv(vec_dot(pa, pb, n), vec_f32(std::raw::fmul(na, nb))))
+    }
+    rt_free_block(pa)
+    rt_free_block(pb)
+    rt_float(r)
+}
+
+fn std__vector__normalize(v: any) -> any {
+    let p = vec_numbers(v, "std::vector::normalize")
+    let n = rt_seq_len(v)
+    let len = vec_norm(p, n)
+    if !vec_is_zero(len) {
+        let mut i = 0
+        while i < n {
+            std::raw::store(p + 8 * i, vec_f32(std::raw::fdiv(std::raw::load(p + 8 * i), len)))
+            i += 1
+        }
+    }
+    let out = vec_array(p, n)
+    rt_free_block(p)
+    out
+}
+
+// op: 0 suma, 1 resta.
+fn vec_elementwise(a: any, b: any, f: string, op: int) -> any {
+    let pa = vec_numbers(a, f)
+    let pb = vec_numbers(b, f)
+    vec_same_len(a, b, f, "")
+    let n = rt_seq_len(a)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load(pa + 8 * i)
+        let y = std::raw::load(pb + 8 * i)
+        if op == 0 {
+            std::raw::store(pa + 8 * i, vec_f32(std::raw::fadd(x, y)))
+        } else {
+            std::raw::store(pa + 8 * i, vec_f32(std::raw::fsub(x, y)))
+        }
+        i += 1
+    }
+    let out = vec_array(pa, n)
+    rt_free_block(pa)
+    rt_free_block(pb)
+    out
+}
+
+fn std__vector__add(a: any, b: any) -> any {
+    vec_elementwise(a, b, "std::vector::add", 0)
+}
+
+fn std__vector__sub(a: any, b: any) -> any {
+    vec_elementwise(a, b, "std::vector::sub", 1)
+}
+
+fn std__vector__scale(v: any, k: any) -> any {
+    let f = "std::vector::scale"
+    let p = vec_numbers(v, f)
+    let n = rt_seq_len(v)
+    let kb = rt_expect_number(k, f)
+    let kf = vec_f32(kb)
+    let mut i = 0
+    while i < n {
+        std::raw::store(p + 8 * i, vec_f32(std::raw::fmul(std::raw::load(p + 8 * i), kf)))
+        i += 1
+    }
+    let out = vec_array(p, n)
+    rt_free_block(p)
+    out
+}
+
+fn std__vector__argmax(v: any) -> any {
+    let f = "std::vector::argmax"
+    let p = vec_numbers(v, f)
+    let n = rt_seq_len(v)
+    if n == 0 {
+        rt_free_block(p)
+        rt_native_fail(f, "std::vector::argmax: empty vector")
+    }
+    let mut best = 0
+    let mut best_v = std::raw::load(p)
+    let mut i = 1
+    while i < n {
+        let x = std::raw::load(p + 8 * i)
+        if std::raw::fcmp(x, best_v) == 1 {
+            best_v = x
+            best = i
+        }
+        i += 1
+    }
+    rt_free_block(p)
+    best
+}

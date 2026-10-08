@@ -1,0 +1,11 @@
+enum Shape {
+    Square(int),
+    Dot,
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Shape::Square(n) => n * n,
+        Shape::Dot => 0,
+    }
+}

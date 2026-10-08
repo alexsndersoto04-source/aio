@@ -1,0 +1,1 @@
+enum Choice { Up, Down } fn choose(choice: Choice) -> fn(int) -> int { match choice { Choice::Up => |value| value + 1, Choice::Down => |value| value - 1 } } fn main() { let callback = choose(Choice::Up) let result: int = callback(41) }

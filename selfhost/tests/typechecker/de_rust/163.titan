@@ -1,0 +1,1 @@
+fn literal() -> int { if true { return 1 } }

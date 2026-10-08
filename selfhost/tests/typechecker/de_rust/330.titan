@@ -1,0 +1,1 @@
+fn act() {} fn run(flag: bool) { let mut n = 0 if flag { act() } else { n = 1 } }

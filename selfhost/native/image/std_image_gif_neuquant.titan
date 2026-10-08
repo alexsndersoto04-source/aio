@@ -1,0 +1,340 @@
+// Port Titan de NeuQuant (color_quant 1.1.0), speed 1, para paletas GIF
+// que superan 256 colores. El aviso de licencia está en COLOR-QUANT-NOTICE.txt.
+fn im_gif_nq_source_channel(source: int, color: int, pixel: int, channel: int, transparent_rgb: int) -> int {
+    if color == 3 {
+        if channel == 0 { return std::raw::load8(source + 3 * pixel) }
+        if channel == 1 { return std::raw::load8(source + 3 * pixel + 1) }
+        if channel == 2 { return std::raw::load8(source + 3 * pixel + 2) }
+        return 255
+    }
+    let p = source + 4 * pixel
+    let alpha = std::raw::load8(p + 3)
+    if alpha == 0 {
+        if channel == 0 { return std::raw::shr(transparent_rgb, 16) & 255 }
+        if channel == 1 { return std::raw::shr(transparent_rgb, 8) & 255 }
+        if channel == 2 { return transparent_rgb & 255 }
+        return 0
+    }
+    if channel == 0 { return std::raw::load8(p) }
+    if channel == 1 { return std::raw::load8(p + 1) }
+    if channel == 2 { return std::raw::load8(p + 2) }
+    255
+}
+
+fn im_gif_nq_abs_delta(a: int, b: int) -> int {
+    let d = std::raw::fsub(a, b)
+    if std::raw::fcmp(d, 0) < 0 { return std::raw::fsub(0, d) }
+    d
+}
+
+fn im_gif_nq_move(network: int, neuron: int, alpha: int, r: int, g: int, b: int, a: int) {
+    let base = neuron * 32
+    let value_b = std::raw::load(network + base + 16)
+    let value_g = std::raw::load(network + base + 8)
+    let value_r = std::raw::load(network + base)
+    let value_a = std::raw::load(network + base + 24)
+    std::raw::store(network + base + 16, std::raw::fsub(value_b, std::raw::fmul(alpha, std::raw::fsub(value_b, b))))
+    std::raw::store(network + base + 8, std::raw::fsub(value_g, std::raw::fmul(alpha, std::raw::fsub(value_g, g))))
+    std::raw::store(network + base, std::raw::fsub(value_r, std::raw::fmul(alpha, std::raw::fsub(value_r, r))))
+    std::raw::store(network + base + 24, std::raw::fsub(value_a, std::raw::fmul(alpha, std::raw::fsub(value_a, a))))
+}
+
+fn im_gif_nq_contest(network: int, bias: int, frequency: int, r: int, g: int, b: int, a: int) -> int {
+    let mut best_distance = 9218868437227405311
+    let mut best_bias_distance = best_distance
+    let mut best_position = -1
+    let mut best_bias_position = -1
+    let beta = std::raw::fdiv(std::raw::ffromint(1), std::raw::ffromint(1024))
+    let beta_gamma = std::raw::ffromint(1)
+    let mut i = 0
+    while i < 256 {
+        let bias_value = std::raw::load(bias + 8 * i)
+        let best_bias_biased = std::raw::fadd(best_bias_distance, bias_value)
+        let base = i * 32
+        let mut distance = im_gif_nq_abs_delta(std::raw::load(network + base + 16), b)
+        distance = std::raw::fadd(distance, im_gif_nq_abs_delta(std::raw::load(network + base), r))
+        if std::raw::fcmp(distance, best_distance) < 0 || std::raw::fcmp(distance, best_bias_biased) < 0 {
+            distance = std::raw::fadd(distance, im_gif_nq_abs_delta(std::raw::load(network + base + 8), g))
+            distance = std::raw::fadd(distance, im_gif_nq_abs_delta(std::raw::load(network + base + 24), a))
+            if std::raw::fcmp(distance, best_distance) < 0 {
+                best_distance = distance
+                best_position = i
+            }
+            let bias_distance = std::raw::fsub(distance, bias_value)
+            if std::raw::fcmp(bias_distance, best_bias_distance) < 0 {
+                best_bias_distance = bias_distance
+                best_bias_position = i
+            }
+        }
+        let freq_value = std::raw::load(frequency + 8 * i)
+        let next_freq = std::raw::fsub(freq_value, std::raw::fmul(beta, freq_value))
+        std::raw::store(frequency + 8 * i, next_freq)
+        std::raw::store(bias + 8 * i, std::raw::fadd(bias_value, std::raw::fmul(beta_gamma, next_freq)))
+        i += 1
+    }
+    let best_freq = std::raw::load(frequency + 8 * best_position)
+    std::raw::store(frequency + 8 * best_position, std::raw::fadd(best_freq, beta))
+    std::raw::store(bias + 8 * best_position, std::raw::fsub(std::raw::load(bias + 8 * best_position), beta_gamma))
+    best_bias_position
+}
+
+fn im_gif_nq_neighbours(network: int, radius: int, position: int, alpha: int, r: int, g: int, b: int, a: int) {
+    let low = if position - radius > 0 { position - radius } else { 0 }
+    let high = if position + radius < 256 { position + radius } else { 256 }
+    let mut forward = position + 1
+    let mut backward = position - 1
+    let mut q = 0
+    let radius_f = std::raw::ffromint(radius)
+    let radius_squared = std::raw::fmul(radius_f, radius_f)
+    while forward < high || backward > low {
+        let q_f = std::raw::ffromint(q)
+        let local_alpha = std::raw::fdiv(std::raw::fmul(alpha, std::raw::fsub(radius_squared, std::raw::fmul(q_f, q_f))), radius_squared)
+        q += 1
+        if forward < high {
+            im_gif_nq_move(network, forward, local_alpha, r, g, b, a)
+            forward += 1
+        }
+        if backward > low {
+            im_gif_nq_move(network, backward, local_alpha, r, g, b, a)
+            backward -= 1
+        }
+    }
+}
+
+fn im_gif_nq_train(network: int, bias: int, frequency: int, source: int, color: int, pixels: int, transparent_rgb: int) {
+    let init_rad = 32
+    let mut bias_radius = init_rad * 64
+    let mut alpha = 1024
+    let mut radius = std::raw::shr(bias_radius, 6)
+    if radius <= 1 { radius = 0 }
+    let sample_pixels = pixels
+    let cycles = 128
+    let mut delta = sample_pixels / cycles
+    if delta == 0 { delta = 1 }
+    let mut step = 503
+    if pixels % 499 != 0 {
+        step = 499
+    } else if pixels % 491 != 0 {
+        step = 491
+    } else if pixels % 478 != 0 {
+        step = 478
+    }
+    let mut position = 0
+    let mut i = 0
+    while i < sample_pixels {
+        let r = std::raw::ffromint(im_gif_nq_source_channel(source, color, position, 0, transparent_rgb))
+        let g = std::raw::ffromint(im_gif_nq_source_channel(source, color, position, 1, transparent_rgb))
+        let b = std::raw::ffromint(im_gif_nq_source_channel(source, color, position, 2, transparent_rgb))
+        let a = std::raw::ffromint(im_gif_nq_source_channel(source, color, position, 3, transparent_rgb))
+        let best = im_gif_nq_contest(network, bias, frequency, r, g, b, a)
+        let alpha_f = std::raw::fdiv(std::raw::ffromint(alpha), std::raw::ffromint(1024))
+        im_gif_nq_move(network, best, alpha_f, r, g, b, a)
+        if radius > 0 { im_gif_nq_neighbours(network, radius, best, alpha_f, r, g, b, a) }
+        position += step
+        while position >= pixels { position -= pixels }
+        i += 1
+        if i % delta == 0 {
+            alpha -= alpha / 30
+            bias_radius -= bias_radius / 30
+            radius = std::raw::shr(bias_radius, 6)
+            if radius <= 1 { radius = 0 }
+        }
+    }
+}
+
+fn im_gif_nq_build_index(colormap: int, netindex: int) {
+    let mut previous = 0
+    let mut start = 0
+    let mut i = 0
+    while i < 256 {
+        let mut small_position = i
+        let mut small_value = std::raw::load(colormap + i * 32 + 8)
+        let mut j = i + 1
+        while j < 256 {
+            let value = std::raw::load(colormap + j * 32 + 8)
+            if value < small_value {
+                small_position = j
+                small_value = value
+            }
+            j += 1
+        }
+        if i != small_position {
+            let mut channel = 0
+            while channel < 4 {
+                let at_i = colormap + i * 32 + 8 * channel
+                let at_small = colormap + small_position * 32 + 8 * channel
+                let value_i = std::raw::load(at_i)
+                let value_small = std::raw::load(at_small)
+                std::raw::store(at_i, value_small)
+                std::raw::store(at_small, value_i)
+                channel += 1
+            }
+        }
+        if small_value != previous {
+            std::raw::store(netindex + 8 * previous, (start + i) / 2)
+            let mut k = previous + 1
+            while k < small_value {
+                std::raw::store(netindex + 8 * k, i)
+                k += 1
+            }
+            previous = small_value
+            start = i
+        }
+        i += 1
+    }
+    std::raw::store(netindex + 8 * previous, (start + 255) / 2)
+    let mut k = previous + 1
+    while k < 256 {
+        std::raw::store(netindex + 8 * k, 255)
+        k += 1
+    }
+}
+
+fn im_gif_nq_search(colormap: int, netindex: int, r: int, g: int, b: int, a: int) -> int {
+    let mut best_distance = 1073741824
+    let mut best = 0
+    let mut i = std::raw::load(netindex + 8 * g)
+    let mut j = if i > 0 { i - 1 } else { 0 }
+    let mut stop = false
+    while (i < 256 || j > 0) && !stop {
+        if i < 256 {
+            let base = colormap + i * 32
+            let mut d = std::raw::load(base + 8) - g
+            let mut distance = d * d
+            if distance >= best_distance {
+                stop = true
+                0
+            } else {
+                d = std::raw::load(base + 16) - b
+                distance += d * d
+                if distance < best_distance {
+                    d = std::raw::load(base) - r
+                    distance += d * d
+                    if distance < best_distance {
+                        d = std::raw::load(base + 24) - a
+                        distance += d * d
+                        if distance < best_distance {
+                            best_distance = distance
+                            best = i
+                        }
+                    }
+                }
+                i += 1
+            }
+        }
+        if !stop && j > 0 {
+            let base = colormap + j * 32
+            let mut d = std::raw::load(base + 8) - g
+            let mut distance = d * d
+            if distance >= best_distance {
+                stop = true
+                0
+            } else {
+                d = std::raw::load(base + 16) - b
+                distance += d * d
+                if distance < best_distance {
+                    d = std::raw::load(base) - r
+                    distance += d * d
+                    if distance < best_distance {
+                        d = std::raw::load(base + 24) - a
+                        distance += d * d
+                        if distance < best_distance {
+                            best_distance = distance
+                            best = j
+                        }
+                    }
+                }
+                j -= 1
+            }
+        }
+    }
+    best
+}
+
+fn im_gif_nq_prepare(source: int, color: int, pixels: int, transparent_rgb: int, palette: int) -> int {
+    let state = rt_alloc_zero(48)
+    let network = rt_alloc_zero(256 * 4 * 8)
+    let colormap = rt_alloc_zero(256 * 4 * 8)
+    let netindex = rt_alloc_zero(256 * 8)
+    let bias = rt_alloc_zero(256 * 8)
+    let frequency = rt_alloc_zero(256 * 8)
+    std::raw::store(state, network)
+    std::raw::store(state + 8, colormap)
+    std::raw::store(state + 16, netindex)
+    std::raw::store(state + 24, bias)
+    std::raw::store(state + 32, frequency)
+
+    let initial_frequency = std::raw::fdiv(std::raw::ffromint(1), std::raw::ffromint(256))
+    let mut i = 0
+    while i < 256 {
+        let value = i
+        let alpha = if i < 16 { i * 16 } else { 255 }
+        let base = i * 32
+        std::raw::store(network + base, std::raw::ffromint(value))
+        std::raw::store(network + base + 8, std::raw::ffromint(value))
+        std::raw::store(network + base + 16, std::raw::ffromint(value))
+        std::raw::store(network + base + 24, std::raw::ffromint(alpha))
+        std::raw::store(colormap + base, 0)
+        std::raw::store(colormap + base + 8, 0)
+        std::raw::store(colormap + base + 16, 0)
+        std::raw::store(colormap + base + 24, 255)
+        std::raw::store(frequency + 8 * i, initial_frequency)
+        std::raw::store(bias + 8 * i, 0)
+        i += 1
+    }
+
+    im_gif_nq_train(network, bias, frequency, source, color, pixels, transparent_rgb)
+    i = 0
+    let half = std::raw::fdiv(std::raw::ffromint(1), std::raw::ffromint(2))
+    while i < 256 {
+        let base = i * 32
+        let r = std::raw::ftoint(std::raw::fadd(std::raw::load(network + base), half))
+        let g = std::raw::ftoint(std::raw::fadd(std::raw::load(network + base + 8), half))
+        let b = std::raw::ftoint(std::raw::fadd(std::raw::load(network + base + 16), half))
+        let a = std::raw::ftoint(std::raw::fadd(std::raw::load(network + base + 24), half))
+        std::raw::store(colormap + base, im_clamp255(r))
+        std::raw::store(colormap + base + 8, im_clamp255(g))
+        std::raw::store(colormap + base + 16, im_clamp255(b))
+        std::raw::store(colormap + base + 24, im_clamp255(a))
+        i += 1
+    }
+    im_gif_nq_build_index(colormap, netindex)
+    i = 0
+    while i < 256 {
+        let base = colormap + i * 32
+        std::raw::store8(palette + 3 * i, std::raw::load(base))
+        std::raw::store8(palette + 3 * i + 1, std::raw::load(base + 8))
+        std::raw::store8(palette + 3 * i + 2, std::raw::load(base + 16))
+        i += 1
+    }
+    state
+}
+
+fn im_gif_nq_index(state: int, source: int, color: int, pixel: int, transparent_rgb: int) -> int {
+    let network = std::raw::load(state)
+    let colormap = std::raw::load(state + 8)
+    let netindex = std::raw::load(state + 16)
+    let r = im_gif_nq_source_channel(source, color, pixel, 0, transparent_rgb)
+    let g = im_gif_nq_source_channel(source, color, pixel, 1, transparent_rgb)
+    let b = im_gif_nq_source_channel(source, color, pixel, 2, transparent_rgb)
+    let a = im_gif_nq_source_channel(source, color, pixel, 3, transparent_rgb)
+    im_gif_nq_search(colormap, netindex, r, g, b, a)
+}
+
+fn im_gif_nq_transparent_index(state: int, transparent_rgb: int) -> int {
+    let colormap = std::raw::load(state + 8)
+    let netindex = std::raw::load(state + 16)
+    let r = std::raw::shr(transparent_rgb, 16) & 255
+    let g = std::raw::shr(transparent_rgb, 8) & 255
+    let b = transparent_rgb & 255
+    im_gif_nq_search(colormap, netindex, r, g, b, 0)
+}
+
+fn im_gif_nq_free(state: int) {
+    rt_free_block(std::raw::load(state))
+    rt_free_block(std::raw::load(state + 8))
+    rt_free_block(std::raw::load(state + 16))
+    rt_free_block(std::raw::load(state + 24))
+    rt_free_block(std::raw::load(state + 32))
+    rt_free_block(state)
+}

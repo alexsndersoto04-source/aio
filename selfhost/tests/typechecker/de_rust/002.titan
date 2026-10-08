@@ -1,0 +1,1 @@
+trait Tr { fn m(self) -> int; } struct A { x: int } impl Tr for A { } fn main() { }

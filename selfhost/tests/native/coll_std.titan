@@ -1,0 +1,204 @@
+// std::collections: funciones de arrays y estructuras con identificador.
+fn opt(o: any) -> string {
+    return "{o}"
+}
+
+fn main() {
+    let texto: any = "añ😀"
+    print(std::collections::length(texto))
+    print(std::collections::length(std::bytes::from_array([1, 2, 3, 4])))
+    print(std::collections::length([1, 2, 3]))
+    print(std::collections::length((1, "a")))
+    print(std::collections::length(std::map::insert(std::map::new(), "k", 1)))
+    let mezcla: any = [1, 1.0, "1", nil, [1, 2], [1, 2], (1, 2), true, 'c', 0.0 - 0.0, 0.0]
+    print(std::collections::contains(mezcla, 1.0))
+    print(std::collections::contains(mezcla, [1, 2]))
+    print(std::collections::contains(mezcla, false))
+    print(std::collections::contains(mezcla, nil))
+    print(std::collections::deduplicate(mezcla))
+    print(std::collections::reverse(mezcla))
+    print(std::collections::reverse([]))
+    print(std::collections::join(mezcla, ", "))
+    print(std::collections::join([], "-"))
+    print(std::collections::chunk([1, 2, 3, 4, 5], 2))
+    print(std::collections::chunk([1, 2], 5))
+    print(std::collections::chunk([], 3))
+    print(std::collections::chunk((1, 2, 3), 1))
+
+    // set
+    let s = std::collections::set_from(["pera", "uva", "Árbol", "pera", "a", ""])
+    print(s)
+    print(std::collections::set_to_array(s))
+    print(std::collections::set_len(s))
+    print(std::collections::set_add(s, "uva"))
+    print(std::collections::set_add(s, "zeta"))
+    print(std::collections::set_remove(s, "pera"))
+    print(std::collections::set_remove(s, "pera"))
+    print(std::collections::set_contains(s, "zeta"))
+    print(std::collections::set_contains(s, "pera"))
+    let t = std::collections::set_new()
+    std::collections::set_add(t, "uva")
+    std::collections::set_add(t, "kiwi")
+    let u = std::collections::set_union(s, t)
+    let i = std::collections::set_intersect(s, t)
+    let d = std::collections::set_difference(s, t)
+    print(std::collections::set_to_array(u))
+    print(std::collections::set_to_array(i))
+    print(std::collections::set_to_array(d))
+    print(std::collections::set_is_subset(i, s))
+    print(std::collections::set_is_subset(t, s))
+    print(std::collections::set_drop(u))
+    print(std::collections::set_drop(u))
+    print(std::collections::set_drop(9999))
+    print(std::collections::set_drop(t))
+
+    // deque
+    let q = std::collections::deque_new()
+    print(q)
+    print(opt(std::collections::deque_pop_front(q)))
+    let mut k = 0
+    while k < 20 {
+        if k % 3 == 0 {
+            std::collections::deque_push_front(q, "f{k}")
+        } else {
+            std::collections::deque_push_back(q, "b{k}")
+        }
+        k += 1
+    }
+    print(std::collections::deque_to_array(q))
+    print(std::collections::deque_len(q))
+    print(opt(std::collections::deque_pop_front(q)))
+    print(opt(std::collections::deque_pop_back(q)))
+    print(std::collections::deque_to_array(q))
+    print(std::collections::deque_drop(q))
+    print(std::collections::deque_drop(q))
+
+    // colas de prioridad
+    let mx = std::collections::pq_new_max()
+    let mn = std::collections::pq_new_min()
+    print(opt(std::collections::pq_peek(mx)))
+    print(opt(std::collections::pq_pop(mn)))
+    let prios = [5, 1, 5, -3, 9223372036854775807, 0, 5, 1, -9223372036854775807, 7]
+    k = 0
+    for p in prios {
+        std::collections::pq_push(mx, "x{k}", p)
+        std::collections::pq_push(mn, "n{k}", p)
+        k += 1
+    }
+    print(std::collections::pq_len(mx))
+    print(opt(std::collections::pq_peek(mn)))
+    let mut orden_max = []
+    let mut orden_min = []
+    k = 0
+    while k < 11 {
+        orden_max = std::array::push(orden_max, opt(std::collections::pq_pop(mx)))
+        orden_min = std::array::push(orden_min, opt(std::collections::pq_pop(mn)))
+        k += 1
+    }
+    print(orden_max)
+    print(orden_min)
+    print(std::collections::pq_drop(mx))
+    std::collections::pq_push(mn, "resto", 3)
+    print(std::collections::pq_drop(mn))
+
+    // mapa ordenado
+    let m = std::collections::omap_new()
+    std::collections::omap_insert(m, "z", 1)
+    std::collections::omap_insert(m, "a", [1.5, "x", nil, true])
+    std::collections::omap_insert(m, "m", std::map::insert(std::map::new(), "k", (1, 2)))
+    std::collections::omap_insert(m, "z", "nuevo")
+    print(std::collections::omap_keys(m))
+    print(std::collections::omap_len(m))
+    print(opt(std::collections::omap_get(m, "a")))
+    print(opt(std::collections::omap_get(m, "m")))
+    print(opt(std::collections::omap_get(m, "z")))
+    print(opt(std::collections::omap_get(m, "nada")))
+    print(std::collections::omap_remove(m, "z"))
+    print(std::collections::omap_remove(m, "z"))
+    std::collections::omap_insert(m, "z", 2.0)
+    print(std::collections::omap_keys(m))
+    print(opt(std::collections::omap_get(m, "z")))
+    print(std::collections::omap_drop(m))
+
+    // contador
+    let c = std::collections::counter_from(["b", "a", "b", "c", "a", "b"])
+    std::collections::counter_add(c, "d", 3)
+    std::collections::counter_add(c, "a", -5)
+    std::collections::counter_add(c, "e", 0)
+    print(std::collections::counter_count(c, "b"))
+    print(std::collections::counter_count(c, "a"))
+    print(std::collections::counter_count(c, "nada"))
+    print(std::collections::counter_most_common(c, 10))
+    print(std::collections::counter_most_common(c, 2))
+    print(std::collections::counter_most_common(c, 0))
+    print(std::collections::counter_total(c))
+    let grande = std::collections::counter_from([])
+    std::collections::counter_add(grande, "x", 9223372036854775807)
+    std::collections::counter_add(grande, "y", 5)
+    std::collections::counter_add(grande, "z", -10)
+    print(std::collections::counter_total(grande))
+    print(std::collections::counter_drop(c))
+
+    // grafos
+    let g = std::collections::graph_new(true)
+    std::collections::graph_add_edge(g, "a", "c", 4)
+    std::collections::graph_add_edge(g, "a", "b", 1)
+    std::collections::graph_add_edge(g, "b", "c", 2)
+    std::collections::graph_add_edge(g, "c", "d", 1)
+    std::collections::graph_add_edge(g, "b", "d", 5)
+    std::collections::graph_add_node(g, "solo")
+    std::collections::graph_add_node(g, "a")
+    print(std::collections::graph_nodes(g))
+    print(std::collections::graph_neighbors(g, "a"))
+    print(std::collections::graph_neighbors(g, "nada"))
+    print(std::collections::graph_bfs(g, "a"))
+    print(std::collections::graph_dfs(g, "a"))
+    print(std::collections::graph_bfs(g, "nada"))
+    print(std::collections::graph_shortest_path(g, "a", "d"))
+    print(std::collections::graph_shortest_path(g, "d", "a"))
+    print(std::collections::graph_shortest_path(g, "a", "a"))
+    print(std::collections::graph_topological_sort(g))
+    print(std::collections::graph_has_cycle(g))
+    std::collections::graph_add_edge(g, "d", "a", 0)
+    print(std::collections::graph_has_cycle(g))
+    // empates: igual distancia por dos caminos
+    let e = std::collections::graph_new(true)
+    std::collections::graph_add_edge(e, "s", "x", 1)
+    std::collections::graph_add_edge(e, "s", "y", 1)
+    std::collections::graph_add_edge(e, "x", "t", 1)
+    std::collections::graph_add_edge(e, "y", "t", 1)
+    print(std::collections::graph_shortest_path(e, "s", "t"))
+    std::collections::graph_add_edge(e, "s", "big", 9223372036854775807)
+    std::collections::graph_add_edge(e, "big", "t", 9)
+    print(std::collections::graph_shortest_path(e, "s", "t"))
+    let n = std::collections::graph_new(false)
+    std::collections::graph_add_edge(n, "a", "b", 1)
+    std::collections::graph_add_edge(n, "b", "c", 1)
+    print(std::collections::graph_has_cycle(n))
+    print(std::collections::graph_neighbors(n, "b"))
+    print(std::collections::graph_dfs(n, "c"))
+    std::collections::graph_add_edge(n, "c", "a", 1)
+    print(std::collections::graph_has_cycle(n))
+    let lazo = std::collections::graph_new(false)
+    std::collections::graph_add_edge(lazo, "p", "p", 1)
+    print(std::collections::graph_neighbors(lazo, "p"))
+    print(std::collections::graph_has_cycle(lazo))
+    print(std::collections::graph_drop(g))
+    print(std::collections::graph_drop(g))
+    print(std::collections::graph_drop(n))
+
+    // el mismo contador de identificadores para todos los tipos
+    print(std::collections::set_new())
+    print(std::collections::graph_new(true))
+    // un identificador de otro tipo cuenta como desconocido al soltarlo
+    print(std::collections::deque_drop(s))
+    // cuota de identificadores: 256 vivos a la vez
+    let mut vivos = 0
+    k = 0
+    while k < 300 {
+        let h = std::collections::deque_new()
+        std::collections::deque_drop(h)
+        k += 1
+    }
+    print("ok cuota")
+}

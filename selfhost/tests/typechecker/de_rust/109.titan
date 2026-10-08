@@ -1,0 +1,1 @@
+fn main() { let print: fn(int) -> int = |value| value print(1) }

@@ -1,0 +1,1 @@
+trait Reset { fn reset(self); } struct Item { value: int } impl Reset for Item { fn reset(self) {} } fn main() {}

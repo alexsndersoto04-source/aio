@@ -1,0 +1,1 @@
+fn halt() -> ! { for item in loop {} {} } fn main() {}

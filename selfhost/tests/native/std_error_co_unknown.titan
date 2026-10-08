@@ -1,0 +1,4 @@
+fn main() {
+    let s = std::collections::deque_new()
+    print(std::collections::set_add(s, "x"))
+}

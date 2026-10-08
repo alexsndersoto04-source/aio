@@ -1,0 +1,35 @@
+// Differential checks for Titan-backed std::audio sample generators.
+// The verifier compares these exact arrays with the Rust VM results.
+fn main() {
+    println("sine", std::audio::sine_wave(440.0, 2, 8000, 0.5))
+    println("square", std::audio::square_wave(440.0, 2, 8000, 0.5))
+    let saw_exact = std::audio::saw_wave(2000.0, 1, 8000, 0.5)
+    std::testing::assert_eq(saw_exact, [-0.5, -0.25, 0.0, 0.25, -0.5, -0.25, 0.0, 0.25], "saw integer period samples")
+    println("saw-fractional-period", std::audio::saw_wave(3000.0, 2, 8000, 0.5))
+    println("saw-short-period", std::audio::saw_wave(30000.0, 2, 8000, 0.5))
+    println("saw-subnormal-period", std::audio::saw_wave(3.4e38, 2000, 1, 0.5))
+    println("saw-zero-frequency", std::audio::saw_wave(0.0, 1, 4000, 0.5))
+    println("saw-negative-frequency", std::audio::saw_wave(-2000.0, 1, 8000, 0.5))
+    println("noise", std::audio::white_noise(2, 8000, 0.5))
+    println("clamped-high", std::audio::white_noise(1, 4000, 2.0))
+    println("clamped-low", std::audio::white_noise(1, 4000, -1.0))
+    println("empty", std::audio::sine_wave(440.0, 10, 0, 0.5))
+
+    let duration_error = std::try::catch(|| std::audio::sine_wave(440.0, -1, 8000, 0.5))
+    match duration_error {
+        Result::Ok(_) => std::testing::assert(false, "negative duration must fail"),
+        Result::Err(message) => {
+            let expected = "native function 'std::audio::sine_wave' failed: duration_ms out of range"
+            std::testing::assert(std::text::equals(message, expected), "audio duration range error")
+        },
+    }
+
+    let rate_error = std::try::catch(|| std::audio::white_noise(1, 4294967296, 0.5))
+    match rate_error {
+        Result::Ok(_) => std::testing::assert(false, "oversized sample rate must fail"),
+        Result::Err(message) => {
+            let expected = "native function 'std::audio::white_noise' failed: sample_rate out of range"
+            std::testing::assert(std::text::equals(message, expected), "audio sample-rate range error")
+        },
+    }
+}

@@ -1,0 +1,316 @@
+// std::termux adapters. These invoke the actual Termux:API command-line tools;
+// no operation is emulated on non-Termux hosts. The user must install the
+// Termux:API Android app and `pkg install termux-api` on the device.
+const TX_BATTERY_TOOL: string = "termux-battery-status"
+
+fn tx_cstrlen(pointer: int) -> int {
+    let mut length = 0
+    while std::raw::load8(pointer + length) != 0 {
+        length += 1
+    }
+    length
+}
+
+// Replica which::which para Unix: cada segmento de PATH se une al nombre y
+// se prueba como archivo regular (seguir enlaces, no exigir permiso de ejecución).
+fn tx_path_has_tool(path: int, tool: string) -> bool {
+    let path_length = tx_cstrlen(path)
+    let tool_bytes = std::raw::bits(tool) + 16
+    let tool_length = rt_slen(tool)
+    let mut start = 0
+    loop {
+        let mut end = start
+        while end < path_length && std::raw::load8(path + end) != 58 {
+            end += 1
+        }
+        let segment_length = end - start
+        let mut separator = 0
+        if segment_length > 0 && std::raw::load8(path + end - 1) != 47 {
+            separator = 1
+        }
+        let candidate_length = segment_length + separator + tool_length
+        let candidate_object = rt_str_alloc(candidate_length)
+        if segment_length > 0 {
+            rt_copy(candidate_object + 16, path + start, segment_length)
+        }
+        if separator == 1 {
+            std::raw::store8(candidate_object + 16 + segment_length, 47)
+        }
+        rt_copy(candidate_object + 16 + segment_length + separator, tool_bytes, tool_length)
+        let candidate = rt_sval(candidate_object)
+        if std::fs::is_file(candidate) {
+            return true
+        }
+        if end >= path_length {
+            break
+        }
+        start = end + 1
+    }
+    false
+}
+
+// Equivale al segundo intento de termux_mod::is_available: Command::spawn con
+// stdin/stdout/stderr en /dev/null. No espera ni ejecuta un shell.
+fn tx_spawn_battery_cli() -> bool {
+    let null = rt_open("/dev/null", 524290, 0) // O_RDWR | O_CLOEXEC
+    if null < 0 {
+        return false
+    }
+    let pid = ps_spawn([TX_BATTERY_TOOL], null, null, null)
+    ps_close(null)
+    pid > 0
+}
+
+fn std__termux__is_available() -> bool {
+    let path = rt_getenv("PATH")
+    if path != 0 && tx_path_has_tool(path, TX_BATTERY_TOOL) {
+        return true
+    }
+    tx_spawn_battery_cli()
+}
+
+// Build argv directly: command text parsing would strip quotes and cannot
+// preserve an argument exactly as supplied by the caller.
+fn tx_cli_argv(tool: string, args: any) -> any {
+    let mut argv = [tool]
+    let mut i = 0
+    let n = rt_seq_len(args)
+    while i < n {
+        argv = std::array::push(argv, rt_seq_get(args, i))
+        i += 1
+    }
+    argv
+}
+
+fn tx_process_error(function: string, tool: string, error: string) -> any {
+    if std::text::contains(error, "spawn error: No such file or directory") {
+        rt_native_fail(function, "termux-api CLI '" + tool + "' is not installed. Run: pkg install termux-api")
+    }
+    let detail = std::text::replace(error, "native function 'std::process::run' failed: ", "")
+    let detail = std::text::replace(detail, "spawn error: ", "")
+    let detail = std::text::replace(detail, "process io error: ", "")
+    rt_native_fail(function, "I/O error running termux-api: " + detail)
+}
+
+// Return real stdout bytes (represented as a lossy string by std::process),
+// and preserve the native Termux error categories for missing tools, I/O, and
+// non-zero exit status.
+fn tx_cli_output(function: string, tool: string, args: any, input: any) -> any {
+    let argv = tx_cli_argv(tool, args)
+    let result = if std::raw::tag(input) == 0 {
+        match std::try::catch(|| std__process__run_argv(argv)) {
+            Result::Ok(value) => value,
+            Result::Err(error) => tx_process_error(function, tool, error),
+        }
+    } else {
+        match std::try::catch(|| std__process__run_argv_with_input(argv, input)) {
+            Result::Ok(value) => value,
+            Result::Err(error) => tx_process_error(function, tool, error),
+        }
+    }
+    let status = std::map::get(result, "exit_code")
+    if status != 0 {
+        let stderr = dr_lossy(std::map::get(result, "stderr"))
+        rt_native_fail(function, "termux-api '" + tool + "' failed with status " + rt_int_to_str(std::raw::bits(status)) + ": " + stderr)
+    }
+    std::map::get(result, "stdout")
+}
+
+fn tx_cli_json(function: string, tool: string, args: any) -> any {
+    let output = tx_cli_output(function, tool, args, nil)
+    let parsed = match std::try::catch(|| std::json::parse(output)) {
+        Result::Ok(value) => value,
+        Result::Err(error) => {
+            let detail = std::text::replace(error, "native function 'std::json::parse' failed: ", "")
+            rt_native_fail(function, "could not parse termux-api output as JSON: " + detail)
+        },
+    }
+    parsed
+}
+
+fn tx_cli_ok(function: string, tool: string, args: any) -> () {
+    let _ = tx_cli_output(function, tool, args, nil)
+    nil
+}
+
+fn tx_trim_trailing_newlines(value: any) -> any {
+    let p = std::raw::bits(value) + 16
+    let length = std::raw::load(std::raw::bits(value) + 8)
+    let mut end = length
+    while end > 0 && std::raw::load8(p + end - 1) == 10 {
+        end -= 1
+    }
+    if end == length {
+        return dr_lossy(value)
+    }
+    let bytes = rt_bytes_from(p, end)
+    dr_lossy(bytes)
+}
+
+// ---------------- Battery / device state ------------------------------
+
+fn std__termux__battery_status() -> any {
+    tx_cli_json("std::termux::battery_status", "termux-battery-status", [])
+}
+
+fn std__termux__wifi_info() -> any {
+    tx_cli_json("std::termux::wifi_info", "termux-wifi-connectioninfo", [])
+}
+
+fn std__termux__telephony_info() -> any {
+    tx_cli_json("std::termux::telephony_info", "termux-telephony-deviceinfo", [])
+}
+
+// ---------------- Location (GPS / network) ----------------------------
+
+fn std__termux__location(provider: string, request: string) -> any {
+    let args = ["-p", provider, "-r", request]
+    tx_cli_json("std::termux::location", "termux-location", args)
+}
+
+// ---------------- Sensors ---------------------------------------------
+
+fn std__termux__sensor_list() -> any {
+    let value = tx_cli_json("std::termux::sensor_list", "termux-sensor", ["-l"])
+    if std::raw::tag(value) != 9 {
+        return []
+    }
+    let sensors = std::map::get(value, "sensors")
+    if std::raw::tag(sensors) != 7 {
+        return []
+    }
+    let mut names = []
+    let mut i = 0
+    let n = rt_seq_len(sensors)
+    while i < n {
+        let sensor = rt_seq_get(sensors, i)
+        if std::raw::tag(sensor) == 5 {
+            names = std::array::push(names, sensor)
+        }
+        i += 1
+    }
+    names
+}
+
+fn std__termux__sensor_read(sensor: string) -> any {
+    tx_cli_json("std::termux::sensor_read", "termux-sensor", ["-s", sensor, "-n", "1"])
+}
+
+// ---------------- Clipboard (system clipboard) -----------------------
+
+fn std__termux__clipboard_get() -> string {
+    let output = tx_cli_output("std::termux::clipboard_get", "termux-clipboard-get", [], nil)
+    tx_trim_trailing_newlines(output)
+}
+
+fn std__termux__clipboard_set(text: string) -> () {
+    let input = std::encoding::utf8_encode(text)
+    let _ = tx_cli_output("std::termux::clipboard_set", "termux-clipboard-set", [], input)
+    nil
+}
+
+// ---------------- Feedback (vibrate, torch, toast, notification) -----
+
+fn std__termux__vibrate(duration_ms: int, force: bool) -> () {
+    let mut duration = duration_ms
+    if duration < 0 {
+        duration = 0
+    }
+    let mut args = ["-d", rt_int_to_str(duration)]
+    if force {
+        args = std::array::push(args, "-f")
+    }
+    tx_cli_ok("std::termux::vibrate", "termux-vibrate", args)
+    nil
+}
+
+fn std__termux__torch(on: bool) -> () {
+    let mut state = "off"
+    if on {
+        state = "on"
+    }
+    tx_cli_ok("std::termux::torch", "termux-torch", [state])
+    nil
+}
+
+fn std__termux__toast(message: string) -> () {
+    tx_cli_ok("std::termux::toast", "termux-toast", [message])
+    nil
+}
+
+fn std__termux__notify(title: string, content: string, id: int) -> () {
+    let mut args = ["-t", title, "-c", content]
+    if id > 0 {
+        args = std::array::push(args, "--id")
+        args = std::array::push(args, rt_int_to_str(id))
+    }
+    tx_cli_ok("std::termux::notify", "termux-notification", args)
+    nil
+}
+
+fn std__termux__notify_remove(id: int) -> () {
+    tx_cli_ok("std::termux::notify_remove", "termux-notification-remove", [rt_int_to_str(id)])
+    nil
+}
+
+// ---------------- Text-to-speech --------------------------------------
+
+fn std__termux__tts_speak(text: string) -> () {
+    let input = std::encoding::utf8_encode(text)
+    let _ = tx_cli_output("std::termux::tts_speak", "termux-tts-speak", [], input)
+    nil
+}
+
+// ---------------- SMS -------------------------------------------------
+
+fn std__termux__sms_list(limit: int) -> any {
+    tx_cli_json("std::termux::sms_list", "termux-sms-list", ["-l", rt_int_to_str(limit)])
+}
+
+fn std__termux__sms_send(recipient: string, message: string) -> () {
+    let input = std::encoding::utf8_encode(message)
+    let _ = tx_cli_output("std::termux::sms_send", "termux-sms-send", ["-n", recipient], input)
+    nil
+}
+
+// ---------------- Contacts --------------------------------------------
+
+fn std__termux__contacts() -> any {
+    tx_cli_json("std::termux::contacts", "termux-contact-list", [])
+}
+
+// ---------------- Camera ----------------------------------------------
+
+fn std__termux__camera_info() -> any {
+    tx_cli_json("std::termux::camera_info", "termux-camera-info", [])
+}
+
+fn std__termux__camera_photo(camera_id: string, output_path: string) -> () {
+    tx_cli_ok("std::termux::camera_photo", "termux-camera-photo", ["-c", camera_id, output_path])
+    nil
+}
+
+// ---------------- Screen brightness -----------------------------------
+
+fn std__termux__brightness(value: int) -> () {
+    let mut brightness = value
+    if brightness < 0 {
+        brightness = 0
+    }
+    if brightness > 255 {
+        brightness = 255
+    }
+    tx_cli_ok("std::termux::brightness", "termux-brightness", [rt_int_to_str(brightness)])
+    nil
+}
+
+// ---------------- Dialog / share --------------------------------------
+
+fn std__termux__dialog(dialog_type: string, title: string) -> any {
+    tx_cli_json("std::termux::dialog", "termux-dialog", [dialog_type, "-t", title])
+}
+
+fn std__termux__share(path: string) -> () {
+    tx_cli_ok("std::termux::share", "termux-share", [path])
+    nil
+}

@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Programas de Titan SIN sistema operativo (aarch64-none): el compilador en
+# Titan escribe el LLVM IR, LLVM lo convierte en una imagen ARM64 que arranca
+# sola (MMU, puerto serie, PSCI) y se ejecuta en un procesador ARM64:
+#   CORRER=unicorn (por defecto): native/bare/correr.py (motor de QEMU);
+#   CORRER=qemu: qemu-system-aarch64 -machine virt de verdad (en CI).
+# La salida del puerto serie (stdout y stderr van al mismo) se compara byte a
+# byte con la VM de Rust (`zett run`, stdout+stderr juntos). Con unicorn se
+# compara también el código de salida (PSCI SYSTEM_OFF lo deja en x1); QEMU
+# no lo da, así que ahí solo cuenta la salida.
+#
+# Las pruebas de hardware (selfhost/tests/bare: tablas de páginas, vectores de
+# excepción, UART) no existen en la VM (tiene sistema operativo debajo): se
+# comparan con PROGRAMA.esperado (salida) y PROGRAMA.codigo (código de salida,
+# 0 si no está). Con PROGRAMA.solo-qemu la prueba necesita fallos de memoria
+# de verdad, que unicorn no entrega al programa: con unicorn se omite (y se
+# cuenta aparte).
+#
+# Uso: bash selfhost/native/bare/probar.sh [PROGRAMA.titan...]
+# Sin argumentos: las pruebas de selfhost/tests/native que no usan archivos,
+# procesos, red, reloj, azar ni entrada (sin sistema operativo no existen y
+# el runtime responde -ENOSYS, de verdad).
+set -u
+ZETT="${ZETT:-zett}"
+CORRER="${CORRER:-unicorn}"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$ROOT"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+if [ $# -gt 0 ]; then
+  FILES=("$@")
+else
+  # These host-side cases have target-specific dependencies that are exercised
+  # by no_os_apis.titan with explicit ENOSYS/no-entropy expectations below:
+  # QR save needs a filesystem, Wi-Fi needs a process/Termux API, and masked
+  # WebSocket frames need secure OS entropy. Their host behavior remains in the
+  # ordinary native/LLVM/ARM64 differential suites.
+  mapfile -t FILES < <(
+    grep -L -E "std::(fs|process|net|env|os|path|http|tcp|udp|signal|term|dirs|time|thread|random|io|args|chan|sync|datetime|crypto|gui|window|image|audio|db|sql|compress|zip|tls|dns|mobile|password|uuid|freestanding_)|go |spawn" selfhost/tests/native/*.titan \
+      | grep -v -E '/(qrcode_save|wifi_errores|ws_masked)\.titan$'
+  )
+  FILES+=(selfhost/tests/bare/*.titan)
+fi
+
+if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -path selfhost/tests -prune -o -name '*.titan' -newer selfhost/build_llvm -print | head -1)" ]; then
+  echo "compilando selfhost/build_llvm..."
+  (cd selfhost && "$ZETT" run build.titan build_llvm.titan build_llvm) || exit 1
+fi
+
+if command -v clang >/dev/null 2>&1 && command -v ld.lld >/dev/null 2>&1; then
+  compile() { clang --target=aarch64-none-elf -O2 -nostdlib -static -ffreestanding -fno-pic -fuse-ld=lld -Wl,-T,"$tmp/ll/bare.ld" "$1" -o "$2"; }
+else
+  compile() { python3 -m ziglang cc -target aarch64-freestanding-none -O2 -nostdlib -static -ffreestanding -fno-pic -Wno-override-module -Wl,-T,"$tmp/ll/bare.ld" "$1" -o "$2"; }
+fi
+if [ "$CORRER" = qemu ]; then
+  # LIMITE se ajusta por programa en el bucle; `.lento` da 30 minutos también a QEMU.
+  # Sin tarjeta de red (-nic none: la de virt pide efi-virtio.rom, que no
+  # siempre está instalado). Sin pantalla ni monitor: el puerto serie (PL011) va a stdio. (Con
+  # -nographic además de -serial stdio, QEMU se niega: stdio dos veces.)
+  run() { timeout "${LIMITE:-300}" qemu-system-aarch64 -machine virt -cpu cortex-a57 -m 1G -display none -monitor none -nic none -serial stdio -kernel "$1" < /dev/null; }
+else
+  # unicorn es mucho más lento que QEMU: los programas marcados con un
+  # archivo .lento (p. ej. archive_zip64, ~13 minutos) tienen 30 minutos.
+  run() { timeout "${LIMITE:-300}" python3 selfhost/native/bare/correr.py "$1"; }
+fi
+
+mkdir -p "$tmp/ll"
+./selfhost/build_llvm --lote-bare "$tmp/ll" "${FILES[@]}"
+
+pass=0; fail=0; unsupported=0; skipped=0
+for f in "${FILES[@]}"; do
+  base="$(basename "$f" .titan)"
+  if [ -f "${f%.titan}.solo-qemu" ] && [ "$CORRER" != qemu ]; then
+    skipped=$((skipped + 1))
+    echo "omitido (solo QEMU: fallos de memoria de verdad): $f"
+    continue
+  fi
+  if [ ! -f "$tmp/ll/$base.ll" ]; then
+    unsupported=$((unsupported + 1))
+    echo "no admitido: $f: $(head -c 300 "$tmp/ll/$base.err" 2>/dev/null | tr '\n' ' ')"
+    continue
+  fi
+  rm -f "$tmp/prog.elf"
+  if ! compile "$tmp/ll/$base.ll" "$tmp/prog.elf" > "$tmp/llvm.txt" 2>&1; then
+    fail=$((fail + 1))
+    echo "DIFERENCIA en $f: LLVM rechazó el IR: $(head -c 400 "$tmp/llvm.txt" | tr '\n' ' ')"
+    continue
+  fi
+  rm -f "$tmp/ll/$base.ll"
+  if [ -f "${f%.titan}.esperado" ]; then
+    cp "${f%.titan}.esperado" "$tmp/vm.out"
+    vm=0
+    if [ -f "${f%.titan}.codigo" ]; then vm="$(tr -d ' \n' < "${f%.titan}.codigo")"; fi
+  else
+    # Sin GITHUB_ACTIONS: si no, la VM añade a su salida la anotación
+    # "::error title=RUNTIME ERROR::…" para GitHub, que no es del programa.
+    timeout 60 env -u GITHUB_ACTIONS "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
+  fi
+  LIMITE=300
+  if [ -f "${f%.titan}.lento" ]; then LIMITE=1800; fi
+  run "$tmp/prog.elf" > "$tmp/bare.out" 2> "$tmp/bare.err"; bare=$?
+  # QEMU/Unicorn expose the PL011 as bytes, while the `.esperado` fixtures and
+  # the VM expose Titan strings. Decode as lossy UTF-8 just like the runtime:
+  # a lone UART byte such as 0xC3 is displayed as U+FFFD, not as invalid text.
+  python3 - "$tmp/bare.out" "$tmp/bare.text" <<'PY'
+from pathlib import Path
+import sys
+raw = Path(sys.argv[1]).read_bytes()
+Path(sys.argv[2]).write_bytes(raw.decode("utf-8", errors="replace").encode("utf-8"))
+PY
+  same_code=1
+  if [ "$CORRER" != qemu ] && [ "$vm" != "$bare" ]; then same_code=0; fi
+  if cmp -s "$tmp/vm.out" "$tmp/bare.text" && [ $same_code = 1 ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    echo "DIFERENCIA en $f (salida VM=$vm sin-SO=$bare):"
+    diff "$tmp/vm.out" "$tmp/bare.text" | head -8
+    head -c 300 "$tmp/bare.err"
+    # En GitHub Actions las anotaciones solo guardan una línea: la diferencia
+    # va en una sola (las 5 primeras pruebas distintas).
+    if [ -n "${GITHUB_ACTIONS:-}" ] && [ "$fail" -le 5 ]; then
+      d="$( (diff "$tmp/vm.out" "$tmp/bare.text" | head -6; head -c 200 "$tmp/bare.err") | cut -c1-160 | tr '\n' '|' )"
+      echo "::error title=sin-so $CORRER $base::VM=$vm sin-SO=$bare $d"
+    fi
+  fi
+done
+echo "programas: ${#FILES[@]}  idénticos: $pass  distintos: $fail  no admitidos: $unsupported  omitidos: $skipped"
+[ "$fail" -eq 0 ] && [ "$unsupported" -eq 0 ]

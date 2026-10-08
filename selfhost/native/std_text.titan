@@ -1,0 +1,596 @@
+// Biblioteca estándar nativa: std::text (fase 6 del self-hosting).
+// Reproduce crates/titan_vm/src/native.rs y crates/titan_stdlib/src/text.rs.
+// Forma parte del runtime (lo importa runtime.titan): puede usar std::raw.
+//
+// Constructor de strings (sb_*): un bloque con +0 longitud, +8 capacidad,
+// +16 puntero a los bytes; se van añadiendo bytes y al final se convierte en
+// un string (sb_finish), sin crear strings intermedios.
+
+fn sb_new(cap0: int) -> int {
+    let mut cap = cap0
+    if cap < 16 {
+        cap = 16
+    }
+    let b = rt_alloc(24)
+    std::raw::store(b, 0)
+    std::raw::store(b + 8, cap)
+    std::raw::store(b + 16, rt_alloc(cap))
+    b
+}
+
+fn sb_reserve(b: int, extra: int) {
+    let n = std::raw::load(b)
+    let cap = std::raw::load(b + 8)
+    if n + extra <= cap {
+        return
+    }
+    let mut bigger = cap * 2
+    while bigger < n + extra {
+        bigger = bigger * 2
+    }
+    let data = rt_alloc(bigger)
+    let old = std::raw::load(b + 16)
+    rt_copy(data, old, n)
+    rt_free_block(old)
+    std::raw::store(b + 8, bigger)
+    std::raw::store(b + 16, data)
+}
+
+fn sb_byte(b: int, x: int) {
+    sb_reserve(b, 1)
+    let n = std::raw::load(b)
+    std::raw::store8(std::raw::load(b + 16) + n, x)
+    std::raw::store(b, n + 1)
+}
+
+fn sb_raw(b: int, p: int, count: int) {
+    sb_reserve(b, count)
+    let n = std::raw::load(b)
+    rt_copy(std::raw::load(b + 16) + n, p, count)
+    std::raw::store(b, n + count)
+}
+
+fn sb_str(b: int, s: any) {
+    let p = std::raw::bits(s)
+    sb_raw(b, p + 16, std::raw::load(p + 8))
+}
+
+// Añade el carácter c en UTF-8.
+fn sb_cp(b: int, c: int) {
+    if c < 128 {
+        sb_byte(b, c)
+    } else if c < 2048 {
+        sb_byte(b, 192 + c / 64)
+        sb_byte(b, 128 + (c & 63))
+    } else if c < 65536 {
+        sb_byte(b, 224 + c / 4096)
+        sb_byte(b, 128 + ((c / 64) & 63))
+        sb_byte(b, 128 + (c & 63))
+    } else {
+        sb_byte(b, 240 + c / 262144)
+        sb_byte(b, 128 + ((c / 4096) & 63))
+        sb_byte(b, 128 + ((c / 64) & 63))
+        sb_byte(b, 128 + (c & 63))
+    }
+}
+
+fn sb_len(b: int) -> int {
+    std::raw::load(b)
+}
+
+// Convierte lo acumulado en un string (y libera el constructor).
+fn sb_finish(b: int) -> any {
+    let n = std::raw::load(b)
+    let data = std::raw::load(b + 16)
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, data, n)
+    rt_free_block(data)
+    rt_free_block(b)
+    rt_sval(p)
+}
+
+// Igual, pero como bytes (etiqueta 6, mismo formato).
+fn sb_finish_bytes(b: int) -> any {
+    let n = std::raw::load(b)
+    let data = std::raw::load(b + 16)
+    let p = rt_str_alloc(n)
+    rt_copy(p + 16, data, n)
+    rt_free_block(data)
+    rt_free_block(b)
+    std::raw::adopt(6, p)
+}
+
+// ------------------------------------------------------------ UTF-8
+
+// Código del carácter que empieza en el byte p (UTF-8 válido).
+fn tx_decode(p: int) -> int {
+    let b0 = std::raw::load8(p)
+    if b0 < 128 {
+        return b0
+    }
+    if b0 < 224 {
+        return (b0 & 31) * 64 + (std::raw::load8(p + 1) & 63)
+    }
+    if b0 < 240 {
+        return (b0 & 15) * 4096 + (std::raw::load8(p + 1) & 63) * 64 + (std::raw::load8(p + 2) & 63)
+    }
+    return (b0 & 7) * 262144 + (std::raw::load8(p + 1) & 63) * 4096 + (std::raw::load8(p + 2) & 63) * 64 + (std::raw::load8(p + 3) & 63)
+}
+
+// Inicio del carácter anterior al byte i (i > 0).
+fn tx_prev(p: int, i: int) -> int {
+    let mut j = i - 1
+    while j > 0 && (std::raw::load8(p + j) & 192) == 128 {
+        j -= 1
+    }
+    j
+}
+
+// ------------------------------------------------------------ mayúsculas
+
+// Tablas de unicode_case.titan (slots 4..9 de rt_unicode_table).
+fn tx_case_simple(slot: int, c: int) -> int {
+    let table = rt_unicode_table(slot)
+    let mut lo = 0
+    let mut hi = std::raw::load(table) / 4
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let e = table + 8 + 32 * mid
+        let start = std::raw::load(e)
+        let end = std::raw::load(e + 8)
+        if c < start {
+            hi = mid
+        } else if c > end {
+            lo = mid + 1
+        } else {
+            if (c - start) % std::raw::load(e + 16) == 0 {
+                return c + std::raw::load(e + 24) - 2000000
+            }
+            return c
+        }
+    }
+    c
+}
+
+// Posición (en la tabla) del mapeo múltiple de c, o 0.
+fn tx_case_multi(slot: int, c: int) -> int {
+    let table = rt_unicode_table(slot)
+    let mut lo = 0
+    let mut hi = std::raw::load(table) / 5
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let e = table + 8 + 40 * mid
+        let k = std::raw::load(e)
+        if c < k {
+            hi = mid
+        } else if c > k {
+            lo = mid + 1
+        } else {
+            return e
+        }
+    }
+    0
+}
+
+// Añade c en mayúsculas (upper) o minúsculas, como char::to_uppercase /
+// char::to_lowercase (puede dar varios caracteres: ß → SS).
+fn tx_push_case(b: int, c: int, upper: bool) {
+    let mut ms = 7
+    let mut ss = 6
+    if upper {
+        ms = 5
+        ss = 4
+    }
+    if c >= 128 {
+        let e = tx_case_multi(ms, c)
+        if e != 0 {
+            let n = std::raw::load(e + 8)
+            let mut k = 0
+            while k < n {
+                sb_cp(b, std::raw::load(e + 16 + 8 * k))
+                k += 1
+            }
+            return
+        }
+        sb_cp(b, tx_case_simple(ss, c))
+        return
+    }
+    if upper && c >= 97 && c <= 122 {
+        sb_byte(b, c - 32)
+    } else if !upper && c >= 65 && c <= 90 {
+        sb_byte(b, c + 32)
+    } else {
+        sb_byte(b, c)
+    }
+}
+
+fn tx_case_ignorable(c: int) -> bool {
+    rt_unicode_has(8, c)
+}
+
+// Regla de la sigma final (core::str::to_lowercase): ¿el primer carácter no
+// ignorable, yendo hacia atrás desde el byte i, tiene caso?
+fn tx_cased_before(p: int, i: int) -> bool {
+    let mut j = i
+    while j > 0 {
+        j = tx_prev(p, j)
+        let c = tx_decode(p + j)
+        if !tx_case_ignorable(c) {
+            return rt_unicode_has(9, c)
+        }
+    }
+    false
+}
+
+fn tx_cased_after(p: int, i: int, n: int) -> bool {
+    let mut j = i
+    while j < n {
+        let c = tx_decode(p + j)
+        if !tx_case_ignorable(c) {
+            return rt_unicode_has(9, c)
+        }
+        j += rt_utf8_width(std::raw::load8(p + j))
+    }
+    false
+}
+
+fn tx_change_case(s: any, upper: bool) -> any {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n + 8)
+    let mut i = 0
+    while i < n {
+        let w = rt_utf8_width(std::raw::load8(p + 16 + i))
+        let c = tx_decode(p + 16 + i)
+        if !upper && c == 931 {
+            // Σ: ς al final de palabra, σ en otro caso.
+            if tx_cased_before(p + 16, i) && !tx_cased_after(p + 16, i + w, n) {
+                sb_cp(b, 962)
+            } else {
+                sb_cp(b, 963)
+            }
+        } else {
+            tx_push_case(b, c, upper)
+        }
+        i += w
+    }
+    sb_finish(b)
+}
+
+fn std__text__uppercase(s: any) -> any {
+    rt_expect_str(s, "std::text::uppercase")
+    tx_change_case(s, true)
+}
+
+fn std__text__lowercase(s: any) -> any {
+    rt_expect_str(s, "std::text::lowercase")
+    tx_change_case(s, false)
+}
+
+fn std__text__capitalize(s: any) -> any {
+    rt_expect_str(s, "std::text::capitalize")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    if n == 0 {
+        return ""
+    }
+    let b = sb_new(n + 8)
+    let w = rt_utf8_width(std::raw::load8(p + 16))
+    tx_push_case(b, tx_decode(p + 16), true)
+    sb_raw(b, p + 16 + w, n - w)
+    sb_finish(b)
+}
+
+// ------------------------------------------------------------ el resto
+
+fn std__text__length(s: any) -> any {
+    rt_expect_str(s, "std::text::length")
+    rt_str_chars(s)
+}
+
+fn std__text__equals(a: any, b: any) -> any {
+    rt_expect_str(a, "std::text::equals")
+    rt_expect_str(b, "std::text::equals")
+    rt_str_eq(a, b)
+}
+
+fn std__text__reverse(s: any) -> any {
+    rt_expect_str(s, "std::text::reverse")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n)
+    let mut end = n
+    while end > 0 {
+        let start = tx_prev(p + 16, end)
+        sb_raw(b, p + 16 + start, end - start)
+        end = start
+    }
+    sb_finish(b)
+}
+
+fn std__text__escape_html(s: any) -> any {
+    rt_expect_str(s, "std::text::escape_html")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n + 16)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(p + 16 + i)
+        if x == 38 {
+            sb_str(b, "&amp;")
+        } else if x == 60 {
+            sb_str(b, "&lt;")
+        } else if x == 62 {
+            sb_str(b, "&gt;")
+        } else if x == 34 {
+            sb_str(b, "&quot;")
+        } else if x == 39 {
+            sb_str(b, "&#39;")
+        } else {
+            sb_byte(b, x)
+        }
+        i += 1
+    }
+    sb_finish(b)
+}
+
+// Minúsculas (carácter a carácter, sin la regla de la sigma), letras y
+// números se quedan; lo demás se convierte en un único '-' entre palabras.
+fn std__text__slugify(s: any) -> any {
+    rt_expect_str(s, "std::text::slugify")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n + 8)
+    let lower = sb_new(8)
+    let mut separator = false
+    let mut i = 0
+    while i < n {
+        let w = rt_utf8_width(std::raw::load8(p + 16 + i))
+        std::raw::store(lower, 0)
+        tx_push_case(lower, tx_decode(p + 16 + i), false)
+        let lp = std::raw::load(lower + 16)
+        let ln = std::raw::load(lower)
+        let mut j = 0
+        while j < ln {
+            let lw = rt_utf8_width(std::raw::load8(lp + j))
+            let c = tx_decode(lp + j)
+            if rt_unicode_has(1, c) {
+                if separator && sb_len(b) > 0 {
+                    sb_byte(b, 45)
+                }
+                sb_cp(b, c)
+                separator = false
+            } else {
+                separator = true
+            }
+            j += lw
+        }
+        i += w
+    }
+    rt_free_block(std::raw::load(lower + 16))
+    rt_free_block(lower)
+    sb_finish(b)
+}
+
+fn std__text__levenshtein(a: any, b: any) -> any {
+    rt_expect_str(a, "std::text::levenshtein")
+    rt_expect_str(b, "std::text::levenshtein")
+    let pb = std::raw::bits(b)
+    let nb = std::raw::load(pb + 8)
+    // Caracteres de b en un bloque (8 bytes cada uno).
+    let bc = rt_alloc(8 * nb + 8)
+    let mut m = 0
+    let mut i = 0
+    while i < nb {
+        std::raw::store(bc + 8 * m, tx_decode(pb + 16 + i))
+        m += 1
+        i += rt_utf8_width(std::raw::load8(pb + 16 + i))
+    }
+    let prev = rt_alloc(8 * m + 8)
+    let cur = rt_alloc(8 * m + 8)
+    let mut j = 0
+    while j <= m {
+        std::raw::store(prev + 8 * j, j)
+        j += 1
+    }
+    let pa = std::raw::bits(a)
+    let na = std::raw::load(pa + 8)
+    let mut row = 0
+    i = 0
+    while i < na {
+        let ac = tx_decode(pa + 16 + i)
+        row += 1
+        std::raw::store(cur, row)
+        j = 0
+        while j < m {
+            let mut cost = 1
+            if ac == std::raw::load(bc + 8 * j) {
+                cost = 0
+            }
+            let mut best = std::raw::load(prev + 8 * (j + 1)) + 1
+            let left = std::raw::load(cur + 8 * j) + 1
+            if left < best {
+                best = left
+            }
+            let diag = std::raw::load(prev + 8 * j) + cost
+            if diag < best {
+                best = diag
+            }
+            std::raw::store(cur + 8 * (j + 1), best)
+            j += 1
+        }
+        rt_copy(prev, cur, 8 * (m + 1))
+        i += rt_utf8_width(std::raw::load8(pa + 16 + i))
+    }
+    let result = std::raw::load(prev + 8 * m)
+    rt_free_block(bc)
+    rt_free_block(prev)
+    rt_free_block(cur)
+    result
+}
+
+// FNV-1a de 64 bits sobre los bytes (como checksum::fnv1a_64).
+fn tx_fnv1a(p: int, n: int) -> int {
+    let mut h = -3750763034362895579
+    let mut i = 0
+    while i < n {
+        h = std::raw::wmul(h ^ std::raw::load8(p + i), 1099511628211)
+        i += 1
+    }
+    h
+}
+
+fn std__text__hash64(s: any) -> any {
+    rt_expect_str(s, "std::text::hash64")
+    let p = std::raw::bits(s)
+    tx_fnv1a(p + 16, std::raw::load(p + 8))
+}
+
+// Como str::replace: de izquierda a derecha, sin solaparse; con `from` vacío
+// pone `to` al principio, entre cada carácter y al final.
+fn std__text__replace(s: any, from: any, to: any) -> any {
+    rt_expect_str(s, "std::text::replace")
+    rt_expect_str(from, "std::text::replace")
+    rt_expect_str(to, "std::text::replace")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let pf = std::raw::bits(from)
+    let nf = std::raw::load(pf + 8)
+    let b = sb_new(n + 16)
+    let mut i = 0
+    if nf == 0 {
+        sb_str(b, to)
+        while i < n {
+            let w = rt_utf8_width(std::raw::load8(p + 16 + i))
+            sb_raw(b, p + 16 + i, w)
+            sb_str(b, to)
+            i += w
+        }
+        return sb_finish(b)
+    }
+    let mut last = 0
+    while i + nf <= n {
+        if rt_bytes_at(s, i, from) {
+            sb_raw(b, p + 16 + last, i - last)
+            sb_str(b, to)
+            i += nf
+            last = i
+        } else {
+            i += 1
+        }
+    }
+    sb_raw(b, p + 16 + last, n - last)
+    sb_finish(b)
+}
+
+fn std__text__truncate(s: any, max: any, suffix: any) -> any {
+    rt_expect_str(s, "std::text::truncate")
+    rt_expect_int(max, "std::text::truncate")
+    let m = std::raw::bits(max)
+    if m < 0 {
+        rt_native_fail("std::text::truncate", "expected nonnegative integer")
+    }
+    rt_expect_str(suffix, "std::text::truncate")
+    let count = rt_str_chars(s)
+    if count <= m {
+        return s
+    }
+    if m == 0 {
+        return ""
+    }
+    let sl = rt_str_chars(suffix)
+    if sl >= m {
+        return std__text__substring(suffix, 0, m)
+    }
+    rt_concat(std__text__substring(s, 0, m - sl), suffix)
+}
+
+// Como `text.trim().parse::<i64>()`: [+-]?dígitos, None si no cabe.
+fn std__text__parse_int(s: any) -> any {
+    rt_expect_str(s, "std::text::parse_int")
+    let t = std__text__trim(s)
+    let p = std::raw::bits(t)
+    let n = std::raw::load(p + 8)
+    let mut i = 0
+    let mut negative = false
+    if n > 0 && (std::raw::load8(p + 16) == 43 || std::raw::load8(p + 16) == 45) {
+        negative = std::raw::load8(p + 16) == 45
+        i = 1
+    }
+    if i >= n {
+        return Option::None
+    }
+    // Se acumula en negativo para que i64::MIN quepa.
+    let mut v = 0
+    while i < n {
+        let d = std::raw::load8(p + 16 + i) - 48
+        if d < 0 || d > 9 {
+            return Option::None
+        }
+        if v < (-9223372036854775807 - 1 + d) / 10 {
+            return Option::None
+        }
+        v = v * 10 - d
+        i += 1
+    }
+    if !negative {
+        if v == -9223372036854775807 - 1 {
+            return Option::None
+        }
+        v = 0 - v
+    }
+    Option::Some(v)
+}
+
+// Como split_whitespace: trozos separados por espacios Unicode.
+fn std__text__words(s: any) -> any {
+    rt_expect_str(s, "std::text::words")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut out = []
+    let mut start = -1
+    let mut i = 0
+    while i < n {
+        let w = rt_utf8_width(std::raw::load8(p + 16 + i))
+        let space = rt_unicode_has(3, tx_decode(p + 16 + i))
+        if space {
+            if start >= 0 {
+                out = std::array::push(out, rt_substr_bytes(s, start, i))
+                start = -1
+            }
+        } else if start < 0 {
+            start = i
+        }
+        i += w
+    }
+    if start >= 0 {
+        out = std::array::push(out, rt_substr_bytes(s, start, n))
+    }
+    out
+}
+
+// Como str::lines: corta en '\n', quita un '\r' justo antes del '\n' y no
+// hay línea vacía al final si el texto acaba en '\n'.
+fn std__text__lines(s: any) -> any {
+    rt_expect_str(s, "std::text::lines")
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut out = []
+    let mut start = 0
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + 16 + i) == 10 {
+            let mut end = i
+            if end > start && std::raw::load8(p + 15 + end) == 13 {
+                end -= 1
+            }
+            out = std::array::push(out, rt_substr_bytes(s, start, end))
+            start = i + 1
+        }
+        i += 1
+    }
+    if start < n {
+        out = std::array::push(out, rt_substr_bytes(s, start, n))
+    }
+    out
+}

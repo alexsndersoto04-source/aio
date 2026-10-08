@@ -1,0 +1,1742 @@
+// Compilación de HIR a NFA de Thompson, escrita en Titan: regex-automata
+// 0.4.15 (nfa/thompson/compiler.rs, builder.rs, map.rs, literal_trie.rs) y
+// regex-syntax 0.8.11 (utf8.rs), con la configuración que usa regex 1.13.0
+// (meta::Regex): límite de 10 MiB, captures All en el NFA directo, sin
+// captures en el inverso, shrink(false) y prefijo no anclado.
+//
+// La memoria se cuenta igual que builder.rs en x86_64:
+//   estados * size_of::<State>() (32) + transiciones dispersas (8 bytes)
+//   + alternativas de Union (4 bytes).
+// Como sólo crece, el error "Compiled regex exceeds size limit" depende sólo
+// del total; los identificadores de estado se reproducen igualmente porque
+// entran en los hash de Utf8BoundedMap (y sus colisiones cambian el NFA).
+//
+// También está la decisión previa de meta/strategy.rs: si el patrón se
+// reduce a una búsqueda de literales (Pre::from_prefixes o
+// Pre::from_alternation_literals) no se construye ningún NFA, así que no
+// puede fallar por tamaño. Para eso se porta el extractor de prefijos de
+// regex-syntax (hir/literal.rs) con optimize_for_prefix_by_preference.
+
+// ------------------------------------------------------------ constructor
+//
+// N: +8 estados (vector, 4 palabras por estado: tipo, x, y, z), +16 memoria
+// de estados (memory_states), +24 1 = se pasó del límite, +32 1 = inverso,
+// +40 transiciones de los estados dispersos (tríos inicio, fin, siguiente),
+// +48 Utf8BoundedMap, +56 Utf8SuffixMap, +64 fin del último fragmento,
+// +72 registro (analizador), +80 nodos sin compilar de Utf8Compiler,
+// +88 destino de Utf8Compiler, +96 inicio anclado, +104 inicio no anclado,
+// +112 1 = con límite de tamaño, +120 nombres de grupos (tríos índice,
+// inicio y fin del nombre en el patrón), +128 cantidad de grupos.
+//
+// Estados: 1 Empty (x siguiente), 2 ByteRange (x inicio, y fin, z
+// siguiente), 3 Sparse (x posición en +40, y cantidad), 4 Look (x bit, y
+// siguiente), 5 CaptureStart / 6 CaptureEnd (x grupo, y siguiente),
+// 7 Union / 8 UnionReverse (x vector de alternativas), 9 Fail, 10 Match.
+
+fn rn_new(p: int, reverse: bool, limit: bool) -> int {
+    let n = rp_node(p, 0, 17)
+    if limit {
+        std::raw::store(n + 112, 1)
+    }
+    std::raw::store(n + 120, rp_vec(p))
+    std::raw::store(n + 8, rp_vec(p))
+    if reverse {
+        std::raw::store(n + 32, 1)
+    }
+    std::raw::store(n + 40, rp_vec(p))
+    std::raw::store(n + 48, rn_map_new(p, 10000, 2))
+    std::raw::store(n + 56, rn_map_new(p, 1000, 5))
+    std::raw::store(n + 72, p)
+    std::raw::store(n + 80, iv_new(8))
+    n
+}
+
+fn rn_free(n: int) {
+    let u = std::raw::load(n + 80)
+    let mut i = 0
+    while i < iv_len(u) {
+        let node = iv_get(u, i)
+        iv_free(std::raw::load(node))
+        rt_free_block(node)
+        i += 1
+    }
+    iv_free(u)
+}
+
+fn rn_rev(n: int) -> bool {
+    std::raw::load(n + 32) == 1
+}
+
+fn rn_bad(n: int) -> bool {
+    std::raw::load(n + 24) != 0
+}
+
+fn rn_count(n: int) -> int {
+    iv_len(std::raw::load(n + 8)) / 4
+}
+
+fn rn_kind(n: int, s: int) -> int {
+    iv_get(std::raw::load(n + 8), 4 * s)
+}
+
+fn rn_field(n: int, s: int, k: int) -> int {
+    iv_get(std::raw::load(n + 8), 4 * s + k)
+}
+
+fn rn_set_field(n: int, s: int, k: int, v: int) {
+    iv_set(std::raw::load(n + 8), 4 * s + k, v)
+}
+
+fn rn_check(n: int) {
+    if std::raw::load(n + 112) == 1 && rn_count(n) * 32 + std::raw::load(n + 16) > 10485760 {
+        std::raw::store(n + 24, 1)
+    }
+}
+
+fn rn_add(n: int, kind: int, x: int, y: int, z: int, mem: int) -> int {
+    let st = std::raw::load(n + 8)
+    let id = iv_len(st) / 4
+    iv_push(st, kind)
+    iv_push(st, x)
+    iv_push(st, y)
+    iv_push(st, z)
+    std::raw::store(n + 16, std::raw::load(n + 16) + mem)
+    rn_check(n)
+    id
+}
+
+fn rn_patch(n: int, from: int, to: int) {
+    let k = rn_kind(n, from)
+    if k == 1 {
+        rn_set_field(n, from, 1, to)
+    } else if k == 2 {
+        rn_set_field(n, from, 3, to)
+    } else if k == 4 || k == 5 || k == 6 {
+        rn_set_field(n, from, 2, to)
+    } else if k == 7 || k == 8 {
+        iv_push(rn_field(n, from, 1), to)
+        std::raw::store(n + 16, std::raw::load(n + 16) + 4)
+        rn_check(n)
+    }
+}
+
+fn rn_add_empty(n: int) -> int {
+    rn_add(n, 1, 0, 0, 0, 0)
+}
+
+fn rn_add_range(n: int, s: int, e: int, next: int) -> int {
+    rn_add(n, 2, s, e, next, 0)
+}
+
+// Estado disperso con los tríos de v (se copian).
+fn rn_add_sparse(n: int, v: int) -> int {
+    let pool = std::raw::load(n + 40)
+    let off = iv_len(pool) / 3
+    let mut i = 0
+    while i < iv_len(v) {
+        iv_push(pool, iv_get(v, i))
+        i += 1
+    }
+    let cnt = iv_len(v) / 3
+    rn_add(n, 3, off, cnt, 0, 8 * cnt)
+}
+
+fn rn_add_union(n: int, greedy: bool) -> int {
+    let v = rp_vec(std::raw::load(n + 72))
+    if greedy {
+        return rn_add(n, 7, v, 0, 0, 0)
+    }
+    rn_add(n, 8, v, 0, 0, 0)
+}
+
+// ------------------------------------------------------------ mapas acotados
+//
+// Utf8BoundedMap (capacidad 10000, entrada: versión, estado disperso cuyo
+// contenido es la clave; -1 = entrada por defecto con clave vacía) y
+// Utf8SuffixMap (capacidad 1000, entrada: versión, from, start, end, val).
+// M: +0 versión, +8 entradas, +16 capacidad, +24 palabras por entrada,
+// +32 1 = ya reservado.
+
+fn rn_map_new(p: int, cap: int, words: int) -> int {
+    let m = rp_node(p, 0, 5)
+    std::raw::store(m + 8, rp_vec(p))
+    std::raw::store(m + 16, cap)
+    std::raw::store(m + 24, words)
+    m
+}
+
+fn rn_map_reset(m: int) {
+    let v = std::raw::load(m + 8)
+    let words = std::raw::load(m + 24)
+    let total = std::raw::load(m + 16) * words
+    // Reserva de una vez y rellena directamente.
+    if std::raw::load(v + 8) < total {
+        rt_free_block(std::raw::load(v + 16))
+        std::raw::store(v + 16, rt_alloc(8 * total))
+        std::raw::store(v + 8, total)
+    }
+    std::raw::store(v, total)
+    let d = std::raw::load(v + 16)
+    let mut i = 0
+    if words == 2 {
+        while i < total {
+            std::raw::store(d + 8 * i, 0)
+            std::raw::store(d + 8 * i + 8, -1)
+            i += 2
+        }
+    } else {
+        while i < total {
+            std::raw::store(d + 8 * i, 0)
+            i += 1
+        }
+    }
+}
+
+fn rn_map_clear(m: int) {
+    if std::raw::load(m + 32) == 0 {
+        rn_map_reset(m)
+        std::raw::store(m + 32, 1)
+        return
+    }
+    let ver = (std::raw::load(m) + 1) % 65536
+    std::raw::store(m, ver)
+    if ver == 0 {
+        rn_map_reset(m)
+    }
+}
+
+// h mod m con h como u64.
+fn rn_umod(h: int, m: int) -> int {
+    if h >= 0 {
+        return h % m
+    }
+    let q = std::raw::shr(h, 1)
+    return ((q % m) * 2 + (h & 1)) % m
+}
+
+fn rn_fnv(h: int, x: int) -> int {
+    std::raw::wmul(h ^ x, 1099511628211)
+}
+
+fn rn_fnv_init() -> int {
+    -3750763034362895579
+}
+
+fn rn_u8_hash(v: int) -> int {
+    let mut h = rn_fnv_init()
+    let mut i = 0
+    while i < iv_len(v) {
+        h = rn_fnv(h, iv_get(v, i))
+        i += 1
+    }
+    rn_umod(h, 10000)
+}
+
+// ¿Las transiciones de v son las del estado disperso s?
+fn rn_sparse_eq(n: int, s: int, v: int) -> bool {
+    if s < 0 {
+        return iv_len(v) == 0
+    }
+    let cnt = rn_field(n, s, 2)
+    if cnt * 3 != iv_len(v) {
+        return false
+    }
+    let pool = std::raw::load(n + 40)
+    let off = 3 * rn_field(n, s, 1)
+    let mut i = 0
+    while i < iv_len(v) {
+        if iv_get(pool, off + i) != iv_get(v, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ------------------------------------------------------------ compilador
+//
+// Cada función devuelve el estado inicial del fragmento y deja el final en
+// N+64 (ThompsonRef).
+
+fn nc_ref(n: int, s: int, e: int) -> int {
+    std::raw::store(n + 64, e)
+    s
+}
+
+fn nc_end(n: int) -> int {
+    std::raw::load(n + 64)
+}
+
+fn nc_empty(n: int) -> int {
+    let id = rn_add_empty(n)
+    nc_ref(n, id, id)
+}
+
+fn nc_fail(n: int) -> int {
+    let id = rn_add(n, 9, 0, 0, 0, 0)
+    nc_ref(n, id, id)
+}
+
+fn nc_range(n: int, s: int, e: int) -> int {
+    let id = rn_add_range(n, s, e, 0)
+    nc_ref(n, id, id)
+}
+
+fn nc_look_rev(bit: int) -> int {
+    if bit == 1 || bit == 4 || bit == 16 || bit == 1024 || bit == 4096 || bit == 16384 || bit == 65536 {
+        return bit * 2
+    }
+    if bit == 2 || bit == 8 || bit == 32 || bit == 2048 || bit == 8192 || bit == 32768 || bit == 131072 {
+        return bit / 2
+    }
+    bit
+}
+
+fn nc_look(n: int, bit: int) -> int {
+    let mut b = bit
+    if rn_rev(n) {
+        b = nc_look_rev(bit)
+    }
+    let id = rn_add(n, 4, b, 0, 0, 0)
+    nc_ref(n, id, id)
+}
+
+fn nc_c(n: int, h: int) -> int {
+    if rn_bad(n) {
+        return nc_ref(n, 0, 0)
+    }
+    let k = rh_kind(h)
+    if k == 1 {
+        return nc_empty(n)
+    }
+    if k == 2 {
+        return nc_literal(n, std::raw::load(h + 104))
+    }
+    if k == 3 {
+        let c = std::raw::load(h + 104)
+        if std::raw::load(c + 16) == 1 {
+            return nc_unicode_class(n, c)
+        }
+        return nc_byte_class(n, c)
+    }
+    if k == 4 {
+        return nc_look(n, std::raw::load(h + 104))
+    }
+    if k == 5 {
+        return nc_repetition(n, h)
+    }
+    if k == 6 {
+        return nc_cap(n, std::raw::load(h + 104), std::raw::load(h + 112), std::raw::load(h + 120), std::raw::load(h + 128))
+    }
+    if k == 7 {
+        return nc_concat(n, rh_subs(h))
+    }
+    nc_alt_slice(n, rh_subs(h))
+}
+
+fn nc_concat(n: int, v: int) -> int {
+    let cnt = iv_len(v)
+    if cnt == 0 {
+        return nc_empty(n)
+    }
+    let rev = rn_rev(n)
+    let mut i = 0
+    if rev {
+        i = cnt - 1
+    }
+    let start = nc_c(n, iv_get(v, i))
+    let mut end = nc_end(n)
+    let mut k = 1
+    while k < cnt && !rn_bad(n) {
+        if rev {
+            i -= 1
+        } else {
+            i += 1
+        }
+        let s = nc_c(n, iv_get(v, i))
+        let e = nc_end(n)
+        rn_patch(n, end, s)
+        end = e
+        k += 1
+    }
+    nc_ref(n, start, end)
+}
+
+fn nc_exactly(n: int, h: int, cnt: int) -> int {
+    if cnt == 0 {
+        return nc_empty(n)
+    }
+    let start = nc_c(n, h)
+    let mut end = nc_end(n)
+    let mut k = 1
+    while k < cnt && !rn_bad(n) {
+        let s = nc_c(n, h)
+        let e = nc_end(n)
+        rn_patch(n, end, s)
+        end = e
+        k += 1
+    }
+    nc_ref(n, start, end)
+}
+
+fn nc_literal(n: int, bytes: int) -> int {
+    let cnt = iv_len(bytes)
+    if cnt == 0 {
+        return nc_empty(n)
+    }
+    let rev = rn_rev(n)
+    let mut i = 0
+    if rev {
+        i = cnt - 1
+    }
+    let start = rn_add_range(n, iv_get(bytes, i), iv_get(bytes, i), 0)
+    let mut end = start
+    let mut k = 1
+    while k < cnt && !rn_bad(n) {
+        if rev {
+            i -= 1
+        } else {
+            i += 1
+        }
+        let s = rn_add_range(n, iv_get(bytes, i), iv_get(bytes, i), 0)
+        rn_patch(n, end, s)
+        end = s
+        k += 1
+    }
+    nc_ref(n, start, end)
+}
+
+fn nc_alt_list(n: int, v: int) -> int {
+    let cnt = iv_len(v)
+    if cnt == 0 {
+        return nc_fail(n)
+    }
+    let s1 = nc_c(n, iv_get(v, 0))
+    let e1 = nc_end(n)
+    if cnt == 1 {
+        return nc_ref(n, s1, e1)
+    }
+    let s2 = nc_c(n, iv_get(v, 1))
+    let e2 = nc_end(n)
+    let u = rn_add_union(n, true)
+    let en = rn_add_empty(n)
+    rn_patch(n, u, s1)
+    rn_patch(n, e1, en)
+    rn_patch(n, u, s2)
+    rn_patch(n, e2, en)
+    let mut i = 2
+    while i < cnt && !rn_bad(n) {
+        let s = nc_c(n, iv_get(v, i))
+        let e = nc_end(n)
+        rn_patch(n, u, s)
+        rn_patch(n, e, en)
+        i += 1
+    }
+    nc_ref(n, u, en)
+}
+
+fn nc_alt_slice(n: int, v: int) -> int {
+    let mut lits = 0
+    let mut i = 0
+    while i < iv_len(v) {
+        if rh_kind(iv_get(v, i)) == 2 {
+            lits += 1
+        }
+        i += 1
+    }
+    if lits <= 1 || lits < iv_len(v) {
+        return nc_alt_list(n, v)
+    }
+    nc_trie(n, v)
+}
+
+fn nc_cap(n: int, index: int, n0: int, n1: int, sub: int) -> int {
+    if rn_rev(n) {
+        return nc_c(n, sub)
+    }
+    if index + 1 > std::raw::load(n + 128) {
+        std::raw::store(n + 128, index + 1)
+    }
+    if n0 >= 0 {
+        let names = std::raw::load(n + 120)
+        iv_push(names, index)
+        iv_push(names, n0)
+        iv_push(names, n1)
+    }
+    let start = rn_add(n, 5, index, 0, 0, 0)
+    let s = nc_c(n, sub)
+    let e = nc_end(n)
+    let en = rn_add(n, 6, index, 0, 0, 0)
+    rn_patch(n, start, s)
+    rn_patch(n, e, en)
+    nc_ref(n, start, en)
+}
+
+fn nc_repetition(n: int, h: int) -> int {
+    let mn = std::raw::load(h + 104)
+    let mx = std::raw::load(h + 112)
+    let greedy = std::raw::load(h + 120) == 1
+    let sub = std::raw::load(h + 128)
+    if mn == 0 && mx == 1 {
+        return nc_zero_or_one(n, sub, greedy)
+    }
+    if mx < 0 {
+        return nc_at_least(n, sub, greedy, mn)
+    }
+    if mn == mx {
+        return nc_exactly(n, sub, mn)
+    }
+    nc_bounded(n, sub, greedy, mn, mx)
+}
+
+fn nc_bounded(n: int, h: int, greedy: bool, mn: int, mx: int) -> int {
+    let ps = nc_exactly(n, h, mn)
+    let pe = nc_end(n)
+    if mn == mx {
+        return nc_ref(n, ps, pe)
+    }
+    let empty = rn_add_empty(n)
+    let mut prev = pe
+    let mut i = mn
+    while i < mx && !rn_bad(n) {
+        let u = rn_add_union(n, greedy)
+        let s = nc_c(n, h)
+        let e = nc_end(n)
+        rn_patch(n, prev, u)
+        rn_patch(n, u, s)
+        rn_patch(n, u, empty)
+        prev = e
+        i += 1
+    }
+    rn_patch(n, prev, empty)
+    nc_ref(n, ps, empty)
+}
+
+fn nc_at_least(n: int, h: int, greedy: bool, k: int) -> int {
+    if k == 0 {
+        if rh_min(h) > 0 {
+            let u = rn_add_union(n, greedy)
+            let s = nc_c(n, h)
+            let e = nc_end(n)
+            rn_patch(n, u, s)
+            rn_patch(n, e, u)
+            return nc_ref(n, u, u)
+        }
+        let s = nc_c(n, h)
+        let e = nc_end(n)
+        let plus = rn_add_union(n, greedy)
+        rn_patch(n, e, plus)
+        rn_patch(n, plus, s)
+        let question = rn_add_union(n, greedy)
+        let empty = rn_add_empty(n)
+        rn_patch(n, question, s)
+        rn_patch(n, question, empty)
+        rn_patch(n, plus, empty)
+        return nc_ref(n, question, empty)
+    }
+    if k == 1 {
+        let s = nc_c(n, h)
+        let e = nc_end(n)
+        let u = rn_add_union(n, greedy)
+        rn_patch(n, e, u)
+        rn_patch(n, u, s)
+        return nc_ref(n, s, u)
+    }
+    let ps = nc_exactly(n, h, k - 1)
+    let pe = nc_end(n)
+    let ls = nc_c(n, h)
+    let le = nc_end(n)
+    let u = rn_add_union(n, greedy)
+    rn_patch(n, pe, ls)
+    rn_patch(n, le, u)
+    rn_patch(n, u, ls)
+    nc_ref(n, ps, u)
+}
+
+fn nc_zero_or_one(n: int, h: int, greedy: bool) -> int {
+    let u = rn_add_union(n, greedy)
+    let s = nc_c(n, h)
+    let e = nc_end(n)
+    let empty = rn_add_empty(n)
+    rn_patch(n, u, s)
+    rn_patch(n, u, empty)
+    rn_patch(n, e, empty)
+    nc_ref(n, u, empty)
+}
+
+fn nc_byte_class(n: int, c: int) -> int {
+    let end = rn_add_empty(n)
+    let v = iv_new(8)
+    let mut i = 0
+    while i < rc_n(c) {
+        iv_push(v, rc_lo(c, i))
+        iv_push(v, rc_hi(c, i))
+        iv_push(v, end)
+        i += 1
+    }
+    let start = rn_add_sparse(n, v)
+    iv_free(v)
+    nc_ref(n, start, end)
+}
+
+fn nc_unicode_class(n: int, c: int) -> int {
+    let cnt = rc_n(c)
+    if cnt == 0 || rc_hi(c, cnt - 1) <= 127 {
+        return nc_byte_class(n, c)
+    }
+    if rn_rev(n) {
+        return nc_class_reverse(n, c)
+    }
+    nc_u8c_new(n)
+    let seqs = nc_class_seqs(n, c)
+    let mut j = 0
+    while j < iv_len(seqs) && !rn_bad(n) {
+        let len = iv_get(seqs, j)
+        nc_u8c_add(n, seqs, j + 1, len)
+        j += 1 + 2 * len
+    }
+    nc_u8c_finish(n)
+}
+
+// c_unicode_class_reverse_with_suffix.
+fn nc_class_reverse(n: int, c: int) -> int {
+    let m = std::raw::load(n + 56)
+    rn_map_clear(m)
+    let u = rn_add_union(n, true)
+    let alt_end = rn_add_empty(n)
+    let seqs = nc_class_seqs(n, c)
+    let mut j = 0
+    while j < iv_len(seqs) && !rn_bad(n) {
+            let len = iv_get(seqs, j)
+            let mut end = alt_end
+            let mut k = 0
+            while k < len {
+                let bs = iv_get(seqs, j + 1 + 2 * k)
+                let be = iv_get(seqs, j + 2 + 2 * k)
+                let hash = rn_umod(rn_fnv(rn_fnv(rn_fnv(rn_fnv_init(), end), bs), be), 1000)
+                let ev = std::raw::load(m + 8)
+                let at = 5 * hash
+                if iv_get(ev, at) == std::raw::load(m) && iv_get(ev, at + 1) == end && iv_get(ev, at + 2) == bs && iv_get(ev, at + 3) == be {
+                    end = iv_get(ev, at + 4)
+                } else {
+                    let s = rn_add_range(n, bs, be, 0)
+                    rn_patch(n, s, end)
+                    iv_set(ev, at, std::raw::load(m))
+                    iv_set(ev, at + 1, end)
+                    iv_set(ev, at + 2, bs)
+                    iv_set(ev, at + 3, be)
+                    iv_set(ev, at + 4, s)
+                    end = s
+                }
+                k += 1
+            }
+            rn_patch(n, u, end)
+            j += 1 + 2 * len
+    }
+    nc_ref(n, u, alt_end)
+}
+
+// Secuencias UTF-8 de todos los rangos de la clase c, calculadas una sola
+// vez (se guardan en c+24; dependen sólo de los rangos).
+fn nc_class_seqs(n: int, c: int) -> int {
+    let cached = std::raw::load(c + 24)
+    if cached != 0 {
+        return cached
+    }
+    let seqs = rp_vec(std::raw::load(n + 72))
+    let mut i = 0
+    while i < rc_n(c) {
+        nc_utf8_seqs(rc_lo(c, i), rc_hi(c, i), seqs)
+        i += 1
+    }
+    std::raw::store(c + 24, seqs)
+    seqs
+}
+
+// ------------------------------------------------------------ Utf8Sequences
+//
+// Añade a out las secuencias UTF-8 del rango [s, e] de caracteres, cada una
+// como [cantidad, inicio1, fin1, inicio2, fin2, ...].
+
+fn nc_utf8_max(i: int) -> int {
+    if i == 1 {
+        return 127
+    }
+    if i == 2 {
+        return 2047
+    }
+    if i == 3 {
+        return 65535
+    }
+    1114111
+}
+
+fn nc_utf8_len(c: int) -> int {
+    if c < 128 {
+        return 1
+    }
+    if c < 2048 {
+        return 2
+    }
+    if c < 65536 {
+        return 3
+    }
+    4
+}
+
+// Byte k (0..) de la codificación UTF-8 de c.
+fn nc_utf8_byte(c: int, k: int) -> int {
+    let len = nc_utf8_len(c)
+    if len == 1 {
+        return c
+    }
+    if k == 0 {
+        if len == 2 {
+            return 192 + std::raw::shr(c, 6)
+        }
+        if len == 3 {
+            return 224 + std::raw::shr(c, 12)
+        }
+        return 240 + std::raw::shr(c, 18)
+    }
+    let sh = 6 * (len - 1 - k)
+    128 + (std::raw::shr(c, sh) & 63)
+}
+
+fn nc_utf8_seqs(s0: int, e0: int, out: int) {
+    let st = iv_new(8)
+    iv_push(st, s0)
+    iv_push(st, e0)
+    while iv_len(st) > 0 {
+        let top = iv_len(st)
+        let mut rs = iv_get(st, top - 2)
+        let mut re = iv_get(st, top - 1)
+        iv_trunc(st, top - 2)
+        let mut seguir = true
+        while seguir {
+            if rs < 57344 && re > 55295 {
+                iv_push(st, 57344)
+                iv_push(st, re)
+                re = 55295
+                continue
+            }
+            if rs > re {
+                seguir = false
+                continue
+            }
+            let mut split = false
+            let mut i = 1
+            while i < 4 && !split {
+                let mx = nc_utf8_max(i)
+                if rs <= mx && mx < re {
+                    iv_push(st, mx + 1)
+                    iv_push(st, re)
+                    re = mx
+                    split = true
+                }
+                i += 1
+            }
+            if split {
+                continue
+            }
+            if re <= 127 {
+                iv_push(out, 1)
+                iv_push(out, rs)
+                iv_push(out, re)
+                seguir = false
+                continue
+            }
+            i = 1
+            let mut m = 63
+            while i < 4 && !split {
+                if rs - (rs & m) != re - (re & m) {
+                    if (rs & m) != 0 {
+                        iv_push(st, (rs | m) + 1)
+                        iv_push(st, re)
+                        re = rs | m
+                        split = true
+                    } else if (re & m) != m {
+                        iv_push(st, re - (re & m))
+                        iv_push(st, re)
+                        re = re - (re & m) - 1
+                        split = true
+                    }
+                }
+                m = m * 64 + 63
+                i += 1
+            }
+            if split {
+                continue
+            }
+            let len = nc_utf8_len(rs)
+            iv_push(out, len)
+            let mut k = 0
+            while k < len {
+                iv_push(out, nc_utf8_byte(rs, k))
+                iv_push(out, nc_utf8_byte(re, k))
+                k += 1
+            }
+            seguir = false
+        }
+    }
+    iv_free(st)
+}
+
+// ------------------------------------------------------------ Utf8Compiler
+//
+// Nodo sin compilar: +0 transiciones (tríos), +8 1 = tiene última
+// transición, +16/+24 su rango.
+
+fn nc_node_new(has: int, s: int, e: int) -> int {
+    let node = rt_alloc(32)
+    std::raw::store(node, iv_new(4))
+    std::raw::store(node + 8, has)
+    std::raw::store(node + 16, s)
+    std::raw::store(node + 24, e)
+    node
+}
+
+fn nc_u8c_new(n: int) {
+    std::raw::store(n + 88, rn_add_empty(n))
+    rn_map_clear(std::raw::load(n + 48))
+    let u = std::raw::load(n + 80)
+    let mut i = 0
+    while i < iv_len(u) {
+        let node = iv_get(u, i)
+        iv_free(std::raw::load(node))
+        rt_free_block(node)
+        i += 1
+    }
+    iv_trunc(u, 0)
+    iv_push(u, nc_node_new(0, 0, 0))
+}
+
+fn nc_set_last(node: int, next: int) {
+    if std::raw::load(node + 8) == 1 {
+        let t = std::raw::load(node)
+        iv_push(t, std::raw::load(node + 16))
+        iv_push(t, std::raw::load(node + 24))
+        iv_push(t, next)
+        std::raw::store(node + 8, 0)
+    }
+}
+
+// Saca el último nodo, fija su última transición y devuelve sus
+// transiciones (el vector pasa al llamador).
+fn nc_pop_freeze(n: int, next: int) -> int {
+    let u = std::raw::load(n + 80)
+    let node = iv_get(u, iv_len(u) - 1)
+    iv_trunc(u, iv_len(u) - 1)
+    nc_set_last(node, next)
+    let t = std::raw::load(node)
+    rt_free_block(node)
+    t
+}
+
+// Compila (o reutiliza) el nodo con transiciones t; libera t.
+fn nc_u8c_compile(n: int, t: int) -> int {
+    let m = std::raw::load(n + 48)
+    let hash = rn_u8_hash(t)
+    let ev = std::raw::load(m + 8)
+    if iv_get(ev, 2 * hash) == std::raw::load(m) && rn_sparse_eq(n, iv_get(ev, 2 * hash + 1), t) {
+        iv_free(t)
+        return iv_get(ev, 2 * hash + 1)
+    }
+    let id = rn_add_sparse(n, t)
+    iv_set(ev, 2 * hash, std::raw::load(m))
+    iv_set(ev, 2 * hash + 1, id)
+    iv_free(t)
+    id
+}
+
+fn nc_u8c_compile_from(n: int, from: int) {
+    let u = std::raw::load(n + 80)
+    let mut next = std::raw::load(n + 88)
+    while from + 1 < iv_len(u) {
+        let t = nc_pop_freeze(n, next)
+        next = nc_u8c_compile(n, t)
+    }
+    nc_set_last(iv_get(u, iv_len(u) - 1), next)
+}
+
+fn nc_u8c_add(n: int, seqs: int, off: int, len: int) {
+    let u = std::raw::load(n + 80)
+    let mut pre = 0
+    let mut seguir = true
+    while seguir && pre < len && pre < iv_len(u) {
+        let node = iv_get(u, pre)
+        if std::raw::load(node + 8) == 1 && std::raw::load(node + 16) == iv_get(seqs, off + 2 * pre) && std::raw::load(node + 24) == iv_get(seqs, off + 2 * pre + 1) {
+            pre += 1
+        } else {
+            seguir = false
+            pre = pre
+        }
+    }
+    nc_u8c_compile_from(n, pre)
+    let last = iv_get(u, iv_len(u) - 1)
+    std::raw::store(last + 8, 1)
+    std::raw::store(last + 16, iv_get(seqs, off + 2 * pre))
+    std::raw::store(last + 24, iv_get(seqs, off + 2 * pre + 1))
+    let mut k = pre + 1
+    while k < len {
+        iv_push(u, nc_node_new(1, iv_get(seqs, off + 2 * k), iv_get(seqs, off + 2 * k + 1)))
+        k += 1
+    }
+}
+
+fn nc_u8c_finish(n: int) -> int {
+    nc_u8c_compile_from(n, 0)
+    let u = std::raw::load(n + 80)
+    let node = iv_get(u, 0)
+    iv_trunc(u, 0)
+    let t = std::raw::load(node)
+    rt_free_block(node)
+    let start = nc_u8c_compile(n, t)
+    nc_ref(n, start, std::raw::load(n + 88))
+}
+
+// ------------------------------------------------------------ LiteralTrie
+//
+// Estado del trie: +0 transiciones (pares byte, siguiente, ordenadas por
+// byte dentro de cada trozo), +8 trozos (pares inicio, fin).
+
+fn nc_trie_state() -> int {
+    let s = rt_alloc(16)
+    std::raw::store(s, iv_new(4))
+    std::raw::store(s + 8, iv_new(2))
+    s
+}
+
+fn nc_trie_active(s: int) -> int {
+    let ch = std::raw::load(s + 8)
+    if iv_len(ch) == 0 {
+        return 0
+    }
+    iv_get(ch, iv_len(ch) - 1)
+}
+
+fn nc_trie_step(states: int, from: int, b: int) -> int {
+    let s = iv_get(states, from)
+    let t = std::raw::load(s)
+    let a = nc_trie_active(s)
+    let mut lo = a
+    let mut hi = iv_len(t) / 2
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let x = iv_get(t, 2 * mid)
+        if x == b {
+            return iv_get(t, 2 * mid + 1)
+        }
+        if x < b {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    let next = iv_len(states)
+    iv_push(states, nc_trie_state())
+    iv_insert(t, 2 * lo, b)
+    iv_insert(t, 2 * lo + 1, next)
+    next
+}
+
+fn nc_trie_add_match(s: int) {
+    let t = std::raw::load(s)
+    let ch = std::raw::load(s + 8)
+    if iv_len(t) == 0 && iv_len(ch) > 0 {
+        return
+    }
+    iv_push(ch, nc_trie_active(s))
+    iv_push(ch, iv_len(t) / 2)
+}
+
+// Marco: +0 estado, +8 trozo actual, +16 transición actual, +24 fin del
+// trozo, +32 alternativas (Union), +40 tríos dispersos pendientes.
+fn nc_frame_bounds(states: int, f: int) {
+    let s = iv_get(states, std::raw::load(f))
+    let ch = std::raw::load(s + 8)
+    let ci = std::raw::load(f + 8)
+    if 2 * ci < iv_len(ch) {
+        std::raw::store(f + 16, iv_get(ch, 2 * ci))
+        std::raw::store(f + 24, iv_get(ch, 2 * ci + 1))
+    } else {
+        std::raw::store(f + 16, nc_trie_active(s))
+        std::raw::store(f + 24, iv_len(std::raw::load(s)) / 2)
+    }
+}
+
+fn nc_frame_new(n: int, states: int, sid: int) -> int {
+    let f = rt_alloc(48)
+    std::raw::store(f, sid)
+    std::raw::store(f + 8, 0)
+    std::raw::store(f + 32, rp_vec(std::raw::load(n + 72)))
+    std::raw::store(f + 40, iv_new(4))
+    nc_frame_bounds(states, f)
+    f
+}
+
+fn nc_trie(n: int, v: int) -> int {
+    let states = iv_new(8)
+    iv_push(states, nc_trie_state())
+    let rev = rn_rev(n)
+    let mut i = 0
+    while i < iv_len(v) {
+        let bytes = std::raw::load(iv_get(v, i) + 104)
+        let mut prev = 0
+        let mut k = 0
+        while k < iv_len(bytes) {
+            let mut b = iv_get(bytes, k)
+            if rev {
+                b = iv_get(bytes, iv_len(bytes) - 1 - k)
+            }
+            prev = nc_trie_step(states, prev, b)
+            k += 1
+        }
+        nc_trie_add_match(iv_get(states, prev))
+        i += 1
+    }
+    let end = rn_add_empty(n)
+    let stack = iv_new(8)
+    let mut f = nc_frame_new(n, states, 0)
+    let mut result = 0
+    let mut seguir = true
+    while seguir {
+        let ti = std::raw::load(f + 16)
+        if ti < std::raw::load(f + 24) {
+            let t = std::raw::load(iv_get(states, std::raw::load(f)))
+            let b = iv_get(t, 2 * ti)
+            let nx = iv_get(t, 2 * ti + 1)
+            std::raw::store(f + 16, ti + 1)
+            let sp = std::raw::load(f + 40)
+            iv_push(sp, b)
+            iv_push(sp, b)
+            if iv_len(std::raw::load(iv_get(states, nx))) == 0 {
+                iv_push(sp, end)
+            } else {
+                iv_push(sp, 0)
+                iv_push(stack, f)
+                f = nc_frame_new(n, states, nx)
+            }
+            continue
+        }
+        let sp = std::raw::load(f + 40)
+        if iv_len(sp) > 0 {
+            let mut cid = 0
+            if iv_len(sp) == 3 {
+                cid = rn_add_range(n, iv_get(sp, 0), iv_get(sp, 1), iv_get(sp, 2))
+            } else {
+                cid = rn_add_sparse(n, sp)
+            }
+            iv_trunc(sp, 0)
+            iv_push(std::raw::load(f + 32), cid)
+        }
+        let s = iv_get(states, std::raw::load(f))
+        let nseq = iv_len(std::raw::load(s + 8)) / 2 + 1
+        let ci = std::raw::load(f + 8)
+        if ci + 1 < nseq {
+            iv_push(std::raw::load(f + 32), end)
+            std::raw::store(f + 8, ci + 1)
+            nc_frame_bounds(states, f)
+            continue
+        }
+        let un = std::raw::load(f + 32)
+        let start = rn_add(n, 7, un, 0, 0, 4 * iv_len(un))
+        iv_free(sp)
+        rt_free_block(f)
+        if iv_len(stack) == 0 {
+            result = start
+            seguir = false
+        } else {
+            f = iv_get(stack, iv_len(stack) - 1)
+            iv_trunc(stack, iv_len(stack) - 1)
+            let psp = std::raw::load(f + 40)
+            iv_set(psp, iv_len(psp) - 1, start)
+            seguir = true
+        }
+    }
+    iv_free(stack)
+    i = 0
+    while i < iv_len(states) {
+        let s = iv_get(states, i)
+        iv_free(std::raw::load(s))
+        iv_free(std::raw::load(s + 8))
+        rt_free_block(s)
+        i += 1
+    }
+    iv_free(states)
+    nc_ref(n, result, end)
+}
+
+// ------------------------------------------------------------ compile()
+
+// Compila h (un patrón). Devuelve N; rn_bad(N) indica que se pasó del
+// límite.
+fn nc_compile(p: int, h: int, reverse: bool, limit: bool) -> int {
+    let n = rn_new(p, reverse, limit)
+    let mut anchored = false
+    if reverse {
+        anchored = (std::raw::load(h + 40) & 2) != 0
+    } else {
+        anchored = (std::raw::load(h + 32) & 1) != 0
+    }
+    let mut ups = 0
+    let mut upe = 0
+    if anchored {
+        ups = nc_empty(n)
+        upe = nc_end(n)
+    } else {
+        let c = rc_new(p, 0)
+        rc_add(rc_v(c), 0, 255)
+        std::raw::store(c + 8, 0)
+        ups = nc_at_least(n, rh_class_raw(p, c), false, 0)
+        upe = nc_end(n)
+    }
+    let s = nc_cap(n, 0, -1, -1, h)
+    let e = nc_end(n)
+    let m = rn_add(n, 10, 0, 0, 0, 0)
+    rn_patch(n, e, m)
+    rn_patch(n, upe, s)
+    std::raw::store(n + 96, s)
+    std::raw::store(n + 104, ups)
+    n
+}
+
+// ------------------------------------------------------------ literales
+//
+// Literal: +0 bytes (vector), +8 1 = exacto. Seq: +0 vector de literales
+// o 0 = infinita.
+
+fn rl_lit(p: int, v: int, exact: int) -> int {
+    let l = rp_node(p, 0, 2)
+    std::raw::store(l, v)
+    std::raw::store(l + 8, exact)
+    l
+}
+
+fn rl_b(l: int) -> int {
+    std::raw::load(l)
+}
+
+fn rl_exact(l: int) -> bool {
+    std::raw::load(l + 8) == 1
+}
+
+fn rl_copy_vec(p: int, v: int) -> int {
+    let w = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(v) {
+        iv_push(w, iv_get(v, i))
+        i += 1
+    }
+    w
+}
+
+fn rl_seq(p: int) -> int {
+    let s = rp_node(p, 0, 1)
+    std::raw::store(s, rp_vec(p))
+    s
+}
+
+fn rl_seq1(p: int, l: int) -> int {
+    let s = rl_seq(p)
+    iv_push(std::raw::load(s), l)
+    s
+}
+
+fn rl_empty_exact(p: int) -> int {
+    rl_seq1(p, rl_lit(p, rp_vec(p), 1))
+}
+
+fn rl_lits(s: int) -> int {
+    std::raw::load(s)
+}
+
+fn rl_finite(s: int) -> bool {
+    std::raw::load(s) != 0
+}
+
+fn rl_len(s: int) -> int {
+    if !rl_finite(s) {
+        return -1
+    }
+    iv_len(rl_lits(s))
+}
+
+fn rl_make_inf(s: int) {
+    std::raw::store(s, 0)
+}
+
+fn rl_make_inexact(s: int) {
+    if !rl_finite(s) {
+        return
+    }
+    let v = rl_lits(s)
+    let mut i = 0
+    while i < iv_len(v) {
+        std::raw::store(iv_get(v, i) + 8, 0)
+        i += 1
+    }
+}
+
+fn rl_vec_eq(a: int, b: int) -> bool {
+    if iv_len(a) != iv_len(b) {
+        return false
+    }
+    let mut i = 0
+    while i < iv_len(a) {
+        if iv_get(a, i) != iv_get(b, i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn rl_push(s: int, l: int) {
+    if !rl_finite(s) {
+        return
+    }
+    let v = rl_lits(s)
+    if iv_len(v) > 0 {
+        let last = iv_get(v, iv_len(v) - 1)
+        if rl_vec_eq(rl_b(last), rl_b(l)) && std::raw::load(last + 8) == std::raw::load(l + 8) {
+            return
+        }
+    }
+    iv_push(v, l)
+}
+
+fn rl_is_exact(s: int) -> bool {
+    if !rl_finite(s) {
+        return false
+    }
+    let v = rl_lits(s)
+    let mut i = 0
+    while i < iv_len(v) {
+        if !rl_exact(iv_get(v, i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn rl_is_inexact(s: int) -> bool {
+    if !rl_finite(s) {
+        return true
+    }
+    let v = rl_lits(s)
+    let mut i = 0
+    while i < iv_len(v) {
+        if rl_exact(iv_get(v, i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Longitud mínima de los literales (-1 = None).
+fn rl_min_len(s: int) -> int {
+    if !rl_finite(s) {
+        return -1
+    }
+    let v = rl_lits(s)
+    let mut m = -1
+    let mut i = 0
+    while i < iv_len(v) {
+        let k = iv_len(rl_b(iv_get(v, i)))
+        if m < 0 || k < m {
+            m = k
+        }
+        i += 1
+    }
+    m
+}
+
+fn rl_dedup(p: int, s: int) {
+    if !rl_finite(s) {
+        return
+    }
+    let v = rl_lits(s)
+    let out = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(v) {
+        let l = iv_get(v, i)
+        let mut dup = false
+        if iv_len(out) > 0 {
+            let last = iv_get(out, iv_len(out) - 1)
+            if rl_vec_eq(rl_b(last), rl_b(l)) {
+                dup = true
+                if std::raw::load(last + 8) != std::raw::load(l + 8) {
+                    std::raw::store(last + 8, 0)
+                }
+            }
+        }
+        if !dup {
+            iv_push(out, l)
+        }
+        i += 1
+    }
+    std::raw::store(s, out)
+}
+
+fn rl_keep_first(s: int, k: int) {
+    if !rl_finite(s) {
+        return
+    }
+    let v = rl_lits(s)
+    let mut i = 0
+    while i < iv_len(v) {
+        let l = iv_get(v, i)
+        if k < iv_len(rl_b(l)) {
+            std::raw::store(l + 8, 0)
+            iv_trunc(rl_b(l), k)
+        }
+        i += 1
+    }
+}
+
+fn rl_clone(p: int, s: int) -> int {
+    let c = rp_node(p, 0, 1)
+    if !rl_finite(s) {
+        return c
+    }
+    let w = rp_vec(p)
+    let v = rl_lits(s)
+    let mut i = 0
+    while i < iv_len(v) {
+        let l = iv_get(v, i)
+        iv_push(w, rl_lit(p, rl_copy_vec(p, rl_b(l)), std::raw::load(l + 8)))
+        i += 1
+    }
+    std::raw::store(c, w)
+    c
+}
+
+// Seq::cross_forward (s2 queda vacía).
+fn rl_cross_forward(p: int, s1: int, s2: int) {
+    if !rl_finite(s2) {
+        if rl_min_len(s1) == 0 {
+            rl_make_inf(s1)
+        } else {
+            rl_make_inexact(s1)
+        }
+        return
+    }
+    if !rl_finite(s1) {
+        std::raw::store(s2, rp_vec(p))
+        return
+    }
+    let v1 = rl_lits(s1)
+    let v2 = rl_lits(s2)
+    let out = rp_vec(p)
+    let mut i = 0
+    while i < iv_len(v1) {
+        let a = iv_get(v1, i)
+        if !rl_exact(a) {
+            iv_push(out, a)
+        } else {
+            let mut j = 0
+            while j < iv_len(v2) {
+                let b = iv_get(v2, j)
+                let nb = rl_copy_vec(p, rl_b(a))
+                let bb = rl_b(b)
+                let mut k = 0
+                while k < iv_len(bb) {
+                    iv_push(nb, iv_get(bb, k))
+                    k += 1
+                }
+                iv_push(out, rl_lit(p, nb, std::raw::load(b + 8)))
+                j += 1
+            }
+        }
+        i += 1
+    }
+    std::raw::store(s1, out)
+    std::raw::store(s2, rp_vec(p))
+    rl_dedup(p, s1)
+}
+
+// Seq::union (s2 queda vacía).
+fn rl_union_raw(p: int, s1: int, s2: int) {
+    if !rl_finite(s2) {
+        rl_make_inf(s1)
+        return
+    }
+    if !rl_finite(s1) {
+        std::raw::store(s2, rp_vec(p))
+        return
+    }
+    let v1 = rl_lits(s1)
+    let v2 = rl_lits(s2)
+    let mut i = 0
+    while i < iv_len(v2) {
+        iv_push(v1, iv_get(v2, i))
+        i += 1
+    }
+    std::raw::store(s2, rp_vec(p))
+    rl_dedup(p, s1)
+}
+
+// Extractor::cross.
+fn rl_cross(p: int, s1: int, s2: int) -> int {
+    let a = rl_len(s1)
+    let b = rl_len(s2)
+    if a >= 0 && b >= 0 && a * b > 250 {
+        rl_make_inf(s2)
+    }
+    rl_cross_forward(p, s1, s2)
+    rl_keep_first(s1, 100)
+    s1
+}
+
+// Extractor::union.
+fn rl_union(p: int, s1: int, s2: int) -> int {
+    let a = rl_len(s1)
+    let b = rl_len(s2)
+    if a >= 0 && b >= 0 && a + b > 250 {
+        rl_keep_first(s1, 4)
+        rl_keep_first(s2, 4)
+        rl_dedup(p, s1)
+        rl_dedup(p, s2)
+        if rl_len(s1) + rl_len(s2) > 250 {
+            rl_make_inf(s2)
+        }
+    }
+    rl_union_raw(p, s1, s2)
+    s1
+}
+
+fn rl_class_over(c: int) -> bool {
+    let mut count = 0
+    let mut i = 0
+    while i < rc_n(c) {
+        if count > 10 {
+            return true
+        }
+        count += rc_hi(c, i) - rc_lo(c, i) + 1
+        i += 1
+    }
+    count > 10
+}
+
+fn rl_class(p: int, c: int) -> int {
+    if rl_class_over(c) {
+        let s = rl_seq(p)
+        rl_make_inf(s)
+        return s
+    }
+    let uni = std::raw::load(c + 16) == 1
+    let s = rl_seq(p)
+    let mut i = 0
+    while i < rc_n(c) {
+        let mut x = rc_lo(c, i)
+        while x <= rc_hi(c, i) {
+            if !uni || x < 55296 || x > 57343 {
+                let v = rp_vec(p)
+                if uni {
+                    rh_utf8_push(v, x)
+                } else {
+                    iv_push(v, x)
+                }
+                rl_push(s, rl_lit(p, v, 1))
+            }
+            x += 1
+        }
+        i += 1
+    }
+    rl_keep_first(s, 100)
+    s
+}
+
+fn rl_extract(p: int, h: int) -> int {
+    let k = rh_kind(h)
+    if k == 1 || k == 4 {
+        return rl_empty_exact(p)
+    }
+    if k == 2 {
+        let s = rl_seq1(p, rl_lit(p, rl_copy_vec(p, std::raw::load(h + 104)), 1))
+        rl_keep_first(s, 100)
+        return s
+    }
+    if k == 3 {
+        return rl_class(p, std::raw::load(h + 104))
+    }
+    if k == 5 {
+        return rl_repetition(p, h)
+    }
+    if k == 6 {
+        return rl_extract(p, std::raw::load(h + 128))
+    }
+    let v = rh_subs(h)
+    if k == 7 {
+        let mut s = rl_empty_exact(p)
+        let mut i = 0
+        while i < iv_len(v) {
+            if rl_is_inexact(s) {
+                return s
+            }
+            s = rl_cross(p, s, rl_extract(p, iv_get(v, i)))
+            i += 1
+        }
+        return s
+    }
+    let mut s = rl_seq(p)
+    let mut i = 0
+    while i < iv_len(v) {
+        if !rl_finite(s) {
+            return s
+        }
+        s = rl_union(p, s, rl_extract(p, iv_get(v, i)))
+        i += 1
+    }
+    s
+}
+
+fn rl_repetition(p: int, h: int) -> int {
+    let mn = std::raw::load(h + 104)
+    let mx = std::raw::load(h + 112)
+    let greedy = std::raw::load(h + 120) == 1
+    let sub = rl_extract(p, std::raw::load(h + 128))
+    if mn == 0 {
+        if mx != 1 {
+            rl_make_inexact(sub)
+        }
+        let empty = rl_empty_exact(p)
+        if !greedy {
+            return rl_union(p, empty, sub)
+        }
+        return rl_union(p, sub, empty)
+    }
+    let mut lim = mn
+    if lim > 10 {
+        lim = 10
+    }
+    let mut s = rl_empty_exact(p)
+    let mut i = 0
+    while i < lim && !rl_is_inexact(s) {
+        s = rl_cross(p, s, rl_clone(p, sub))
+        i += 1
+    }
+    if mn != mx || mn > 10 {
+        rl_make_inexact(s)
+    }
+    s
+}
+
+// PreferenceTrie::minimize(literals, keep_exact = true).
+fn rl_minimize(p: int, s: int) {
+    let v = rl_lits(s)
+    let states = iv_new(8)
+    let matches = iv_new(8)
+    let out = rp_vec(p)
+    let mut next_idx = 1
+    let mut i = 0
+    while i < iv_len(v) {
+        let l = iv_get(v, i)
+        let b = rl_b(l)
+        if iv_len(states) == 0 {
+            iv_push(states, iv_new(4))
+            iv_push(matches, 0)
+        }
+        let mut prev = 0
+        let mut ok = iv_get(matches, 0) == 0
+        let mut k = 0
+        while ok && k < iv_len(b) {
+            let x = iv_get(b, k)
+            let t = iv_get(states, prev)
+            let mut lo = 0
+            let mut hi = iv_len(t) / 2
+            let mut found = -1
+            while lo < hi && found < 0 {
+                let mid = (lo + hi) / 2
+                let y = iv_get(t, 2 * mid)
+                if y == x {
+                    found = iv_get(t, 2 * mid + 1)
+                } else if y < x {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+            if found >= 0 {
+                prev = found
+                if iv_get(matches, prev) != 0 {
+                    ok = false
+                }
+            } else {
+                let nx = iv_len(states)
+                iv_push(states, iv_new(4))
+                iv_push(matches, 0)
+                iv_insert(t, 2 * lo, x)
+                iv_insert(t, 2 * lo + 1, nx)
+                prev = nx
+            }
+            k += 1
+        }
+        if ok {
+            iv_set(matches, prev, next_idx)
+            next_idx += 1
+            iv_push(out, l)
+        }
+        i += 1
+    }
+    i = 0
+    while i < iv_len(states) {
+        iv_free(iv_get(states, i))
+        i += 1
+    }
+    iv_free(states)
+    iv_free(matches)
+    std::raw::store(s, out)
+}
+
+// Longitud del prefijo común más largo (-1 = None).
+fn rl_lcp(s: int) -> int {
+    if rl_len(s) <= 0 {
+        return -1
+    }
+    let v = rl_lits(s)
+    let base = rl_b(iv_get(v, 0))
+    let mut len = iv_len(base)
+    let mut i = 1
+    while i < iv_len(v) {
+        let m = rl_b(iv_get(v, i))
+        let mut k = 0
+        while k < len && k < iv_len(m) && iv_get(m, k) == iv_get(base, k) {
+            k += 1
+        }
+        len = k
+        if len == 0 {
+            return 0
+        }
+        i += 1
+    }
+    len
+}
+
+// regex-syntax rank.rs (BYTE_FREQUENCIES).
+fn rl_rank(b: int) -> int {
+    let t = "3734333231302F2E2D67F24243E52C2B2A29282726252423222138201F1E1D1CFF94A49588A09BADDDDE867AE8CAD7E0D0DCCCBBB7B3B1A8B2C8E2C39AB8AE7E78BF9DC2AABDA2A196C18E89ABB0B9A7BA70AFC0BC9C8C8F7B8580938A9272DF97F9D8EEECFDE3DAE6F787B4F1E9F6F4E78BF5F3FBEBC9C4F0D698B6CDB57F1BD4D3D2D5E4C5A99F83AC695062606151CF917473908299796B846D6E7C6F526C768D7181777DA5755C6A5348635D414FA6EDA3C7BEE1D1CBC6D9DBCEEAF89EEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    let a = std::raw::bits(t) + 16 + 2 * b
+    16 * rl_hex(std::raw::load8(a)) + rl_hex(std::raw::load8(a + 1))
+}
+
+fn rl_hex(c: int) -> int {
+    if c >= 65 {
+        return c - 55
+    }
+    c - 48
+}
+
+fn rl_poisonous(l: int) -> bool {
+    let b = rl_b(l)
+    iv_len(b) == 0 || (iv_len(b) == 1 && rl_rank(iv_get(b, 0)) >= 250)
+}
+
+fn rl_optimize(p: int, s: int) {
+    let origlen = rl_len(s)
+    if origlen < 0 {
+        return
+    }
+    if rl_min_len(s) == 0 {
+        rl_make_inf(s)
+        return
+    }
+    rl_minimize(p, s)
+    let fl = rl_lcp(s)
+    if fl >= 0 {
+        if origlen > 1 && fl >= 1 && fl <= 3 && rl_rank(iv_get(rl_b(iv_get(rl_lits(s), 0)), 0)) < 200 {
+            rl_keep_first(s, 1)
+            rl_dedup(p, s)
+            return
+        }
+        let isfast = rl_is_exact(s) && rl_len(s) <= 16
+        if fl > 4 || (fl > 1 && !isfast) {
+            rl_keep_first(s, fl)
+            rl_dedup(p, s)
+        }
+    }
+    let mut exact = 0
+    if rl_is_exact(s) {
+        exact = rl_clone(p, s)
+    }
+    let keeps = [5, 4, 3, 2, 1]
+    let limits = [10, 10, 64, 64, 10]
+    let mut i = 0
+    while i < 5 && rl_finite(s) && rl_len(s) > limits[i] {
+        rl_keep_first(s, keeps[i])
+        rl_minimize(p, s)
+        i += 1
+    }
+    if rl_finite(s) {
+        let v = rl_lits(s)
+        let mut k = 0
+        let mut poison = false
+        while k < iv_len(v) {
+            if rl_poisonous(iv_get(v, k)) {
+                poison = true
+            }
+            k += 1
+        }
+        if poison {
+            rl_make_inf(s)
+        }
+    }
+    if exact != 0 {
+        let ml = rl_min_len(s)
+        if !rl_finite(s) || ml <= 2 || rl_len(s) > 64 {
+            std::raw::store(s, std::raw::load(exact))
+        }
+    }
+}
+
+// ¿meta::Regex resuelve el patrón sólo con literales (sin NFA)?
+fn rl_bypass(p: int, h: int) -> bool {
+    if (std::raw::load(h + 32) & 1) != 0 {
+        return false
+    }
+    let noaux = std::raw::load(h + 72) == 0 && std::raw::load(h + 24) == 0
+    let s = rl_seq(p)
+    rl_union_raw(p, s, rl_extract(p, h))
+    rl_optimize(p, s)
+    if noaux && rl_is_exact(s) && rl_len(s) > 0 && rl_min_len(s) > 0 {
+        return true
+    }
+    noaux && rh_kind(h) == 8 && std::raw::load(h + 96) != 0 && iv_len(rh_subs(h)) >= 3000
+}
+
+// ------------------------------------------------------------ entrada
+
+// Como Core::new: NFA directo listo para buscar, o 0 si el directo o el
+// inverso superan el límite. Si meta::Regex usaría sólo literales (Pre) no
+// hay límite, pero igual se construye el NFA para buscar con él.
+fn rx_prepare(p: int, h: int) -> int {
+    if rl_bypass(p, h) {
+        return nc_compile(p, h, false, false)
+    }
+    let f = nc_compile(p, h, false, true)
+    if rn_bad(f) {
+        rn_free(f)
+        return 0
+    }
+    let r = nc_compile(p, h, true, true)
+    let bad = rn_bad(r)
+    rn_free(r)
+    if bad {
+        rn_free(f)
+        return 0
+    }
+    f
+}
+
+// 0 si el NFA cabe en el límite (o no hace falta), 1 si lo supera.
+fn rx_nfa_too_big(p: int, h: int) -> int {
+    let f = rx_prepare(p, h)
+    if f == 0 {
+        return 1
+    }
+    rn_free(f)
+    0
+}

@@ -1,0 +1,8 @@
+// Lee un archivo JSON (último argumento), lo analiza y lo vuelve a escribir.
+fn main() {
+    let args = std::env::args()
+    let n = len(args)
+    let text = std::fs::read_text(args[n - 1])
+    let v = std::json::parse(text)
+    print(std::json::stringify(v))
+}

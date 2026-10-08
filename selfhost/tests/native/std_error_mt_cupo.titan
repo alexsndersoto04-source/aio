@@ -1,0 +1,10 @@
+// Métrica número 4097.
+fn main() {
+    let mut i = 0
+    while i < 4096 {
+        std::metrics::histogram_record("h{i}", 1.0)
+        i += 1
+    }
+    std::metrics::gauge_get("g")
+    std::metrics::gauge_set("g", 1.0)
+}

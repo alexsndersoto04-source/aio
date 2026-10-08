@@ -1,0 +1,17 @@
+// Errores de std::qrcode (nivel, rango, archivo).
+fn show(label: string, r: Result) {
+    match r {
+        Result::Ok(_) => println(label + " OK"),
+        Result::Err(e) => println(label + " ERR " + e),
+    }
+}
+
+fn main() {
+    show("nivel vacio", std::try::catch(|| { std::qrcode::to_unicode("x", "") }))
+    show("nivel ll", std::try::catch(|| { std::qrcode::to_unicode("x", "LL") }))
+    show("nivel z", std::try::catch(|| { std::qrcode::to_ascii("x", "z", "#", " ") }))
+    show("svg neg", std::try::catch(|| { std::qrcode::to_svg("x", "M", 0 - 1) }))
+    show("png neg", std::try::catch(|| { std::qrcode::to_png("x", "L", 0 - 5) }))
+    show("png big", std::try::catch(|| { std::qrcode::to_png("x", "L", 4294967296) }))
+    show("svg cero", std::try::catch(|| { std::qrcode::to_svg("ok", "L", 0) }))
+}

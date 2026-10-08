@@ -1,0 +1,1794 @@
+// Segundo backend del compilador de Titan: bytecode (selfhost/codegen.titan)
+// → LLVM IR en texto (.ll). LLVM (clang/llc) lo convierte después en código
+// máquina optimizado para x86-64 o ARM64 (AArch64: teléfonos, Termux).
+//
+// Traduce lo mismo que el backend propio (native/backend.titan) y con las
+// mismas reglas, instrucción por instrucción; así un programa hace
+// exactamente lo mismo compilado por cualquiera de los dos caminos:
+//   - Cada valor es un par (etiqueta, contenido) de dos i64 (%V).
+//   - Una función de bytecode = una función LLVM `fastcc` que recibe
+//     (closure, etiqueta0, contenido0, etiqueta1, ...) y devuelve %V. El
+//     primer parámetro es el objeto closure (0 si no lo es).
+//   - La pila de operandos y las variables locales son `alloca` con la
+//     profundidad calculada al compilar (LLVM las pasa a registros: mem2reg).
+//   - Conteo de referencias igual que en el backend propio (g_inc/g_dec;
+//     rt_free al llegar a 0; objetos estáticos con cuenta -1).
+//   - Las funciones del usuario cuentan la profundidad de llamadas (4096).
+//   - Las globales del runtime están en @G (std::raw::globals()).
+//   - _start guarda la pila inicial (argumentos y entorno) en G+32, crea una
+//     pila propia de 1 GiB y llama a main; al final rt_finish.
+// Solo se incluyen las funciones del runtime que se usan (como un enlazador).
+// Prefijo `lv_`.
+
+import native::backend
+
+struct Lv {
+    l: array,
+    refs: array,
+    errs: array,
+    strs: map,
+    stxt: array,
+    objs: map,
+    odef: array,
+}
+
+struct LvCtx {
+    prefix: string,
+    runtime: bool,
+    locals: int,
+    funcs: array,
+    table: array,
+    rt: map,
+    rt_arity: map,
+    target: string,
+    depth: array,
+    maxd: int,
+    bare: bool,
+}
+
+fn lv_new() -> Lv {
+    Lv { l: [], refs: [], errs: [], strs: std::map::new(), stxt: [], objs: std::map::new(), odef: [] }
+}
+
+fn lv_e(b: Lv, s: string) -> Lv {
+    Lv { l: std::array::push(b.l, s), refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+}
+
+// Saca las líneas acumuladas (como un solo texto) y deja la lista vacía.
+// Las piezas se juntan en variables locales (que crecen en su sitio); una
+// lista dentro de la estructura se copiaría entera con cada línea nueva.
+fn lv_flush(b: Lv) -> (Lv, string) {
+    let text = std::collections::join(b.l, "\n") + "\n"
+    return (Lv { l: [], refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }, text)
+}
+
+fn lv_take_refs(b: Lv) -> (Lv, array) {
+    return (Lv { l: b.l, refs: [], errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }, b.refs)
+}
+
+fn lv_ref(b: Lv, label: string) -> Lv {
+    Lv { l: b.l, refs: std::array::push(b.refs, label), errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+}
+
+fn lv_err(b: Lv, message: string) -> Lv {
+    Lv { l: b.l, refs: b.refs, errs: std::array::push(b.errs, message), strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+}
+
+// "{" + x + "}" (las llaves literales no se pueden escribir en un string).
+fn lv_br(inner: string) -> string {
+    let mut s = ""
+    s += '{'
+    s += inner
+    s += '}'
+    s
+}
+
+// Dirección (i64) del string estático con ese texto.
+fn lv_str(b: Lv, text: string) -> (Lv, string) {
+    if std::map::contains(b.strs, text) {
+        let id = std::map::get(b.strs, text)
+        return (b, "ptrtoint (ptr @s.{id} to i64)")
+    }
+    let id = len(b.stxt)
+    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: std::map::insert(b.strs, text, id), stxt: std::array::push(b.stxt, text), objs: b.objs, odef: b.odef }
+    return (nb, "ptrtoint (ptr @s.{id} to i64)")
+}
+
+// Objeto estático (esquema de struct o enum sin contenido); `def` es su
+// inicializador ya escrito. Devuelve su dirección (i64).
+fn lv_obj(b: Lv, key: string, ty: string, def: string) -> (Lv, string) {
+    if std::map::contains(b.objs, key) {
+        let id = std::map::get(b.objs, key)
+        return (b, "ptrtoint (ptr @o.{id} to i64)")
+    }
+    let id = len(b.odef)
+    let line = "@o.{id} = internal global " + ty + " " + def + ", align 16"
+    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: std::map::insert(b.objs, key, id), odef: std::array::push(b.odef, line) }
+    return (nb, "ptrtoint (ptr @o.{id} to i64)")
+}
+
+fn lv_rt(ctx: LvCtx, name: string) -> string {
+    if !std::map::contains(ctx.rt, name) {
+        return "missing:" + name
+    }
+    "r" + std::map::get(ctx.rt, name)
+}
+
+// ------------------------------------------------------------ piezas
+
+fn lv_get(b: Lv, id: string, k: int) -> Lv {
+    let b1 = lv_e(b, "  " + id + "t = load i64, ptr %sT{k}")
+    lv_e(b1, "  " + id + "b = load i64, ptr %sB{k}")
+}
+
+fn lv_put(b: Lv, k: int, t: string, v: string) -> Lv {
+    let b1 = lv_e(b, "  store i64 " + t + ", ptr %sT{k}")
+    lv_e(b1, "  store i64 " + v + ", ptr %sB{k}")
+}
+
+fn lv_lget(b: Lv, id: string, i: int) -> Lv {
+    let b1 = lv_e(b, "  " + id + "t = load i64, ptr %lT{i}")
+    lv_e(b1, "  " + id + "b = load i64, ptr %lB{i}")
+}
+
+fn lv_lput(b: Lv, i: int, t: string, v: string) -> Lv {
+    let b1 = lv_e(b, "  store i64 " + t + ", ptr %lT{i}")
+    lv_e(b1, "  store i64 " + v + ", ptr %lB{i}")
+}
+
+// Dirección `addr + off` como ptr, en `dst`.
+fn lv_addr(b: Lv, dst: string, addr: string, off: int) -> Lv {
+    if off == 0 {
+        return lv_e(b, "  " + dst + " = inttoptr i64 " + addr + " to ptr")
+    }
+    let b1 = lv_e(b, "  " + dst + ".i = inttoptr i64 " + addr + " to ptr")
+    lv_e(b1, "  " + dst + " = getelementptr i8, ptr " + dst + ".i, i64 {off}")
+}
+
+fn lv_load(b: Lv, dst: string, addr: string, off: int) -> Lv {
+    let b1 = lv_addr(b, dst + ".a", addr, off)
+    lv_e(b1, "  " + dst + " = load i64, ptr " + dst + ".a")
+}
+
+fn lv_store(b: Lv, id: string, addr: string, off: int, v: string) -> Lv {
+    let b1 = lv_addr(b, id, addr, off)
+    lv_e(b1, "  store i64 " + v + ", ptr " + id)
+}
+
+fn lv_inc(b: Lv, t: string, v: string) -> Lv {
+    lv_e(b, "  call fastcc void @g_inc(i64 " + t + ", i64 " + v + ")")
+}
+
+fn lv_dec(b: Lv, t: string, v: string) -> Lv {
+    lv_e(b, "  call fastcc void @g_dec(i64 " + t + ", i64 " + v + ")")
+}
+
+// Nombre de bloque sin el '%' inicial (las piezas usan el mismo prefijo
+// para valores y bloques).
+fn lv_lab(name: string) -> string {
+    if std::text::starts_with(name, "%") {
+        return std::text::substring(name, 1, len(name))
+    }
+    name
+}
+
+fn lv_label(b: Lv, name: string) -> Lv {
+    lv_e(b, lv_lab(name) + ":")
+}
+
+fn lv_br_to(b: Lv, name: string) -> Lv {
+    lv_e(b, "  br label %" + lv_lab(name))
+}
+
+fn lv_cond(b: Lv, c: string, yes: string, no: string) -> Lv {
+    lv_e(b, "  br i1 " + c + ", label %" + lv_lab(yes) + ", label %" + lv_lab(no))
+}
+
+// Error fatal del runtime (desbordamiento, división por cero, ...).
+fn lv_raise(b: Lv, which: string) -> Lv {
+    let b1 = lv_e(b, "  call fastcc void @" + which + "()")
+    lv_e(b1, "  unreachable")
+}
+
+// Llamada a una función: `dst`t / `dst`b = resultado.
+fn lv_call(b: Lv, dst: string, callee: string, clo: string, args: array) -> Lv {
+    let mut a = "i64 " + clo
+    for x in args {
+        a += ", i64 " + x
+    }
+    let mut b1 = lv_e(b, "  " + dst + " = call fastcc %V " + callee + "(" + a + ")")
+    b1 = lv_e(b1, "  " + dst + "t = extractvalue %V " + dst + ", 0")
+    lv_e(b1, "  " + dst + "b = extractvalue %V " + dst + ", 1")
+}
+
+fn lv_call_rt(b: Lv, ctx: LvCtx, dst: string, name: string, args: array) -> Lv {
+    let label = lv_rt(ctx, name)
+    if std::text::starts_with(label, "missing:") {
+        return lv_err(b, "native runtime function '" + name + "' not found")
+    }
+    lv_call(lv_ref(b, label), dst, "@" + label, "0", args)
+}
+
+// Argumentos: los `n` valores de la cima (del más profundo a la cima).
+fn lv_args(b: Lv, id: string, d: int, n: int) -> (Lv, array) {
+    let mut b1 = b
+    let mut args = []
+    let mut k = 0
+    while k < n {
+        let s = d - n + k
+        let name = id + "a{k}"
+        b1 = lv_get(b1, name, s)
+        args = std::array::push(args, name + "t")
+        args = std::array::push(args, name + "b")
+        k += 1
+    }
+    return (b1, args)
+}
+
+// Llamada al runtime con los `n` valores de la cima; el resultado ocupa su lugar.
+fn lv_rt_top(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int) -> Lv {
+    let (b1, args) = lv_args(b, id, d, n)
+    let b2 = lv_call_rt(b1, ctx, id + "r", name, args)
+    lv_put(b2, d - n, id + "rt", id + "rb")
+}
+
+// Falso de la VM: nil, o bool falso. i1 en `dst`.
+fn lv_falsy(b: Lv, dst: string, t: string, v: string) -> Lv {
+    let mut b1 = lv_e(b, "  " + dst + ".n = icmp eq i64 " + t + ", 0")
+    b1 = lv_e(b1, "  " + dst + ".b = icmp eq i64 " + t + ", 3")
+    b1 = lv_e(b1, "  " + dst + ".z = icmp eq i64 " + v + ", 0")
+    b1 = lv_e(b1, "  " + dst + ".f = and i1 " + dst + ".b, " + dst + ".z")
+    lv_e(b1, "  " + dst + " = or i1 " + dst + ".n, " + dst + ".f")
+}
+
+// Las dos cimas son enteros: salta a `yes` o a `no`. Deja a/b cargados en
+// `id`x (la de abajo) y `id`y (la cima).
+fn lv_both_int(b: Lv, id: string, d: int, yes: string, no: string) -> Lv {
+    let mut b1 = lv_get(b, id + "x", d - 2)
+    b1 = lv_get(b1, id + "y", d - 1)
+    b1 = lv_e(b1, "  " + id + "i1 = icmp eq i64 " + id + "xt, 1")
+    b1 = lv_e(b1, "  " + id + "i2 = icmp eq i64 " + id + "yt, 1")
+    b1 = lv_e(b1, "  " + id + "ii = and i1 " + id + "i1, " + id + "i2")
+    lv_cond(b1, id + "ii", yes, no)
+}
+
+// ------------------------------------------------------------ instrucciones
+
+fn lv_arith(b: Lv, ctx: LvCtx, id: string, d: int, k: string, next: string) -> Lv {
+    let fast = id + "fast"
+    let slow = id + "slow"
+    let ovf = id + "ovf"
+    let ok = id + "ok"
+    let mut b1 = lv_both_int(b, id, d, fast, slow)
+    b1 = lv_label(b1, fast)
+    let mut f = "smul"
+    let mut name = "rt_mul"
+    if k == "Add" {
+        f = "sadd"
+        name = "rt_add"
+    } else if k == "Sub" {
+        f = "ssub"
+        name = "rt_sub"
+    }
+    b1 = lv_e(b1, "  " + id + "o = call %O @llvm." + f + ".with.overflow.i64(i64 " + id + "xb, i64 " + id + "yb)")
+    b1 = lv_e(b1, "  " + id + "v = extractvalue %O " + id + "o, 0")
+    b1 = lv_e(b1, "  " + id + "c = extractvalue %O " + id + "o, 1")
+    b1 = lv_cond(b1, id + "c", ovf, ok)
+    b1 = lv_label(b1, ovf)
+    b1 = lv_raise(b1, "g_overflow")
+    b1 = lv_label(b1, ok)
+    b1 = lv_put(b1, d - 2, "1", id + "v")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, slow)
+    b1 = lv_call_rt(b1, ctx, id + "r", name, [id + "xt", id + "xb", id + "yt", id + "yb"])
+    b1 = lv_put(b1, d - 2, id + "rt", id + "rb")
+    lv_br_to(b1, next)
+}
+
+fn lv_divmod(b: Lv, ctx: LvCtx, id: string, d: int, k: string, next: string) -> Lv {
+    let fast = id + "fast"
+    let slow = id + "slow"
+    let mut b1 = lv_both_int(b, id, d, fast, slow)
+    b1 = lv_label(b1, fast)
+    b1 = lv_e(b1, "  " + id + "z = icmp eq i64 " + id + "yb, 0")
+    b1 = lv_cond(b1, id + "z", id + "dz", id + "nz")
+    b1 = lv_label(b1, id + "dz")
+    b1 = lv_raise(b1, "g_divzero")
+    b1 = lv_label(b1, id + "nz")
+    b1 = lv_e(b1, "  " + id + "m1 = icmp eq i64 " + id + "yb, -1")
+    b1 = lv_e(b1, "  " + id + "mn = icmp eq i64 " + id + "xb, -9223372036854775808")
+    b1 = lv_e(b1, "  " + id + "bad = and i1 " + id + "m1, " + id + "mn")
+    b1 = lv_cond(b1, id + "bad", id + "ovf", id + "ok")
+    b1 = lv_label(b1, id + "ovf")
+    b1 = lv_raise(b1, "g_overflow")
+    b1 = lv_label(b1, id + "ok")
+    let mut ins = "srem"
+    let mut name = "rt_mod"
+    if k == "Div" {
+        ins = "sdiv"
+        name = "rt_div"
+    }
+    b1 = lv_e(b1, "  " + id + "v = " + ins + " i64 " + id + "xb, " + id + "yb")
+    b1 = lv_put(b1, d - 2, "1", id + "v")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, slow)
+    b1 = lv_call_rt(b1, ctx, id + "r", name, [id + "xt", id + "xb", id + "yt", id + "yb"])
+    b1 = lv_put(b1, d - 2, id + "rt", id + "rb")
+    lv_br_to(b1, next)
+}
+
+// Eq/Neq con las mismas reglas que el backend propio (bk_eq).
+fn lv_eq(b: Lv, ctx: LvCtx, id: string, d: int, negate: bool, next: string) -> Lv {
+    let mut b1 = lv_get(b, id + "x", d - 2)
+    b1 = lv_get(b1, id + "y", d - 1)
+    b1 = lv_e(b1, "  " + id + "st = icmp eq i64 " + id + "xt, " + id + "yt")
+    b1 = lv_cond(b1, id + "st", id + "same", id + "false")
+    b1 = lv_label(b1, id + "same")
+    b1 = lv_e(b1, "  " + id + "fl = icmp eq i64 " + id + "xt, 2")
+    b1 = lv_cond(b1, id + "fl", id + "slow", id + "nf")
+    b1 = lv_label(b1, id + "nf")
+    b1 = lv_e(b1, "  " + id + "sb = icmp eq i64 " + id + "xb, " + id + "yb")
+    b1 = lv_cond(b1, id + "sb", id + "true", id + "diff")
+    b1 = lv_label(b1, id + "diff")
+    b1 = lv_e(b1, "  " + id + "big = icmp ugt i64 " + id + "xt, 4")
+    b1 = lv_cond(b1, id + "big", id + "slow", id + "false")
+    let mut yes = "1"
+    let mut no = "0"
+    if negate {
+        yes = "0"
+        no = "1"
+    }
+    b1 = lv_label(b1, id + "false")
+    b1 = lv_dec(b1, id + "yt", id + "yb")
+    b1 = lv_dec(b1, id + "xt", id + "xb")
+    b1 = lv_put(b1, d - 2, "3", no)
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "true")
+    b1 = lv_dec(b1, id + "yt", id + "yb")
+    b1 = lv_dec(b1, id + "xt", id + "xb")
+    b1 = lv_put(b1, d - 2, "3", yes)
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "slow")
+    b1 = lv_call_rt(b1, ctx, id + "r", "rt_eq", [id + "xt", id + "xb", id + "yt", id + "yb"])
+    if negate {
+        b1 = lv_e(b1, "  " + id + "rn = xor i64 " + id + "rb, 1")
+        b1 = lv_put(b1, d - 2, "3", id + "rn")
+    } else {
+        b1 = lv_put(b1, d - 2, "3", id + "rb")
+    }
+    lv_br_to(b1, next)
+}
+
+fn lv_order(b: Lv, ctx: LvCtx, id: string, d: int, k: string, next: string) -> Lv {
+    let mut cc = "slt"
+    let mut name = "rt_lt"
+    if k == "Gt" {
+        cc = "sgt"
+        name = "rt_gt"
+    } else if k == "Lte" {
+        cc = "sle"
+        name = "rt_le"
+    } else if k == "Gte" {
+        cc = "sge"
+        name = "rt_ge"
+    }
+    let mut b1 = lv_both_int(b, id, d, id + "fast", id + "slow")
+    b1 = lv_label(b1, id + "fast")
+    b1 = lv_e(b1, "  " + id + "c = icmp " + cc + " i64 " + id + "xb, " + id + "yb")
+    b1 = lv_e(b1, "  " + id + "v = zext i1 " + id + "c to i64")
+    b1 = lv_put(b1, d - 2, "3", id + "v")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "slow")
+    b1 = lv_call_rt(b1, ctx, id + "r", name, [id + "xt", id + "xb", id + "yt", id + "yb"])
+    b1 = lv_put(b1, d - 2, id + "rt", id + "rb")
+    lv_br_to(b1, next)
+}
+
+fn lv_bitop(b: Lv, ctx: LvCtx, id: string, d: int, k: string, next: string) -> Lv {
+    let mut ins = "xor"
+    if k == "BitAnd" {
+        ins = "and"
+    } else if k == "BitOr" {
+        ins = "or"
+    }
+    let mut b1 = lv_both_int(b, id, d, id + "fast", id + "slow")
+    b1 = lv_label(b1, id + "fast")
+    b1 = lv_e(b1, "  " + id + "v = " + ins + " i64 " + id + "xb, " + id + "yb")
+    b1 = lv_put(b1, d - 2, "1", id + "v")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "slow")
+    b1 = lv_call_rt(b1, ctx, id + "r", "rt_bit_error", [])
+    lv_e(b1, "  unreachable")
+}
+
+// Cambia la cima (contenedor `ct`/`cb`) por el elemento guardado en `addr`:
+// el elemento gana una referencia y el contenedor pierde la suya.
+fn lv_replace_top(b: Lv, id: string, d: int, addr: string, ct: string, cb: string) -> Lv {
+    let mut b1 = lv_load(b, id + "et", addr, 0)
+    b1 = lv_load(b1, id + "eb", addr, 8)
+    b1 = lv_inc(b1, id + "et", id + "eb")
+    b1 = lv_put(b1, d - 1, id + "et", id + "eb")
+    lv_dec(b1, ct, cb)
+}
+
+fn lv_get_field(b: Lv, ctx: LvCtx, id: string, d: int, field: string, next: string) -> Lv {
+    let (b0, fs) = lv_str(b, field)
+    let mut b1 = lv_get(b0, id + "x", d - 1)
+    b1 = lv_e(b1, "  " + id + "is = icmp eq i64 " + id + "xt, 10")
+    b1 = lv_cond(b1, id + "is", id + "st", id + "slow")
+    b1 = lv_label(b1, id + "st")
+    b1 = lv_load(b1, id + "sc", id + "xb", 16)
+    b1 = lv_load(b1, id + "n", id + "xb", 24)
+    b1 = lv_e(b1, "  " + id + "n0 = icmp eq i64 " + id + "n, 0")
+    b1 = lv_cond(b1, id + "n0", id + "slow", id + "loop")
+    b1 = lv_label(b1, id + "loop")
+    b1 = lv_e(b1, "  " + id + "i = phi i64 [0, " + id + "st], [" + id + "i1, " + id + "next]")
+    b1 = lv_e(b1, "  " + id + "o = shl i64 " + id + "i, 3")
+    b1 = lv_e(b1, "  " + id + "o8 = add i64 " + id + "o, 8")
+    b1 = lv_e(b1, "  " + id + "ea = add i64 " + id + "sc, " + id + "o8")
+    b1 = lv_load(b1, id + "nm", id + "ea", 0)
+    b1 = lv_e(b1, "  " + id + "eq = icmp eq i64 " + id + "nm, " + fs)
+    b1 = lv_cond(b1, id + "eq", id + "found", id + "next")
+    b1 = lv_label(b1, id + "next")
+    b1 = lv_e(b1, "  " + id + "i1 = add i64 " + id + "i, 1")
+    b1 = lv_e(b1, "  " + id + "end = icmp eq i64 " + id + "i1, " + id + "n")
+    b1 = lv_cond(b1, id + "end", id + "slow", id + "loop")
+    b1 = lv_label(b1, id + "found")
+    b1 = lv_e(b1, "  " + id + "fo = shl i64 " + id + "i, 4")
+    b1 = lv_e(b1, "  " + id + "fb = add i64 " + id + "xb, " + id + "fo")
+    b1 = lv_e(b1, "  " + id + "fa = add i64 " + id + "fb, 32")
+    b1 = lv_replace_top(b1, id, d, id + "fa", "10", id + "xb")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "slow")
+    b1 = lv_call_rt(b1, ctx, id + "r", "rt_get_field", [id + "xt", id + "xb", "5", fs])
+    b1 = lv_put(b1, d - 1, id + "rt", id + "rb")
+    lv_br_to(b1, next)
+}
+
+fn lv_index(b: Lv, ctx: LvCtx, id: string, d: int, next: string) -> Lv {
+    let mut b1 = lv_get(b, id + "x", d - 2)
+    b1 = lv_get(b1, id + "y", d - 1)
+    b1 = lv_e(b1, "  " + id + "ii = icmp eq i64 " + id + "yt, 1")
+    b1 = lv_e(b1, "  " + id + "ia = icmp eq i64 " + id + "xt, 7")
+    b1 = lv_e(b1, "  " + id + "it = icmp eq i64 " + id + "xt, 8")
+    b1 = lv_e(b1, "  " + id + "sq = or i1 " + id + "ia, " + id + "it")
+    b1 = lv_e(b1, "  " + id + "ok = and i1 " + id + "ii, " + id + "sq")
+    b1 = lv_cond(b1, id + "ok", id + "seq", id + "slow")
+    b1 = lv_label(b1, id + "seq")
+    b1 = lv_load(b1, id + "n", id + "xb", 8)
+    b1 = lv_e(b1, "  " + id + "in = icmp ult i64 " + id + "yb, " + id + "n")
+    b1 = lv_cond(b1, id + "in", id + "fast", id + "slow")
+    b1 = lv_label(b1, id + "fast")
+    b1 = lv_load(b1, id + "da", id + "xb", 24)
+    b1 = lv_e(b1, "  " + id + "off = shl i64 " + id + "yb, 4")
+    b1 = lv_e(b1, "  " + id + "ea = add i64 " + id + "da, " + id + "off")
+    b1 = lv_replace_top(b1, id, d - 1, id + "ea", id + "xt", id + "xb")
+    b1 = lv_br_to(b1, next)
+    b1 = lv_label(b1, id + "slow")
+    b1 = lv_call_rt(b1, ctx, id + "r", "rt_index", [id + "xt", id + "xb", id + "yt", id + "yb"])
+    b1 = lv_put(b1, d - 2, id + "rt", id + "rb")
+    lv_br_to(b1, next)
+}
+
+// NewArray/NewTuple/Print: secuencia nueva con los `n` valores de la cima
+// (se mueven, sin cambiar sus cuentas). Resultado en `id`qt / `id`qb.
+fn lv_new_seq(b: Lv, ctx: LvCtx, id: string, d: int, maker: string, n: int) -> Lv {
+    let mut b1 = lv_call_rt(b, ctx, id + "q", maker, ["1", "{n}"])
+    b1 = lv_load(b1, id + "qd", id + "qb", 24)
+    let mut k = 0
+    while k < n {
+        let s = d - n + k
+        let e = id + "e{k}"
+        b1 = lv_get(b1, e, s)
+        b1 = lv_store(b1, e + "pt", id + "qd", 16 * k, e + "t")
+        b1 = lv_store(b1, e + "pb", id + "qd", 16 * k + 8, e + "b")
+        k += 1
+    }
+    b1
+}
+
+// Un operando de una operación de bajo nivel (el `k`-ésimo de `n`).
+fn lv_raw_arg(b: Lv, id: string, d: int, n: int, k: int) -> Lv {
+    lv_get(b, id + "a{k}", d - n + k)
+}
+
+fn lv_f(b: Lv, dst: string, v: string) -> Lv {
+    lv_e(b, "  " + dst + " = bitcast i64 " + v + " to double")
+}
+
+fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, next: string) -> Lv {
+    let mut b1 = b
+    let mut k = 0
+    while k < n {
+        b1 = lv_raw_arg(b1, id, d, n, k)
+        k += 1
+    }
+    let a0 = id + "a0b"
+    let a1 = id + "a1b"
+    let a2 = id + "a2b"
+    let res = d - n
+    if name == "std::raw::load" || name == "std::raw::load8" {
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        if name == "std::raw::load" {
+            b1 = lv_e(b1, "  " + id + "v = load i64, ptr " + id + "p")
+        } else {
+            b1 = lv_e(b1, "  " + id + "v8 = load i8, ptr " + id + "p")
+            b1 = lv_e(b1, "  " + id + "v = zext i8 " + id + "v8 to i64")
+        }
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::store" || name == "std::raw::store8" {
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        if name == "std::raw::store" {
+            b1 = lv_e(b1, "  store i64 " + a1 + ", ptr " + id + "p")
+        } else {
+            b1 = lv_e(b1, "  " + id + "v8 = trunc i64 " + a1 + " to i8")
+            b1 = lv_e(b1, "  store i8 " + id + "v8, ptr " + id + "p")
+        }
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::mmio_load32" {
+        // Registro de hardware: acceso volátil de 32 bits (LLVM no puede
+        // quitarlo, juntarlo ni cambiarlo de orden).
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        b1 = lv_e(b1, "  " + id + "v32 = load volatile i32, ptr " + id + "p, align 4")
+        b1 = lv_e(b1, "  " + id + "v = zext i32 " + id + "v32 to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::mmio_store32" {
+        b1 = lv_addr(b1, id + "p", a0, 0)
+        b1 = lv_e(b1, "  " + id + "v32 = trunc i64 " + a1 + " to i32")
+        b1 = lv_e(b1, "  store volatile i32 " + id + "v32, ptr " + id + "p, align 4")
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::sysreg" {
+        b1 = lv_e(b1, "  " + id + "v = call i64 @lv_sysreg(i64 " + a0 + ")")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::set_sysreg" {
+        b1 = lv_e(b1, "  call void @lv_set_sysreg(i64 " + a0 + ", i64 " + a1 + ")")
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::hvc" {
+        // Llamada al firmware (PSCI): x0, x1 -> x0. Solo ARM64.
+        if ctx.target == "aarch64" {
+            b1 = lv_e(b1, "  " + id + "v = call i64 asm sideeffect \"hvc #0\", \"=" + lv_br("x0") + "," + lv_br("x0") + "," + lv_br("x1") + ",~" + lv_br("memory") + "\"(i64 " + a0 + ", i64 " + a1 + ")")
+        } else {
+            b1 = lv_e(b1, "  call void @llvm.trap()")
+            b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
+        }
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::bare" {
+        // 1 = programa sin sistema operativo (objetivo aarch64-none).
+        let mut v = "0"
+        if ctx.bare {
+            v = "1"
+        }
+        b1 = lv_put(b1, res, "1", v)
+    } else if name == "std::raw::tag" {
+        b1 = lv_dec(b1, id + "a0t", a0)
+        b1 = lv_put(b1, res, "1", id + "a0t")
+    } else if name == "std::raw::bits" {
+        b1 = lv_dec(b1, id + "a0t", a0)
+        b1 = lv_put(b1, res, "1", a0)
+    } else if name == "std::raw::keep" {
+        b1 = lv_put(b1, res, "1", a0)
+    } else if name == "std::raw::value" || name == "std::raw::adopt" {
+        b1 = lv_put(b1, res, a0, a1)
+        if name == "std::raw::value" {
+            b1 = lv_inc(b1, a0, a1)
+        }
+    } else if name == "std::raw::retain" {
+        b1 = lv_inc(b1, a0, a1)
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::release" {
+        b1 = lv_dec(b1, a0, a1)
+        b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::fadd" || name == "std::raw::fsub" || name == "std::raw::fmul" || name == "std::raw::fdiv" {
+        let op = "f" + std::text::substring(name, 11, len(name))
+        b1 = lv_f(b1, id + "x", a0)
+        b1 = lv_f(b1, id + "y", a1)
+        b1 = lv_e(b1, "  " + id + "z = " + op + " double " + id + "x, " + id + "y")
+        b1 = lv_e(b1, "  " + id + "v = bitcast double " + id + "z to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::wadd" || name == "std::raw::wsub" || name == "std::raw::wmul" {
+        let mut op = "add"
+        if name == "std::raw::wsub" {
+            op = "sub"
+        } else if name == "std::raw::wmul" {
+            op = "mul"
+        }
+        b1 = lv_e(b1, "  " + id + "v = " + op + " i64 " + a0 + ", " + a1)
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::shl" || name == "std::raw::shr" || name == "std::raw::sar" {
+        // La cuenta se toma módulo 64 (como `shl rax, cl`).
+        let mut op = "shl"
+        if name == "std::raw::shr" {
+            op = "lshr"
+        } else if name == "std::raw::sar" {
+            op = "ashr"
+        }
+        b1 = lv_e(b1, "  " + id + "c = and i64 " + a1 + ", 63")
+        b1 = lv_e(b1, "  " + id + "v = " + op + " i64 " + a0 + ", " + id + "c")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::fsqrt" {
+        b1 = lv_f(b1, id + "x", a0)
+        b1 = lv_e(b1, "  " + id + "z = call double @llvm.sqrt.f64(double " + id + "x)")
+        b1 = lv_e(b1, "  " + id + "v = bitcast double " + id + "z to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::ftoint" {
+        // Hacia cero; fuera de rango o NaN = el entero mínimo (como cvttsd2si,
+        // igual en todas las arquitecturas).
+        b1 = lv_f(b1, id + "x", a0)
+        b1 = lv_e(b1, "  " + id + "lo = fcmp oge double " + id + "x, -9.223372036854775808e18")
+        b1 = lv_e(b1, "  " + id + "hi = fcmp olt double " + id + "x, 9.223372036854775808e18")
+        b1 = lv_e(b1, "  " + id + "in = and i1 " + id + "lo, " + id + "hi")
+        b1 = lv_cond(b1, id + "in", id + "cv", id + "out")
+        b1 = lv_label(b1, id + "cv")
+        b1 = lv_e(b1, "  " + id + "c = fptosi double " + id + "x to i64")
+        b1 = lv_br_to(b1, id + "done")
+        b1 = lv_label(b1, id + "out")
+        b1 = lv_br_to(b1, id + "done")
+        b1 = lv_label(b1, id + "done")
+        b1 = lv_e(b1, "  " + id + "v = phi i64 [" + id + "c, " + id + "cv], [-9223372036854775808, " + id + "out]")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::ffma" {
+        // a * b + c con un solo redondeo. El runtime solo la usa si la CPU
+        // la tiene (rt_has_fma), así que siempre es la instrucción de la CPU.
+        b1 = lv_f(b1, id + "x", a0)
+        b1 = lv_f(b1, id + "y", a1)
+        b1 = lv_f(b1, id + "w", a2)
+        if ctx.target == "x86_64" {
+            b1 = lv_e(b1, "  " + id + "z = call double asm \"vfmadd231sd $3, $2, $0\", \"=x,0,x,x\"(double " + id + "w, double " + id + "x, double " + id + "y)")
+        } else {
+            b1 = lv_e(b1, "  " + id + "z = call double @llvm.fma.f64(double " + id + "x, double " + id + "y, double " + id + "w)")
+        }
+        b1 = lv_e(b1, "  " + id + "v = bitcast double " + id + "z to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::cpuid" {
+        if ctx.target == "x86_64" {
+            let cons = "\"=" + lv_br("eax") + ",=" + lv_br("ebx") + ",=" + lv_br("ecx") + ",=" + lv_br("edx") + "," + lv_br("eax") + "," + lv_br("ecx") + "\""
+            b1 = lv_e(b1, "  " + id + "l = trunc i64 " + a0 + " to i32")
+            b1 = lv_e(b1, "  " + id + "s = trunc i64 " + a1 + " to i32")
+            b1 = lv_e(b1, "  " + id + "q = call %Q asm \"cpuid\", " + cons + "(i32 " + id + "l, i32 " + id + "s)")
+            b1 = lv_e(b1, "  " + id + "rb = extractvalue %Q " + id + "q, 1")
+            b1 = lv_e(b1, "  " + id + "rc = extractvalue %Q " + id + "q, 2")
+            b1 = lv_e(b1, "  " + id + "hb = zext i32 " + id + "rb to i64")
+            b1 = lv_e(b1, "  " + id + "hc = zext i32 " + id + "rc to i64")
+            b1 = lv_e(b1, "  " + id + "hs = shl i64 " + id + "hb, 32")
+            b1 = lv_e(b1, "  " + id + "v = or i64 " + id + "hs, " + id + "hc")
+            b1 = lv_put(b1, res, "1", id + "v")
+        } else {
+            // No es x86: ninguna extensión de x86 disponible.
+            b1 = lv_put(b1, res, "1", "0")
+        }
+    } else if name == "std::raw::xgetbv" {
+        if ctx.target == "x86_64" {
+            let cons = "\"=" + lv_br("eax") + ",=" + lv_br("edx") + "," + lv_br("ecx") + "\""
+            b1 = lv_e(b1, "  " + id + "q = call %P asm \"xgetbv\", " + cons + "(i32 0)")
+            b1 = lv_e(b1, "  " + id + "ra = extractvalue %P " + id + "q, 0")
+            b1 = lv_e(b1, "  " + id + "rd = extractvalue %P " + id + "q, 1")
+            b1 = lv_e(b1, "  " + id + "ha = zext i32 " + id + "ra to i64")
+            b1 = lv_e(b1, "  " + id + "hd = zext i32 " + id + "rd to i64")
+            b1 = lv_e(b1, "  " + id + "hs = shl i64 " + id + "hd, 32")
+            b1 = lv_e(b1, "  " + id + "v = or i64 " + id + "hs, " + id + "ha")
+            b1 = lv_put(b1, res, "1", id + "v")
+        } else {
+            b1 = lv_put(b1, res, "1", "0")
+        }
+    } else if name == "std::raw::ffromint" {
+        b1 = lv_e(b1, "  " + id + "z = sitofp i64 " + a0 + " to double")
+        b1 = lv_e(b1, "  " + id + "v = bitcast double " + id + "z to i64")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::fcmp" {
+        b1 = lv_f(b1, id + "x", a0)
+        b1 = lv_f(b1, id + "y", a1)
+        b1 = lv_e(b1, "  " + id + "u = fcmp uno double " + id + "x, " + id + "y")
+        b1 = lv_e(b1, "  " + id + "e = fcmp oeq double " + id + "x, " + id + "y")
+        b1 = lv_e(b1, "  " + id + "l = fcmp olt double " + id + "x, " + id + "y")
+        b1 = lv_e(b1, "  " + id + "s1 = select i1 " + id + "l, i64 -1, i64 1")
+        b1 = lv_e(b1, "  " + id + "s2 = select i1 " + id + "e, i64 0, i64 " + id + "s1")
+        b1 = lv_e(b1, "  " + id + "v = select i1 " + id + "u, i64 2, i64 " + id + "s2")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::syscall" && ctx.bare {
+        // Sin sistema operativo: las atiende rt_sys_bare (sys_bare.titan).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_bare", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
+    } else if name == "std::raw::syscall" && ctx.target == "aarch64" {
+        // Números y estructuras de x86-64: los traduce rt_sys_arm64 (sys_arm64.titan).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm64", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
+    } else if name == "std::raw::svc" {
+        if ctx.target != "aarch64" {
+            // Solo existe en ARM64: aquí es una trampa (el runtime la usa
+            // únicamente con std::raw::bare() == 1).
+            b1 = lv_e(b1, "  call void @llvm.trap()")
+            b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
+        } else {
+            let mut a = ""
+            k = 0
+            while k < 7 {
+                if k > 0 {
+                    a += ", "
+                }
+                a += "i64 " + id + "a{k}b"
+                k += 1
+            }
+            b1 = lv_e(b1, "  " + id + "v = call i64 @lv_svc(" + a + ")")
+        }
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::syscall" {
+        let mut a = ""
+        k = 0
+        while k < 7 {
+            if k > 0 {
+                a += ", "
+            }
+            a += "i64 " + id + "a{k}b"
+            k += 1
+        }
+        b1 = lv_e(b1, "  " + id + "v = call i64 @lv_syscall(" + a + ")")
+        b1 = lv_put(b1, res, "1", id + "v")
+    } else if name == "std::raw::arch" {
+        // 0 = x86-64, 1 = ARM64 (para lo que Rust hace distinto en cada una).
+        let mut v = "0"
+        if ctx.target == "aarch64" {
+            v = "1"
+        }
+        b1 = lv_put(b1, res, "1", v)
+    } else if name == "std::raw::globals" {
+        b1 = lv_put(b1, res, "1", "ptrtoint (ptr @G to i64)")
+    } else if name == "std::raw::fail" {
+        b1 = lv_e(b1, "  call fastcc void @g_raise(i64 " + a0 + ")")
+        return lv_e(b1, "  unreachable")
+    } else if name == "std::raw::throw" {
+        // Vuelve al std::try::catch activo (registro en G+24, ver TryCall).
+        b1 = lv_e(b1, "  " + id + "mtp = getelementptr i8, ptr @G, i64 2632")
+        b1 = lv_e(b1, "  store i64 " + id + "a0t, ptr " + id + "mtp")
+        b1 = lv_e(b1, "  " + id + "mbp = getelementptr i8, ptr @G, i64 2640")
+        b1 = lv_e(b1, "  store i64 " + a0 + ", ptr " + id + "mbp")
+        b1 = lv_e(b1, "  " + id + "hp = getelementptr i8, ptr @G, i64 24")
+        b1 = lv_e(b1, "  " + id + "h = load i64, ptr " + id + "hp")
+        b1 = lv_e(b1, "  " + id + "hq = inttoptr i64 " + id + "h to ptr")
+        b1 = lv_e(b1, "  call void @t_longjmp(ptr " + id + "hq)")
+        return lv_e(b1, "  unreachable")
+    } else {
+        return lv_e(lv_err(b1, "unknown intrinsic " + name), "  unreachable")
+    }
+    lv_br_to(b1, next)
+}
+
+// Salida de la función con el valor de la cima (o nil si la pila está vacía).
+fn lv_ret(b: Lv, id: string, d: int) -> Lv {
+    let mut b1 = b
+    if d == 0 {
+        b1 = lv_e(b1, "  store i64 0, ptr %rT")
+        b1 = lv_e(b1, "  store i64 0, ptr %rB")
+    } else {
+        b1 = lv_get(b1, id + "x", d - 1)
+        b1 = lv_e(b1, "  store i64 " + id + "xt, ptr %rT")
+        b1 = lv_e(b1, "  store i64 " + id + "xb, ptr %rB")
+    }
+    lv_br_to(b1, "epi")
+}
+
+fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
+    let k = op.k
+    let n = op.n
+    let id = "%p{pc}_"
+    let blk = "p{pc}_"
+    let d = ctx.depth[pc]
+    let nx = pc + 1
+    let next = "pc{nx}"
+    let mut b = lv_label(b0, "pc{pc}")
+    if d < 0 {
+        // Inalcanzable.
+        return lv_e(b, "  unreachable")
+    }
+    if k == "PushInt" {
+        return lv_br_to(lv_put(b, d, "1", "{n}"), next)
+    }
+    if k == "PushNil" {
+        return lv_br_to(lv_put(b, d, "0", "0"), next)
+    }
+    if k == "PushBool" {
+        let mut v = "0"
+        if op.flag {
+            v = "1"
+        }
+        return lv_br_to(lv_put(b, d, "3", v), next)
+    }
+    if k == "PushFloat" {
+        let bits = fl_parse(op.s)
+        if bits == nil {
+            return lv_e(lv_err(b, "invalid float literal " + op.s), "  unreachable")
+        }
+        return lv_br_to(lv_put(b, d, "2", "{bits}"), next)
+    }
+    if k == "PushChar" {
+        let code = std::text::char_code(std::text::chars(op.s)[0])
+        return lv_br_to(lv_put(b, d, "4", "{code}"), next)
+    }
+    if k == "PushStr" {
+        let (b1, s) = lv_str(b, ctx.table[n])
+        return lv_br_to(lv_put(b1, d, "5", s), next)
+    }
+    if k == "PushLocal" {
+        b = lv_lget(b, id + "l", n)
+        b = lv_put(b, d, id + "lt", id + "lb")
+        b = lv_inc(b, id + "lt", id + "lb")
+        return lv_br_to(b, next)
+    }
+    if k == "TakeLocal" {
+        b = lv_lget(b, id + "l", n)
+        b = lv_put(b, d, id + "lt", id + "lb")
+        b = lv_lput(b, n, "0", "0")
+        return lv_br_to(b, next)
+    }
+    if k == "StoreLocal" {
+        b = lv_lget(b, id + "l", n)
+        b = lv_dec(b, id + "lt", id + "lb")
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_lput(b, n, id + "xt", id + "xb")
+        return lv_br_to(b, next)
+    }
+    // Llamada integrada por el optimizador (opt.titan): cuenta la
+    // profundidad igual que una llamada de verdad (mismo límite, mismo error).
+    if k == "InlEnter" {
+        if ctx.runtime {
+            return lv_br_to(b, next)
+        }
+        b = lv_e(b, "  " + id + "d = load i64, ptr %dp")
+        b = lv_e(b, "  " + id + "c = icmp sge i64 " + id + "d, 4096")
+        b = lv_cond(b, id + "c", blk + "deep", blk + "ok")
+        b = lv_label(b, blk + "deep")
+        b = lv_raise(b, "g_depth")
+        b = lv_label(b, blk + "ok")
+        b = lv_e(b, "  " + id + "e = add i64 " + id + "d, 1")
+        b = lv_e(b, "  store i64 " + id + "e, ptr %dp")
+        return lv_br_to(b, next)
+    }
+    if k == "InlLeave" {
+        if ctx.runtime {
+            return lv_br_to(b, next)
+        }
+        b = lv_e(b, "  " + id + "d = load i64, ptr %dp")
+        b = lv_e(b, "  " + id + "e = sub i64 " + id + "d, 1")
+        b = lv_e(b, "  store i64 " + id + "e, ptr %dp")
+        return lv_br_to(b, next)
+    }
+    if k == "Pop" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_dec(b, id + "xt", id + "xb")
+        return lv_br_to(b, next)
+    }
+    if k == "Dup" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_put(b, d, id + "xt", id + "xb")
+        b = lv_inc(b, id + "xt", id + "xb")
+        return lv_br_to(b, next)
+    }
+    if k == "Add" || k == "Sub" || k == "Mul" {
+        return lv_arith(b, ctx, id, d, k, next)
+    }
+    if k == "Div" || k == "Mod" {
+        return lv_divmod(b, ctx, id, d, k, next)
+    }
+    if k == "Eq" {
+        return lv_eq(b, ctx, id, d, false, next)
+    }
+    if k == "Neq" {
+        return lv_eq(b, ctx, id, d, true, next)
+    }
+    if k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" {
+        return lv_order(b, ctx, id, d, k, next)
+    }
+    if k == "BitAnd" || k == "BitOr" || k == "BitXor" {
+        return lv_bitop(b, ctx, id, d, k, next)
+    }
+    if k == "Neg" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_e(b, "  " + id + "ii = icmp eq i64 " + id + "xt, 1")
+        b = lv_cond(b, id + "ii", blk + "fast", blk + "slow")
+        b = lv_label(b, blk + "fast")
+        b = lv_e(b, "  " + id + "o = call %O @llvm.ssub.with.overflow.i64(i64 0, i64 " + id + "xb)")
+        b = lv_e(b, "  " + id + "v = extractvalue %O " + id + "o, 0")
+        b = lv_e(b, "  " + id + "c = extractvalue %O " + id + "o, 1")
+        b = lv_cond(b, id + "c", blk + "ovf", blk + "ok")
+        b = lv_label(b, blk + "ovf")
+        b = lv_raise(b, "g_overflow")
+        b = lv_label(b, blk + "ok")
+        b = lv_put(b, d - 1, "1", id + "v")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "slow")
+        b = lv_call_rt(b, ctx, id + "r", "rt_neg", [id + "xt", id + "xb"])
+        b = lv_put(b, d - 1, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "BitNot" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_e(b, "  " + id + "ii = icmp eq i64 " + id + "xt, 1")
+        b = lv_cond(b, id + "ii", blk + "fast", blk + "slow")
+        b = lv_label(b, blk + "fast")
+        b = lv_e(b, "  " + id + "v = xor i64 " + id + "xb, -1")
+        b = lv_put(b, d - 1, "1", id + "v")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "slow")
+        b = lv_call_rt(b, ctx, id + "r", "rt_bitnot_error", [])
+        return lv_e(b, "  unreachable")
+    }
+    if k == "Not" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_dec(b, id + "xt", id + "xb")
+        b = lv_falsy(b, id + "f", id + "xt", id + "xb")
+        b = lv_e(b, "  " + id + "v = zext i1 " + id + "f to i64")
+        b = lv_put(b, d - 1, "3", id + "v")
+        return lv_br_to(b, next)
+    }
+    if k == "Jump" {
+        return lv_br_to(b, "pc{n}")
+    }
+    if k == "JumpIfFalse" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_dec(b, id + "xt", id + "xb")
+        b = lv_falsy(b, id + "f", id + "xt", id + "xb")
+        return lv_cond(b, id + "f", "pc{n}", next)
+    }
+    if k == "Call" {
+        if op.flag {
+            return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_range", op.m), next)
+        }
+        let (b1, args) = lv_args(b, id, d, op.m)
+        let label = ctx.prefix + "{n}"
+        b = lv_call(lv_ref(b1, label), id + "r", "@" + label, "0", args)
+        b = lv_put(b, d - op.m, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "CallNative" {
+        let name = op.s
+        if std::text::starts_with(name, "std::raw::") {
+            if !ctx.runtime {
+                return lv_e(lv_err(b, "'" + name + "' is only available to the native runtime"), "  unreachable")
+            }
+            return lv_intrinsic(b, ctx, id, d, name, n, next)
+        }
+        let target = bk_mangle(name)
+        if !std::map::contains(ctx.rt, target) {
+            return lv_e(lv_err(b, "native function '" + name + "' is not implemented in the native runtime yet"), "  unreachable")
+        }
+        if std::map::get(ctx.rt_arity, target) != n {
+            return lv_e(lv_err(b, "native function '" + name + "' has a different arity in the native runtime"), "  unreachable")
+        }
+        return lv_br_to(lv_rt_top(b, ctx, id, d, target, n), next)
+    }
+    if k == "Ret" {
+        return lv_ret(b, id, d)
+    }
+    if k == "Print" {
+        b = lv_new_seq(b, ctx, id, d, "rt_array_new", n)
+        b = lv_call_rt(b, ctx, id + "r", "rt_print", [id + "qt", id + "qb"])
+        b = lv_put(b, d - n, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "NewArray" || k == "NewTuple" {
+        let mut maker = "rt_array_new"
+        if k == "NewTuple" {
+            maker = "rt_tuple_new"
+        }
+        b = lv_new_seq(b, ctx, id, d, maker, n)
+        b = lv_put(b, d - n, id + "qt", id + "qb")
+        return lv_br_to(b, next)
+    }
+    if k == "ToString" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_to_string", 1), next)
+    }
+    if k == "Len" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_len", 1), next)
+    }
+    if k == "ArraySortBy" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_sort_by", 2), next)
+    }
+    if k == "Index" {
+        return lv_index(b, ctx, id, d, next)
+    }
+    if k == "GetField" {
+        return lv_get_field(b, ctx, id, d, op.s, next)
+    }
+    if k == "NewStruct" {
+        let fields = op.list
+        let count = len(fields)
+        let sorted = bk_sort_strings(fields)
+        let (b1, name) = lv_str(b, op.s)
+        b = b1
+        let mut items = ""
+        for f in sorted {
+            let (b2, fs) = lv_str(b, f)
+            b = b2
+            if items != "" {
+                items += ", "
+            }
+            items += "i64 " + fs
+        }
+        let ty = lv_br("i64, [{count} x i64]")
+        let def = lv_br("i64 {count}, [{count} x i64] [" + items + "]")
+        let (b3, schema) = lv_obj(b, "schema:" + bk_join(sorted, "\n"), ty, def)
+        b = lv_call_rt(b3, ctx, id + "r", "rt_struct_new", ["5", name, "1", schema, "1", "{count}"])
+        let mut j = 0
+        while j < count {
+            let e = id + "e{j}"
+            let dst = 32 + 16 * bk_index_of(sorted, fields[j])
+            b = lv_get(b, e, d - count + j)
+            b = lv_store(b, e + "pt", id + "rb", dst, e + "t")
+            b = lv_store(b, e + "pb", id + "rb", dst + 8, e + "b")
+            j += 1
+        }
+        b = lv_put(b, d - count, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "NewEnum" {
+        let (b1, en) = lv_str(b, op.s)
+        let (b2, vn) = lv_str(b1, op.s2)
+        b = b2
+        if op.flag {
+            b = lv_get(b, id + "x", d - 1)
+            b = lv_call_rt(b, ctx, id + "r", "rt_enum_new", [id + "xt", id + "xb", "5", en, "5", vn])
+            b = lv_put(b, d - 1, id + "rt", id + "rb")
+            return lv_br_to(b, next)
+        }
+        let ty = lv_br("i64, i64, i64, i64, i64, i64")
+        let def = lv_br("i64 -1, i64 " + en + ", i64 " + vn + ", i64 0, i64 0, i64 0")
+        let (b3, unit) = lv_obj(b, "unit:" + op.s + "\n" + op.s2, ty, def)
+        return lv_br_to(lv_put(b3, d, "11", unit), next)
+    }
+    if k == "EnumIs" {
+        let (b1, en) = lv_str(b, op.s)
+        let (b2, vn) = lv_str(b1, op.s2)
+        b = lv_get(b2, id + "x", d - 1)
+        b = lv_call_rt(b, ctx, id + "r", "rt_enum_is", [id + "xt", id + "xb", "5", en, "5", vn])
+        b = lv_put(b, d - 1, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "EnumPayload" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_enum_payload", 1), next)
+    }
+    if k == "Try" {
+        b = lv_get(b, id + "x", d - 1)
+        b = lv_inc(b, id + "xt", id + "xb")
+        b = lv_call_rt(b, ctx, id + "k", "rt_try_kind", [id + "xt", id + "xb"])
+        b = lv_e(b, "  " + id + "z = icmp eq i64 " + id + "kb, 0")
+        b = lv_cond(b, id + "z", blk + "unwrap", blk + "leave")
+        b = lv_label(b, blk + "leave")
+        b = lv_e(b, "  store i64 " + id + "xt, ptr %rT")
+        b = lv_e(b, "  store i64 " + id + "xb, ptr %rB")
+        b = lv_br_to(b, "epi")
+        b = lv_label(b, blk + "unwrap")
+        b = lv_e(b, "  " + id + "pa = add i64 " + id + "xb, 32")
+        b = lv_replace_top(b, id, d, id + "pa", "11", id + "xb")
+        return lv_br_to(b, next)
+    }
+    if k == "MakeClosure" {
+        let f = ctx.funcs[n]
+        let caps = op.list
+        let label = ctx.prefix + "{n}"
+        let (b1, fname) = lv_str(lv_ref(b, label), f.name)
+        let nc = len(caps)
+        let ar = f.arity
+        let code = "ptrtoint (ptr @" + label + " to i64)"
+        b = lv_call_rt(b1, ctx, id + "r", "rt_closure_new", ["1", code, "1", "{nc}", "1", "{ar}", "1", "{n}", "5", fname])
+        let mut i = 0
+        for slot in caps {
+            let e = id + "c{i}"
+            b = lv_lget(b, e, slot)
+            b = lv_store(b, e + "pt", id + "rb", 48 + 16 * i, e + "t")
+            b = lv_store(b, e + "pb", id + "rb", 56 + 16 * i, e + "b")
+            b = lv_inc(b, e + "t", e + "b")
+            i += 1
+        }
+        b = lv_put(b, d, id + "rt", id + "rb")
+        return lv_br_to(b, next)
+    }
+    if k == "CallValue" {
+        let at = d - 1 - n
+        b = lv_get(b, id + "f", at)
+        b = lv_e(b, "  " + id + "ic = icmp eq i64 " + id + "ft, 12")
+        b = lv_cond(b, id + "ic", blk + "clo", blk + "err")
+        b = lv_label(b, blk + "clo")
+        b = lv_load(b, id + "ar", id + "fb", 24)
+        b = lv_e(b, "  " + id + "ok = icmp eq i64 " + id + "ar, {n}")
+        b = lv_cond(b, id + "ok", blk + "call", blk + "err")
+        b = lv_label(b, blk + "call")
+        b = lv_load(b, id + "fp", id + "fb", 8)
+        b = lv_e(b, "  " + id + "fq = inttoptr i64 " + id + "fp to ptr")
+        let (b1, args) = lv_args(b, id, d, n)
+        b = lv_call(b1, id + "r", id + "fq", id + "fb", args)
+        b = lv_put(b, at, id + "rt", id + "rb")
+        b = lv_dec(b, id + "ft", id + "fb")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "err")
+        b = lv_call_rt(b, ctx, id + "e", "rt_call_error", [id + "ft", id + "fb", "1", "{n}"])
+        return lv_e(b, "  unreachable")
+    }
+    if k == "TryCall" {
+        // std::try::catch(f, args...): como la VM, un error dentro de la
+        // llamada da Result::Err(mensaje) y el éxito Result::Ok(valor).
+        // El registro %tj{pc} guarda los registros de la CPU (t_setjmp,
+        // palabras 0-21), el manejador anterior (22) y, fuera del runtime,
+        // la profundidad (23). G+24 apunta a él mientras dura la llamada.
+        // rt_fatal salta aquí (std::raw::throw -> t_longjmp) con el mensaje
+        // en G+2632/G+2640. El runtime no lleva contador de profundidad.
+        let at = d - 1 - n
+        let rec = "%tj{pc}"
+        b = lv_get(b, id + "f", at)
+        b = lv_e(b, "  " + id + "ic = icmp eq i64 " + id + "ft, 12")
+        b = lv_cond(b, id + "ic", blk + "clo", blk + "noclo")
+        b = lv_label(b, blk + "clo")
+        b = lv_e(b, "  " + id + "ri = ptrtoint ptr " + rec + " to i64")
+        b = lv_e(b, "  " + id + "gh = getelementptr i8, ptr @G, i64 24")
+        b = lv_e(b, "  " + id + "pv = load i64, ptr " + id + "gh")
+        b = lv_store(b, id + "s1", id + "ri", 176, id + "pv")
+        if !ctx.runtime {
+            b = lv_e(b, "  " + id + "dv = load i64, ptr %dp")
+            b = lv_store(b, id + "s2", id + "ri", 184, id + "dv")
+        }
+        b = lv_e(b, "  store i64 " + id + "ri, ptr " + id + "gh")
+        b = lv_e(b, "  " + id + "sj = call i64 @t_setjmp(ptr " + rec + ")")
+        b = lv_e(b, "  " + id + "z = icmp eq i64 " + id + "sj, 0")
+        b = lv_cond(b, id + "z", blk + "go", blk + "caught")
+        b = lv_label(b, blk + "go")
+        b = lv_load(b, id + "ar", id + "fb", 24)
+        b = lv_e(b, "  " + id + "ok = icmp eq i64 " + id + "ar, {n}")
+        b = lv_cond(b, id + "ok", blk + "call", blk + "err")
+        b = lv_label(b, blk + "call")
+        b = lv_load(b, id + "fp", id + "fb", 8)
+        b = lv_e(b, "  " + id + "fq = inttoptr i64 " + id + "fp to ptr")
+        let (b1, args) = lv_args(b, id, d, n)
+        b = lv_call(b1, id + "r", id + "fq", id + "fb", args)
+        b = lv_load(b, id + "p1", id + "ri", 176)
+        b = lv_e(b, "  store i64 " + id + "p1, ptr " + id + "gh")
+        b = lv_dec(b, id + "ft", id + "fb")
+        b = lv_call_rt(b, ctx, id + "y", "rt_try_ok", [id + "rt", id + "rb"])
+        b = lv_put(b, at, id + "yt", id + "yb")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "err")
+        b = lv_call_rt(b, ctx, id + "e", "rt_call_error", [id + "ft", id + "fb", "1", "{n}"])
+        b = lv_e(b, "  unreachable")
+        b = lv_label(b, blk + "caught")
+        b = lv_e(b, "  " + id + "ci = ptrtoint ptr " + rec + " to i64")
+        b = lv_load(b, id + "p2", id + "ci", 176)
+        b = lv_e(b, "  " + id + "gh2 = getelementptr i8, ptr @G, i64 24")
+        b = lv_e(b, "  store i64 " + id + "p2, ptr " + id + "gh2")
+        if !ctx.runtime {
+            b = lv_load(b, id + "d2", id + "ci", 184)
+            b = lv_e(b, "  store i64 " + id + "d2, ptr %dp")
+        }
+        b = lv_e(b, "  " + id + "mtp = getelementptr i8, ptr @G, i64 2632")
+        b = lv_e(b, "  " + id + "mt = load i64, ptr " + id + "mtp")
+        b = lv_e(b, "  " + id + "mbp = getelementptr i8, ptr @G, i64 2640")
+        b = lv_e(b, "  " + id + "mb = load i64, ptr " + id + "mbp")
+        b = lv_call_rt(b, ctx, id + "x", "rt_try_err", [id + "mt", id + "mb"])
+        b = lv_put(b, at, id + "xt", id + "xb")
+        b = lv_br_to(b, next)
+        b = lv_label(b, blk + "noclo")
+        let mut w = 0
+        while w <= n {
+            b = lv_get(b, id + "v{w}", at + w)
+            b = lv_dec(b, id + "v{w}t", id + "v{w}b")
+            w += 1
+        }
+        let (b2, msg) = lv_str(b, "std::try::catch expected a closure")
+        b = lv_call_rt(b2, ctx, id + "n", "rt_try_err", ["5", msg])
+        b = lv_put(b, at, id + "nt", id + "nb")
+        return lv_br_to(b, next)
+    }
+    lv_e(lv_err(b, "instruction " + k + " is not supported by the native backend yet"), "  unreachable")
+}
+
+// ------------------------------------------------------------ pila
+
+// (sacados, apilados) de cada instrucción.
+fn lv_effect(op: Op) -> (int, int) {
+    let k = op.k
+    let n = op.n
+    if k == "PushInt" || k == "PushNil" || k == "PushBool" || k == "PushFloat" || k == "PushChar" || k == "PushStr" || k == "PushLocal" || k == "TakeLocal" || k == "MakeClosure" {
+        return (0, 1)
+    }
+    if k == "StoreLocal" || k == "Pop" || k == "JumpIfFalse" {
+        return (1, 0)
+    }
+    if k == "Dup" {
+        return (1, 2)
+    }
+    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Index" || k == "ArraySortBy" {
+        return (2, 1)
+    }
+    if k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Try" {
+        return (1, 1)
+    }
+    if k == "Jump" || k == "InlEnter" || k == "InlLeave" {
+        return (0, 0)
+    }
+    if k == "Call" {
+        return (op.m, 1)
+    }
+    if k == "CallNative" || k == "Print" || k == "NewArray" || k == "NewTuple" {
+        return (n, 1)
+    }
+    if k == "NewStruct" {
+        return (len(op.list), 1)
+    }
+    if k == "NewEnum" {
+        if op.flag {
+            return (1, 1)
+        }
+        return (0, 1)
+    }
+    if k == "CallValue" || k == "TryCall" {
+        return (n + 1, 1)
+    }
+    // Ret y las desconocidas (que dan error al traducirse).
+    return (0, 0)
+}
+
+// Profundidad de la pila de operandos al empezar cada instrucción (-1 =
+// inalcanzable; la posición len(code) es la salida por el final), y la máxima.
+fn lv_depths(f: Func) -> Result {
+    let code = f.code
+    let total = len(code)
+    let mut depth = []
+    let mut i = 0
+    while i <= total {
+        depth = std::array::push(depth, -1)
+        i += 1
+    }
+    depth = std::array::set(depth, 0, 0)
+    let mut work = [0]
+    let mut maxd = 0
+    while len(work) > 0 {
+        let pc = work[len(work) - 1]
+        work = std::array::slice(work, 0, len(work) - 1)
+        if pc >= total {
+            continue
+        }
+        let op = code[pc]
+        let d = depth[pc]
+        let (pops, pushes) = lv_effect(op)
+        if pops > d {
+            return Result::Err("stack underflow at instruction {pc} of " + f.name)
+        }
+        let nd = d - pops + pushes
+        if nd > maxd {
+            maxd = nd
+        }
+        let mut succ = [pc + 1]
+        if op.k == "Jump" {
+            succ = [op.n]
+        } else if op.k == "JumpIfFalse" {
+            succ = [op.n, pc + 1]
+        } else if op.k == "Ret" {
+            succ = []
+        }
+        for s in succ {
+            if depth[s] == -1 {
+                depth = std::array::set(depth, s, nd)
+                work = std::array::push(work, s)
+            } else if depth[s] != nd {
+                let have = depth[s]
+                return Result::Err("stack depth mismatch at instruction {s} of " + f.name + " ({have} vs {nd})")
+            }
+        }
+    }
+    Result::Ok((depth, maxd))
+}
+
+// ------------------------------------------------------------ funciones
+
+fn lv_function(b0: Lv, ctx0: LvCtx, f: Func, label: string) -> Lv {
+    let mut locals = f.locals
+    if f.arity + f.captures > locals {
+        locals = f.arity + f.captures
+    }
+    let mut depth = []
+    let mut maxd = 0
+    match lv_depths(f) {
+        Result::Ok(r) => {
+            let (dd, mm) = r
+            depth = dd
+            maxd = mm
+        },
+        Result::Err(message) => {
+            return lv_err(b0, message)
+        },
+    }
+    let ctx = LvCtx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, target: ctx0.target, depth: depth, maxd: maxd, bare: ctx0.bare }
+    let a = f.arity
+    let c = f.captures
+    let mut params = "i64 %clo"
+    let mut i = 0
+    while i < a {
+        params += ", i64 %a{i}t, i64 %a{i}b"
+        i += 1
+    }
+    let mut b = lv_e(b0, "")
+    b = lv_e(b, "; " + f.name)
+    let mut open = ""
+    open += '{'
+    b = lv_e(b, "define internal fastcc %V @" + label + "(" + params + ") " + open)
+    b = lv_e(b, "entry:")
+    b = lv_e(b, "  %rT = alloca i64")
+    b = lv_e(b, "  %rB = alloca i64")
+    i = 0
+    while i < maxd {
+        b = lv_e(b, "  %sT{i} = alloca i64")
+        b = lv_e(b, "  %sB{i} = alloca i64")
+        i += 1
+    }
+    i = 0
+    while i < locals {
+        b = lv_e(b, "  %lT{i} = alloca i64")
+        b = lv_e(b, "  %lB{i} = alloca i64")
+        i += 1
+    }
+    // Un registro de std::try::catch por cada TryCall (ver lv_op).
+    i = 0
+    for op in f.code {
+        if op.k == "TryCall" {
+            b = lv_e(b, "  %tj{i} = alloca [24 x i64], align 16")
+        }
+        i += 1
+    }
+    if !ctx.runtime {
+        b = lv_e(b, "  %dp = getelementptr i8, ptr @G, i64 16")
+        b = lv_e(b, "  %d0 = load i64, ptr %dp")
+        b = lv_e(b, "  %dl = icmp sge i64 %d0, 4096")
+        b = lv_cond(b, "%dl", "deep", "start")
+        b = lv_label(b, "deep")
+        b = lv_raise(b, "g_depth")
+        b = lv_label(b, "start")
+        b = lv_e(b, "  %d1 = add i64 %d0, 1")
+        b = lv_e(b, "  store i64 %d1, ptr %dp")
+    }
+    i = c + a
+    while i < locals {
+        b = lv_lput(b, i, "0", "0")
+        i += 1
+    }
+    i = 0
+    while i < c {
+        b = lv_load(b, "%c{i}t", "%clo", 48 + 16 * i)
+        b = lv_load(b, "%c{i}b", "%clo", 56 + 16 * i)
+        b = lv_lput(b, i, "%c{i}t", "%c{i}b")
+        b = lv_inc(b, "%c{i}t", "%c{i}b")
+        i += 1
+    }
+    i = 0
+    while i < a {
+        let s = c + i
+        b = lv_lput(b, s, "%a{i}t", "%a{i}b")
+        i += 1
+    }
+    b = lv_br_to(b, "pc0")
+    let (bh, head) = lv_flush(b)
+    b = bh
+    let mut text = head
+    let mut pc = 0
+    for op in f.code {
+        b = lv_op(b, ctx, op, pc)
+        let (bo, piece) = lv_flush(b)
+        b = bo
+        text += piece
+        pc += 1
+    }
+    // Salir por el final devuelve la cima o nil, como la VM.
+    let total = len(f.code)
+    b = lv_label(b, "pc{total}")
+    let dt = depth[total]
+    if dt < 0 {
+        b = lv_e(b, "  unreachable")
+    } else {
+        b = lv_ret(b, "%tail_", dt)
+    }
+    // Epílogo: suelta las variables locales y descuenta la profundidad.
+    b = lv_label(b, "epi")
+    i = 0
+    while i < locals {
+        b = lv_lget(b, "%e{i}", i)
+        b = lv_dec(b, "%e{i}t", "%e{i}b")
+        i += 1
+    }
+    if !ctx.runtime {
+        b = lv_e(b, "  %x0 = load i64, ptr %dp")
+        b = lv_e(b, "  %x1 = sub i64 %x0, 1")
+        b = lv_e(b, "  store i64 %x1, ptr %dp")
+    }
+    b = lv_e(b, "  %rt = load i64, ptr %rT")
+    b = lv_e(b, "  %rb = load i64, ptr %rB")
+    b = lv_e(b, "  %r0 = insertvalue %V undef, i64 %rt, 0")
+    b = lv_e(b, "  %r1 = insertvalue %V %r0, i64 %rb, 1")
+    b = lv_e(b, "  ret %V %r1")
+    let mut close = ""
+    close += '}'
+    b = lv_e(b, close)
+    let (bt, tail) = lv_flush(b)
+    text += tail
+    lv_e(bt, text)
+}
+
+// ------------------------------------------------------------ módulo
+
+fn lv_hex2(v: int) -> string {
+    let digits = "0123456789ABCDEF"
+    std::text::substring(digits, v / 16, v / 16 + 1) + std::text::substring(digits, v % 16, v % 16 + 1)
+}
+
+// Bytes como constante c"..." de LLVM.
+fn lv_cbytes(bytes: array) -> string {
+    let mut parts = []
+    for v in bytes {
+        if v >= 32 && v < 127 && v != 34 && v != 92 {
+            let mut ch = ""
+            ch += std::text::from_char_code(v)
+            parts = std::array::push(parts, ch)
+        } else {
+            parts = std::array::push(parts, "\\" + lv_hex2(v))
+        }
+    }
+    "c\"" + std::collections::join(parts, "") + "\""
+}
+
+// Código de apoyo: refcount, errores, llamadas al sistema y el arranque.
+fn lv_glue(ctx: LvCtx) -> array {
+    let free = lv_rt(ctx, "rt_free")
+    let fatal = lv_rt(ctx, "rt_fatal")
+    let finish = lv_rt(ctx, "rt_finish")
+    let mut close = ""
+    close += '}'
+    let mut l = []
+    // g_inc / g_dec: la cuenta está en la primera palabra del objeto; solo
+    // cuentan las etiquetas >= 5 con cuenta >= 1 (las estáticas tienen -1).
+    l = std::array::push(l, "define internal fastcc void @g_inc(i64 %t, i64 %v) alwaysinline " + lv_br("\n  %o = icmp sge i64 %t, 5\n  br i1 %o, label %obj, label %out\nobj:\n  %p = inttoptr i64 %v to ptr\n  %c = load i64, ptr %p\n  %live = icmp sge i64 %c, 1\n  br i1 %live, label %add, label %out\nadd:\n  %c1 = add i64 %c, 1\n  store i64 %c1, ptr %p\n  br label %out\nout:\n  ret void\n"))
+    l = std::array::push(l, "define internal fastcc void @g_dec(i64 %t, i64 %v) " + lv_br("\n  %o = icmp sge i64 %t, 5\n  br i1 %o, label %obj, label %out\nobj:\n  %p = inttoptr i64 %v to ptr\n  %c = load i64, ptr %p\n  %live = icmp sge i64 %c, 1\n  br i1 %live, label %chk, label %out\nchk:\n  %last = icmp eq i64 %c, 1\n  br i1 %last, label %free, label %sub\nsub:\n  %c1 = sub i64 %c, 1\n  store i64 %c1, ptr %p\n  br label %out\nfree:\n  store i64 0, ptr %p\n  %r = call fastcc %V @" + free + "(i64 0, i64 1, i64 %t, i64 1, i64 %v)\n  br label %out\nout:\n  ret void\n"))
+    l = std::array::push(l, "define internal fastcc void @g_raise(i64 %m) noreturn noinline cold " + lv_br("\n  %r = call fastcc %V @" + fatal + "(i64 0, i64 5, i64 %m)\n  unreachable\n"))
+    // Los mensajes de error como strings estáticos propios.
+    for pair in [("g_overflow", "integer overflow"), ("g_divzero", "division by zero"), ("g_depth", "call depth limit exceeded")] {
+        let (label, message) = pair
+        let bytes = bk_utf8(message)
+        let nb = len(bytes)
+        let ty = lv_br("i64, i64, [{nb} x i8]")
+        l = std::array::push(l, "@" + label + ".msg = internal global " + ty + " " + lv_br("i64 -1, i64 {nb}, [{nb} x i8] " + lv_cbytes(bytes)) + ", align 16")
+        l = std::array::push(l, "define internal fastcc void @" + label + "() noreturn noinline cold " + lv_br("\n  call fastcc void @g_raise(i64 ptrtoint (ptr @" + label + ".msg to i64))\n  unreachable\n"))
+    }
+    // t_setjmp / t_longjmp propios (para std::try::catch): guardan y
+    // restauran los registros que conserva una llamada (callee-saved), la
+    // pila y la dirección de vuelta. Se escriben a mano porque
+    // llvm.eh.sjlj.setjmp no hace nada en AArch64 (devuelve siempre 0).
+    l = std::array::push(l, "declare i64 @t_setjmp(ptr) returns_twice nounwind")
+    l = std::array::push(l, "declare void @t_longjmp(ptr) noreturn nounwind")
+    let mut sj = []
+    if ctx.target == "x86_64" {
+        sj = [".text", ".globl t_setjmp", "t_setjmp:", "  movq %rbx, 0(%rdi)", "  movq %rbp, 8(%rdi)", "  movq %r12, 16(%rdi)", "  movq %r13, 24(%rdi)", "  movq %r14, 32(%rdi)", "  movq %r15, 40(%rdi)", "  leaq 8(%rsp), %rdx", "  movq %rdx, 48(%rdi)", "  movq (%rsp), %rdx", "  movq %rdx, 56(%rdi)", "  xorl %eax, %eax", "  ret", ".globl t_longjmp", "t_longjmp:", "  movq 0(%rdi), %rbx", "  movq 8(%rdi), %rbp", "  movq 16(%rdi), %r12", "  movq 24(%rdi), %r13", "  movq 32(%rdi), %r14", "  movq 40(%rdi), %r15", "  movq 48(%rdi), %rsp", "  movl $1, %eax", "  jmpq *56(%rdi)"]
+    } else {
+        sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stp x19, x20, [x0]", "  stp x21, x22, [x0, #16]", "  stp x23, x24, [x0, #32]", "  stp x25, x26, [x0, #48]", "  stp x27, x28, [x0, #64]", "  stp x29, x30, [x0, #80]", "  mov x2, sp", "  str x2, [x0, #96]", "  stp d8, d9, [x0, #104]", "  stp d10, d11, [x0, #120]", "  stp d12, d13, [x0, #136]", "  stp d14, d15, [x0, #152]", "  mov x0, #0", "  ret", ".globl t_longjmp", "t_longjmp:", "  ldp x19, x20, [x0]", "  ldp x21, x22, [x0, #16]", "  ldp x23, x24, [x0, #32]", "  ldp x25, x26, [x0, #48]", "  ldp x27, x28, [x0, #64]", "  ldp x29, x30, [x0, #80]", "  ldr x2, [x0, #96]", "  mov sp, x2", "  ldp d8, d9, [x0, #104]", "  ldp d10, d11, [x0, #120]", "  ldp d12, d13, [x0, #136]", "  ldp d14, d15, [x0, #152]", "  mov x0, #1", "  ret"]
+    }
+    for line in sj {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    if ctx.target == "x86_64" {
+        let cons = "\"=" + lv_br("rax") + "," + lv_br("rax") + "," + lv_br("rdi") + "," + lv_br("rsi") + "," + lv_br("rdx") + "," + lv_br("r10") + "," + lv_br("r8") + "," + lv_br("r9") + ",~" + lv_br("rcx") + ",~" + lv_br("r11") + ",~" + lv_br("memory") + "\""
+        l = std::array::push(l, "define internal i64 @lv_syscall(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) alwaysinline " + lv_br("\n  %r = call i64 asm sideeffect \"syscall\", " + cons + "(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f)\n  ret i64 %r\n"))
+        // _start: la pila inicial (argc, argv, entorno) va a lv_start.
+        l = std::array::push(l, "module asm \".globl _start\"")
+        l = std::array::push(l, "module asm \"_start:\"")
+        l = std::array::push(l, "module asm \"  mov %rsp, %rdi\"")
+        l = std::array::push(l, "module asm \"  call lv_start\"")
+        l = std::array::push(l, "module asm \"  ud2\"")
+        // lv_start: globales, pila propia de 1 GiB (reservada) y lv_main en ella.
+        l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
+    } else if ctx.bare {
+        l = std::array::concat(l, lv_bare_prologue(lv_rt(ctx, "rt_bare_exception")))
+    } else {
+        // AArch64: número en x8, argumentos en x0-x5, resultado en x0.
+        let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
+        l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) alwaysinline " + lv_br("\n  %r = call i64 asm sideeffect \"svc #0\", " + cons + "(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f)\n  ret i64 %r\n"))
+        l = std::array::push(l, "module asm \".globl _start\"")
+        l = std::array::push(l, "module asm \"_start:\"")
+        l = std::array::push(l, "module asm \"  mov x0, sp\"")
+        l = std::array::push(l, "module asm \"  bl lv_start\"")
+        l = std::array::push(l, "module asm \"  brk #0\"")
+        // mmap de ARM64 = 222; mismas banderas.
+        l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_svc(i64 222, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov sp, $0\\0Abl lv_main\\0Abrk #0\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
+    }
+    l
+}
+
+// Registros del procesador para std::raw::sysreg / set_sysreg (solo ARM64;
+// en x86-64 no existen y la llamada es una trampa, nunca un valor inventado;
+// el runtime solo las usa con std::raw::bare() == 1).
+//   1 cntvct_el0 (L)  2 cntfrq_el0 (L)  3 vbar_el1  4 esr_el1 (L)
+//   5 far_el1 (L)     6 elr_el1         7 spsr_el1  8 sctlr_el1
+//   9 ttbr0_el1       10 tcr_el1        11 mair_el1 12 cpacr_el1
+//   13 daif           14 currentel (L)
+//   set_sysreg(100, _): invalida la TLB (tras cambiar tablas de páginas).
+//   set_sysreg(101, dirección): lleva a memoria la línea de caché de datos
+//   (dc cvau); set_sysreg(102, _): invalida la caché de instrucciones (tras
+//   escribir código, p. ej. la tabla de vectores copiada).
+fn lv_sysreg_names() -> array {
+    ["", "cntvct_el0", "cntfrq_el0", "vbar_el1", "esr_el1", "far_el1", "elr_el1", "spsr_el1", "sctlr_el1", "ttbr0_el1", "tcr_el1", "mair_el1", "cpacr_el1", "daif", "currentel"]
+}
+
+fn lv_sysreg_writable(k: int) -> bool {
+    k == 3 || (k >= 6 && k <= 13)
+}
+
+fn lv_sysreg_helpers(arch: string) -> array {
+    let mut l = []
+    if arch != "aarch64" {
+        l = std::array::push(l, "define internal i64 @lv_sysreg(i64 %k) noinline " + lv_br("\n  call void @llvm.trap()\n  unreachable\n"))
+        l = std::array::push(l, "define internal void @lv_set_sysreg(i64 %k, i64 %v) noinline " + lv_br("\n  call void @llvm.trap()\n  unreachable\n"))
+        return l
+    }
+    let names = lv_sysreg_names()
+    let mut rd = "\n  switch i64 %k, label %bad ["
+    let mut wr = "\n  switch i64 %k, label %bad ["
+    let mut k = 1
+    while k < len(names) {
+        rd += " i64 {k}, label %r{k}"
+        if lv_sysreg_writable(k) {
+            wr += " i64 {k}, label %w{k}"
+        }
+        k += 1
+    }
+    rd += " ]\n"
+    wr += " i64 100, label %tlb i64 101, label %dc i64 102, label %ic ]\n"
+    k = 1
+    while k < len(names) {
+        let n = names[k]
+        rd += "r{k}:\n  %v{k} = call i64 asm sideeffect \"mrs $0, " + n + "\", \"=r\"()\n  ret i64 %v{k}\n"
+        if lv_sysreg_writable(k) {
+            wr += "w{k}:\n  call void asm sideeffect \"msr " + n + ", $0\\0Aisb\", \"r,~" + lv_br("memory") + "\"(i64 %v)\n  ret void\n"
+        }
+        k += 1
+    }
+    rd += "bad:\n  call void @llvm.trap()\n  unreachable\n"
+    wr += "tlb:\n  call void asm sideeffect \"dsb ishst\\0Atlbi vmalle1is\\0Adsb ish\\0Aisb\", \"~" + lv_br("memory") + "\"()\n  ret void\n"
+    wr += "dc:\n  call void asm sideeffect \"dc cvau, $0\", \"r,~" + lv_br("memory") + "\"(i64 %v)\n  ret void\n"
+    wr += "ic:\n  call void asm sideeffect \"dsb ish\\0Aic iallu\\0Adsb ish\\0Aisb\", \"~" + lv_br("memory") + "\"()\n  ret void\n"
+    wr += "bad:\n  call void @llvm.trap()\n  unreachable\n"
+    l = std::array::push(l, "define internal i64 @lv_sysreg(i64 %k) noinline " + lv_br(rd))
+    l = std::array::push(l, "define internal void @lv_set_sysreg(i64 %k, i64 %v) noinline " + lv_br(wr))
+    l
+}
+
+// Arranque sin sistema operativo (aarch64-none, máquina "virt" de QEMU o
+// equivalente: RAM desde 0x40000000, UART PL011 en 0x09000000, PSCI por hvc).
+// El _start lo escribe std::freestanding::generate_startup_asm (pila en
+// _stack_top, .bss a cero, salto a lv_bare_start); el enlazado usa el guion
+// de std::freestanding::generate_linker_script (build_llvm lo escribe junto
+// al .ll). lv_bare_start activa la coma flotante (CPACR_EL1) y la MMU con una
+// tabla de páginas de verdad (bloques de 1 GiB con identidad: el primero como
+// dispositivo, sin ejecutar; los otros tres como memoria normal con caché;
+// MAIR 0xFF00, TCR 0x1_8080_3519: T0SZ=25, páginas de 4 KiB en las dos
+// mitades (TG1=0 está reservado y el procesador no traduce nada), la alta
+// desactivada (EPD1), direcciones físicas de 36 bits) y SCTLR_EL1 con un valor completo conocido (bits RES1 0x30D00800 +
+// M, C, I; sin WXN ni comprobación de alineación, cuyo valor al arrancar es
+// desconocido) y
+// sigue en lv_bare_init: argumentos vacíos, zona de memoria desde
+// __kernel_end hasta 0x80000000 (globals + 3000 / + 3008) y lv_main.
+fn lv_bare_prologue(exc: string) -> array {
+    let mut l = []
+    for line in std::text::lines(std::freestanding::generate_startup_asm("aarch64-unknown-none", "lv_bare_start")) {
+        if std::text::length(line) > 0 {
+            l = std::array::push(l, "module asm \"" + lv_asm_escape(line) + "\"")
+        }
+    }
+    let asm = [".text", ".globl lv_bare_start", "lv_bare_start:",
+        "  mov x0, #0x300000", "  msr cpacr_el1, x0", "  isb",
+        "  adrp x0, lv_bare_l1", "  add x0, x0, :lo12:lv_bare_l1",
+        "  movz x1, #0x401", "  movk x1, #0x60, lsl #48", "  str x1, [x0]",
+        "  movz x1, #0x705", "  movk x1, #0x4000, lsl #16", "  str x1, [x0, #8]",
+        "  movz x1, #0x705", "  movk x1, #0x8000, lsl #16", "  str x1, [x0, #16]",
+        "  movz x1, #0x705", "  movk x1, #0xc000, lsl #16", "  str x1, [x0, #24]",
+        "  dsb sy",
+        "  msr ttbr0_el1, x0",
+        "  movz x1, #0xff00", "  msr mair_el1, x1",
+        "  movz x1, #0x3519", "  movk x1, #0x8080, lsl #16", "  movk x1, #1, lsl #32", "  msr tcr_el1, x1",
+        "  isb",
+        "  tlbi vmalle1", "  dsb sy", "  isb",
+        "  movz x1, #0x1805", "  movk x1, #0x30d0, lsl #16",
+        "  msr sctlr_el1, x1", "  isb",
+        "  adrp x0, lv_vectors", "  add x0, x0, :lo12:lv_vectors", "  msr vbar_el1, x0", "  isb",
+        "  b lv_bare_init",
+        ".bss", ".balign 4096", "lv_bare_l1:", "  .space 4096", ".text"]
+    for line in asm {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    // svc #0 (lo usa std::freestanding_cpu::invoke_syscall: trampa de verdad
+    // hacia la tabla de vectores).
+    let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
+    l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) noinline " + lv_br("\n  %r = call i64 asm sideeffect \"svc #0\", " + cons + "(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f)\n  ret i64 %r\n"))
+    for line in lv_bare_vectors() {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    // lv_exception: la tabla de vectores llega aquí (convención de C) y pasa
+    // al runtime en Titan, que devuelve la dirección donde seguir.
+    l = std::array::push(l, "define i64 @lv_exception(i64 %k, i64 %esr, i64 %far, i64 %elr, i64 %fr) noinline " + lv_br("\n  %r = call fastcc %V @" + exc + "(i64 0, i64 1, i64 %k, i64 1, i64 %esr, i64 1, i64 %far, i64 1, i64 %elr, i64 1, i64 %fr)\n  %v = extractvalue %V %r, 1\n  ret i64 %v\n"))
+    l = std::array::push(l, "@lv_bare_args = internal global [4 x i64] zeroinitializer, align 16")
+    l = std::array::push(l, "@__kernel_end = external global i8")
+    l = std::array::push(l, "@lv_vectors = external global i8")
+    l = std::array::push(l, "define void @lv_bare_init() noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 ptrtoint (ptr @lv_bare_args to i64), ptr %g\n  %e = ptrtoint ptr @__kernel_end to i64\n  %e1 = add i64 %e, 4095\n  %e2 = and i64 %e1, -4096\n  %h = getelementptr i8, ptr @G, i64 3000\n  store i64 %e2, ptr %h\n  %he = getelementptr i8, ptr @G, i64 3008\n  store i64 2147483648, ptr %he\n  %vt = getelementptr i8, ptr @G, i64 3024\n  store i64 ptrtoint (ptr @lv_vectors to i64), ptr %vt\n  call void @lv_main()\n  unreachable\n"))
+    l
+}
+
+// Tabla de vectores de excepción (16 entradas de 128 bytes, alineada a 2 KiB,
+// independiente de la posición: std::freestanding_cpu::init_exception_table
+// la copia donde diga el programa y la pone en VBAR_EL1). Cada entrada reserva
+// el marco de 800 bytes, guarda x0/x1, pone su número en x0 y salta a
+// lv_exc_common, que guarda el resto (x2-x30, ELR, SPSR y q0-q31), llama a
+// lv_exception(número, ESR, FAR, ELR, marco) y vuelve con eret a la dirección
+// que devuelve (el marco puede haber cambiado, p. ej. x0 con el resultado de
+// una llamada al sistema).
+fn lv_bare_vectors() -> array {
+    let mut l = [".text", ".balign 2048", ".globl lv_vectors", "lv_vectors:"]
+    let mut k = 0
+    while k < 16 {
+        l = std::array::concat(l, ["  .balign 128", "  sub sp, sp, #800", "  stp x0, x1, [sp, #0]", "  mov x0, #{k}", "  ldr x1, 1f", "  br x1", "  .balign 8", "1:  .quad lv_exc_common"])
+        k += 1
+    }
+    l = std::array::concat(l, [".balign 4", "lv_exc_common:"])
+    let mut r = 2
+    while r < 30 {
+        let o = 8 * r
+        let r1 = r + 1
+        l = std::array::push(l, "  stp x{r}, x{r1}, [sp, #{o}]")
+        r += 2
+    }
+    l = std::array::concat(l, ["  mrs x2, elr_el1", "  mrs x3, spsr_el1", "  stp x30, x2, [sp, #240]", "  str x3, [sp, #256]"])
+    let mut q = 0
+    while q < 32 {
+        let o = 272 + 16 * q
+        let q1 = q + 1
+        l = std::array::push(l, "  stp q{q}, q{q1}, [sp, #{o}]")
+        q += 2
+    }
+    l = std::array::concat(l, ["  mov x4, sp", "  mrs x1, esr_el1", "  mrs x2, far_el1", "  ldr x3, [sp, #248]", "  bl lv_exception", "  str x0, [sp, #248]"])
+    q = 0
+    while q < 32 {
+        let o = 272 + 16 * q
+        let q1 = q + 1
+        l = std::array::push(l, "  ldp q{q}, q{q1}, [sp, #{o}]")
+        q += 2
+    }
+    l = std::array::concat(l, ["  ldr x3, [sp, #256]", "  msr spsr_el1, x3", "  ldr x2, [sp, #248]", "  msr elr_el1, x2", "  ldr x30, [sp, #240]"])
+    r = 2
+    while r < 30 {
+        let o = 8 * r
+        let r1 = r + 1
+        l = std::array::push(l, "  ldp x{r}, x{r1}, [sp, #{o}]")
+        r += 2
+    }
+    l = std::array::concat(l, ["  ldp x0, x1, [sp, #0]", "  add sp, sp, #800", "  eret"])
+    l
+}
+
+fn lv_asm_escape(s: string) -> string {
+    std::text::replace(std::text::replace(s, "\\", "\\5C"), "\"", "\\22")
+}
+
+// Programa (gu) + runtime (gr) -> Result::Ok(texto .ll) o Err(mensajes).
+fn lv_build(gu: G, gr: G, target: string) -> Result {
+    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" {
+        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64 or aarch64-none)")
+    }
+    // aarch64-none: ARM64 sin sistema operativo (arranca sola; ver
+    // lv_bare_prologue y native/sys_bare.titan).
+    let bare = target == "aarch64-none"
+    let mut arch = target
+    if bare {
+        arch = "aarch64"
+    }
+    let (rt, rt_arity) = bk_rt_tables(gr)
+    let uctx = LvCtx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, target: arch, depth: [], maxd: 0, bare: bare }
+    let rctx = LvCtx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, target: arch, depth: [], maxd: 0, bare: bare }
+    let mut b = lv_new()
+    let mut parts = []
+    // Funciones del apoyo que llaman al runtime.
+    let mut seeds = ["rt_free", "rt_fatal", "rt_finish"]
+    if bare {
+        seeds = std::array::push(seeds, "rt_bare_exception")
+    }
+    for name in seeds {
+        let label = lv_rt(rctx, name)
+        if std::text::starts_with(label, "missing:") {
+            b = lv_err(b, "native runtime function '" + name + "' not found")
+        } else {
+            b = lv_ref(b, label)
+        }
+    }
+    let mut all_refs = []
+    let mut i = 0
+    for f in gu.funcs {
+        b = lv_function(b, uctx, f, "u{i}")
+        let (bf, piece) = lv_flush(b)
+        let (br, refs) = lv_take_refs(bf)
+        b = br
+        parts = std::array::push(parts, piece)
+        all_refs = std::array::concat(all_refs, refs)
+        i += 1
+    }
+    // Del runtime solo las funciones que se usan.
+    let mut emitted = std::map::new()
+    let mut scan = 0
+    while scan < len(all_refs) {
+        let target_label = all_refs[scan]
+        scan += 1
+        if !bk_is_rt_label(target_label) || std::map::contains(emitted, target_label) {
+            continue
+        }
+        emitted = std::map::insert(emitted, target_label, true)
+        let f = gr.funcs[bk_label_index(target_label)]
+        b = lv_function(b, rctx, f, target_label)
+        let (bf, piece) = lv_flush(b)
+        let (br, refs) = lv_take_refs(bf)
+        b = br
+        parts = std::array::push(parts, piece)
+        all_refs = std::array::concat(all_refs, refs)
+    }
+    let mut errors = []
+    let mut seen = std::map::new()
+    for e in b.errs {
+        if !std::map::contains(seen, e) {
+            errors = std::array::push(errors, e)
+            seen = std::map::insert(seen, e, true)
+        }
+    }
+    if len(errors) > 0 {
+        return Result::Err(bk_join(errors, "\n"))
+    }
+    let mut head = []
+    head = std::array::push(head, "; Generado por selfhost/native/llvm.titan (compilador de Titan escrito en Titan).")
+    if bare {
+        head = std::array::push(head, "target triple = \"aarch64-unknown-none\"")
+    } else {
+        head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
+    }
+    head = std::array::push(head, "%V = type " + lv_br(" i64, i64 "))
+    head = std::array::push(head, "%O = type " + lv_br(" i64, i1 "))
+    head = std::array::push(head, "%P = type " + lv_br(" i32, i32 "))
+    head = std::array::push(head, "%Q = type " + lv_br(" i32, i32, i32, i32 "))
+    head = std::array::push(head, "@G = internal global [4096 x i8] zeroinitializer, align 16")
+    head = std::array::push(head, "declare %O @llvm.sadd.with.overflow.i64(i64, i64)")
+    head = std::array::push(head, "declare %O @llvm.ssub.with.overflow.i64(i64, i64)")
+    head = std::array::push(head, "declare %O @llvm.smul.with.overflow.i64(i64, i64)")
+    head = std::array::push(head, "declare double @llvm.sqrt.f64(double)")
+    head = std::array::push(head, "declare double @llvm.fma.f64(double, double, double)")
+    head = std::array::push(head, "declare void @llvm.trap()")
+    head = std::array::concat(head, lv_sysreg_helpers(arch))
+    // Strings estáticos: [cuenta -1][longitud][bytes].
+    let mut id = 0
+    for t in b.stxt {
+        let bytes = bk_utf8(t)
+        let nb = len(bytes)
+        let ty = lv_br("i64, i64, [{nb} x i8]")
+        head = std::array::push(head, "@s.{id} = internal global " + ty + " " + lv_br("i64 -1, i64 {nb}, [{nb} x i8] " + lv_cbytes(bytes)) + ", align 16")
+        id += 1
+    }
+    for line in b.odef {
+        head = std::array::push(head, line)
+    }
+    for line in lv_glue(rctx) {
+        head = std::array::push(head, line)
+    }
+    // lv_main: el main del programa y rt_finish con su resultado.
+    let entry = gu.entry
+    let finish = lv_rt(rctx, "rt_finish")
+    head = std::array::push(head, "define void @lv_main() noreturn noinline " + lv_br("\n  %r = call fastcc %V @u{entry}(i64 0)\n  %t = extractvalue %V %r, 0\n  %v = extractvalue %V %r, 1\n  %f = call fastcc %V @" + finish + "(i64 0, i64 %t, i64 %v)\n  unreachable\n"))
+    let all = std::array::concat([std::collections::join(head, "\n")], parts)
+    Result::Ok(std::collections::join(all, "\n") + "\n")
+}

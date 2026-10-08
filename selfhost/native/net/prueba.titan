@@ -1,0 +1,19 @@
+// Lee URLs (una por línea) del archivo del primer argumento e imprime lo que
+// devuelve std::net::http_get para cada una (cuerpo como texto).
+fn main() {
+    let args = std::env::args()
+    let text = std::fs::read_text(args[len(args) - 1])
+    for url in std::text::lines(text) {
+        if len(url) == 0 {
+            continue
+        }
+        let r = std::try::catch(|| { std::net::http_get(url) })
+        match r {
+            Result::Ok(v) => {
+                let body = std::map::get(v, "body")
+                println(url + " -> " + std::json::stringify(std::map::get(v, "status")) + " " + std::encoding::utf8_decode(body))
+            }
+            Result::Err(e) => println(url + " ERR " + e),
+        }
+    }
+}

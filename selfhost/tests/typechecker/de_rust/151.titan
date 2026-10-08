@@ -1,0 +1,1 @@
+fn main() { let mut value = "text" value -= 1 }

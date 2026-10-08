@@ -1,0 +1,1 @@
+struct Item { value: int } fn halt() -> ! { Item { value: loop {} } } fn main() {}
