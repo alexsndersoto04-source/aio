@@ -14,7 +14,7 @@
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
     <a href="../index.html#instalar">Instalación</a>
@@ -112,7 +112,10 @@ python3 -m http.server 8080
 <p>Type metadata <code>BytecodeType::Map</code> and <code>BytecodeType::MapOf(key_type, value_type)</code> (<code>MapOf(String, T)</code>) is fully integrated into the Wasm stack analysis (<code>ValueKind::Map(Some(Box::new(T)))</code>). When a map is passed as a parameter or returned across calls, its exact value type (<code>T</code>) is preserved. Native operations (<code>std::map::get</code>, <code>values</code>) propagate this metadata statically, allowing safe chains such as <code>std::map::get(map, "item").field</code>. Furthermore, <code>ValueKind::Struct</code> captures field-specific types (<code>BTreeMap&lt;String, ValueKind&gt;</code>), so maps nested within Structs (<code>struct.map_field</code>), Arrays (<code>array[index]</code>), or Enums (<code>variant_payload</code>) maintain full type safety across host boundaries. Managed maps interoperate directly with browser DOM host calls (<code>query_exists</code>, <code>set_text</code>, <code>listen</code>, <code>request</code>), enabling fully integrated browser applications with stateful Wasm memory. Tracing reclamation remains pending; heap limits, telemetry and scopes apply.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/WASM.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">
   <div class="foot-cols">
-    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
     <div><h4>Proyecto</h4>
       <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
       <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>

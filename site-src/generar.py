@@ -3,7 +3,7 @@
 
 Uso (desde la raíz del repositorio):
     python3 site-src/generar.py [variante] [carpeta_de_salida]
-        variante: claro (por defecto) o grafito; carpeta por defecto: site/
+        variante: claro (por defecto); carpeta por defecto: site/
 Requiere el paquete `markdown` (pip install markdown).
 
 Los ejemplos de código están en site-src/ejemplos/*.titan y se ejecutaron con `titan run`;
@@ -233,6 +233,7 @@ escribir("documentacion.html", render(cabecera("Documentación — Titan", "Guí
 # ---------------------------------------------------------------- estilos y recursos
 css = leer(os.path.join(AQUI, "estilos", "base.css")) + "\n" + leer(os.path.join(AQUI, "estilos", VARIANTE + ".css"))
 escribir("style.css", css)
-shutil.copy(os.path.join(AQUI, "favicon.svg"), os.path.join(SALIDA, "favicon.svg"))
+for destino in ("favicon.svg", "zett-marca.svg"):
+    shutil.copy(os.path.join(AQUI, "recursos", "zett-marca.svg"), os.path.join(SALIDA, destino))
 open(os.path.join(SALIDA, ".nojekyll"), "w").close()
 print("ok", VARIANTE, SALIDA)
