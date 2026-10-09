@@ -5,8 +5,8 @@ examples
 docs
 stdlib
 scripts
-frontend/node_modules
-frontend/dist
+projects/moon/frontend/node_modules
+projects/moon/frontend/dist
 selfhost/tests
 selfhost/titanc0
 selfhost/titanc1
@@ -15,5 +15,3 @@ selfhost/titanc3
 selfhost/titan
 *.log
 CHANGELOG.md
-INFORME_PROYECTOS.md
-MOON_ERRORES.md

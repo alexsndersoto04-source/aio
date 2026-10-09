@@ -5,11 +5,14 @@ Uso: python3 site-src/generar.py   (desde la raíz del repositorio)
 Los ejemplos de código están en site-src/ejemplos/*.titan y se ejecutaron con `titan run`;
 la salida mostrada junto a cada uno es la real (site-src/ejemplos/*.out).
 """
-import html, os, re
+import html, os, re, shutil, sys
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(AQUI)
-SALIDA = os.path.join(RAIZ, "site")
+# Uso: generar.py [variante] [carpeta_de_salida]   (variante: a, b o c; por defecto la elegida: a)
+VARIANTE = sys.argv[1] if len(sys.argv) > 1 else "a"
+SALIDA = sys.argv[2] if len(sys.argv) > 2 else os.path.join(RAIZ, "site")
+os.makedirs(SALIDA, exist_ok=True)
 REPO = "https://github.com/alexsndersoto04-source/aio"
 
 
@@ -72,4 +75,9 @@ pagina("index.html", "Titan — lenguaje de programación",
 pagina("biblioteca.html", "Biblioteca estándar — Titan",
        "Las 812 funciones de la biblioteca estándar de Titan, agrupadas en 73 espacios de nombres.",
        leer(os.path.join(AQUI, "plantillas", "biblioteca.html")).replace("{{FILAS}}", filas_biblioteca()))
-print("ok")
+css = leer(os.path.join(AQUI, "estilos", "base.css")) + "\n" + leer(os.path.join(AQUI, "estilos", VARIANTE + ".css"))
+with open(os.path.join(SALIDA, "style.css"), "w", encoding="utf-8") as f:
+    f.write(css)
+shutil.copy(os.path.join(AQUI, "favicon.svg"), os.path.join(SALIDA, "favicon.svg"))
+open(os.path.join(SALIDA, ".nojekyll"), "w").close()
+print("ok", VARIANTE, SALIDA)

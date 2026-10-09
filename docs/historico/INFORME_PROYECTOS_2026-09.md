@@ -1,5 +1,7 @@
 # Informe de magnitud y estado — TITAN/Zett + Moon
 
+> **Documento histórico.** Se escribió cuando Titan era un prototipo en Rust (herramientas `zett`, `cargo`, VM). Se conserva como registro; lo vigente y verificado está en [`selfhost/ESTADO.md`](../../selfhost/ESTADO.md).
+
 **Fecha:** 12 de septiembre de 2026
 **Repositorio:** `alexsndersoto04-source/aio` (commit base `966e7d0`, rama de trabajo `arena/01a09451-aio`)
 **Método:** medición directa sobre el código (LOC, tablas de símbolos, dependencias, workflows, releases vía API de GitHub), más ejecución real de lo que sí se podía ejecutar en este entorno (build del frontend, verificador estático del propio repo, consultas a la API de GitHub).
@@ -163,7 +165,7 @@ Una red social web "de nivel startup": registro/login con 2FA, posts con fotos, 
 > es prefijo y no continúa la línea anterior), más dos ajustes en el código de
 > Moon (el hub de tiempo real es un `Sender`; dos `match` sobre valores
 > dinámicos llevan brazo `_`). Detalle uno por uno y pruebas nuevas (6 del
-> comprobador, 2 del parser) en [`MOON_ERRORES.md`](MOON_ERRORES.md).
+> comprobador, 2 del parser) en [`MOON_ERRORES.md`](../../projects/moon/historial/MOON_ERRORES_2026-09.md).
 >
 > Queda un solo paso para «funcional»: **correrlo contra Postgres real**. El
 > arnés (`ops/`, `test/e2e.mjs`, `LOCAL.md`) ya está en esta rama; no se pudo
@@ -268,7 +270,7 @@ Traducción: **Moon tiene tests end-to-end y un entorno local reproducible, pero
 
 ### P0 — Desbloquear (esta semana)
 1. ✅ **HECHO (12-sep):** Moon compila — `zett check` verde con los 19 errores de
-   tipos resueltos; ver §4.4 y [`MOON_ERRORES.md`](MOON_ERRORES.md).
+   tipos resueltos; ver §4.4 y [`MOON_ERRORES.md`](../../projects/moon/historial/MOON_ERRORES_2026-09.md).
 2. ✅ **HECHO:** el fallo ya es legible: cada diagnóstico imprime
    `archivo:línea:columna` y la CLI lo publica como anotación de GitHub. El
    snippet de §4.4 sigue pendiente de pegar en `check-moon.yml` si quieres el

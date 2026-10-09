@@ -1,0 +1,37 @@
+/* Variante C — editorial, papel cálido y tipografía grande */
+:root,:root:root{
+  --bg:#fbf8f2;--bg2:#f3eee3;--text:#241f19;--muted:#6b6256;--line:#e2d9c8;
+  --acc:#9a3412;--link:#1e4fa3;--code-bg:#1c1a17;--code-text:#f1ebdf;--code-muted:#a39a89;
+  --serif:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,"Times New Roman",serif;
+}
+body{font-size:17px;line-height:1.75}
+h1,h2,h3,.fact b{font-family:var(--serif);font-weight:700}
+h1{font-size:clamp(2.4rem,6vw,3.8rem);line-height:1.08;letter-spacing:-.025em;max-width:14em}
+h2{font-size:2rem;margin-bottom:12px}
+h3{font-size:1.2rem}
+.wrap{max-width:920px}
+header.top{background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{font-family:var(--serif);letter-spacing:.12em;font-size:1.05rem}
+nav.main a{font-size:.9rem}
+.hero{background:var(--bg);padding:96px 0 48px;border-bottom:1px solid var(--line)}
+.lead{font-family:var(--serif);font-size:1.3rem;line-height:1.55;color:var(--muted);max-width:640px}
+.btn{border-radius:2px;background:transparent;border:1px solid var(--text);font-weight:600}
+.btn:hover{background:var(--text);color:var(--bg)}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.primary:hover{background:#7c2a0e;border-color:#7c2a0e;color:#fff}
+.facts{border-top:1px solid var(--line);border-bottom:1px solid var(--line);gap:0;margin-top:48px}
+.fact{border:0;border-radius:0;background:transparent;border-right:1px solid var(--line);padding:22px 18px}
+.fact:last-child{border-right:0}
+.fact b{font-size:2.1rem;color:var(--acc)}
+section{padding:68px 0}
+.card{border-radius:2px;background:transparent;border:0;border-top:2px solid var(--text);padding:14px 0 0}
+.card h3{font-family:var(--serif);font-size:1.15rem}
+.code{border-radius:2px;border:0}
+table{font-size:.97rem}
+th{background:transparent;border-bottom:2px solid var(--text);font-family:var(--serif)}
+td{border-bottom-color:var(--line)}
+code{background:#ece4d3}
+.note{background:#f3eee3;border-left-color:var(--acc);border-radius:0}
+.ok{color:#166534}.no{color:#991b1b}.part{color:#9a3412}
+footer{background:var(--bg2);border-top:1px solid var(--line)}
+@media(max-width:700px){.fact{border-right:0;border-bottom:1px solid var(--line)}}

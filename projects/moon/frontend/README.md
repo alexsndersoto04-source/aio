@@ -47,7 +47,7 @@ La galería también se compila en `npm run build` (sale como `dist/design.html`
 cd ../projects/moon/server && npm install && npm run dev
 
 # 2) La aplicación, en otra terminal
-cd frontend
+cd projects/moon/frontend
 API_PROXY_TARGET=http://127.0.0.1:3000 npm run dev
 ```
 

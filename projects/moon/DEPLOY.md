@@ -150,7 +150,7 @@ en tu máquina (necesitas Rust instalado y Node):
 cargo run -q -p titan_cli -- check projects/moon/src/main.titan
 
 # 2) Frontend React: build de producción
-cd frontend
+cd projects/moon/frontend
 npm ci
 npm run build
 ```

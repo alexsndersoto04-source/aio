@@ -100,7 +100,7 @@ curl http://127.0.0.1:3000/api/health
 En otra terminal:
 
 ```sh
-cd frontend
+cd projects/moon/frontend
 npm ci
 API_PROXY_TARGET=http://127.0.0.1:3000 npm run dev
 ```

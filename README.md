@@ -118,6 +118,23 @@ titan version
 
 Un proyecto tiene `Titan.toml`, `src/main.titan` y opcionalmente `tests/*.titan`. Los imports se canonicalizan, se detectan ciclos y no pueden salir del árbol de fuentes. Ver [`docs/PROJECTS.md`](docs/PROJECTS.md).
 
+## Estructura del repositorio
+
+```text
+selfhost/          el compilador, el runtime y la biblioteca estándar, todo en Titan
+  native/            runtime y las 812 funciones std::* (más backends x86-64, LLVM y WebAssembly)
+  semilla/           compilador ya compilado para arrancar (bootstrap.sh)
+  tests/             pruebas del compilador, del runtime, del depurador y de ARM64
+  ESTADO.md          estado verificado, pruebas y limitaciones
+docs/              documentación (docs/historico/ guarda informes de la etapa en Rust)
+examples/          programas de ejemplo
+stdlib/            módulos de la biblioteca estándar que viven en archivos .titan
+projects/moon/     Moon, una aplicación completa (API en Titan + interfaz web)
+site/              página oficial (generada desde site-src/)
+.github/workflows/ CI: pruebas, ARM64 real, comprobaciones de Moon y página
+Dockerfile, render.yaml, wrangler.jsonc   despliegue de Moon
+```
+
 ## Ejemplos y proyectos
 
 La carpeta [`examples/`](examples) tiene más de 50 programas (todos pasan `titan check`): lenguaje, servidor web, bases de datos, criptografía, tokenizador, ONNX, gráficos, TUI, etc. Algunos necesitan recursos externos (internet, un servidor de base de datos, una pantalla, un modelo ONNX).

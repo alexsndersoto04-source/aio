@@ -4,7 +4,7 @@
 # así todo vive en una dirección única y no hay que configurar dominios.
 #
 # Plan gratuito de Render + base de datos gratuita de Neon (no piden tarjeta).
-# Pasos detallados, en lenguaje llano: ver DESPLEGAR.md en la raíz del proyecto.
+# Pasos detallados, en lenguaje llano: ver projects/moon/DESPLEGAR.md.
 
 services:
   - type: web
@@ -12,8 +12,8 @@ services:
     runtime: node
     plan: free
     buildCommand: >-
-      npm --prefix frontend ci &&
-      npm --prefix frontend run build &&
+      npm --prefix projects/moon/frontend ci &&
+      npm --prefix projects/moon/frontend run build &&
       npm --prefix projects/moon/server ci --omit=dev
     startCommand: node projects/moon/server/src/index.mjs
     healthCheckPath: /api/health
@@ -33,7 +33,7 @@ services:
         value: "*"
       # Carpeta del sitio ya compilado (la crea el paso de compilación).
       - key: MOON_WEB_DIR
-        value: /opt/render/project/src/frontend/dist
+        value: /opt/render/project/src/projects/moon/frontend/dist
       # Carpeta de caché de las fotos. Las imágenes se guardan DENTRO de la
       # base de datos, así que esta carpeta solo acelera la entrega: si el
       # servidor se reinicia y se vacía, no se pierde ninguna foto.

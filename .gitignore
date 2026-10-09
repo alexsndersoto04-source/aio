@@ -26,8 +26,8 @@ node_modules/
 *.db
 
 # Frontend build
-frontend/node_modules/
-frontend/dist/
+projects/moon/frontend/node_modules/
+projects/moon/frontend/dist/
 
 
 # Moon: artefactos locales (binario, secretos, cluster postgres)

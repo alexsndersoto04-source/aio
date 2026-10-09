@@ -1,6 +1,6 @@
 // Moon — Servidor de archivos estáticos
 // ============================================================
-// Entrega la aplicación ya compilada (frontend/dist) desde el mismo puerto
+// Entrega la aplicación ya compilada (projects/moon/frontend/dist) desde el mismo puerto
 // que la API. Así la red social y su servidor viven en una sola dirección:
 // un único enlace que abre todo, sin depender de dos servicios distintos.
 
@@ -14,7 +14,7 @@ const RAIZ_REPO = resolve(AQUI, '..', '..', '..', '..');
 
 export const CARPETA_WEB = process.env.MOON_WEB_DIR
   ? resolve(process.env.MOON_WEB_DIR)
-  : join(RAIZ_REPO, 'frontend', 'dist');
+  : join(RAIZ_REPO, 'projects', 'moon', 'frontend', 'dist');
 
 const TIPOS = {
   '.html': 'text/html; charset=utf-8',

@@ -24,18 +24,29 @@
     <a href="index.html#herramientas">Herramientas</a>
     <a href="index.html#limites">Límites</a>
     <a href="index.html#documentacion">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
 <main id="contenido">
-<div class="hero"><div class="wrap">
-  <h1>Titan — lenguaje de programación</h1>
-  <p class="lead">Un lenguaje compilado y con tipos comprobados antes de ejecutar. Genera ejecutables nativos para Linux (x86-64 y ARM64, incluido Termux) y módulos WebAssembly. Trae una biblioteca estándar amplia: texto, red, bases de datos, criptografía, audio, imágenes, inteligencia artificial local y más.</p>
-  <div class="btns">
-    <a class="btn primary" href="#instalar">Instalar</a>
-    <a class="btn" href="biblioteca.html">Biblioteca estándar</a>
-    <a class="btn" href="https://github.com/alexsndersoto04-source/aio">Código fuente</a>
+<div class="hero"><div class="wrap hero-grid">
+  <div class="hero-text">
+    <h1>Titan — lenguaje de programación</h1>
+    <p class="lead">Un lenguaje compilado y con tipos comprobados antes de ejecutar. Genera ejecutables nativos para Linux (x86-64 y ARM64, incluido Termux) y módulos WebAssembly. Trae una biblioteca estándar amplia: texto, red, bases de datos, criptografía, audio, imágenes, inteligencia artificial local y más.</p>
+    <div class="btns">
+      <a class="btn primary" href="#instalar">Instalar</a>
+      <a class="btn" href="https://github.com/alexsndersoto04-source/aio/releases">Descargas (releases)</a>
+      <a class="btn" href="https://github.com/alexsndersoto04-source/aio">Código en GitHub</a>
+    </div>
   </div>
+  <div class="hero-code">
+    <div class="code"><div class="cap">hola.titan</div><pre><code>fn main() {
+    print(&quot;Hola desde Titan&quot;)
+}</code></pre><pre class="out"><code>Hola desde Titan</code></pre></div>
+    <p class="hero-cmd">Se ejecuta con <code>titan run hola.titan</code></p>
+  </div>
+</div>
+<div class="wrap">
   <div class="facts">
     <div class="fact"><b>812</b><span>funciones en la biblioteca estándar (73 espacios de nombres)</span></div>
     <div class="fact"><b>2</b><span>plataformas con ejecutable probado: Linux x86-64 y Linux ARM64</span></div>
@@ -162,7 +173,7 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
 
 <section id="instalar"><div class="wrap">
   <h2>Instalación</h2>
-  <p class="sub">Hoy Titan se instala construyéndolo desde las fuentes. Solo hacen falta <code>bash</code> y <code>gzip</code>.</p>
+  <p class="sub">Titan se instala construyéndolo desde las fuentes; solo hacen falta <code>bash</code> y <code>gzip</code>. Los paquetes ya compilados para Linux x86-64 y ARM64 se publican en la página de <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a> a partir de la versión 1.1; las versiones 1.0.x de esa página son del prototipo antiguo en Rust.</p>
   <div class="code"><div class="cap">Linux x86-64</div><pre><code>git clone https://github.com/alexsndersoto04-source/aio.git
 cd aio
 bash selfhost/bootstrap.sh      # tarda 2-3 minutos
@@ -192,7 +203,7 @@ titan run</code></pre></div>
     </tbody>
   </table>
   <p>Con LLVM se puede compilar desde x86-64 para ARM64: <code>titan compile programa.titan --target aarch64</code>.</p>
-  <div class="note">Los binarios de la release v1.0.0 pertenecen a la versión antigua, escrita en Rust, y no se actualizan. Por ahora la versión actual se construye desde las fuentes o con el artefacto del flujo de ARM64.</div>
+  <div class="note">Los binarios de la release v1.0.0 pertenecen a la versión antigua, escrita en Rust, y no se actualizan. La versión actual se construye desde las fuentes; los paquetes nuevos se publican en <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a> a partir de la versión 1.1.</div>
 </div></section>
 
 <section id="como-funciona"><div class="wrap">
@@ -289,8 +300,16 @@ titan run</code></pre></div>
 </div></section>
 </main>
 <footer><div class="wrap">
-  Titan se distribuye bajo licencia MIT. Código y documentación: <a href="https://github.com/alexsndersoto04-source/aio">github.com/alexsndersoto04-source/aio</a>.
-  Los datos de esta página provienen del repositorio (<a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">selfhost/ESTADO.md</a>) y se midieron en octubre de 2026.
+  <div class="foot-links">
+    <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/CHANGELOG.md">Historial de cambios</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado verificado</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+  </div>
+  <p>Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
 </div></footer>
 </body>
 </html>

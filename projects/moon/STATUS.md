@@ -1,5 +1,7 @@
 # Moon — Estado actual del proyecto
 
+> **Documento histórico.** Se escribió cuando Titan era un prototipo en Rust (herramientas `zett`, `cargo`, VM). Se conserva como registro; lo vigente y verificado está en [`selfhost/ESTADO.md`](../../selfhost/ESTADO.md).
+
 **Fecha:** 2026-08-26
 **Método:** verificación estática contra el runtime de Titan (`titan_stdlib`, `titan_vm`, `titan_typechecker`, `titan_codegen`, `titan_lexer`) + build real del frontend (`vite build`). El sandbox no tiene toolchain Rust/crates.io, así que el backend Titan no se pudo *ejecutar* aquí: se validó contra el código fuente del runtime (firmas, aridad, tipos, escapes del lexer) y contra la release v1.0.0 que usa el Dockerfile.
 
