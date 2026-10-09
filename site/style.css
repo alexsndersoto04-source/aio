@@ -258,3 +258,5 @@ section.cta{background:#f1f3f5;color:var(--text);padding:54px 0;border-top:1px s
 .step-b .code{margin:0}
 @media(max-width:860px){.step{grid-template-columns:1fr;gap:12px}}
 .pipe-a{flex:0 0 auto;color:#8a94a0;font-size:1.2rem;line-height:1}
+.pipe-a{width:9px;height:9px;border-top:2px solid #8a94a0;border-right:2px solid #8a94a0;transform:rotate(45deg);margin:0 4px}
+@media(max-width:900px){.pipe-a{transform:rotate(135deg);margin:2px 0 2px 24px}}
