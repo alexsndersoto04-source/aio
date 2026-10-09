@@ -18,7 +18,7 @@ jobs:
       - name: Bootstrap (semilla -> titanc1 == titanc2 == titanc3 -> titan)
         run: bash selfhost/bootstrap.sh
 
-      - name: Cobertura de la biblioteca estándar (funciones std:: con cuerpo en Titan)
+      - name: "Cobertura de la biblioteca estándar (funciones std con cuerpo en Titan)"
         run: bash selfhost/native/cobertura.sh -v | tail -3
 
       - name: check de Moon y de los ejemplos
