@@ -103,7 +103,19 @@ fn lb_link(cc: array, text: string, target: string, arch: string, host: string) 
     let ll = std::path::join(tmp, "titan-ll-{pid}-{now}.ll")
     std::fs::write_text(ll, text)
     let mut flags = ["-O2", "-nostdlib", "-static", "-fno-pie", "-no-pie", "-Wl,-e,_start"]
-    if lb_is_zig(cc) {
+    if arch == "armv7" {
+        // ARM de 32 bits: ARMv7-A con VFPv3-D16 (el mínimo de armeabi-v7a). El programa no llama a código de
+        // C, así que la ABI de coma flotante solo importa entre sus propias funciones. Las divisiones de 64
+        // bits y las conversiones las trae el propio programa (lv_arm32_helpers en llvm.titan).
+        if lb_is_zig(cc) {
+            flags = std::array::concat(["-target", "arm-linux-gnueabihf", "-mcpu=generic+v7a+vfp3d16"], flags)
+        } else {
+            flags = std::array::concat(["--target=armv7a-linux-gnueabihf", "-march=armv7-a", "-mfpu=vfpv3-d16", "-mfloat-abi=hard", "-marm"], flags)
+            if arch != host {
+                flags = std::array::push(flags, "-fuse-ld=lld")
+            }
+        }
+    } else if lb_is_zig(cc) {
         flags = std::array::concat(["-target", arch + "-linux-none"], flags)
     } else {
         flags = std::array::concat(["--target=" + arch + "-linux-gnu"], flags)

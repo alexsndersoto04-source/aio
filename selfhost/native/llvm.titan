@@ -639,6 +639,10 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_f(b1, id + "w", a2)
         if ctx.target == "x86_64" {
             b1 = lv_e(b1, "  " + id + "z = call double asm \"vfmadd231sd $3, $2, $0\", \"=x,0,x,x\"(double " + id + "w, double " + id + "x, double " + id + "y)")
+        } else if ctx.target == "armv7" {
+            // ARMv7 con VFPv3 no tiene fma: rt_has_fma es falso y nunca se llega aquí.
+            b1 = lv_e(b1, "  call void @llvm.trap()")
+            b1 = lv_e(b1, "  " + id + "z = fadd double 0.0, 0.0")
         } else {
             b1 = lv_e(b1, "  " + id + "z = call double @llvm.fma.f64(double " + id + "x, double " + id + "y, double " + id + "w)")
         }
@@ -700,6 +704,17 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         }
         b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_bare", args)
         b1 = lv_put(b1, res, "1", id + "sb")
+    } else if name == "std::raw::syscall" && ctx.target == "armv7" {
+        // Números y estructuras de x86-64: los traduce rt_sys_arm32 (sys_arm32.titan).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm32", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::syscall" && ctx.target == "aarch64" {
         // Números y estructuras de x86-64: los traduce rt_sys_arm64 (sys_arm64.titan).
         let mut args = []
@@ -712,8 +727,8 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm64", args)
         b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::svc" {
-        if ctx.target != "aarch64" {
-            // Solo existe en ARM64: aquí es una trampa (el runtime la usa
+        if ctx.target != "aarch64" && ctx.target != "armv7" {
+            // Solo existe en ARM (con su propia instrucción): aquí es una trampa (el runtime la usa
             // únicamente con std::raw::bare() == 1).
             b1 = lv_e(b1, "  call void @llvm.trap()")
             b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
@@ -743,10 +758,13 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_e(b1, "  " + id + "v = call i64 @lv_syscall(" + a + ")")
         b1 = lv_put(b1, res, "1", id + "v")
     } else if name == "std::raw::arch" {
-        // 0 = x86-64, 1 = ARM64 (para lo que Rust hace distinto en cada una).
+        // 0 = x86-64, 1 = ARM64, 2 = ARM de 32 bits (para lo que Rust hace distinto en cada una).
         let mut v = "0"
         if ctx.target == "aarch64" {
             v = "1"
+        }
+        if ctx.target == "armv7" {
+            v = "2"
         }
         b1 = lv_put(b1, res, "1", v)
     } else if name == "std::raw::globals" {
@@ -1534,6 +1552,8 @@ fn lv_glue(ctx: LvCtx) -> array {
     let mut sj = []
     if ctx.target == "x86_64" {
         sj = [".text", ".globl t_setjmp", "t_setjmp:", "  movq %rbx, 0(%rdi)", "  movq %rbp, 8(%rdi)", "  movq %r12, 16(%rdi)", "  movq %r13, 24(%rdi)", "  movq %r14, 32(%rdi)", "  movq %r15, 40(%rdi)", "  leaq 8(%rsp), %rdx", "  movq %rdx, 48(%rdi)", "  movq (%rsp), %rdx", "  movq %rdx, 56(%rdi)", "  xorl %eax, %eax", "  ret", ".globl t_longjmp", "t_longjmp:", "  movq 0(%rdi), %rbx", "  movq 8(%rdi), %rbp", "  movq 16(%rdi), %r12", "  movq 24(%rdi), %r13", "  movq 32(%rdi), %r14", "  movq 40(%rdi), %r15", "  movq 48(%rdi), %rsp", "  movl $1, %eax", "  jmpq *56(%rdi)"]
+    } else if ctx.target == "armv7" {
+        sj = [".arm", ".fpu vfpv3-d16", ".text", ".globl t_setjmp", "t_setjmp:", "  stmia r0!, " + lv_br("r4-r11"), "  str sp, [r0], #4", "  str lr, [r0], #4", "  vstmia r0, " + lv_br("d8-d15"), "  mov r0, #0", "  mov r1, #0", "  bx lr", ".globl t_longjmp", "t_longjmp:", "  ldmia r0!, " + lv_br("r4-r11"), "  ldr sp, [r0], #4", "  ldr lr, [r0], #4", "  vldmia r0, " + lv_br("d8-d15"), "  mov r0, #1", "  mov r1, #0", "  bx lr"]
     } else {
         sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stp x19, x20, [x0]", "  stp x21, x22, [x0, #16]", "  stp x23, x24, [x0, #32]", "  stp x25, x26, [x0, #48]", "  stp x27, x28, [x0, #64]", "  stp x29, x30, [x0, #80]", "  mov x2, sp", "  str x2, [x0, #96]", "  stp d8, d9, [x0, #104]", "  stp d10, d11, [x0, #120]", "  stp d12, d13, [x0, #136]", "  stp d14, d15, [x0, #152]", "  mov x0, #0", "  ret", ".globl t_longjmp", "t_longjmp:", "  ldp x19, x20, [x0]", "  ldp x21, x22, [x0, #16]", "  ldp x23, x24, [x0, #32]", "  ldp x25, x26, [x0, #48]", "  ldp x27, x28, [x0, #64]", "  ldp x29, x30, [x0, #80]", "  ldr x2, [x0, #96]", "  mov sp, x2", "  ldp d8, d9, [x0, #104]", "  ldp d10, d11, [x0, #120]", "  ldp d12, d13, [x0, #136]", "  ldp d14, d15, [x0, #152]", "  mov x0, #1", "  ret"]
     }
@@ -1548,11 +1568,16 @@ fn lv_glue(ctx: LvCtx) -> array {
     let mut fs = []
     if ctx.target == "x86_64" {
         fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  pushq %rbp", "  pushq %rbx", "  pushq %r12", "  pushq %r13", "  pushq %r14", "  pushq %r15", "  pushq $1", "  movq %rsp, (%rdi)", "  movq %rsi, %rsp", "  popq %rax", "  testq %rax, %rax", "  jz 1f", "  popq %r15", "  popq %r14", "  popq %r13", "  popq %r12", "  popq %rbx", "  popq %rbp", "  ret", "1:", "  xorl %ebp, %ebp", "  ret"]
+    } else if ctx.target == "armv7" {
+        fs = [".arm", ".fpu vfpv3-d16", ".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  sub sp, sp, #112", "  mov r12, #1", "  str r12, [sp]", "  add r12, sp, #8", "  stmia r12, " + lv_br("r4-r11"), "  str lr, [sp, #40]", "  add r12, sp, #48", "  vstmia r12, " + lv_br("d8-d15"), "  str sp, [r0]", "  mov r12, #0", "  str r12, [r0, #4]", "  ldr r12, [r2]", "  cmp r12, #0", "  beq 1f", "  mov sp, r2", "  add r12, sp, #8", "  ldmia r12, " + lv_br("r4-r11"), "  ldr lr, [sp, #40]", "  add r12, sp, #48", "  vldmia r12, " + lv_br("d8-d15"), "  add sp, sp, #112", "  bx lr", "1:", "  ldr r12, [r2, #8]", "  add r3, r2, #16", "  bic r3, r3, #15", "  mov sp, r3", "  mov r11, #0", "  mov lr, #0", "  bx r12"]
     } else {
         fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  sub sp, sp, #176", "  stp x19, x20, [sp, #16]", "  stp x21, x22, [sp, #32]", "  stp x23, x24, [sp, #48]", "  stp x25, x26, [sp, #64]", "  stp x27, x28, [sp, #80]", "  stp x29, x30, [sp, #96]", "  stp d8, d9, [sp, #112]", "  stp d10, d11, [sp, #128]", "  stp d12, d13, [sp, #144]", "  stp d14, d15, [sp, #160]", "  mov x2, #1", "  str x2, [sp]", "  mov x2, sp", "  str x2, [x0]", "  ldr x2, [x1]", "  cbz x2, 1f", "  mov sp, x1", "  ldp x19, x20, [sp, #16]", "  ldp x21, x22, [sp, #32]", "  ldp x23, x24, [sp, #48]", "  ldp x25, x26, [sp, #64]", "  ldp x27, x28, [sp, #80]", "  ldp x29, x30, [sp, #96]", "  ldp d8, d9, [sp, #112]", "  ldp d10, d11, [sp, #128]", "  ldp d12, d13, [sp, #144]", "  ldp d14, d15, [sp, #160]", "  add sp, sp, #176", "  ret", "1:", "  ldr x19, [x1, #8]", "  add x2, x1, #16", "  and x2, x2, #-16", "  mov sp, x2", "  mov x29, xzr", "  mov x30, xzr", "  br x19"]
     }
     for line in fs {
         l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    if ctx.target == "armv7" {
+        l = std::array::concat(l, lv_arm32_helpers())
     }
     if ctx.target == "x86_64" {
         let cons = "\"=" + lv_br("rax") + "," + lv_br("rax") + "," + lv_br("rdi") + "," + lv_br("rsi") + "," + lv_br("rdx") + "," + lv_br("r10") + "," + lv_br("r8") + "," + lv_br("r9") + ",~" + lv_br("rcx") + ",~" + lv_br("r11") + ",~" + lv_br("memory") + "\""
@@ -1565,6 +1590,21 @@ fn lv_glue(ctx: LvCtx) -> array {
         l = std::array::push(l, "module asm \"  ud2\"")
         // lv_start: globales, pila propia de 1 GiB (reservada) y lv_main en ella.
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
+    } else if ctx.target == "armv7" {
+        // ARM EABI: número en r7, argumentos en r0-r5, resultado en r0 (32 bits). Un resultado entre
+        // -4095 y -1 es un error (-errno); cualquier otro es un valor sin signo (direcciones de mmap).
+        let cons = "\"=" + lv_br("r0") + "," + lv_br("r7") + "," + lv_br("r0") + "," + lv_br("r1") + "," + lv_br("r2") + "," + lv_br("r3") + "," + lv_br("r4") + "," + lv_br("r5") + ",~" + lv_br("memory") + "\""
+        let body = "\n  %nn = trunc i64 %n to i32\n  %aa = trunc i64 %a to i32\n  %bb = trunc i64 %b to i32\n  %cc = trunc i64 %c to i32\n  %dd = trunc i64 %d to i32\n  %ee = trunc i64 %e to i32\n  %ff = trunc i64 %f to i32\n  %r = call i32 asm sideeffect \"svc #0\", " + cons + "(i32 %nn, i32 %aa, i32 %bb, i32 %cc, i32 %dd, i32 %ee, i32 %ff)\n  %bad = icmp ugt i32 %r, -4096\n  %sx = sext i32 %r to i64\n  %zx = zext i32 %r to i64\n  %o = select i1 %bad, i64 %sx, i64 %zx\n  ret i64 %o\n"
+        l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) alwaysinline " + lv_br(body))
+        l = std::array::push(l, "module asm \".arm\"")
+        l = std::array::push(l, "module asm \".globl _start\"")
+        l = std::array::push(l, "module asm \"_start:\"")
+        l = std::array::push(l, "module asm \"  mov r0, sp\"")
+        l = std::array::push(l, "module asm \"  mov r1, #0\"")
+        l = std::array::push(l, "module asm \"  bl lv_start\"")
+        l = std::array::push(l, "module asm \"  udf #0\"")
+        // mmap2 (192): el desplazamiento va en páginas; pila principal de 256 MiB (el espacio de direcciones es de 4 GiB).
+        l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_svc(i64 192, i64 0, i64 268435456, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 268435456\n  %t32 = trunc i64 %top to i32\n  call void asm sideeffect \"mov sp, $0\\0Abl lv_main\\0Audf #0\", \"r,~" + lv_br("memory") + "\"(i32 %t32)\n  unreachable\n"))
     } else if ctx.bare {
         l = std::array::concat(l, lv_bare_prologue(lv_rt(ctx, "rt_bare_exception")))
     } else {
@@ -1751,14 +1791,35 @@ fn lv_bare_vectors() -> array {
     l
 }
 
+// Funciones de apoyo de 64 bits para ARM de 32 bits (lo que haría libclang_rt.builtins): división y resto de
+// enteros de 64 bits, y conversión entre enteros de 64 bits y double. Se escriben aquí para que el programa
+// no dependa de ninguna biblioteca. Una división es un bucle de desplazar y restar sobre los bits que
+// importan (de 1 a 64 vueltas); la conversión a double es exacta con un solo redondeo.
+fn lv_arm32_helpers() -> array {
+    let mut l = []
+    l = std::array::push(l, "declare i64 @llvm.ctlz.i64(i64, i1)")
+    l = std::array::push(l, "define i64 @lv_udivmod(i64 %n, i64 %d, ptr %rp) noinline " + lv_br("\nentry:\n  %dz = icmp eq i64 %d, 0\n  %lt = icmp ult i64 %n, %d\n  %trivial = or i1 %dz, %lt\n  br i1 %trivial, label %small, label %loop0\nsmall:\n  store i64 %n, ptr %rp, align 4\n  ret i64 0\nloop0:\n  %cn = call i64 @llvm.ctlz.i64(i64 %n, i1 false)\n  %cd = call i64 @llvm.ctlz.i64(i64 %d, i1 false)\n  %sh = sub i64 %cd, %cn\n  %dd = shl i64 %d, %sh\n  br label %loop\nloop:\n  %r = phi i64 [ %n, %loop0 ], [ %r2, %loop ]\n  %q = phi i64 [ 0, %loop0 ], [ %q2, %loop ]\n  %dv = phi i64 [ %dd, %loop0 ], [ %dv2, %loop ]\n  %i = phi i64 [ %sh, %loop0 ], [ %i2, %loop ]\n  %ge = icmp uge i64 %r, %dv\n  %sub = sub i64 %r, %dv\n  %r2 = select i1 %ge, i64 %sub, i64 %r\n  %q1 = shl i64 %q, 1\n  %qb = zext i1 %ge to i64\n  %q2 = or i64 %q1, %qb\n  %dv2 = lshr i64 %dv, 1\n  %i2 = sub i64 %i, 1\n  %done = icmp eq i64 %i, 0\n  br i1 %done, label %fin, label %loop\nfin:\n  store i64 %r2, ptr %rp, align 4\n  ret i64 %q2\n"))
+    l = std::array::push(l, "define i64 @lv_sdivmod(i64 %n, i64 %d, ptr %rp) noinline " + lv_br("\n  %nn = icmp slt i64 %n, 0\n  %dn = icmp slt i64 %d, 0\n  %nneg = sub i64 0, %n\n  %dneg = sub i64 0, %d\n  %an = select i1 %nn, i64 %nneg, i64 %n\n  %ad = select i1 %dn, i64 %dneg, i64 %d\n  %q = call i64 @lv_udivmod(i64 %an, i64 %ad, ptr %rp)\n  %r = load i64, ptr %rp, align 4\n  %rneg = sub i64 0, %r\n  %r2 = select i1 %nn, i64 %rneg, i64 %r\n  store i64 %r2, ptr %rp, align 4\n  %sx = xor i1 %nn, %dn\n  %qneg = sub i64 0, %q\n  %q2 = select i1 %sx, i64 %qneg, i64 %q\n  ret i64 %q2\n"))
+    l = std::array::push(l, "define arm_aapcscc i64 @__aeabi_d2lz(double %x) noinline " + lv_br("\n  %b = bitcast double %x to i64\n  %sgn = lshr i64 %b, 63\n  %ex0 = lshr i64 %b, 52\n  %ex1 = and i64 %ex0, 2047\n  %e = sub i64 %ex1, 1023\n  %m0 = and i64 %b, 4503599627370495\n  %m = or i64 %m0, 4503599627370496\n  %neg = icmp ne i64 %sgn, 0\n  %small = icmp slt i64 %e, 0\n  %big = icmp sge i64 %e, 63\n  %inf = icmp eq i64 %ex1, 2047\n  %mz = icmp ne i64 %m0, 0\n  %isnan = and i1 %inf, %mz\n  %le52 = icmp sle i64 %e, 52\n  %rs = sub i64 52, %e\n  %ls = sub i64 %e, 52\n  %rsc = and i64 %rs, 63\n  %lsc = and i64 %ls, 63\n  %r1 = lshr i64 %m, %rsc\n  %l1 = shl i64 %m, %lsc\n  %v = select i1 %le52, i64 %r1, i64 %l1\n  %vn = sub i64 0, %v\n  %sv = select i1 %neg, i64 %vn, i64 %v\n  %sat = select i1 %neg, i64 -9223372036854775808, i64 9223372036854775807\n  %r = select i1 %big, i64 %sat, i64 %sv\n  %r3 = select i1 %small, i64 0, i64 %r\n  %r4 = select i1 %isnan, i64 0, i64 %r3\n  ret i64 %r4\n"))
+    l = std::array::push(l, "define arm_aapcscc double @__aeabi_l2d(i64 %x) noinline " + lv_br("\n  %h64 = ashr i64 %x, 32\n  %hi = trunc i64 %h64 to i32\n  %lo = trunc i64 %x to i32\n  %hd = sitofp i32 %hi to double\n  %ld = uitofp i32 %lo to double\n  %s = fmul double %hd, 4294967296.0\n  %r = fadd double %s, %ld\n  ret double %r\n"))
+    l = std::array::push(l, "define arm_aapcscc double @__aeabi_ul2d(i64 %x) noinline " + lv_br("\n  %h64 = lshr i64 %x, 32\n  %hi = trunc i64 %h64 to i32\n  %lo = trunc i64 %x to i32\n  %hd = uitofp i32 %hi to double\n  %ld = uitofp i32 %lo to double\n  %s = fmul double %hd, 4294967296.0\n  %r = fadd double %s, %ld\n  ret double %r\n"))
+    for line in [".arm", ".text", ".globl __aeabi_uldivmod", "__aeabi_uldivmod:", "  push " + lv_br("r4, lr") + "", "  sub sp, sp, #16", "  add r4, sp, #8", "  str r4, [sp]", "  bl lv_udivmod", "  ldr r2, [sp, #8]", "  ldr r3, [sp, #12]", "  add sp, sp, #16", "  pop " + lv_br("r4, pc") + ""] {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    for line in [".arm", ".text", ".globl __aeabi_ldivmod", "__aeabi_ldivmod:", "  push " + lv_br("r4, lr") + "", "  sub sp, sp, #16", "  add r4, sp, #8", "  str r4, [sp]", "  bl lv_sdivmod", "  ldr r2, [sp, #8]", "  ldr r3, [sp, #12]", "  add sp, sp, #16", "  pop " + lv_br("r4, pc") + ""] {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    l
+}
+
 fn lv_asm_escape(s: string) -> string {
     std::text::replace(std::text::replace(s, "\\", "\\5C"), "\"", "\\22")
 }
 
 // Programa (gu) + runtime (gr) -> Result::Ok(texto .ll) o Err(mensajes).
 fn lv_build(gu: G, gr: G, target: string) -> Result {
-    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" {
-        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64 or aarch64-none)")
+    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" && target != "armv7" {
+        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64, armv7 or aarch64-none)")
     }
     // aarch64-none: ARM64 sin sistema operativo (arranca sola; ver
     // lv_bare_prologue y native/sys_bare.titan).
@@ -1830,7 +1891,11 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     if bare {
         head = std::array::push(head, "target triple = \"aarch64-unknown-none\"")
     } else {
-        head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
+        if target == "armv7" {
+            head = std::array::push(head, "target triple = \"armv7a-unknown-linux-gnueabihf\"")
+        } else {
+            head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
+        }
     }
     head = std::array::push(head, "%V = type " + lv_br(" i64, i64 "))
     head = std::array::push(head, "%O = type " + lv_br(" i64, i1 "))

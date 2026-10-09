@@ -159,6 +159,7 @@ import image::std_image_api
 import image::std_image_ops
 import image::std_image_codec
 import sys_arm64
+import sys_arm32
 import sys_bare
 //
 // Lo compila el mismo compilador (selfhost/native/build.titan) y va dentro de
