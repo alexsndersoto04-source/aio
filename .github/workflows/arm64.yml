@@ -8,10 +8,16 @@ on:
   push:
     branches: [ main, "arena/**" ]
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Solo probar en ARM64 usando los artefactos de esta ejecución (omite la construcción)"
+        required: false
+        default: ""
 
 jobs:
   construir:
     name: construir (x86-64 -> ARM64 cruzado)
+    if: ${{ inputs.run_id == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -44,6 +50,7 @@ jobs:
   probar:
     name: probar en ARM64 real
     needs: construir
+    if: ${{ always() && (needs.construir.result == 'success' || needs.construir.result == 'skipped') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
@@ -53,6 +60,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: arm64-entrada
+          run-id: ${{ inputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - name: El ejecutable ARM64 arranca
         run: |
           uname -m
@@ -65,8 +74,18 @@ jobs:
           test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
       - name: Diferencial contra x86-64
         run: |
-          bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout
-          bash selfhost/tests/arm64_diff.sh comparar x86out armout
+          bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout > generar.txt 2>&1
+          bash selfhost/tests/arm64_diff.sh comparar x86out armout > comparar.txt 2>&1
+          rc=$?
+          cat generar.txt comparar.txt
+          # La salida completa del log no se puede leer por API: se publica como anotación.
+          msg=$(head -c 6000 comparar.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          if [ $rc -ne 0 ]; then
+            echo "::error title=diferencial ARM64::$msg"
+          else
+            echo "::notice title=diferencial ARM64::$msg"
+          fi
+          exit $rc
       - name: titan compilado por titan en ARM64 (informativo)
         continue-on-error: true
         run: |
