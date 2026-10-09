@@ -1,0 +1,23 @@
+<section><div class="wrap">
+  <h1 style="font-size:2rem">Biblioteca estándar</h1>
+  <p class="sub">812 funciones en 73 espacios de nombres. Todas están escritas en Titan y se compilan junto con el programa. La tabla de firmas está en <a href="{{REPO}}/blob/main/selfhost/natives.titan">selfhost/natives.titan</a>; las limitaciones de cada pieza, en {{DOC:selfhost/ESTADO.md|selfhost/ESTADO.md}}.</p>
+  <label for="f" class="sub">Filtrar:</label><br>
+  <input id="f" class="filter" type="search" placeholder="por ejemplo: json, audio, sqlite…" autocomplete="off">
+  <table id="t">
+    <thead><tr><th>Espacio de nombres</th><th style="text-align:right">Funciones</th><th>Contenido</th></tr></thead>
+    <tbody>
+{{FILAS}}
+    </tbody>
+  </table>
+  <p>Las funciones se llaman con su ruta completa, sin importar nada: <code>std::hash::sha256(datos)</code>, <code>std::json::parse(texto)</code>, <code>std::server::start("127.0.0.1:8080")</code>.</p>
+  <p><a href="index.html">← Volver al inicio</a></p>
+</div></section>
+<script>
+(function(){
+  var f=document.getElementById('f'), rows=document.querySelectorAll('#t tbody tr');
+  f.addEventListener('input',function(){
+    var q=f.value.trim().toLowerCase();
+    rows.forEach(function(r){ r.style.display = r.textContent.toLowerCase().indexOf(q)>-1 ? '' : 'none'; });
+  });
+})();
+</script>

@@ -1,0 +1,21 @@
+fn productor(tx: Sender, n: int) -> int {
+    let mut i = 1
+    while i <= n {
+        send(tx, i * i)
+        i += 1
+    }
+    n
+}
+
+fn main() {
+    let (tx, rx) = channel(2)
+    let tarea = spawn || { productor(tx, 5) }
+    let mut suma = 0
+    let mut k = 0
+    while k < 5 {
+        suma += recv(rx)
+        k += 1
+    }
+    print("suma de cuadrados = {suma}")
+    print("la tarea envió {join(tarea)} valores")
+}

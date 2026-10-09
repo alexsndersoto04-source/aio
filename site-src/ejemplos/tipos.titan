@@ -1,0 +1,30 @@
+enum Forma {
+    Circulo(float),
+    Cuadrado(float),
+    Vacio,
+}
+
+fn area(f: Forma) -> float {
+    match f {
+        Forma::Circulo(r) => 3.14159 * r * r,
+        Forma::Cuadrado(l) => l * l,
+        Forma::Vacio => 0.0,
+    }
+}
+
+fn dividir(a: int, b: int) -> Result {
+    if b == 0 {
+        return Result::Err("división por cero")
+    }
+    Result::Ok(a / b)
+}
+
+fn main() {
+    let formas = [Forma::Circulo(2.0), Forma::Cuadrado(3.0), Forma::Vacio]
+    let areas = formas.map(|f| area(f))
+    print("áreas: {areas}")
+    match dividir(10, 0) {
+        Result::Ok(v) => print("resultado {v}"),
+        Result::Err(e) => print("error: {e}"),
+    }
+}

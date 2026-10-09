@@ -1,40 +1,10 @@
-<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Titan — lenguaje de programación</title>
-<meta name="description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
-<meta property="og:title" content="Titan — lenguaje de programación">
-<meta property="og:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
-<meta property="og:type" content="website">
-<meta name="color-scheme" content="light dark">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<a class="skip" href="#contenido">Saltar al contenido</a>
-<header class="top"><div class="wrap">
-  <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="26" height="26">TITAN</a>
-  <nav class="main" aria-label="Principal">
-    <a href="index.html#lenguaje">Lenguaje</a>
-    <a href="index.html#instalar">Instalación</a>
-    <a href="index.html#plataformas">Plataformas</a>
-    <a href="biblioteca.html">Biblioteca estándar</a>
-    <a href="index.html#herramientas">Herramientas</a>
-    <a href="index.html#limites">Límites</a>
-    <a href="index.html#documentacion">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
-  </nav>
-</div></header>
-<main id="contenido">
 <div class="hero"><div class="wrap">
   <h1>Titan — lenguaje de programación</h1>
   <p class="lead">Un lenguaje compilado y con tipos comprobados antes de ejecutar. Genera ejecutables nativos para Linux (x86-64 y ARM64, incluido Termux) y módulos WebAssembly. Trae una biblioteca estándar amplia: texto, red, bases de datos, criptografía, audio, imágenes, inteligencia artificial local y más.</p>
   <div class="btns">
     <a class="btn primary" href="#instalar">Instalar</a>
     <a class="btn" href="biblioteca.html">Biblioteca estándar</a>
-    <a class="btn" href="https://github.com/alexsndersoto04-source/aio">Código fuente</a>
+    <a class="btn" href="{{REPO}}">Código fuente</a>
   </div>
   <div class="facts">
     <div class="fact"><b>812</b><span>funciones en la biblioteca estándar (73 espacios de nombres)</span></div>
@@ -50,37 +20,7 @@
 
   <div class="grid2">
     <div>
-      <div class="code"><div class="cap">enums, match y manejo de errores</div><pre><code>enum Forma {
-    Circulo(float),
-    Cuadrado(float),
-    Vacio,
-}
-
-fn area(f: Forma) -&gt; float {
-    match f {
-        Forma::Circulo(r) =&gt; 3.14159 * r * r,
-        Forma::Cuadrado(l) =&gt; l * l,
-        Forma::Vacio =&gt; 0.0,
-    }
-}
-
-fn dividir(a: int, b: int) -&gt; Result {
-    if b == 0 {
-        return Result::Err(&quot;división por cero&quot;)
-    }
-    Result::Ok(a / b)
-}
-
-fn main() {
-    let formas = [Forma::Circulo(2.0), Forma::Cuadrado(3.0), Forma::Vacio]
-    let areas = formas.map(|f| area(f))
-    print(&quot;áreas: {areas}&quot;)
-    match dividir(10, 0) {
-        Result::Ok(v) =&gt; print(&quot;resultado {v}&quot;),
-        Result::Err(e) =&gt; print(&quot;error: {e}&quot;),
-    }
-}</code></pre><pre class="out"><code>áreas: [12.56636, 9, 0]
-error: división por cero</code></pre></div>
+      {{EJ:tipos|enums, match y manejo de errores}}
     </div>
     <div>
       <h3 style="margin-top:0">Qué incluye</h3>
@@ -100,28 +40,7 @@ error: división por cero</code></pre></div>
   <h3>Concurrencia</h3>
   <p>Tareas con <code>spawn</code> y <code>join</code>, canales con capacidad, <code>select</code> y esperas con tiempo límite. Las tareas son fibras cooperativas del runtime, no hilos del sistema: avanzan cuando una se bloquea o cede, y el runtime avisa si todas quedan bloqueadas para siempre (deadlock).</p>
   <div class="grid2">
-    <div class="code"><div class="cap">spawn, canales y join</div><pre><code>fn productor(tx: Sender, n: int) -&gt; int {
-    let mut i = 1
-    while i &lt;= n {
-        send(tx, i * i)
-        i += 1
-    }
-    n
-}
-
-fn main() {
-    let (tx, rx) = channel(2)
-    let tarea = spawn || { productor(tx, 5) }
-    let mut suma = 0
-    let mut k = 0
-    while k &lt; 5 {
-        suma += recv(rx)
-        k += 1
-    }
-    print(&quot;suma de cuadrados = {suma}&quot;)
-    print(&quot;la tarea envió {join(tarea)} valores&quot;)
-}</code></pre><pre class="out"><code>suma de cuadrados = 55
-la tarea envió 5 valores</code></pre></div>
+    {{EJ:tareas|spawn, canales y join}}
     <div>
       <h3 style="margin-top:0">Comprobaciones al compilar</h3>
       <p>El comprobador de tipos rechaza variables inexistentes, tipos incompatibles, llamadas con el número de argumentos equivocado, <code>match</code> no exhaustivos y asignaciones a variables no mutables. No hay conversión implícita de <code>int</code> a <code>float</code>.</p>
@@ -130,52 +49,24 @@ la tarea envió 5 valores</code></pre></div>
   </div>
 
   <h3>Biblioteca estándar en pocas líneas</h3>
-  <div class="code"><div class="cap">JSON, codificación y hash</div><pre><code>fn main() {
-    let doc = std::json::parse(&quot;{\&quot;nombre\&quot;: \&quot;Titan\&quot;, \&quot;version\&quot;: 1}&quot;)
-    print(doc.nombre)
-    let datos = std::encoding::utf8_encode(&quot;hola&quot;)
-    print(&quot;base64 = {std::encoding::base64_encode(datos)}&quot;)
-    print(&quot;sha256 = {std::hash::sha256(datos)}&quot;)
-}</code></pre><pre class="out"><code>Titan
-base64 = aG9sYQ==
-sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code></pre></div>
+  {{EJ:datos|JSON, codificación y hash}}
 
   <h3>Servidor HTTP</h3>
   <p>Este programa se ejecutó y respondió a dos peticiones <code>curl</code> reales.</p>
-  <div class="code"><div class="cap">servidor mínimo</div><pre><code>fn main() {
-    let servidor = std::server::start(&quot;127.0.0.1:8099&quot;)
-    print(&quot;escuchando en {std::server::local_addr(servidor)}&quot;)
-    let mut atendidas = 0
-    while atendidas &lt; 2 {
-        let peticion = std::server::accept(servidor, 30000)
-        if peticion &gt;= 0 {
-            let ruta = std::server::path(peticion)
-            std::server::respond(peticion, 200, &quot;hola desde Titan, ruta {ruta}&quot;)
-            atendidas += 1
-        }
-    }
-    std::server::stop(servidor)
-}</code></pre><pre class="out"><code>escuchando en 127.0.0.1:8099
-(curl /uno)  hola desde Titan, ruta /uno
-(curl /dos)  hola desde Titan, ruta /dos</code></pre></div>
+  {{EJ:servidor|servidor mínimo}}
 </div></section>
 
 <section id="instalar"><div class="wrap">
   <h2>Instalación</h2>
   <p class="sub">Hoy Titan se instala construyéndolo desde las fuentes. Solo hacen falta <code>bash</code> y <code>gzip</code>.</p>
-  <div class="code"><div class="cap">Linux x86-64</div><pre><code>git clone https://github.com/alexsndersoto04-source/aio.git
-cd aio
-bash selfhost/bootstrap.sh      # tarda 2-3 minutos
-selfhost/titan version</code></pre></div>
+  {{COD:Linux x86-64|git clone https://github.com/alexsndersoto04-source/aio.git\ncd aio\nbash selfhost/bootstrap.sh      # tarda 2-3 minutos\nselfhost/titan version}}
   <p>El repositorio incluye una <em>semilla</em>: una copia ya compilada del compilador (7,7 MB, <code>selfhost/semilla/</code>). <code>bootstrap.sh</code> la usa para compilar el compilador escrito en Titan, y este se compila a sí mismo dos veces más; el script comprueba que las tres versiones sean idénticas byte a byte. Después construye la herramienta <code>titan</code>.</p>
   <p>El ejecutable busca su runtime en la carpeta <code>native/</code> que está a su lado. Para usarlo desde cualquier carpeta basta un enlace simbólico:</p>
-  <div class="code"><div class="cap">enlace en el PATH</div><pre><code>ln -s &quot;$PWD/selfhost/titan&quot; ~/.local/bin/titan</code></pre></div>
+  {{COD:enlace en el PATH|ln -s "$PWD/selfhost/titan" ~/.local/bin/titan}}
   <h3>Termux (Android, ARM64)</h3>
-  <p>El paquete <code>titan-v1.0.0-linux-aarch64.tar.gz</code> lo fabrica el flujo «Linux ARM64 (Termux)» de GitHub Actions. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> (en ARM64 Titan lo usa para producir el ejecutable final) y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_TERMUX.md">guía de Termux</a>, que explica también qué no se ha probado todavía.</p>
+  <p>El paquete <code>titan-v1.0.0-linux-aarch64.tar.gz</code> lo fabrica el flujo «Linux ARM64 (Termux)» de GitHub Actions. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> (en ARM64 Titan lo usa para producir el ejecutable final) y deja <code>titan</code> en el <code>PATH</code>. Ver la {{DOC:docs/GUIA_TERMUX.md|guía de Termux}}, que explica también qué no se ha probado todavía.</p>
   <h3>Primer proyecto</h3>
-  <div class="code"><div class="cap">terminal</div><pre><code>titan new mi_app
-cd mi_app
-titan run</code></pre></div>
+  {{COD:terminal|titan new mi_app\ncd mi_app\ntitan run}}
 </div></section>
 
 <section id="plataformas"><div class="wrap">
@@ -207,7 +98,7 @@ titan run</code></pre></div>
       <tr><td>5</td><td>Runtime y biblioteca estándar, también en Titan, que se compilan junto con el programa. El resultado es un ejecutable sin máquina virtual.</td></tr>
     </tbody>
   </table>
-  <p>El compilador se compila a sí mismo: la versión 1 (hecha con la semilla), la 2 (hecha con la 1) y la 3 (hecha con la 2) son idénticas byte a byte. Detalle en <a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/ARCHITECTURE.md">la arquitectura</a>.</p>
+  <p>El compilador se compila a sí mismo: la versión 1 (hecha con la semilla), la 2 (hecha con la 1) y la 3 (hecha con la 2) son idénticas byte a byte. Detalle en {{DOC:docs/ARCHITECTURE.md|la arquitectura}}.</p>
 </div></section>
 
 <section id="biblioteca"><div class="wrap">
@@ -248,7 +139,7 @@ titan run</code></pre></div>
     </tbody>
   </table>
   <h3>Un proyecto grande: Moon</h3>
-  <p>El repositorio incluye <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon</a>, una aplicación completa escrita en Titan (API web con base de datos, cuentas, subida de archivos y tiempo real; unas 4 700 líneas), y más de 50 programas de ejemplo en <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">examples/</a>.</p>
+  <p>El repositorio incluye <a href="{{REPO}}/tree/main/projects/moon">Moon</a>, una aplicación completa escrita en Titan (API web con base de datos, cuentas, subida de archivos y tiempo real; unas 4 700 líneas), y más de 50 programas de ejemplo en <a href="{{REPO}}/tree/main/examples">examples/</a>.</p>
 </div></section>
 
 <section id="limites"><div class="wrap">
@@ -265,21 +156,21 @@ titan run</code></pre></div>
     <li><strong>Web:</strong> <code>std::web</code> y <code>std::wasm</code> solo funcionan con un host JavaScript.</li>
     <li><strong>ARM64:</strong> el depurador y el motor de audio no se han validado en ARM64; compilar en el dispositivo requiere <code>clang</code> y <code>lld</code>.</li>
   </ul>
-  <p>La lista completa, con el detalle de cada pieza, está en <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">selfhost/ESTADO.md</a>.</p>
+  <p>La lista completa, con el detalle de cada pieza, está en {{DOC:selfhost/ESTADO.md|selfhost/ESTADO.md}}.</p>
 </div></section>
 
 <section id="documentacion"><div class="wrap">
   <h2>Documentación</h2>
   <div class="grid3">
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/README.md">README</a></h3><p>Resumen del proyecto, instalación y comandos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/SPEC.md">Especificación</a></h3><p>Definición del lenguaje y de sus reglas de tipos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/TITAN_SYNTAX.md">Sintaxis</a></h3><p>Referencia de la sintaxis con ejemplos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/STDLIB.md">Biblioteca estándar</a></h3><p>Todos los espacios de nombres con su contenido.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/CONCURRENCY.md">Concurrencia</a></h3><p>Tareas, canales, select y tiempos límite.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/ARCHITECTURE.md">Arquitectura</a></h3><p>Etapas del compilador y generadores de código.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_TERMUX.md">Guía de Termux</a></h3><p>Instalación y uso en Android.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/WASM.md">WebAssembly</a></h3><p>Módulos, memoria y host JavaScript.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado verificado</a></h3><p>Qué se probó, cómo y qué falta.</p></div>
+    <div class="card"><h3>{{DOC:README.md|README}}</h3><p>Resumen del proyecto, instalación y comandos.</p></div>
+    <div class="card"><h3>{{DOC:docs/SPEC.md|Especificación}}</h3><p>Definición del lenguaje y de sus reglas de tipos.</p></div>
+    <div class="card"><h3>{{DOC:docs/TITAN_SYNTAX.md|Sintaxis}}</h3><p>Referencia de la sintaxis con ejemplos.</p></div>
+    <div class="card"><h3>{{DOC:docs/STDLIB.md|Biblioteca estándar}}</h3><p>Todos los espacios de nombres con su contenido.</p></div>
+    <div class="card"><h3>{{DOC:docs/CONCURRENCY.md|Concurrencia}}</h3><p>Tareas, canales, select y tiempos límite.</p></div>
+    <div class="card"><h3>{{DOC:docs/ARCHITECTURE.md|Arquitectura}}</h3><p>Etapas del compilador y generadores de código.</p></div>
+    <div class="card"><h3>{{DOC:docs/GUIA_TERMUX.md|Guía de Termux}}</h3><p>Instalación y uso en Android.</p></div>
+    <div class="card"><h3>{{DOC:docs/WASM.md|WebAssembly}}</h3><p>Módulos, memoria y host JavaScript.</p></div>
+    <div class="card"><h3>{{DOC:selfhost/ESTADO.md|Estado verificado}}</h3><p>Qué se probó, cómo y qué falta.</p></div>
   </div>
 </div></section>
 
@@ -287,10 +178,3 @@ titan run</code></pre></div>
   <h2>Origen</h2>
   <p>Titan empezó como un prototipo escrito en Rust. El compilador, el runtime y la biblioteca estándar se reescribieron en Titan y el código Rust se eliminó del repositorio; la última versión con Rust sigue disponible en el historial de git (etiqueta <code>ultimo-con-rust</code>). El nombre «Zett» aparece en algunos archivos y mensajes porque así se distribuyó antes, sobre todo en Termux.</p>
 </div></section>
-</main>
-<footer><div class="wrap">
-  Titan se distribuye bajo licencia MIT. Código y documentación: <a href="https://github.com/alexsndersoto04-source/aio">github.com/alexsndersoto04-source/aio</a>.
-  Los datos de esta página provienen del repositorio (<a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">selfhost/ESTADO.md</a>) y se midieron en octubre de 2026.
-</div></footer>
-</body>
-</html>
