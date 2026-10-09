@@ -1,0 +1,452 @@
+// std::sqlite en Titan, parte 2: capa de E/S (imagen en memoria) y paginador con diario de
+// retroceso (formato de archivo y de diario de SQLite, modo `delete`).
+// El paginador es funcional: cada escritura devuelve el paginador nuevo. Las lecturas no.
+
+struct SqIo {
+    kind: int,
+    img: any,
+    jnl: any,
+    fd: int,
+    path: string,
+}
+
+struct SqPg {
+    io: SqIo,
+    psize: int,
+    npages: int,
+    n0: int,
+    dirty: any,
+    intxn: bool,
+}
+
+// ------------------------------------------------------------ E/S en memoria (desarrollo)
+
+fn sqio_mem() -> SqIo {
+    SqIo { kind: 0, img: std::bytes::from_array([]), jnl: nil, fd: -1, path: "" }
+}
+
+fn sqio_size(io: SqIo) -> int {
+    if io.kind == 1 {
+        return sqf_size(io.fd)
+    }
+    return std::bytes::length(io.img)
+}
+
+fn sqio_read(io: SqIo, off: int, n: int) -> array {
+    if io.kind == 1 {
+        return sqf_read(io.fd, off, n)
+    }
+    let sz = std::bytes::length(io.img)
+    if off >= sz {
+        return sq_zeros(n)
+    }
+    let mut e = off + n
+    if e > sz {
+        e = sz
+    }
+    let a = std::bytes::to_array(std::bytes::slice(io.img, off, e))
+    if e - off < n {
+        return std::array::concat(a, sq_zeros(n - (e - off)))
+    }
+    a
+}
+
+// Aplica páginas (lista de [no, array]) a la imagen.
+fn sqio_apply(io: SqIo, psize: int, pages: array) -> SqIo {
+    if io.kind == 1 {
+        for pg in pages {
+            sqf_write(io.fd, (pg[0] - 1) * psize, pg[1])
+        }
+        return io
+    }
+    let mut img = io.img
+    for pg in pages {
+        let no = pg[0]
+        let data = std::bytes::from_array(pg[1])
+        let off = (no - 1) * psize
+        let sz = std::bytes::length(img)
+        let mut before = std::bytes::slice(img, 0, off)
+        if off > sz {
+            before = std::bytes::concat(img, std::bytes::from_array(sq_zeros(off - sz)))
+        }
+        let mut after = std::bytes::from_array([])
+        if off + psize < sz {
+            after = std::bytes::slice(img, off + psize, sz)
+        }
+        img = std::bytes::concat(std::bytes::concat(before, data), after)
+    }
+    SqIo { kind: io.kind, img: img, jnl: io.jnl, fd: io.fd, path: io.path }
+}
+
+fn sqio_truncate(io: SqIo, size: int) -> SqIo {
+    if io.kind == 1 {
+        if size < sqf_size(io.fd) {
+            sqf_truncate(io.fd, size)
+        }
+        return io
+    }
+    let sz = std::bytes::length(io.img)
+    if size >= sz {
+        return io
+    }
+    SqIo { kind: io.kind, img: std::bytes::slice(io.img, 0, size), jnl: io.jnl, fd: io.fd, path: io.path }
+}
+
+fn sqio_jnl_read(io: SqIo) -> any {
+    if io.kind == 1 {
+        return sqf_jnl_read(io.path)
+    }
+    return io.jnl
+}
+
+fn sqio_jnl_write(io: SqIo, a: array) -> SqIo {
+    if io.kind == 1 {
+        sqf_jnl_write(io.path, a)
+        return io
+    }
+    return SqIo { kind: io.kind, img: io.img, jnl: std::bytes::from_array(a), fd: io.fd, path: io.path }
+}
+
+fn sqio_jnl_delete(io: SqIo) -> SqIo {
+    if io.kind == 1 {
+        sqf_jnl_delete(io.path)
+        return io
+    }
+    return SqIo { kind: io.kind, img: io.img, jnl: nil, fd: io.fd, path: io.path }
+}
+
+// ------------------------------------------------------------ paginador
+
+fn sqp_key(no: int) -> string {
+    "{no}"
+}
+
+fn sqp_with_dirty(p: SqPg, d: any) -> SqPg {
+    SqPg { io: p.io, psize: p.psize, npages: p.npages, n0: p.n0, dirty: d, intxn: p.intxn }
+}
+
+fn sqp_with_np(p: SqPg, n: int) -> SqPg {
+    SqPg { io: p.io, psize: p.psize, npages: n, n0: p.n0, dirty: p.dirty, intxn: p.intxn }
+}
+
+fn sqp_with_io(p: SqPg, io: SqIo) -> SqPg {
+    SqPg { io: io, psize: p.psize, npages: p.npages, n0: p.n0, dirty: p.dirty, intxn: p.intxn }
+}
+
+// Página 1 de una base de datos vacía.
+fn sqp_fresh1(psize: int) -> array {
+    let mut a = sq_zeros(psize)
+    let magic = [83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0]
+    let mut i = 0
+    while i < 16 {
+        a = std::array::set(a, i, magic[i])
+        i += 1
+    }
+    a = sq_set16(a, 16, psize % 65536)
+    a = std::array::set(a, 18, 1)
+    a = std::array::set(a, 19, 1)
+    a = std::array::set(a, 20, 0)
+    a = std::array::set(a, 21, 64)
+    a = std::array::set(a, 22, 32)
+    a = std::array::set(a, 23, 32)
+    a = sq_set32(a, 28, 1)
+    a = sq_set32(a, 44, 4)
+    a = sq_set32(a, 56, 1)
+    a = std::array::set(a, 100, 13)
+    a = sq_set16(a, 105, psize % 65536)
+    a
+}
+
+fn sqp_read(p: SqPg, no: int) -> array {
+    let d = std::map::get(p.dirty, sqp_key(no))
+    if d != nil {
+        return d
+    }
+    if no == 1 && sqio_size(p.io) == 0 {
+        return sqp_fresh1(p.psize)
+    }
+    sqio_read(p.io, (no - 1) * p.psize, p.psize)
+}
+
+fn sqp_write(p: SqPg, no: int, a: array) -> SqPg {
+    sqp_with_dirty(p, std::map::insert(p.dirty, sqp_key(no), a))
+}
+
+// Abre: valida cabecera, recupera un diario activo. Devuelve (paginador, error).
+fn sqp_open(io0: SqIo) -> (SqPg, string) {
+    let mut io = io0
+    let mut psize = 4096
+    let sz0 = sqio_size(io)
+    if sz0 > 0 {
+        if sz0 < 100 {
+            return (SqPg { io: io, psize: 4096, npages: 0, n0: 0, dirty: std::map::new(), intxn: false }, "file is not a database")
+        }
+        let h = sqio_read(io, 0, 100)
+        let magic = [83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0]
+        let mut i = 0
+        while i < 16 {
+            if h[i] != magic[i] {
+                return (SqPg { io: io, psize: 4096, npages: 0, n0: 0, dirty: std::map::new(), intxn: false }, "file is not a database")
+            }
+            i += 1
+        }
+        psize = sq_u16(h, 16)
+        if psize == 1 {
+            psize = 65536
+        }
+    }
+    // recuperación de diario activo
+    let j = sqio_jnl_read(io)
+    if j != nil {
+        let ja = std::bytes::to_array(j)
+        io = sqp_recover(io, ja, psize)
+        io = sqio_jnl_delete(io)
+    }
+    let sz = sqio_size(io)
+    let mut np = 1
+    let mut n0 = 0
+    if sz > 0 {
+        let h = sqio_read(io, 0, 100)
+        let cnt = sq_u32(h, 28)
+        let chg = sq_u32(h, 24)
+        let vv = sq_u32(h, 92)
+        if cnt > 0 && chg == vv {
+            np = cnt
+        } else {
+            np = sz / psize
+        }
+        n0 = np
+    }
+    return (SqPg { io: io, psize: psize, npages: np, n0: n0, dirty: std::map::new(), intxn: false }, "")
+}
+
+fn sqp_cksum(nonce: int, a: array, psize: int) -> int {
+    let mut c = nonce
+    let mut i = psize - 200
+    while i > 0 {
+        c = (c + a[i]) % 4294967296
+        i -= 200
+    }
+    c
+}
+
+// Restaura las páginas originales guardadas en el diario.
+fn sqp_recover(io0: SqIo, j: array, psize: int) -> SqIo {
+    let mut io = io0
+    if len(j) < 28 {
+        return io
+    }
+    let magic = [217, 213, 5, 249, 32, 161, 99, 215]
+    let mut i = 0
+    while i < 8 {
+        if j[i] != magic[i] {
+            return io
+        }
+        i += 1
+    }
+    let mut nrec = sq_u32(j, 8)
+    let nonce = sq_u32(j, 12)
+    let initsz = sq_u32(j, 16)
+    let sector = sq_u32(j, 20)
+    let mut ps = sq_u32(j, 24)
+    if ps == 0 {
+        ps = psize
+    }
+    let mut off = sector
+    if off < 28 {
+        off = 28
+    }
+    let recsz = ps + 8
+    if nrec == 4294967295 || nrec == 0 {
+        nrec = (len(j) - off) / recsz
+    }
+    let mut pages = []
+    let mut r = 0
+    while r < nrec {
+        if off + recsz > len(j) {
+            break
+        }
+        let no = sq_u32(j, off)
+        let data = std::array::slice(j, off + 4, off + 4 + ps)
+        let ck = sq_u32(j, off + 4 + ps)
+        if ck != sqp_cksum(nonce, data, ps) {
+            break
+        }
+        pages = std::array::push(pages, [no, data])
+        off += recsz
+        r += 1
+    }
+    io = sqio_apply(io, ps, pages)
+    sqio_truncate(io, initsz * ps)
+}
+
+fn sqp_begin(p: SqPg) -> SqPg {
+    let sz = sqio_size(p.io)
+    let mut n0 = 0
+    if sz > 0 {
+        n0 = sz / p.psize
+    }
+    SqPg { io: p.io, psize: p.psize, npages: p.npages, n0: n0, dirty: std::map::new(), intxn: true }
+}
+
+// Descarta los cambios. Devuelve el paginador con el estado del archivo.
+fn sqp_rollback(p: SqPg) -> SqPg {
+    let (q, _) = sqp_open(p.io)
+    q
+}
+
+fn sqp_page_numbers(p: SqPg) -> array {
+    let ks = std::map::keys(p.dirty)
+    let mut nums = []
+    for k in ks {
+        let v = match std::text::parse_int(k) {
+            Option::Some(x) => x,
+            _ => 0,
+        }
+        nums = std::array::push(nums, v)
+    }
+    sq_sort_ints(nums)
+}
+
+// Ordenación de enteros (mezcla).
+fn sq_sort_ints(a: array) -> array {
+    let n = len(a)
+    if n < 2 {
+        return a
+    }
+    let mid = n / 2
+    let l = sq_sort_ints(std::array::slice(a, 0, mid))
+    let r = sq_sort_ints(std::array::slice(a, mid, n))
+    let mut out = []
+    let mut i = 0
+    let mut k = 0
+    while i < len(l) && k < len(r) {
+        if l[i] <= r[k] {
+            out = std::array::push(out, l[i])
+            i += 1
+        } else {
+            out = std::array::push(out, r[k])
+            k += 1
+        }
+    }
+    while i < len(l) {
+        out = std::array::push(out, l[i])
+        i += 1
+    }
+    while k < len(r) {
+        out = std::array::push(out, r[k])
+        k += 1
+    }
+    out
+}
+
+// Confirma. fase 0 = completo; 1 = se detiene tras escribir el diario; 2 = tras escribir
+// páginas sin borrar el diario (simulación de caída, solo para pruebas).
+fn sqp_commit(p: SqPg, fase: int) -> SqPg {
+    let nums = sqp_page_numbers(p)
+    if len(nums) == 0 {
+        return SqPg { io: p.io, psize: p.psize, npages: p.npages, n0: p.n0, dirty: std::map::new(), intxn: false }
+    }
+    // cabecera de la página 1
+    let mut h = sqp_read(p, 1)
+    let chg = (sq_u32(h, 24) + 1) % 4294967296
+    h = sq_set32(h, 24, chg)
+    h = sq_set32(h, 28, p.npages)
+    h = sq_set32(h, 92, chg)
+    h = sq_set32(h, 96, 3046000)
+    let mut q = sqp_write(p, 1, h)
+    let nums2 = sqp_page_numbers(q)
+    let mut io = q.io
+    // diario con las páginas originales
+    let mut recs = []
+    for no in nums2 {
+        if no <= q.n0 {
+            recs = std::array::push(recs, no)
+        }
+    }
+    if len(recs) > 0 {
+        let nonce = 1234567
+        let mut j = [217, 213, 5, 249, 32, 161, 99, 215]
+        j = std::array::concat(j, sq_be32(len(recs)))
+        j = std::array::concat(j, sq_be32(nonce))
+        j = std::array::concat(j, sq_be32(q.n0))
+        j = std::array::concat(j, sq_be32(512))
+        j = std::array::concat(j, sq_be32(q.psize))
+        j = std::array::concat(j, sq_zeros(512 - 28))
+        for no in recs {
+            let orig = sqio_read(io, (no - 1) * q.psize, q.psize)
+            j = std::array::concat(j, sq_be32(no))
+            j = std::array::concat(j, orig)
+            j = std::array::concat(j, sq_be32(sqp_cksum(nonce, orig, q.psize)))
+        }
+        io = sqio_jnl_write(io, j)
+        sqio_sync(io)
+    }
+    if fase == 1 {
+        return sqp_with_io(q, io)
+    }
+    let mut pages = []
+    for no in nums2 {
+        pages = std::array::push(pages, [no, sqp_read(q, no)])
+    }
+    io = sqio_apply(io, q.psize, pages)
+    sqio_sync(io)
+    if fase == 2 {
+        return sqp_with_io(q, io)
+    }
+    io = sqio_jnl_delete(io)
+    SqPg { io: io, psize: q.psize, npages: q.npages, n0: q.npages, dirty: std::map::new(), intxn: false }
+}
+
+fn sqio_sync(io: SqIo) -> int {
+    if io.kind == 1 {
+        return sqf_sync(io.fd)
+    }
+    return 0
+}
+
+// ------------------------------------------------------------ páginas libres
+
+fn sqp_alloc(p: SqPg) -> (SqPg, int) {
+    let h = sqp_read(p, 1)
+    let trunk = sq_u32(h, 32)
+    let cnt = sq_u32(h, 36)
+    if trunk != 0 && cnt > 0 {
+        let t = sqp_read(p, trunk)
+        let nl = sq_u32(t, 4)
+        if nl > 0 {
+            let no = sq_u32(t, 8 + 4 * (nl - 1))
+            let t2 = sq_set32(t, 4, nl - 1)
+            let h2 = sq_set32(h, 36, cnt - 1)
+            let q = sqp_write(sqp_write(p, trunk, t2), 1, h2)
+            return (sqp_write(q, no, sq_zeros(p.psize)), no)
+        }
+        let next = sq_u32(t, 0)
+        let h2 = sq_set32(sq_set32(h, 32, next), 36, cnt - 1)
+        let q = sqp_write(p, 1, h2)
+        return (sqp_write(q, trunk, sq_zeros(p.psize)), trunk)
+    }
+    let no = p.npages + 1
+    let q = sqp_with_np(p, no)
+    return (sqp_write(q, no, sq_zeros(p.psize)), no)
+}
+
+fn sqp_free(p: SqPg, no: int) -> SqPg {
+    let h = sqp_read(p, 1)
+    let trunk = sq_u32(h, 32)
+    let cnt = sq_u32(h, 36)
+    let cap = p.psize / 4 - 8
+    if trunk != 0 {
+        let t = sqp_read(p, trunk)
+        let nl = sq_u32(t, 4)
+        if nl < cap {
+            let t2 = sq_set32(sq_set32(t, 4, nl + 1), 8 + 4 * nl, no)
+            let h2 = sq_set32(h, 36, cnt + 1)
+            return sqp_write(sqp_write(p, trunk, t2), 1, h2)
+        }
+    }
+    let mut t = sq_zeros(p.psize)
+    t = sq_set32(t, 0, trunk)
+    let h2 = sq_set32(sq_set32(h, 32, no), 36, cnt + 1)
+    sqp_write(sqp_write(p, no, t), 1, h2)
+}

@@ -50,3 +50,5 @@ ok simd-adler32 0.3.10 18760 bytes sha256 3a219298ac11a56ea9a6d2120044824d6f01ae
 ok plotters 0.3.7 149031 bytes sha256 5aeb6f403d7a4911efb1e33402027fc44f29b5bf6def3effcc22d7bb75f2b747
 ok plotters-svg 0.3.7 6715 bytes sha256 51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670
 ok plotters-backend 0.3.7 13709 bytes sha256 df42e13c12958a16b3f7f4386b9ab1f3e7933914ecea48da7139435263a4172a
+ok unicode-normalization-alignments+unicode_categories (github) tokenizers-fuentes.tar.gz sha256 eb52900a3a9585d327ab2b26889c87bf1f2e08f6e45dd1fc07a2c8e85ab30069
+ok tokenizers 0.22.2 (sdist PyPI) sha256 473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917

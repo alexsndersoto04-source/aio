@@ -703,7 +703,7 @@ fn ym_float_text(bits: int) -> any {
         sb_str(sbuf, "0.0")
         return sb_finish(sbuf)
     }
-    let (num, nd, k) = fl_shortest(b)
+    let (num, nd, k) = fl_shortest_even(b)
     let text = rt_int_to_str(num)
     let tp = std::raw::bits(text) + 16
     if nd <= k && k <= 16 {

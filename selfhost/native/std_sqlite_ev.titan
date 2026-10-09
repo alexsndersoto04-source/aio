@@ -1,0 +1,1444 @@
+// std::sqlite en Titan, parte 9: esquema, contexto de ejecución, funciones escalares, agregados
+// y evaluación de expresiones. Prefijo `sx`.
+
+struct ColI {
+    name: string,
+    ty: string,
+    aff: string,
+    notnull: bool,
+    nnconf: string,
+    dflt: any,
+    coll: string,
+    gen: any,
+    genstored: bool,
+    pk: bool,
+    hidden: bool,
+}
+
+struct TabI {
+    name: string,
+    root: int,
+    cols: array,
+    rowid: int,
+    pk: array,
+    norowid: bool,
+    fks: array,
+    checks: array,
+    autoinc: bool,
+    sql: string,
+    strict: bool,
+    uniqs: array,
+    temp: bool,
+    rconf: string,
+}
+
+struct IdxI {
+    name: string,
+    tbl: string,
+    root: int,
+    cols: array,
+    unique: bool,
+    wh: any,
+    auto: bool,
+    sql: string,
+}
+
+struct TrgI {
+    name: string,
+    tbl: string,
+    timing: string,
+    ev: string,
+    ucols: array,
+    wh: any,
+    body: array,
+    sql: string,
+}
+
+struct ViewI {
+    name: string,
+    cols: array,
+    sel: any,
+    sql: string,
+}
+
+struct Sch {
+    tabs: any,
+    idxs: any,
+    views: any,
+    trgs: array,
+}
+
+struct Cx {
+    sch: Sch,
+    pg: SqPg,
+    params: array,
+    ctes: any,
+    aggs: array,
+    wvals: array,
+    now: int,
+    lastid: int,
+    changes: int,
+    tchanges: int,
+    depth: int,
+    flags: int,
+    trgs: array,
+    settings: any,
+}
+
+fn sx_lc(s: string) -> string {
+    sq_fold(s)
+}
+
+fn sx_iserr(v: Sv) -> bool {
+    match v {
+        Sv::SErr(_) => true,
+        _ => false,
+    }
+}
+
+fn sx_isnull(v: Sv) -> bool {
+    match v {
+        Sv::SNull => true,
+        _ => false,
+    }
+}
+
+fn sx_coll_code(name: string) -> int {
+    let u = sql_upper_ascii(name)
+    if u == "NOCASE" {
+        return 1
+    }
+    if u == "RTRIM" {
+        return 2
+    }
+    0
+}
+
+fn sx_coll_of(e: Ex) -> string {
+    match e {
+        Ex::ESlot(p) => p.3,
+        Ex::ECollate(p) => p.1,
+        Ex::ECoerce(p) => sx_coll_of(p.0),
+        _ => "",
+    }
+}
+
+fn sx_is_explicit_coll(e: Ex) -> bool {
+    match e {
+        Ex::ECollate(_) => true,
+        Ex::ECoerce(p) => sx_is_explicit_coll(p.0),
+        _ => false,
+    }
+}
+
+// Collation de una comparación entre dos operandos.
+fn sx_cmp_coll(l: Ex, r: Ex) -> int {
+    if sx_is_explicit_coll(l) {
+        return sx_coll_code(sx_coll_of(l))
+    }
+    if sx_is_explicit_coll(r) {
+        return sx_coll_code(sx_coll_of(r))
+    }
+    let a = sx_coll_of(l)
+    if a != "" {
+        return sx_coll_code(a)
+    }
+    sx_coll_code(sx_coll_of(r))
+}
+
+fn sx_aff_of(e: Ex) -> string {
+    match e {
+        Ex::ESlot(p) => p.2,
+        Ex::ECast(p) => sc_affinity(p.1),
+        Ex::ECollate(p) => sx_aff_of(p.0),
+        Ex::ECoerce(p) => sx_aff_of(p.0),
+        _ => "",
+    }
+}
+
+// clave de hash de un valor (DISTINCT, UNION, ...)
+fn sx_key(v: Sv) -> string {
+    match v {
+        Sv::SNull => "n",
+        Sv::SInt(i) => "i{i}",
+        Sv::SReal(f) => {
+            if f >= -9007199254740992.0 && f <= 9007199254740992.0 && std::math::floor(f) == f {
+                let n = std::math::to_int(f)
+                return "i{n}"
+            }
+            return "r" + std::encoding::hex_encode(std::bytes::from_array(sq_f2b(f)))
+        },
+        Sv::SText(s) => "t" + s,
+        Sv::SBlob(b) => "b" + std::encoding::hex_encode(b),
+        Sv::SErr(_) => "e",
+    }
+}
+
+fn sx_row_key(row: array) -> string {
+    let mut parts = []
+    for v in row {
+        parts = std::array::push(parts, sx_key(v))
+    }
+    std::collections::join(parts, sx_chr(31))
+}
+
+// ------------------------------------------------------------ funciones escalares
+
+fn sx_len(v: Sv) -> Sv {
+    match v {
+        Sv::SNull => Sv::SNull,
+        Sv::SBlob(b) => Sv::SInt(std::bytes::length(b)),
+        Sv::SText(s) => {
+            // la longitud termina en el primer NUL
+            Sv::SInt(len(std::text::chars(s)))
+        },
+        _ => Sv::SInt(len(std::text::chars(sc_to_text(v)))),
+    }
+}
+
+fn sx_substr(args: array) -> Sv {
+    let x = args[0]
+    if sx_isnull(x) || sx_isnull(args[1]) {
+        return Sv::SNull
+    }
+    let mut isblob = false
+    match x {
+        Sv::SBlob(_) => {
+            isblob = true
+        },
+        _ => {},
+    }
+    let mut chars = []
+    let mut bytes = []
+    let mut n = 0
+    if isblob {
+        match x {
+            Sv::SBlob(b) => {
+                bytes = std::bytes::to_array(b)
+                n = len(bytes)
+            },
+            _ => {},
+        }
+    } else {
+        chars = std::text::chars(sc_to_text(x))
+        n = len(chars)
+    }
+    let mut p1 = sc_to_int(args[1])
+    let mut p2 = n
+    let mut negp2 = false
+    if len(args) == 3 {
+        if sx_isnull(args[2]) {
+            return Sv::SNull
+        }
+        p2 = sc_to_int(args[2])
+        if p2 < 0 {
+            p2 = 0 - p2
+            negp2 = true
+        }
+    }
+    if p1 < 0 {
+        p1 += n
+        if p1 < 0 {
+            p2 += p1
+            if p2 < 0 {
+                p2 = 0
+            }
+            p1 = 0
+        }
+    } else if p1 > 0 {
+        p1 -= 1
+    } else if p2 > 0 {
+        p2 -= 1
+    }
+    if negp2 {
+        p1 -= p2
+        if p1 < 0 {
+            p2 += p1
+            p1 = 0
+        }
+    }
+    if p1 > n {
+        p1 = n
+    }
+    let mut e = p1 + p2
+    if e > n || e < p1 {
+        e = n
+    }
+    if isblob {
+        return Sv::SBlob(std::bytes::from_array(std::array::slice(bytes, p1, e)))
+    }
+    Sv::SText(std::collections::join(std::array::slice(chars, p1, e), ""))
+}
+
+fn sx_instr(a: Sv, b: Sv) -> Sv {
+    if sx_isnull(a) || sx_isnull(b) {
+        return Sv::SNull
+    }
+    let mut bothblob = false
+    match a {
+        Sv::SBlob(x) => {
+            match b {
+                Sv::SBlob(y) => {
+                    bothblob = true
+                    let xa = std::bytes::to_array(x)
+                    let ya = std::bytes::to_array(y)
+                    return Sv::SInt(sx_find(xa, ya))
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    let xa = sql_codes(sc_to_text(a))
+    let ya = sql_codes(sc_to_text(b))
+    Sv::SInt(sx_find(xa, ya))
+}
+
+fn sx_find(h: array, nd: array) -> int {
+    let n = len(h)
+    let m = len(nd)
+    if m == 0 {
+        return 1
+    }
+    let mut i = 0
+    while i + m <= n {
+        let mut ok = true
+        let mut j = 0
+        while j < m {
+            if h[i + j] != nd[j] {
+                ok = false
+                break
+            }
+            j += 1
+        }
+        if ok {
+            return i + 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn sx_trim(args: array, left: bool, right: bool) -> Sv {
+    if sx_isnull(args[0]) {
+        return Sv::SNull
+    }
+    let cs = std::text::chars(sc_to_text(args[0]))
+    let mut set = [" "]
+    if len(args) > 1 {
+        if sx_isnull(args[1]) {
+            return Sv::SNull
+        }
+        set = []
+        for c in std::text::chars(sc_to_text(args[1])) {
+            set = std::array::push(set, std::collections::join([c], ""))
+        }
+    }
+    let mut a = 0
+    let mut b = len(cs)
+    if left {
+        while a < b && sx_in_set(set, cs[a]) {
+            a += 1
+        }
+    }
+    if right {
+        while b > a && sx_in_set(set, cs[b - 1]) {
+            b -= 1
+        }
+    }
+    Sv::SText(std::collections::join(std::array::slice(cs, a, b), ""))
+}
+
+fn sx_in_set(set: array, c: any) -> bool {
+    let s = std::collections::join([c], "")
+    for x in set {
+        if x == s {
+            return true
+        }
+    }
+    false
+}
+
+fn sx_round(args: array) -> Sv {
+    if sx_isnull(args[0]) {
+        return Sv::SNull
+    }
+    let mut n = 0
+    if len(args) > 1 {
+        if sx_isnull(args[1]) {
+            return Sv::SNull
+        }
+        n = sc_to_int(args[1])
+        if n > 30 {
+            n = 30
+        }
+        if n < 0 {
+            n = 0
+        }
+    }
+    let x = sc_to_float(args[0])
+    if x != x {
+        return Sv::SNull
+    }
+    if n == 0 && x > -4503599627370496.0 && x < 4503599627370496.0 {
+        let mut r = 0.0
+        if x < 0.0 {
+            r = std::math::to_float(std::math::to_int(x - 0.5))
+        } else {
+            r = std::math::to_float(std::math::to_int(x + 0.5))
+        }
+        return Sv::SReal(r)
+    }
+    if x > 4503599627370496.0 || x < -4503599627370496.0 {
+        return Sv::SReal(x)
+    }
+    let s = sc_fmt_f(x, n)
+    match std::text::parse_float(s) {
+        Option::Some(f) => Sv::SReal(f),
+        _ => Sv::SReal(x),
+    }
+}
+
+fn sx_hex(v: Sv) -> Sv {
+    if sx_isnull(v) {
+        return Sv::SText("")
+    }
+    let mut bs = std::bytes::from_array([])
+    match v {
+        Sv::SBlob(b) => {
+            bs = b
+        },
+        _ => {
+            bs = std::encoding::utf8_encode(sc_to_text(v))
+        },
+    }
+    Sv::SText(sql_upper_ascii(std::encoding::hex_encode(bs)))
+}
+
+fn sx_quote(v: Sv) -> Sv {
+    match v {
+        Sv::SNull => Sv::SText("NULL"),
+        Sv::SInt(i) => Sv::SText("{i}"),
+        Sv::SReal(f) => Sv::SText(sc_fmt_real(f)),
+        Sv::SText(s) => Sv::SText("'" + std::text::replace(s, "'", "''") + "'"),
+        Sv::SBlob(b) => Sv::SText("X'" + sql_upper_ascii(std::encoding::hex_encode(b)) + "'"),
+        Sv::SErr(_) => v,
+    }
+}
+
+fn sx_typeof(v: Sv) -> Sv {
+    match v {
+        Sv::SNull => Sv::SText("null"),
+        Sv::SInt(_) => Sv::SText("integer"),
+        Sv::SReal(_) => Sv::SText("real"),
+        Sv::SText(_) => Sv::SText("text"),
+        Sv::SBlob(_) => Sv::SText("blob"),
+        Sv::SErr(_) => v,
+    }
+}
+
+fn sx_minmax(args: array, want_max: bool, coll: int) -> Sv {
+    let mut best = args[0]
+    if sx_isnull(best) {
+        return Sv::SNull
+    }
+    let mut i = 1
+    while i < len(args) {
+        let v = args[i]
+        if sx_isnull(v) {
+            return Sv::SNull
+        }
+        let c = sq_cmp(v, best, coll)
+        if (want_max && c > 0) || (!want_max && c < 0) {
+            best = v
+        }
+        i += 1
+    }
+    best
+}
+
+fn sx_chr(k: int) -> string {
+    let mut bs = []
+    if k < 128 {
+        bs = [k]
+    } else if k < 2048 {
+        bs = [192 + k / 64, 128 + k % 64]
+    } else if k < 65536 {
+        bs = [224 + k / 4096, 128 + (k / 64) % 64, 128 + k % 64]
+    } else {
+        bs = [240 + k / 262144, 128 + (k / 4096) % 64, 128 + (k / 64) % 64, 128 + k % 64]
+    }
+    sq_dec_text(bs, 0, len(bs))
+}
+
+// Funciones escalares. `name` ya en minúsculas. Devuelve SErr si hay error de ejecución.
+fn sx_func(cx: Cx, name: string, args: array, coll: int) -> Sv {
+    let n = len(args)
+    if name == "abs" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        match args[0] {
+            Sv::SInt(i) => {
+                if i == -9223372036854775807 - 1 {
+                    return Sv::SErr("integer overflow")
+                }
+                if i < 0 {
+                    return Sv::SInt(0 - i)
+                }
+                return Sv::SInt(i)
+            },
+            _ => {
+                let f = sc_to_float(args[0])
+                if f < 0.0 {
+                    return Sv::SReal(0.0 - f)
+                }
+                return Sv::SReal(f)
+            },
+        }
+    }
+    if name == "coalesce" {
+        for a in args {
+            if !sx_isnull(a) {
+                return a
+            }
+        }
+        return Sv::SNull
+    }
+    if name == "ifnull" {
+        if !sx_isnull(args[0]) {
+            return args[0]
+        }
+        return args[1]
+    }
+    if name == "nullif" {
+        if sx_isnull(args[0]) || sx_isnull(args[1]) {
+            return args[0]
+        }
+        if sq_cmp(args[0], args[1], coll) == 0 {
+            return Sv::SNull
+        }
+        return args[0]
+    }
+    if name == "iif" || name == "if" {
+        if sc_truth(args[0]) == 1 {
+            return args[1]
+        }
+        if n > 2 {
+            return args[2]
+        }
+        return Sv::SNull
+    }
+    if name == "length" {
+        return sx_len(args[0])
+    }
+    if name == "octet_length" {
+        match args[0] {
+            Sv::SNull => {
+                return Sv::SNull
+            },
+            Sv::SBlob(b) => {
+                return Sv::SInt(std::bytes::length(b))
+            },
+            _ => {
+                return Sv::SInt(len(sq_utf8(sc_to_text(args[0]))))
+            },
+        }
+    }
+    if name == "lower" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        return Sv::SText(sq_fold(sc_to_text(args[0])))
+    }
+    if name == "upper" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        return Sv::SText(sql_upper_ascii(sc_to_text(args[0])))
+    }
+    if name == "substr" || name == "substring" {
+        return sx_substr(args)
+    }
+    if name == "instr" {
+        return sx_instr(args[0], args[1])
+    }
+    if name == "replace" {
+        if sx_isnull(args[0]) || sx_isnull(args[1]) || sx_isnull(args[2]) {
+            return Sv::SNull
+        }
+        let a = sc_to_text(args[0])
+        let b = sc_to_text(args[1])
+        if b == "" {
+            return Sv::SText(a)
+        }
+        return Sv::SText(std::text::replace(a, b, sc_to_text(args[2])))
+    }
+    if name == "trim" {
+        return sx_trim(args, true, true)
+    }
+    if name == "ltrim" {
+        return sx_trim(args, true, false)
+    }
+    if name == "rtrim" {
+        return sx_trim(args, false, true)
+    }
+    if name == "round" {
+        return sx_round(args)
+    }
+    if name == "typeof" {
+        return sx_typeof(args[0])
+    }
+    if name == "min" {
+        return sx_minmax(args, false, coll)
+    }
+    if name == "max" {
+        return sx_minmax(args, true, coll)
+    }
+    if name == "hex" {
+        return sx_hex(args[0])
+    }
+    if name == "unhex" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        let s = sc_to_text(args[0])
+        let cs = std::text::chars(s)
+        let mut ok = len(cs) % 2 == 0
+        for c in cs {
+            if !sql_ishex(std::text::char_code(c)) {
+                ok = false
+            }
+        }
+        if !ok {
+            return Sv::SNull
+        }
+        return Sv::SBlob(std::encoding::hex_decode(s))
+    }
+    if name == "quote" {
+        return sx_quote(args[0])
+    }
+    if name == "random" {
+        return Sv::SInt(std::random::int())
+    }
+    if name == "randomblob" {
+        let mut k = sc_to_int(args[0])
+        if k < 1 {
+            k = 1
+        }
+        return Sv::SBlob(std::random::bytes(k))
+    }
+    if name == "zeroblob" {
+        let mut k = sc_to_int(args[0])
+        if k < 0 {
+            k = 0
+        }
+        return Sv::SBlob(std::bytes::from_array(sq_zeros(k)))
+    }
+    if name == "printf" || name == "format" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        return Sv::SText(sc_printf(sc_to_text(args[0]), std::array::slice(args, 1, n)))
+    }
+    if name == "char" {
+        let mut parts = []
+        for a in args {
+            let mut k = sc_to_int(a)
+            if k < 0 || k > 1114111 {
+                k = 65533
+            }
+            parts = std::array::push(parts, sx_chr(k))
+        }
+        return Sv::SText(std::collections::join(parts, ""))
+    }
+    if name == "unicode" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        let cs = std::text::chars(sc_to_text(args[0]))
+        if len(cs) == 0 {
+            return Sv::SNull
+        }
+        return Sv::SInt(std::text::char_code(cs[0]))
+    }
+    if name == "like" {
+        if sx_isnull(args[0]) || sx_isnull(args[1]) {
+            return Sv::SNull
+        }
+        let mut esc = -1
+        if n > 2 {
+            let ec = sql_codes(sc_to_text(args[2]))
+            if len(ec) == 1 {
+                esc = ec[0]
+            }
+        }
+        return sc_bool(sc_like(sc_to_text(args[0]), sc_to_text(args[1]), esc))
+    }
+    if name == "glob" {
+        if sx_isnull(args[0]) || sx_isnull(args[1]) {
+            return Sv::SNull
+        }
+        return sc_bool(sc_glob(sc_to_text(args[0]), sc_to_text(args[1])))
+    }
+    if name == "sign" {
+        let mut nv = Sv::SNull
+        match args[0] {
+            Sv::SInt(_) => {
+                nv = args[0]
+            },
+            Sv::SReal(_) => {
+                nv = args[0]
+            },
+            Sv::SText(t) => {
+                let (sv, whole) = sc_scan_num(t)
+                if whole {
+                    nv = sv
+                }
+            },
+            _ => {},
+        }
+        match nv {
+            Sv::SInt(i) => {
+                if i > 0 {
+                    return Sv::SInt(1)
+                }
+                if i < 0 {
+                    return Sv::SInt(-1)
+                }
+                return Sv::SInt(0)
+            },
+            Sv::SReal(f) => {
+                if f > 0.0 {
+                    return Sv::SInt(1)
+                }
+                if f < 0.0 {
+                    return Sv::SInt(-1)
+                }
+                return Sv::SInt(0)
+            },
+            _ => {
+                return Sv::SNull
+            },
+        }
+    }
+    if name == "concat" {
+        let mut parts = []
+        for a in args {
+            if !sx_isnull(a) {
+                parts = std::array::push(parts, sc_to_text(a))
+            }
+        }
+        return Sv::SText(std::collections::join(parts, ""))
+    }
+    if name == "concat_ws" {
+        if sx_isnull(args[0]) {
+            return Sv::SNull
+        }
+        let mut parts = []
+        let mut i = 1
+        while i < n {
+            if !sx_isnull(args[i]) {
+                parts = std::array::push(parts, sc_to_text(args[i]))
+            }
+            i += 1
+        }
+        return Sv::SText(std::collections::join(parts, sc_to_text(args[0])))
+    }
+    if name == "likely" || name == "unlikely" {
+        return args[0]
+    }
+    if name == "likelihood" {
+        return args[0]
+    }
+    if name == "last_insert_rowid" {
+        return Sv::SInt(cx.lastid)
+    }
+    if name == "changes" {
+        return Sv::SInt(cx.changes)
+    }
+    if name == "total_changes" {
+        return Sv::SInt(cx.tchanges)
+    }
+    if name == "sqlite_version" {
+        return Sv::SText("3.46.0")
+    }
+    if name == "sqlite_source_id" {
+        return Sv::SText("2024-05-23 13:25:27 96c92aba00c8375bc32fafcdf12429c58bd8aabfcadab6683e35bbb9cdebalt1")
+    }
+    if name == "current_timestamp" {
+        return Sv::SText(sd_fmt_datetime(cx.now))
+    }
+    if name == "current_date" {
+        return Sv::SText(std::text::substring(sd_fmt_datetime(cx.now), 0, 10))
+    }
+    if name == "current_time" {
+        return Sv::SText(std::text::substring(sd_fmt_datetime(cx.now), 11, 19))
+    }
+    return sx_func2(cx, name, args)
+}
+
+// Funciones de ámbitos adicionales (fechas, JSON): se definen en otros archivos.
+fn sx_func2(cx: Cx, name: string, args: array) -> Sv {
+    let r = sd_func(cx, name, args)
+    match r {
+        Option::Some(v) => v,
+        _ => {
+            let r2 = sj_func(cx, name, args)
+            match r2 {
+                Option::Some(v) => v,
+                _ => Sv::SErr("no such function: " + name),
+            }
+        },
+    }
+}
+
+// (mínimo, máximo) de argumentos; máximo -1 = ilimitado; (-2,..) = no existe
+fn sx_arity(name: string) -> (int, int) {
+    let t1 = ["abs", "length", "octet_length", "lower", "upper", "typeof", "hex", "unhex", "quote", "randomblob", "zeroblob", "unicode", "sign", "likely", "unlikely", "likelihood_"]
+    for x in t1 {
+        if x == name {
+            return (1, 1)
+        }
+    }
+    let t2 = ["ifnull", "nullif", "instr"]
+    for x in t2 {
+        if x == name {
+            return (2, 2)
+        }
+    }
+    if name == "coalesce" || name == "concat" {
+        return (2, -1)
+    }
+    if name == "concat_ws" || name == "printf" || name == "format" || name == "char" {
+        return (1, -1)
+    }
+    if name == "iif" {
+        return (3, 3)
+    }
+    if name == "replace" {
+        return (3, 3)
+    }
+    if name == "substr" || name == "substring" {
+        return (2, 3)
+    }
+    if name == "trim" || name == "ltrim" || name == "rtrim" || name == "round" {
+        return (1, 2)
+    }
+    if name == "min" || name == "max" {
+        return (1, -1)
+    }
+    if name == "count" {
+        return (0, 1)
+    }
+    if name == "sum" || name == "total" || name == "avg" || name == "json_group_array" || name == "jsonb_group_array" || name == "first_value" || name == "last_value" || name == "ntile" {
+        return (1, 1)
+    }
+    if name == "group_concat" || name == "string_agg" {
+        return (1, 2)
+    }
+    if name == "json_group_object" || name == "nth_value" {
+        return (2, 2)
+    }
+    if name == "row_number" || name == "rank" || name == "dense_rank" || name == "percent_rank" || name == "cume_dist" {
+        return (0, 0)
+    }
+    if name == "lag" || name == "lead" {
+        return (1, 3)
+    }
+    if name == "like" {
+        return (2, 3)
+    }
+    if name == "glob" {
+        return (2, 2)
+    }
+    if name == "likelihood" {
+        return (2, 2)
+    }
+    if name == "random" || name == "last_insert_rowid" || name == "changes" || name == "total_changes" || name == "sqlite_version" || name == "sqlite_source_id" {
+        return (0, 0)
+    }
+    return sx_arity2(name)
+}
+
+fn sx_arity2(name: string) -> (int, int) {
+    let r = sd_arity(name)
+    if r.0 != -2 {
+        return r
+    }
+    return sj_arity(name)
+}
+
+// ------------------------------------------------------------ agregados
+
+fn sx_is_agg(name: string, nargs: int) -> bool {
+    if name == "count" || name == "sum" || name == "total" || name == "avg" || name == "group_concat" || name == "string_agg" {
+        return true
+    }
+    if (name == "min" || name == "max") && nargs == 1 {
+        return true
+    }
+    if name == "json_group_array" || name == "json_group_object" || name == "jsonb_group_array" {
+        return true
+    }
+    false
+}
+
+fn sx_is_window_only(name: string) -> bool {
+    name == "row_number" || name == "rank" || name == "dense_rank" || name == "percent_rank" || name == "cume_dist" || name == "ntile" || name == "lag" || name == "lead" || name == "first_value" || name == "last_value" || name == "nth_value"
+}
+
+// Estado: [n, ints?, sumint, sums, comp, ovf, mval, str-parts(array), seen]
+fn sx_agg_init(name: string) -> array {
+    return [0, true, 0, 0.0, 0.0, false, Sv::SNull, [], std::map::new()]
+}
+
+// Suma de Kahan-Babuska-Neumaier
+fn sx_kbn(st: array, x: float) -> array {
+    let s = st[3]
+    let c = st[4]
+    let t = s + x
+    let mut c2 = c
+    let mut ax = x
+    let mut as_ = s
+    if ax < 0.0 {
+        ax = 0.0 - ax
+    }
+    if as_ < 0.0 {
+        as_ = 0.0 - as_
+    }
+    if as_ >= ax {
+        c2 = c + ((s - t) + x)
+    } else {
+        c2 = c + ((x - t) + s)
+    }
+    std::array::set(std::array::set(st, 3, t), 4, c2)
+}
+
+fn sx_agg_step(name: string, st: array, args: array, coll: int, distinct: bool) -> array {
+    let mut s = st
+    if name == "count" && len(args) == 0 {
+        return std::array::set(s, 0, s[0] + 1)
+    }
+    let a = args[0]
+    if name == "count" {
+        if sx_isnull(a) {
+            return s
+        }
+        if distinct {
+            let k = sx_key(a)
+            if std::map::contains(s[8], k) {
+                return s
+            }
+            s = std::array::set(s, 8, std::map::insert(s[8], k, 1))
+        }
+        return std::array::set(s, 0, s[0] + 1)
+    }
+    if sx_isnull(a) && name != "json_group_array" && name != "jsonb_group_array" && name != "json_group_object" {
+        return s
+    }
+    if distinct {
+        let k = sx_key(a)
+        if std::map::contains(s[8], k) {
+            return s
+        }
+        s = std::array::set(s, 8, std::map::insert(s[8], k, 1))
+    }
+    if name == "sum" || name == "total" || name == "avg" {
+        let mut nv = sc_num(a)
+        // texto no numérico cuenta como 0 entero; en sum() de texto con forma de real, real
+        s = std::array::set(s, 0, s[0] + 1)
+        match nv {
+            Sv::SInt(i) => {
+                if s[1] && name != "total" {
+                    if sc_add_ovf(s[2], i) {
+                        s = std::array::set(s, 5, true)
+                    } else {
+                        s = std::array::set(s, 2, s[2] + i)
+                    }
+                    // mantener también la suma real por si aparece un real después
+                    s = sx_kbn(s, std::math::to_float(i))
+                } else {
+                    s = sx_kbn(s, std::math::to_float(i))
+                }
+            },
+            Sv::SReal(f) => {
+                s = std::array::set(s, 1, false)
+                s = sx_kbn(s, f)
+            },
+            _ => {},
+        }
+        // un texto o blob que no es entero exacto vuelve real a sum()
+        match a {
+            Sv::SText(t) => {
+                match nv {
+                    Sv::SInt(_) => {
+                        let (_, whole) = sc_scan_num(t)
+                        if !whole {
+                            s = std::array::set(s, 1, false)
+                        }
+                    },
+                    _ => {},
+                }
+            },
+            Sv::SBlob(_) => {
+                s = std::array::set(s, 1, false)
+            },
+            _ => {},
+        }
+        return s
+    }
+    if name == "min" || name == "max" {
+        if s[0] == 0 {
+            return std::array::set(std::array::set(s, 0, 1), 6, a)
+        }
+        let c = sq_cmp(a, s[6], coll)
+        if (name == "max" && c > 0) || (name == "min" && c < 0) {
+            return std::array::set(s, 6, a)
+        }
+        return s
+    }
+    if name == "group_concat" || name == "string_agg" {
+        let mut sep = ","
+        if len(args) > 1 {
+            sep = sc_to_text(args[1])
+        }
+        let parts = s[7]
+        if s[0] > 0 {
+            s = std::array::set(s, 7, std::array::push(std::array::push(parts, sep), sc_to_text(a)))
+        } else {
+            s = std::array::set(s, 7, std::array::push(parts, sc_to_text(a)))
+        }
+        return std::array::set(s, 0, s[0] + 1)
+    }
+    if name == "json_group_array" || name == "jsonb_group_array" {
+        s = std::array::set(s, 7, std::array::push(s[7], sj_to_json(a)))
+        return std::array::set(s, 0, s[0] + 1)
+    }
+    if name == "json_group_object" {
+        let v = Sv::SNull
+        let mut val = Sv::SNull
+        if len(args) > 1 {
+            val = args[1]
+        }
+        let mut lab = sj_str_lit(sc_to_text(a))
+        if sx_isnull(a) {
+            lab = ""
+        }
+        s = std::array::set(s, 7, std::array::push(s[7], lab + ":" + sj_to_json(val)))
+        return std::array::set(s, 0, s[0] + 1)
+    }
+    s
+}
+
+fn sx_agg_final(name: string, st: array) -> Sv {
+    if name == "count" {
+        return Sv::SInt(st[0])
+    }
+    if name == "sum" {
+        if st[0] == 0 {
+            return Sv::SNull
+        }
+        if st[1] {
+            if st[5] {
+                return Sv::SErr("integer overflow")
+            }
+            return Sv::SInt(st[2])
+        }
+        return Sv::SReal(st[3] + st[4])
+    }
+    if name == "total" {
+        return Sv::SReal(st[3] + st[4])
+    }
+    if name == "avg" {
+        if st[0] == 0 {
+            return Sv::SNull
+        }
+        return Sv::SReal((st[3] + st[4]) / std::math::to_float(st[0]))
+    }
+    if name == "min" || name == "max" {
+        if st[0] == 0 {
+            return Sv::SNull
+        }
+        return st[6]
+    }
+    if name == "group_concat" || name == "string_agg" {
+        if st[0] == 0 {
+            return Sv::SNull
+        }
+        return Sv::SText(std::collections::join(st[7], ""))
+    }
+    if name == "json_group_array" || name == "jsonb_group_array" {
+        return Sv::SText("[" + std::collections::join(st[7], ",") + "]")
+    }
+    if name == "json_group_object" {
+        return Sv::SText("{" + std::collections::join(st[7], ",") + "}")
+    }
+    Sv::SNull
+}
+
+// ------------------------------------------------------------ evaluación
+
+fn sx_param(cx: Cx, s: string) -> Sv {
+    let n = match std::text::parse_int(s) {
+        Option::Some(x) => x,
+        _ => 0,
+    }
+    if n >= 1 && n <= len(cx.params) {
+        return cx.params[n - 1]
+    }
+    Sv::SNull
+}
+
+fn sx_cmp_op(op: string, c: int) -> Sv {
+    if op == "=" {
+        return sc_bool(c == 0)
+    }
+    if op == "!=" {
+        return sc_bool(c != 0)
+    }
+    if op == "<" {
+        return sc_bool(c < 0)
+    }
+    if op == "<=" {
+        return sc_bool(c <= 0)
+    }
+    if op == ">" {
+        return sc_bool(c > 0)
+    }
+    sc_bool(c >= 0)
+}
+
+fn sx_is_cmp(op: string) -> bool {
+    op == "=" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+}
+
+fn sx_ev(cx: Cx, e: Ex, env: array) -> Sv {
+    match e {
+        Ex::ELit(v) => v,
+        Ex::EPar(s) => sx_param(cx, s),
+        Ex::ESlot(p) => {
+            let row = env[len(env) - 1 - p.0]
+            row[p.1]
+        },
+        Ex::ECoerce(p) => sc_apply_aff(sx_ev(cx, p.0, env), p.1),
+        Ex::ECollate(p) => sx_ev(cx, p.0, env),
+        Ex::EAgg(i) => sj_unmark(cx.aggs[i]),
+        Ex::EWin(i) => cx.wvals[i],
+        Ex::EUn(p) => sx_ev_un(cx, p.0, p.1, env),
+        Ex::EBin(p) => sx_ev_bin(cx, p.0, p.1, p.2, env),
+        Ex::EBetween(p) => {
+            let x = sx_ev(cx, p.0, env)
+            let lo = sx_ev(cx, p.1, env)
+            let hi = sx_ev(cx, p.2, env)
+            if sx_isnull(x) || sx_isnull(lo) || sx_isnull(hi) {
+                return Sv::SNull
+            }
+            let coll = sx_coll_code(sx_coll_of(p.0))
+            let r = sq_cmp(x, lo, coll) >= 0 && sq_cmp(x, hi, coll) <= 0
+            if p.3 {
+                return sc_bool(!r)
+            }
+            sc_bool(r)
+        },
+        Ex::EIsNull(p) => {
+            let v = sx_ev(cx, p.0, env)
+            let isn = sx_isnull(v)
+            if p.1 {
+                return sc_bool(!isn)
+            }
+            sc_bool(isn)
+        },
+        Ex::ECast(p) => sc_cast(sx_ev(cx, p.0, env), p.1),
+        Ex::ECase(p) => {
+            let mut base = Sv::SNull
+            let hasbase = p.0 != nil
+            if hasbase {
+                base = sx_ev(cx, p.0, env)
+            }
+            for w in p.1 {
+                let c = sx_ev(cx, w[0], env)
+                let mut hit = false
+                if hasbase {
+                    if !sx_isnull(base) && !sx_isnull(c) {
+                        hit = sq_cmp(base, c, 0) == 0
+                    }
+                } else {
+                    hit = sc_truth(c) == 1
+                }
+                if hit {
+                    return sx_ev(cx, w[1], env)
+                }
+            }
+            if p.2 != nil {
+                return sx_ev(cx, p.2, env)
+            }
+            Sv::SNull
+        },
+        Ex::ELike(p) => {
+            let x = sx_ev(cx, p.1, env)
+            let pat = sx_ev(cx, p.2, env)
+            if sx_isnull(x) || sx_isnull(pat) {
+                return Sv::SNull
+            }
+            let mut esc = -1
+            if p.3 != nil {
+                let ev = sx_ev(cx, p.3, env)
+                if sx_isnull(ev) {
+                    return Sv::SNull
+                }
+                let ec = sql_codes(sc_to_text(ev))
+                if len(ec) == 1 {
+                    esc = ec[0]
+                }
+            }
+            let mut r = false
+            if p.0 == "GLOB" {
+                r = sc_glob(sc_to_text(pat), sc_to_text(x))
+            } else {
+                r = sc_like(sc_to_text(pat), sc_to_text(x), esc)
+            }
+            if p.4 {
+                return sc_bool(!r)
+            }
+            sc_bool(r)
+        },
+        Ex::EIn(p) => {
+            let x = sx_ev(cx, p.0, env)
+            if len(p.1) == 0 {
+                return sc_bool(p.2)
+            }
+            if sx_isnull(x) {
+                return Sv::SNull
+            }
+            let coll = sx_coll_code(sx_coll_of(p.0))
+            let mut sawnull = false
+            for it in p.1 {
+                let v = sx_ev(cx, it, env)
+                if sx_isnull(v) {
+                    sawnull = true
+                } else if sq_cmp(x, v, coll) == 0 {
+                    return sc_bool(!p.2)
+                }
+            }
+            if sawnull {
+                return Sv::SNull
+            }
+            sc_bool(p.2)
+        },
+        Ex::EInSel(p) => {
+            let x = sx_ev(cx, p.0, env)
+            let (names, rows, err) = sy_select(cx, p.1[0], p.1[1], env, -1)
+            if err != "" {
+                return Sv::SErr(err)
+            }
+            if len(rows) == 0 {
+                return sc_bool(p.2)
+            }
+            if sx_isnull(x) {
+                return Sv::SNull
+            }
+            let coll = sx_coll_code(sx_coll_of(p.0))
+            let mut sawnull = false
+            for r in rows {
+                let v = r[0]
+                if sx_isnull(v) {
+                    sawnull = true
+                } else if sq_cmp(x, v, coll) == 0 {
+                    return sc_bool(!p.2)
+                }
+            }
+            if sawnull {
+                return Sv::SNull
+            }
+            sc_bool(p.2)
+        },
+        Ex::EInSet(p) => {
+            let x = sx_ev(cx, p.0, env)
+            if std::map::length(p.1) == 0 {
+                return sc_bool(p.2)
+            }
+            if sx_isnull(x) {
+                return Sv::SNull
+            }
+            if std::map::contains(p.1, sx_key(x)) {
+                return sc_bool(!p.2)
+            }
+            if std::map::contains(p.1, "N") {
+                return Sv::SNull
+            }
+            sc_bool(p.2)
+        },
+        Ex::EExists(sel) => {
+            let (names, rows, err) = sy_select(cx, sel[0], sel[1], env, 1)
+            if err != "" {
+                return Sv::SErr(err)
+            }
+            sc_bool(len(rows) > 0)
+        },
+        Ex::ESub(sel) => {
+            let (names, rows, err) = sy_select(cx, sel[0], sel[1], env, 1)
+            if err != "" {
+                return Sv::SErr(err)
+            }
+            if len(rows) == 0 {
+                return Sv::SNull
+            }
+            rows[0][0]
+        },
+        Ex::EFn(p) => {
+            let mut args = []
+            for a in p.1 {
+                let v = sx_ev(cx, a, env)
+                if sx_iserr(v) {
+                    return v
+                }
+                args = std::array::push(args, v)
+            }
+            let mut coll = 0
+            if len(p.1) > 0 {
+                coll = sx_coll_code(sx_coll_of(p.1[0]))
+            }
+            let lname = sx_lc(p.0)
+            args = sj_mark(cx, lname, p.1, args)
+            sx_func(cx, lname, args, coll)
+        },
+        Ex::ERaise(p) => Sv::SErr("RAISE:" + p.0 + ":" + p.1),
+        _ => Sv::SErr("unsupported expression"),
+    }
+}
+
+fn sx_ev_un(cx: Cx, op: string, x: Ex, env: array) -> Sv {
+    let v = sx_ev(cx, x, env)
+    if sx_iserr(v) {
+        return v
+    }
+    if op == "NOT" {
+        let t = sc_truth(v)
+        if t < 0 {
+            return Sv::SNull
+        }
+        return sc_bool(t == 0)
+    }
+    if op == "+" {
+        return v
+    }
+    if op == "-" {
+        match sc_num(v) {
+            Sv::SNull => {
+                return Sv::SNull
+            },
+            Sv::SInt(i) => {
+                if i == -9223372036854775807 - 1 {
+                    return Sv::SReal(9223372036854775808.0)
+                }
+                return Sv::SInt(0 - i)
+            },
+            Sv::SReal(f) => {
+                return Sv::SReal(0.0 - f)
+            },
+            _ => {
+                return Sv::SNull
+            },
+        }
+    }
+    // ~
+    if sx_isnull(v) {
+        return Sv::SNull
+    }
+    Sv::SInt(sc_bitnot(sc_to_int(v)))
+}
+
+fn sx_ev_bin(cx: Cx, op: string, l: Ex, r: Ex, env: array) -> Sv {
+    if op == "AND" {
+        let a = sx_ev(cx, l, env)
+        if sx_iserr(a) {
+            return a
+        }
+        let ta = sc_truth(a)
+        if ta == 0 {
+            return Sv::SInt(0)
+        }
+        let b = sx_ev(cx, r, env)
+        if sx_iserr(b) {
+            return b
+        }
+        let tb = sc_truth(b)
+        if tb == 0 {
+            return Sv::SInt(0)
+        }
+        if ta < 0 || tb < 0 {
+            return Sv::SNull
+        }
+        return Sv::SInt(1)
+    }
+    if op == "OR" {
+        let a = sx_ev(cx, l, env)
+        if sx_iserr(a) {
+            return a
+        }
+        let ta = sc_truth(a)
+        if ta == 1 {
+            return Sv::SInt(1)
+        }
+        let b = sx_ev(cx, r, env)
+        if sx_iserr(b) {
+            return b
+        }
+        let tb = sc_truth(b)
+        if tb == 1 {
+            return Sv::SInt(1)
+        }
+        if ta < 0 || tb < 0 {
+            return Sv::SNull
+        }
+        return Sv::SInt(0)
+    }
+    let a = sx_ev(cx, l, env)
+    if sx_iserr(a) {
+        return a
+    }
+    let b = sx_ev(cx, r, env)
+    if sx_iserr(b) {
+        return b
+    }
+    if sx_is_cmp(op) {
+        if sx_isnull(a) || sx_isnull(b) {
+            return Sv::SNull
+        }
+        return sx_cmp_op(op, sq_cmp(a, b, sx_cmp_coll(l, r)))
+    }
+    if op == "IS" || op == "ISNOT" {
+        let an = sx_isnull(a)
+        let bn = sx_isnull(b)
+        let mut eq = false
+        if an || bn {
+            eq = an && bn
+        } else {
+            eq = sq_cmp(a, b, sx_cmp_coll(l, r)) == 0
+        }
+        if op == "IS" {
+            return sc_bool(eq)
+        }
+        return sc_bool(!eq)
+    }
+    if op == "||" {
+        if sx_isnull(a) || sx_isnull(b) {
+            return Sv::SNull
+        }
+        return Sv::SText(sc_to_text(a) + sc_to_text(b))
+    }
+    if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+        return sc_arith(op, a, b)
+    }
+    if op == "&" || op == "|" || op == "<<" || op == ">>" {
+        if sx_isnull(a) || sx_isnull(b) {
+            return Sv::SNull
+        }
+        return Sv::SInt(sc_bitop(op, sc_to_int(a), sc_to_int(b)))
+    }
+    if op == "->" || op == "->>" {
+        return sj_arrow(op, a, b)
+    }
+    Sv::SErr("unsupported operator " + op)
+}

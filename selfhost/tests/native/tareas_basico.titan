@@ -1,0 +1,91 @@
+// spawn / join: valores, identidad, captura, errores capturados con try.
+fn cuadrado(n: int) -> int {
+    n * n
+}
+
+fn main() {
+    let t = spawn || { 40 + 2 }
+    print(t)
+    print(join(t))
+
+    // Varias tareas; se recogen en otro orden que el de creación.
+    let mut tareas = []
+    let mut i = 0
+    while i < 10 {
+        let k = i
+        tareas = std::array::push(tareas, spawn || { cuadrado(k) + 1 })
+        i += 1
+    }
+    let mut suma = 0
+    let mut j = 9
+    while j >= 0 {
+        suma += join(tareas[j])
+        j -= 1
+    }
+    print(suma)
+
+    // Valores compuestos que cruzan la frontera de la tarea.
+    let datos = [1, 2, 3]
+    let nombre = "titan"
+    let u = spawn || {
+        let mut copia = std::array::push(datos, 4)
+        copia = std::array::push(copia, len(nombre))
+        copia
+    }
+    print(join(u))
+    print(datos)
+
+    // La tarea modifica su copia; el original no cambia.
+    let m = [10, 20]
+    let v = spawn || {
+        let mut copia = m
+        copia = std::array::push(copia, 30)
+        len(copia)
+    }
+    print(join(v))
+    print(len(m))
+
+    // Identidad de los manejadores.
+    let a = spawn || { 1 }
+    let b = spawn || { 2 }
+    print(a == a)
+    print(a == b)
+    print(a != b)
+    print(join(a) + join(b))
+
+    // Un error en la tarea se propaga al join y se puede capturar.
+    let f = spawn || { 1 / 0 }
+    let r = std::try::catch(|| join(f))
+    print(r)
+    let g = spawn || { std::array::push([1], 2)[7] }
+    print(std::try::catch(|| join(g)))
+
+    // join dos veces: la tarea ya no está registrada.
+    let h = spawn || { "x" }
+    print(join(h))
+    print(std::try::catch(|| join(h)))
+
+    // Una tarea que lanza otra.
+    let p = spawn || {
+        let q = spawn || { 5 }
+        join(q) * 2
+    }
+    print(join(p))
+
+    // cancel: una tarea que aún no ha avanzado termina con "task cancelled".
+    let c = spawn || {
+        let mut n = 0
+        while true {
+            n += 1
+        }
+        n
+    }
+    print(cancel(c))
+    print(std::try::catch(|| join(c)))
+    print(cancel(c))
+
+    // Tras recogerla con join_timeout ya no está registrada: cancel da false.
+    let d = spawn || { 1 }
+    print(join_timeout(d, 1000))
+    print(cancel(d))
+}

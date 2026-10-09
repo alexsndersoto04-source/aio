@@ -361,23 +361,27 @@ fn wk_utf8_err(p: int, n: int, function: string) {
     wk_fail(function, "incomplete utf-8 byte sequence from index " + rt_int_to_str(i))
 }
 
-fn wk_validate_opcode(fin: int, opcode: int, payload: any, function: string) {
+fn wk_validate_raw(fin: int, opcode: int, p: int, n: int, function: string) {
     if opcode >= 0 && opcode <= 2 {
     } else if opcode >= 8 && opcode <= 10 {
-        if fin == 0 || rt_slen(payload) > 125 {
+        if fin == 0 || n > 125 {
             wk_fail(function, "WebSocket control frame is invalid")
         }
-        if opcode == 8 && rt_slen(payload) == 1 {
+        if opcode == 8 && n == 1 {
             wk_fail(function, "WebSocket control frame is invalid")
         }
     } else {
         wk_fail(function, "unsupported WebSocket opcode " + rt_int_to_str(opcode))
     }
     if opcode == 1 && fin != 0 {
-        if !rt_valid_utf8(rt_bdata(payload), rt_slen(payload)) {
+        if !rt_valid_utf8(p, n) {
             wk_fail(function, "WebSocket text payload is not UTF-8")
         }
     }
+}
+
+fn wk_validate_opcode(fin: int, opcode: int, payload: any, function: string) {
+    wk_validate_raw(fin, opcode, rt_bdata(payload), rt_slen(payload), function)
 }
 
 fn wk_rand4(function: string) -> int {
@@ -512,18 +516,22 @@ fn std__ws__validate_upgrade(request: any, protocol: any) -> any {
     wk_upgrade_bytes(key, protocol, function)
 }
 
-fn std__ws__validate_accept(response: any, key: any) -> any {
-    let function = "std::ws::validate_accept"
-    rt_expect_bytes(response, function)
-    rt_expect_str(key, function)
+// Núcleo común de std::ws::validate_accept (mode 0: devuelve false/true y falla con
+// el error de UTF-8 de la VM) y del handshake de std::ws::connect (mode 1: cualquier
+// anomalía es «invalid WebSocket server handshake»). Devuelve -1 si no es válida
+// o el número de bytes de la cabecera (hasta el \r\n\r\n inclusive).
+fn wk_accept_core(response: any, key: any, function: string, mode: int) -> int {
     let n = rt_slen(response)
     let p = rt_bdata(response)
     let end = wk_find_crlf2(p, n)
     if end < 0 {
-        return false
+        return -1
     }
     if !rt_valid_utf8(p, end) {
-        wk_utf8_err(p, end, function)
+        if mode == 0 {
+            wk_utf8_err(p, end, function)
+        }
+        return -1
     }
     let raw = rt_str_alloc(end)
     rt_copy(raw + 16, p, end)
@@ -559,7 +567,7 @@ fn std__ws__validate_accept(response: any, key: any) -> any {
                     k += 1
                 }
                 if colon < 0 {
-                    return false
+                    return -1
                 }
                 names = std::array::push(names, wk_lower_copy(rt_substr_bytes(line, 0, colon)))
                 values = std::array::push(values, std__text__trim(rt_substr_bytes(line, colon + 1, ln)))
@@ -574,7 +582,7 @@ fn std__ws__validate_accept(response: any, key: any) -> any {
         i += 1
     }
     if line0 != "HTTP/1.1 101 Switching Protocols" {
-        return false
+        return -1
     }
     let expected = wk_accept_key(key, function)
     let mut n_up = 0
@@ -602,18 +610,25 @@ fn std__ws__validate_accept(response: any, key: any) -> any {
         j += 1
     }
     if n_up != 1 || n_conn != 1 || n_acc != 1 {
-        return false
+        return -1
     }
     if wk_ieq(up, "websocket") == 0 {
-        return false
+        return -1
     }
     if wk_has_token(conn, "upgrade") == 0 {
-        return false
+        return -1
     }
     if acc != expected {
-        return false
+        return -1
     }
-    true
+    end + 4
+}
+
+fn std__ws__validate_accept(response: any, key: any) -> any {
+    let function = "std::ws::validate_accept"
+    rt_expect_bytes(response, function)
+    rt_expect_str(key, function)
+    wk_accept_core(response, key, function, 0) >= 0
 }
 
 fn std__ws__encode(opcode: any, payload: any, masked: any) -> any {
@@ -636,19 +651,12 @@ fn std__ws__encode(opcode: any, payload: any, masked: any) -> any {
     out
 }
 
-fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
-    let function = "std::ws::parse"
-    rt_expect_bytes(data, function)
-    let reqm = wk_bool(require_mask, function)
-    rt_expect_int(maximum, function)
-    let maxp = std::raw::bits(maximum)
-    if maxp < 0 {
-        wk_fail(function, "expected nonnegative integer")
-    }
-    let n = rt_slen(data)
-    let buf = rt_bdata(data)
+// Un marco al principio de buf[0..n): 0 si aún está incompleto; si no, un registro
+// {+0 bytes consumidos, +8 fin, +16 opcode, +24 payload (bloque, ya sin máscara),
+// +32 longitud} que el llamador libera con wk_rec_free. Errores como parse_frame de la VM.
+fn wk_parse_raw(buf: int, n: int, reqm: int, maxp: int, function: string) -> int {
     if n < 2 {
-        return wk_none()
+        return 0
     }
     let first = std::raw::load8(buf)
     let second = std::raw::load8(buf + 1)
@@ -674,7 +682,7 @@ fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
         length = marker
     } else if marker == 126 {
         if n < 4 {
-            return wk_none()
+            return 0
         }
         offset = 4
         length = wk_be16(buf + 2)
@@ -683,7 +691,7 @@ fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
         }
     } else {
         if n < 10 {
-            return wk_none()
+            return 0
         }
         if std::raw::load8(buf + 2) >= 128 {
             wk_fail(function, "WebSocket frame length is not minimally encoded")
@@ -706,7 +714,7 @@ fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
     let mut maskp = 0
     if masked != 0 {
         if n < offset + 4 {
-            return wk_none()
+            return 0
         }
         maskp = buf + offset
         offset += 4
@@ -716,7 +724,7 @@ fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
     }
     let end = offset + length
     if n < end {
-        return wk_none()
+        return 0
     }
     let pay = rt_alloc(length + 1)
     rt_copy(pay, buf + offset, length)
@@ -727,17 +735,44 @@ fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
             i += 1
         }
     }
-    let payload = rt_bytes_from(pay, length)
-    rt_free_block(pay)
-    wk_validate_opcode(fin, opcode, payload, function)
+    wk_validate_raw(fin, opcode, pay, length, function)
+    let rec = rt_alloc(40)
+    std::raw::store(rec, end)
+    std::raw::store(rec + 8, fin)
+    std::raw::store(rec + 16, opcode)
+    std::raw::store(rec + 24, pay)
+    std::raw::store(rec + 32, length)
+    rec
+}
+
+fn wk_rec_free(rec: int) {
+    rt_free_block(std::raw::load(rec + 24))
+    rt_free_block(rec)
+}
+
+fn std__ws__parse(data: any, require_mask: any, maximum: any) -> any {
+    let function = "std::ws::parse"
+    rt_expect_bytes(data, function)
+    let reqm = wk_bool(require_mask, function)
+    rt_expect_int(maximum, function)
+    let maxp = std::raw::bits(maximum)
+    if maxp < 0 {
+        wk_fail(function, "expected nonnegative integer")
+    }
+    let rec = wk_parse_raw(rt_bdata(data), rt_slen(data), reqm, maxp, function)
+    if rec == 0 {
+        return wk_none()
+    }
+    let payload = rt_bytes_from(std::raw::load(rec + 24), std::raw::load(rec + 32))
     let mut m = rt_map_alloc(0, 4)
     let mut finv: any = false
-    if fin != 0 {
+    if std::raw::load(rec + 8) != 0 {
         finv = true
     }
-    m = std__map__insert(m, "consumed", end)
+    m = std__map__insert(m, "consumed", std::raw::load(rec))
     m = std__map__insert(m, "fin", finv)
-    m = std__map__insert(m, "opcode", opcode)
+    m = std__map__insert(m, "opcode", std::raw::load(rec + 16))
     m = std__map__insert(m, "payload", payload)
+    wk_rec_free(rec)
     wk_some(m)
 }

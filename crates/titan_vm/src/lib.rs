@@ -1,4 +1,10 @@
 //! Safe stack-based virtual machine for Titan bytecode.
+// `AtomicX::fetch_update` fue renombrado a `try_update` en el Rust estable más
+// reciente y el antiguo nombre está marcado como obsoleto. El CI compila con
+// `-D warnings`, así que ese aviso rompía la compilación. Se mantiene
+// `fetch_update` porque existe en todas las versiones de Rust (Termux incluido);
+// quitar este allow cuando la versión mínima soportada tenga `try_update`.
+#![allow(deprecated)]
 
 mod debug;
 mod native;

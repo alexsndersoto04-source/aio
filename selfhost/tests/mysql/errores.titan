@@ -1,0 +1,44 @@
+// puerto: 53306
+// std::mysql: conexión cortada por el servidor, parámetros no finitos y cupo de handles.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn main() {
+    let url = "mysql://app:secret@127.0.0.1:53306/test?prefer_socket=false"
+    let db = std::mysql::connect(url)
+    let inf = 1.0e308 * 10.0
+    mostrar("inf", std::try::catch(|| { std::mysql::query(db, "SELECT ?", [inf]) }))
+    mostrar("menos_inf", std::try::catch(|| { std::mysql::execute(db, "SELECT ?", [0.0 - inf]) }))
+    mostrar("nan", std::try::catch(|| { std::mysql::execute(db, "SELECT ?", [inf - inf]) }))
+    mostrar("antes", std::mysql::query(db, "SELECT 1 AS a", []))
+    mostrar("begin", std::mysql::begin(db))
+    mostrar("corte", std::try::catch(|| { std::mysql::execute(db, "KILLME", []) }))
+    mostrar("despues", std::try::catch(|| { std::mysql::query(db, "SELECT 1 AS a", []) }))
+    mostrar("despues_otra", std::try::catch(|| { std::mysql::query(db, "SELECT 1 AS a", []) }))
+    mostrar("ping_cortada", std::mysql::ping(db))
+    mostrar("rollback_cortada", std::try::catch(|| { std::mysql::rollback(db) }))
+    mostrar("cerrar_cortada", std::mysql::close(db))
+    let db2 = std::mysql::connect(url)
+    mostrar("nueva", std::mysql::query(db2, "SELECT 2 AS a", []))
+    mostrar("migrar_cortada", std::try::catch(|| { std::mysql::execute(db2, "KILLME", []) }))
+    mostrar("migrar_tras_corte", std::try::catch(|| { std::mysql::migrate(db2, []) }))
+    mostrar("last_id_cortada", std::mysql::last_insert_id(db2))
+    std::mysql::close(db2)
+    // cupo de handles de base de datos
+    let mut abiertas = []
+    let mut i = 0
+    while i < 256 {
+        abiertas = std::array::push(abiertas, std::mysql::connect(url))
+        i += 1
+    }
+    mostrar("abiertas", len(abiertas))
+    mostrar("una_mas", std::try::catch(|| { std::mysql::connect(url) }))
+    mostrar("cierra_una", std::mysql::close(abiertas[0]))
+    let otra = std::mysql::connect(url)
+    mostrar("otra", std::mysql::query(otra, "SELECT 3 AS a", []))
+    for h in abiertas {
+        std::mysql::close(h)
+    }
+    std::mysql::close(otra)
+}

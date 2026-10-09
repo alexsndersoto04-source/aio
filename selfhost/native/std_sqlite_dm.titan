@@ -1,0 +1,1055 @@
+// std::sqlite en Titan, parte 13: INSERT / UPDATE / DELETE con restricciones, conflictos, upsert
+// y RETURNING. Prefijo `sw`.
+
+fn sw_cx(cx: Cx, pg: SqPg, lastid: int, changes: int) -> Cx {
+    return Cx { sch: cx.sch, pg: pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: lastid, changes: changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+}
+
+fn sw_scope(tab: TabI, alias: string) -> array {
+    let mut cols = []
+    for c in tab.cols {
+        cols = std::array::push(cols, ScCol { alias: alias, name: c.name, aff: c.aff, coll: c.coll, hidden: false, merged: false })
+    }
+    cols = std::array::push(cols, ScCol { alias: alias, name: sy_rowid_name(tab), aff: "INTEGER", coll: "", hidden: true, merged: false })
+    return cols
+}
+
+fn sw_rc(cx: Cx) -> Rc {
+    return Rc { aggs: [], wins: [], wdefs: [], allow_agg: false, err: "", aliases: [], alias_first: false, cx: cx }
+}
+
+fn sw_sort_names(names: array) -> string {
+    let mut a = []
+    for n in names {
+        a = std::array::push(a, sh_key(n))
+    }
+    let mut i = 1
+    while i < len(a) {
+        let mut j = i
+        while j > 0 && a[j] < a[j - 1] {
+            let t = a[j]
+            a = std::array::set(std::array::set(a, j, a[j - 1]), j - 1, t)
+            j -= 1
+        }
+        i += 1
+    }
+    return std::collections::join(a, ",")
+}
+
+// Preparación por tabla: [infos de índices, comprobaciones CHECK resueltas, ámbito]
+fn sw_prepare(cx: Cx, tab: TabI, alias: string) -> (array, string) {
+    let scope = sw_scope(tab, alias)
+    let rc = sw_rc(cx)
+    let mut infos = []
+    for ix in sh_tab_indexes(cx.sch, tab) {
+        let ic = sy_idx_cols(cx.sch, tab, ix)
+        let mut exprs = []
+        let mut descs = []
+        let mut colls = []
+        let mut names = []
+        if len(ic) > 0 {
+            for c in ic {
+                let col = tab.cols[c[0]]
+                exprs = std::array::push(exprs, Ex::ESlot((0, c[0], col.aff, col.coll)))
+                descs = std::array::push(descs, c[1])
+                colls = std::array::push(colls, c[2])
+                names = std::array::push(names, col.name)
+            }
+        } else {
+            for c in ix.cols {
+                let (e, r2) = sr_ex(c[0], [scope], rc)
+                if r2.err != "" {
+                    return ([], r2.err)
+                }
+                exprs = std::array::push(exprs, e)
+                let mut d = 0
+                if c[1] {
+                    d = 1
+                }
+                descs = std::array::push(descs, d)
+                let mut cn = c[2]
+                if cn == "" {
+                    cn = sx_coll_of(e)
+                }
+                colls = std::array::push(colls, sx_coll_code(cn))
+            }
+        }
+        let mut wh: any = nil
+        if ix.wh != nil {
+            let (w, r3) = sr_ex(ix.wh, [scope], rc)
+            if r3.err != "" {
+                return ([], r3.err)
+            }
+            wh = w
+        }
+        let mut uconf = ""
+        if ix.auto {
+            let n = sy_last_int(ix.name)
+            if n >= 1 && n <= len(tab.uniqs) {
+                uconf = tab.uniqs[n - 1][2]
+            }
+        }
+        infos = std::array::push(infos, [ix, exprs, descs, colls, wh, uconf, names])
+    }
+    let mut checks = []
+    for ck in tab.checks {
+        let (e, r4) = sr_ex(ck[0], [scope], rc)
+        if r4.err != "" {
+            return ([], r4.err)
+        }
+        checks = std::array::push(checks, [e, ck[1]])
+    }
+    return ([infos, checks, scope], "")
+}
+
+fn sw_ikey(cx: Cx, info: array, full: array) -> array {
+    let e2 = [full]
+    let mut key = []
+    for e in info[1] {
+        key = std::array::push(key, sx_ev(cx, e, e2))
+    }
+    return key
+}
+
+// ¿entra la fila en el índice (índices parciales)?
+fn sw_in_index(cx: Cx, info: array, full: array) -> bool {
+    if info[4] == nil {
+        return true
+    }
+    return sc_truth(sx_ev(cx, info[4], [full])) == 1
+}
+
+fn sw_icolls(info: array) -> array {
+    return std::array::push(info[3], 0)
+}
+
+fn sw_idescs(info: array) -> array {
+    return std::array::push(info[2], 0)
+}
+
+fn sw_max_rowid(pg: SqPg, root: int) -> int {
+    let path = sqt_t_path(pg, root, 9223372036854775807)
+    let k = len(path)
+    let f = path[k - 1]
+    if f[1] == 0 {
+        return 0
+    }
+    let st = std::array::push(std::array::slice(path, 0, k - 1), [f[0], f[1] - 1, f[2], f[3], f[4]])
+    let (rid, pl) = sqt_cu_row(pg, st)
+    return rid
+}
+
+// sqlite_sequence
+fn sw_seq_get(cx: Cx, name: string) -> int {
+    let st = sh_find_tab(cx.sch, "sqlite_sequence")
+    if st == nil {
+        return 0
+    }
+    for r in sqt_t_scan(cx.pg, st.root) {
+        let v = sq_rec_dec(r[1], -1)
+        if len(v) >= 2 && sc_to_text(v[0]) == name {
+            return sc_to_int(v[1])
+        }
+    }
+    return 0
+}
+
+fn sw_seq_set(cx: Cx, name: string, val: int) -> SqPg {
+    let st = sh_find_tab(cx.sch, "sqlite_sequence")
+    if st == nil {
+        return cx.pg
+    }
+    let mut pg = cx.pg
+    for r in sqt_t_scan(pg, st.root) {
+        let v = sq_rec_dec(r[1], -1)
+        if len(v) >= 2 && sc_to_text(v[0]) == name {
+            return sqt_t_put(pg, st.root, r[0], sq_rec_enc([Sv::SText(name), Sv::SInt(val)]))
+        }
+    }
+    let rid = sw_max_rowid(pg, st.root) + 1
+    return sqt_t_put(pg, st.root, rid, sq_rec_enc([Sv::SText(name), Sv::SInt(val)]))
+}
+
+fn sw_desc_names(tab: TabI, names: array) -> string {
+    let mut parts = []
+    for n in names {
+        parts = std::array::push(parts, tab.name + "." + n)
+    }
+    return std::collections::join(parts, ", ")
+}
+
+// Conflictos de unicidad de una fila. Cada uno: [clase, rowid en conflicto, descripción, cláusula, clave de columnas]
+fn sw_conflicts(cx: Cx, tab: TabI, prep: array, full: array, rid: int, skip: int) -> array {
+    let mut out = []
+    if rid != skip {
+        let (found, pl) = sqt_t_find(cx.pg, tab.root, rid)
+        if found {
+            let mut d = tab.name + ".rowid"
+            let mut ck = "rowid"
+            if tab.rowid >= 0 {
+                d = tab.name + "." + tab.cols[tab.rowid].name
+                ck = sh_key(tab.cols[tab.rowid].name)
+            }
+            out = std::array::push(out, ["rowid", rid, d, tab.rconf, ck])
+        }
+    }
+    for info in prep[0] {
+        let ix = info[0]
+        if ix.unique && sw_in_index(cx, info, full) {
+            let key = sw_ikey(cx, info, full)
+            let mut hasnull = false
+            for v in key {
+                if sx_isnull(v) {
+                    hasnull = true
+                }
+            }
+            if !hasnull {
+                let mut st = sqi_seek(cx.pg, ix.root, key, len(key), info[3], info[2])
+                while len(st) > 0 {
+                    let vals = sqi_cu_vals(cx.pg, st)
+                    if sqi_cmp(vals, key, len(key), info[3], info[2]) != 0 {
+                        break
+                    }
+                    let erid = sc_to_int(vals[len(vals) - 1])
+                    if erid != skip {
+                        let mut d = "index '" + ix.name + "'"
+                        let mut ck = ""
+                        if len(info[6]) > 0 {
+                            d = sw_desc_names(tab, info[6])
+                            ck = sw_sort_names(info[6])
+                        }
+                        out = std::array::push(out, ["index", erid, d, info[5], ck])
+                        break
+                    }
+                    st = sqt_cu_adv(cx.pg, st)
+                }
+            }
+        }
+    }
+    return out
+}
+
+fn sw_write_row(cx: Cx, tab: TabI, prep: array, full: array, rid: int) -> SqPg {
+    let mut recv = []
+    let nc = len(tab.cols)
+    let mut i = 0
+    while i < nc {
+        if i == tab.rowid {
+            recv = std::array::push(recv, Sv::SNull)
+        } else {
+            recv = std::array::push(recv, full[i])
+        }
+        i += 1
+    }
+    let mut pg = sqt_t_put(cx.pg, tab.root, rid, sq_rec_enc(recv))
+    for info in prep[0] {
+        if sw_in_index(cx, info, full) {
+            let key = std::array::push(sw_ikey(cx, info, full), Sv::SInt(rid))
+            pg = sqi_put(pg, info[0].root, key, sw_icolls(info), sw_idescs(info))
+        }
+    }
+    return pg
+}
+
+fn sw_delete_row(cx: Cx, tab: TabI, prep: array, full: array, rid: int) -> SqPg {
+    let mut pg = cx.pg
+    for info in prep[0] {
+        if sw_in_index(cx, info, full) {
+            let key = std::array::push(sw_ikey(cx, info, full), Sv::SInt(rid))
+            pg = sqi_del(pg, info[0].root, key, sw_icolls(info), sw_idescs(info))
+        }
+    }
+    return sqt_t_del(pg, tab.root, rid)
+}
+
+// Procesa las comprobaciones comunes (afinidad, NOT NULL, CHECK) de una fila.
+// Devuelve (valores, estado, error): estado 1 = fila ignorada.
+fn sw_check_row(cx: Cx, tab: TabI, prep: array, vals0: array, rid: int, conf: string) -> (array, int, string) {
+    let mut vals = vals0
+    let nc = len(tab.cols)
+    let mut i = 0
+    while i < nc {
+        let c = tab.cols[i]
+        let mut v = vals[i]
+        if i == tab.rowid {
+            v = Sv::SInt(rid)
+        } else {
+            v = sc_apply_aff(v, c.aff)
+        }
+        if c.notnull && sx_isnull(v) {
+            let mut mode = conf
+            if mode == "" {
+                mode = c.nnconf
+            }
+            if mode == "IGNORE" {
+                return ([], 1, "")
+            }
+            let mut ok = false
+            if mode == "REPLACE" && c.dflt != nil {
+                v = sc_apply_aff(sx_ev(cx, c.dflt, []), c.aff)
+                ok = !sx_isnull(v)
+            }
+            if !ok {
+                return ([], 0, "NOT NULL constraint failed: " + tab.name + "." + c.name)
+            }
+        }
+        vals = std::array::set(vals, i, v)
+        i += 1
+    }
+    let full = std::array::push(vals, Sv::SInt(rid))
+    for ck in prep[1] {
+        let v = sx_ev(cx, ck[0], [full])
+        match v {
+            Sv::SErr(m) => {
+                return ([], 0, m)
+            },
+            _ => {},
+        }
+        if !sx_isnull(v) && sc_truth(v) == 0 {
+            if conf == "IGNORE" {
+                return ([], 1, "")
+            }
+            return ([], 0, "CHECK constraint failed: " + ck[1])
+        }
+    }
+    return (vals, 0, "")
+}
+
+// Resuelve los conflictos según el modo. Devuelve (cx, estado, error, conflicto de upsert o nil).
+// estado: 0 = continuar, 1 = omitir la fila.
+fn sw_resolve(cx: Cx, tab: TabI, prep: array, cfs: array, conf: string, ups: array) -> (Cx, int, string, any) {
+    let mut c = cx
+    for cf in cfs {
+        // upsert aplicable
+        for u in ups {
+            let mut match1 = len(u.target) == 0
+            if !match1 {
+                let mut names = []
+                for o in u.target {
+                    match o.e {
+                        Ex::ECol(p) => {
+                            names = std::array::push(names, p.1)
+                        },
+                        _ => {},
+                    }
+                }
+                match1 = sw_sort_names(names) == cf[4]
+            }
+            if match1 {
+                if u.nothing {
+                    return (c, 1, "", nil)
+                }
+                return (c, 0, "", [cf, u])
+            }
+        }
+        let mut mode = conf
+        if mode == "" {
+            mode = cf[3]
+        }
+        if mode == "IGNORE" {
+            return (c, 1, "", nil)
+        }
+        if mode == "REPLACE" {
+            let (found, pl) = sqt_t_find(c.pg, tab.root, cf[1])
+            if found {
+                let old = sh_row(c, tab, cf[1], pl)
+                c = sw_cx(c, sw_delete_row(c, tab, prep, old, cf[1]), c.lastid, c.changes)
+            }
+        } else {
+            return (c, 0, "UNIQUE constraint failed: " + cf[2], nil)
+        }
+    }
+    return (c, 0, "", nil)
+}
+
+// Inserta una fila. rid_in: SNull = automático. Devuelve (cx, estado, rowid, fila completa, error).
+// estado: 0 = insertada, 1 = omitida, 2 = actualizada por upsert.
+fn sw_insert_row(cx: Cx, tab: TabI, prep: array, vals0: array, rid_in: Sv, conf: string, ups: array, scopes: array, env: array) -> (Cx, int, int, array, string) {
+    let mut rid = 0
+    let mut auto = true
+    match rid_in {
+        Sv::SNull => {},
+        _ => {
+            let n = sc_apply_aff(rid_in, "NUMERIC")
+            match n {
+                Sv::SInt(x) => {
+                    rid = x
+                    auto = false
+                },
+                _ => {
+                    return (cx, 0, 0, [], "datatype mismatch")
+                },
+            }
+        },
+    }
+    if tab.rowid >= 0 {
+        let v = vals0[tab.rowid]
+        if !sx_isnull(v) {
+            let n = sc_apply_aff(v, "NUMERIC")
+            match n {
+                Sv::SInt(x) => {
+                    rid = x
+                    auto = false
+                },
+                _ => {
+                    return (cx, 0, 0, [], "datatype mismatch")
+                },
+            }
+        }
+    }
+    let mut c = cx
+    if auto {
+        let mut m = sw_max_rowid(c.pg, tab.root)
+        if tab.autoinc {
+            let sq = sw_seq_get(c, tab.name)
+            if sq > m {
+                m = sq
+            }
+        }
+        if m >= 9223372036854775807 {
+            return (cx, 0, 0, [], "database or disk is full")
+        }
+        rid = m + 1
+    }
+    if len(c.sch.trgs) > 0 {
+        let mut nv0 = []
+        let mut qi = 0
+        while qi < len(tab.cols) {
+            if qi == tab.rowid {
+                nv0 = std::array::push(nv0, Sv::SInt(rid))
+            } else {
+                nv0 = std::array::push(nv0, sc_apply_aff(vals0[qi], tab.cols[qi].aff))
+            }
+            qi += 1
+        }
+        let (cb, sb, eb) = st_fire(c, tab, "BEFORE", "INSERT", nil, std::array::push(nv0, Sv::SInt(rid)), [])
+        if eb != "" {
+            return (cx, 0, 0, [], eb)
+        }
+        if sb == 1 {
+            return (cb, 1, 0, [], "")
+        }
+        c = cb
+    }
+    let (vals, st0, err0) = sw_check_row(c, tab, prep, vals0, rid, conf)
+    if err0 != "" {
+        return (cx, 0, 0, [], err0)
+    }
+    if st0 == 1 {
+        return (cx, 1, 0, [], "")
+    }
+    let full = std::array::push(vals, Sv::SInt(rid))
+    let cfs = sw_conflicts(c, tab, prep, full, rid, -9223372036854775807 - 1 + 0)
+    if len(cfs) > 0 {
+        let (c2, st1, err1, up) = sw_resolve(c, tab, prep, cfs, conf, ups)
+        if err1 != "" {
+            return (cx, 0, 0, [], err1)
+        }
+        if st1 == 1 {
+            return (cx, 1, 0, [], "")
+        }
+        c = c2
+        if up != nil {
+            return sw_upsert(c, tab, prep, full, rid, up[0], up[1], scopes, env)
+        }
+    }
+    let err2 = sw_fk_insert(c, tab, full)
+    if err2 != "" {
+        return (cx, 0, 0, [], err2)
+    }
+    let pg = sw_write_row(c, tab, prep, full, rid)
+    let mut pg2 = pg
+    if tab.autoinc {
+        let sq = sw_seq_get(c, tab.name)
+        if rid > sq {
+            pg2 = sw_seq_set(sw_cx(c, pg, c.lastid, c.changes), tab.name, rid)
+        }
+    }
+    let mut c9 = sw_cx(c, pg2, rid, c.changes)
+    if len(c9.sch.trgs) > 0 {
+        let (ca, sa, ea) = st_fire(c9, tab, "AFTER", "INSERT", nil, full, [])
+        if ea != "" {
+            return (cx, 0, 0, [], ea)
+        }
+        c9 = sw_cx(ca, ca.pg, rid, c9.changes)
+    }
+    return (c9, 0, rid, full, "")
+}
+
+// DO UPDATE de un upsert sobre la fila en conflicto cf[1].
+fn sw_upsert(cx: Cx, tab: TabI, prep: array, newfull: array, newrid: int, cf: array, u: any, scopes: array, env: array) -> (Cx, int, int, array, string) {
+    let (found, pl) = sqt_t_find(cx.pg, tab.root, cf[1])
+    if !found {
+        return (cx, 1, 0, [], "")
+    }
+    let old = sh_row(cx, tab, cf[1], pl)
+    let nc = len(tab.cols)
+    // ámbito: tabla + excluded (solo con calificador)
+    let mut scope = prep[2]
+    for c in tab.cols {
+        scope = std::array::push(scope, ScCol { alias: "excluded", name: c.name, aff: c.aff, coll: c.coll, hidden: false, merged: true })
+    }
+    scope = std::array::push(scope, ScCol { alias: "excluded", name: "rowid", aff: "INTEGER", coll: "", hidden: true, merged: true })
+    let both = std::array::concat(old, newfull)
+    let sc2 = std::array::push(scopes, scope)
+    let e2 = std::array::push(env, both)
+    let rc = sw_rc(cx)
+    if u.wh != nil {
+        let (we, r1) = sr_ex(u.wh, sc2, rc)
+        if r1.err != "" {
+            return (cx, 0, 0, [], r1.err)
+        }
+        let wv = sx_ev(cx, we, e2)
+        if sx_iserr(wv) {
+            return (cx, 0, 0, [], sy_row_err([wv]))
+        }
+        if sc_truth(wv) != 1 {
+            return (cx, 1, 0, [], "")
+        }
+    }
+    let mut nv = std::array::slice(old, 0, nc)
+    for s in u.sets {
+        let (ex, r2) = sr_ex(s[1], sc2, rc)
+        if r2.err != "" {
+            return (cx, 0, 0, [], r2.err)
+        }
+        let v = sx_ev(cx, ex, e2)
+        if sx_iserr(v) {
+            return (cx, 0, 0, [], sy_row_err([v]))
+        }
+        if len(s[0]) != 1 {
+            return (cx, 0, 0, [], "row value misused")
+        }
+        let ci = sh_col_index(tab, s[0][0])
+        if ci < 0 {
+            return (cx, 0, 0, [], "no such column: " + s[0][0])
+        }
+        nv = std::array::set(nv, ci, v)
+    }
+    let mut asg = []
+    for s2 in u.sets {
+        for nm in s2[0] {
+            asg = std::array::push(asg, sh_col_index(tab, nm))
+        }
+    }
+    let (c3, st, full2, err) = sw_update_row(cx, tab, prep, old, cf[1], nv, "", asg)
+    if err != "" {
+        return (cx, 0, 0, [], err)
+    }
+    if st == 1 {
+        return (cx, 1, 0, [], "")
+    }
+    return (c3, 2, cf[1], full2, "")
+}
+
+// Actualiza una fila. Devuelve (cx, estado (0 = hecho, 1 = omitido), fila nueva completa, error).
+fn sw_update_row(cx: Cx, tab: TabI, prep: array, oldfull: array, oldrid: int, newvals0: array, conf: string, assigned: array) -> (Cx, int, array, string) {
+    let mut rid = oldrid
+    if tab.rowid >= 0 {
+        let v = newvals0[tab.rowid]
+        if sx_isnull(v) {
+            return (cx, 0, [], "datatype mismatch")
+        }
+        let n = sc_apply_aff(v, "NUMERIC")
+        match n {
+            Sv::SInt(x) => {
+                rid = x
+            },
+            _ => {
+                return (cx, 0, [], "datatype mismatch")
+            },
+        }
+    }
+    let mut cb = cx
+    if len(cx.sch.trgs) > 0 {
+        let mut nv0 = []
+        let mut qi = 0
+        while qi < len(tab.cols) {
+            if qi == tab.rowid {
+                nv0 = std::array::push(nv0, Sv::SInt(rid))
+            } else {
+                nv0 = std::array::push(nv0, sc_apply_aff(newvals0[qi], tab.cols[qi].aff))
+            }
+            qi += 1
+        }
+        let (c0, sb, eb) = st_fire(cx, tab, "BEFORE", "UPDATE", oldfull, std::array::push(nv0, Sv::SInt(rid)), assigned)
+        if eb != "" {
+            return (cx, 0, [], eb)
+        }
+        if sb == 1 {
+            return (c0, 1, [], "")
+        }
+        cb = c0
+    }
+    let (vals, st0, err0) = sw_check_row(cb, tab, prep, newvals0, rid, conf)
+    if err0 != "" {
+        return (cx, 0, [], err0)
+    }
+    if st0 == 1 {
+        return (cb, 1, [], "")
+    }
+    let full = std::array::push(vals, Sv::SInt(rid))
+    let mut c = cb
+    let cfs = sw_conflicts(c, tab, prep, full, rid, oldrid)
+    if len(cfs) > 0 {
+        let (c2, st1, err1, up) = sw_resolve(c, tab, prep, cfs, conf, [])
+        if err1 != "" {
+            return (cx, 0, [], err1)
+        }
+        if st1 == 1 {
+            return (cx, 1, [], "")
+        }
+        c = c2
+    }
+    let err2 = sw_fk_update(c, tab, oldfull, full)
+    if err2 != "" {
+        return (cx, 0, [], err2)
+    }
+    let mut pg = c.pg
+    for info in prep[0] {
+        let oin = sw_in_index(c, info, oldfull)
+        let nin = sw_in_index(c, info, full)
+        let mut same = false
+        let mut okey = []
+        let mut nkey = []
+        if oin {
+            okey = std::array::push(sw_ikey(c, info, oldfull), Sv::SInt(oldrid))
+        }
+        if nin {
+            nkey = std::array::push(sw_ikey(c, info, full), Sv::SInt(rid))
+        }
+        if oin && nin && sx_row_key(okey) == sx_row_key(nkey) {
+            same = true
+        }
+        if !same {
+            if oin {
+                pg = sqi_del(pg, info[0].root, okey, sw_icolls(info), sw_idescs(info))
+            }
+            if nin {
+                pg = sqi_put(pg, info[0].root, nkey, sw_icolls(info), sw_idescs(info))
+            }
+        }
+    }
+    if rid != oldrid {
+        pg = sqt_t_del(pg, tab.root, oldrid)
+    }
+    let nc = len(tab.cols)
+    let mut recv = []
+    let mut i = 0
+    while i < nc {
+        if i == tab.rowid {
+            recv = std::array::push(recv, Sv::SNull)
+        } else {
+            recv = std::array::push(recv, full[i])
+        }
+        i += 1
+    }
+    pg = sqt_t_put(pg, tab.root, rid, sq_rec_enc(recv))
+    let mut c3 = sw_cx(c, pg, c.lastid, c.changes)
+    if tab.autoinc && rid != oldrid {
+        let sq = sw_seq_get(c3, tab.name)
+        if rid > sq {
+            c3 = sw_cx(c3, sw_seq_set(c3, tab.name, rid), c3.lastid, c3.changes)
+        }
+    }
+    let (c4, ferr) = sf_parent_change(c3, tab, oldfull, full)
+    if ferr != "" {
+        return (cx, 0, [], ferr)
+    }
+    c3 = c4
+    if len(c3.sch.trgs) > 0 {
+        let (ca, sa, ea) = st_fire(c3, tab, "AFTER", "UPDATE", oldfull, full, assigned)
+        if ea != "" {
+            return (cx, 0, [], ea)
+        }
+        c3 = ca
+    }
+    return (c3, 0, full, "")
+}
+
+// ------------------------------------------------------------ sentencias
+
+fn sw_find_target(cx: Cx, name: string) -> (any, string) {
+    let tab = sh_find_tab(cx.sch, name)
+    if tab == nil {
+        if sh_find_view(cx.sch, name) != nil {
+            return (nil, "cannot modify " + name + " because it is a view")
+        }
+        return (nil, "no such table: " + name)
+    }
+    if tab.name == "sqlite_master" || tab.name == "sqlite_schema" {
+        return (nil, "table " + tab.name + " may not be modified")
+    }
+    return (tab, "")
+}
+
+fn sw_with(cx: Cx, with: array, rec: bool) -> Cx {
+    if len(with) == 0 {
+        return cx
+    }
+    let mut m = cx.ctes
+    for c in with {
+        m = std::map::insert(m, sy_cte_key(c.name), ["def", c, rec])
+    }
+    return sy_cx_ctes(cx, m)
+}
+
+// RETURNING: resuelve las columnas. Devuelve (nombres, expresiones, error).
+fn sw_ret_prepare(cx: Cx, ret: array, tab: TabI, scope: array, scopes: array) -> (array, array, string) {
+    if len(ret) == 0 {
+        return ([], [], "")
+    }
+    let sc2 = std::array::push(scopes, scope)
+    let (names, exprs, aliases, rc) = sy_expand_cols(ret, [tab], sc2, sw_rc(cx))
+    if rc.err != "" {
+        return ([], [], rc.err)
+    }
+    return (names, exprs, "")
+}
+
+fn sw_ret_row(cx: Cx, exprs: array, env: array, full: array) -> (array, string) {
+    let e2 = std::array::push(env, full)
+    let mut out = []
+    for e in exprs {
+        out = std::array::push(out, sx_ev(cx, e, e2))
+    }
+    let er = sy_row_err(out)
+    return (out, er)
+}
+
+fn sw_insert(cx0: Cx, ins: any, scopes: array, env: array) -> (Cx, array, array, string) {
+    let cx = sw_with(cx0, ins.with, ins.rec)
+    let (tab, terr) = sw_find_target(cx, ins.tbl)
+    if terr != "" {
+        return (cx0, [], [], terr)
+    }
+    let mut alias = ins.alias
+    if alias == "" {
+        alias = tab.name
+    }
+    let (prep, perr) = sw_prepare(cx, tab, alias)
+    if perr != "" {
+        return (cx0, [], [], perr)
+    }
+    let fkerr = sf_validate_parent(cx, tab)
+    if fkerr != "" {
+        return (cx0, [], [], fkerr)
+    }
+    let nc = len(tab.cols)
+    // columnas destino
+    let mut map = []
+    if len(ins.cols) == 0 {
+        let mut i = 0
+        while i < nc {
+            map = std::array::push(map, i)
+            i += 1
+        }
+    } else {
+        for cn in ins.cols {
+            let ci = sh_col_index(tab, cn)
+            if ci < 0 {
+                if sr_rowid_name(sh_key(cn)) {
+                    map = std::array::push(map, -2)
+                } else {
+                    return (cx0, [], [], "table " + tab.name + " has no column named " + cn)
+                }
+            } else {
+                map = std::array::push(map, ci)
+            }
+        }
+    }
+    let mut srows = []
+    if ins.defaults {
+        srows = [[]]
+        map = []
+    } else {
+        let (names, rows, err) = sy_select(cx, ins.sel, scopes, env, -1)
+        if err != "" {
+            return (cx0, [], [], err)
+        }
+        srows = rows
+        if len(names) != len(map) {
+            if len(ins.cols) == 0 {
+                let nn = len(names)
+                return (cx0, [], [], "table " + tab.name + " has {nc} columns but {nn} values were supplied")
+            }
+            let nn = len(names)
+            let nm = len(map)
+            return (cx0, [], [], "{nn} values for {nm} columns")
+        }
+    }
+    let (rnames, rexprs, rerr) = sw_ret_prepare(cx, ins.ret, tab, prep[2], scopes)
+    if rerr != "" {
+        return (cx0, [], [], rerr)
+    }
+    let mut c = cx
+    let mut changed = 0
+    let mut retrows = []
+    let mut lastid = cx.lastid
+    for sr in srows {
+        let mut vals = []
+        let mut i = 0
+        while i < nc {
+            let col = tab.cols[i]
+            if col.dflt != nil {
+                vals = std::array::push(vals, sx_ev(c, col.dflt, []))
+            } else {
+                vals = std::array::push(vals, Sv::SNull)
+            }
+            i += 1
+        }
+        let mut rid = Sv::SNull
+        let mut j = 0
+        for ci in map {
+            if ci == -2 {
+                rid = sr[j]
+            } else {
+                vals = std::array::set(vals, ci, sr[j])
+            }
+            j += 1
+        }
+        let (c2, st, rowid, full, err) = sw_insert_row(c, tab, prep, vals, rid, ins.conf, ins.ups, scopes, env)
+        if err != "" {
+            return (cx0, [], [], err)
+        }
+        c = c2
+        if st == 0 {
+            changed += 1
+            lastid = rowid
+        }
+        if st == 2 {
+            changed += 1
+        }
+        if st != 1 && len(rexprs) > 0 {
+            let (rr, rerr2) = sw_ret_row(c, rexprs, env, full)
+            if rerr2 != "" {
+                return (cx0, [], [], rerr2)
+            }
+            retrows = std::array::push(retrows, rr)
+        }
+    }
+    let out = sw_cx(c, c.pg, lastid, changed)
+    return (out, rnames, retrows, "")
+}
+
+// Filas a modificar: devuelve array de filas completas (valores + rowid).
+fn sw_match(cx: Cx, tab: TabI, alias: string, wh: any, order: array, limit: any, offset: any, scopes: array, env: array) -> (array, string) {
+    let sc = [SelCol { e: Ex::ECol(("", "_rowid_", 0)), alias: "", star: false, qual: "rowid" }, SelCol { e: nil, alias: "", star: true, qual: "" }]
+    let from = [Src { kind: "table", name: tab.name, alias: alias, sub: nil, jt: "", on: nil, using: [], args: [] }]
+    let core = Core { distinct: false, cols: sc, from: from, wh: wh, group: [], having: nil, wins: [], vals: nil }
+    let (names, rows, err) = sy_core(cx, core, scopes, env, order, -1)
+    if err != "" {
+        return ([], err)
+    }
+    let (lv, ov, lerr) = sy_limits(cx, limit, offset, scopes, env)
+    if lerr != "" {
+        return ([], lerr)
+    }
+    let sel = sy_apply_limit(rows, lv, ov)
+    let nc = len(tab.cols)
+    let mut out = []
+    for r in sel {
+        out = std::array::push(out, std::array::push(std::array::slice(r, 1, nc + 1), r[0]))
+    }
+    return (out, "")
+}
+
+fn sw_update(cx0: Cx, upd: any, scopes: array, env: array) -> (Cx, array, array, string) {
+    let cx = sw_with(cx0, upd.with, upd.rec)
+    let (tab, terr) = sw_find_target(cx, upd.tbl)
+    if terr != "" {
+        return (cx0, [], [], terr)
+    }
+    if len(upd.from) > 0 {
+        return (cx0, [], [], "UPDATE ... FROM is not supported yet")
+    }
+    let mut alias = upd.alias
+    if alias == "" {
+        alias = tab.name
+    }
+    let (prep, perr) = sw_prepare(cx, tab, alias)
+    if perr != "" {
+        return (cx0, [], [], perr)
+    }
+    let fkerr = sf_validate_parent(cx, tab)
+    if fkerr != "" {
+        return (cx0, [], [], fkerr)
+    }
+    let sc2 = std::array::push(scopes, prep[2])
+    let rc = sw_rc(cx)
+    let nc = len(tab.cols)
+    // asignaciones: [índice de columna (-2 = rowid), expresión]
+    let mut sets = []
+    for s in upd.sets {
+        let names = s[0]
+        if len(names) == 1 {
+            let (ex, r1) = sr_ex(s[1], sc2, rc)
+            if r1.err != "" {
+                return (cx0, [], [], r1.err)
+            }
+            let ci = sh_col_index(tab, names[0])
+            if ci < 0 {
+                if sr_rowid_name(sh_key(names[0])) {
+                    sets = std::array::push(sets, [-2, ex])
+                } else {
+                    return (cx0, [], [], "no such column: " + names[0])
+                }
+            } else {
+                sets = std::array::push(sets, [ci, ex])
+            }
+        } else {
+            let mut items = []
+            match s[1] {
+                Ex::ERow(p) => {
+                    items = p
+                },
+                _ => {
+                    return (cx0, [], [], "row value misused")
+                },
+            }
+            if len(items) != len(names) {
+                let ni = len(items)
+                let nn = len(names)
+                return (cx0, [], [], "{nn} columns assigned {ni} values")
+            }
+            let (rit, r2) = sr_list(items, sc2, rc)
+            if r2.err != "" {
+                return (cx0, [], [], r2.err)
+            }
+            let mut k = 0
+            for nm in names {
+                let ci = sh_col_index(tab, nm)
+                if ci < 0 {
+                    return (cx0, [], [], "no such column: " + nm)
+                }
+                sets = std::array::push(sets, [ci, rit[k]])
+                k += 1
+            }
+        }
+    }
+    let mut asg = []
+    for s3 in sets {
+        if s3[0] >= 0 {
+            asg = std::array::push(asg, s3[0])
+        }
+    }
+    let (matched, merr) = sw_match(cx, tab, alias, upd.wh, upd.order, upd.limit, upd.offset, scopes, env)
+    if merr != "" {
+        return (cx0, [], [], merr)
+    }
+    let (rnames, rexprs, rerr) = sw_ret_prepare(cx, upd.ret, tab, prep[2], scopes)
+    if rerr != "" {
+        return (cx0, [], [], rerr)
+    }
+    let mut c = cx
+    let mut changed = 0
+    let mut retrows = []
+    for old in matched {
+        let oldrid = sc_to_int(old[nc])
+        let e2 = std::array::push(env, old)
+        let mut nv = std::array::slice(old, 0, nc)
+        let mut newrid = Sv::SNull
+        for s in sets {
+            let v = sx_ev(c, s[1], e2)
+            if sx_iserr(v) {
+                return (cx0, [], [], sy_row_err([v]))
+            }
+            if s[0] == -2 {
+                if tab.rowid >= 0 {
+                    nv = std::array::set(nv, tab.rowid, v)
+                } else {
+                    return (cx0, [], [], "UPDATE of rowid on this table is not supported")
+                }
+            } else {
+                nv = std::array::set(nv, s[0], v)
+            }
+        }
+        let (c2, st, full, err) = sw_update_row(c, tab, prep, old, oldrid, nv, upd.conf, asg)
+        if err != "" {
+            return (cx0, [], [], err)
+        }
+        c = c2
+        if st == 0 {
+            changed += 1
+            if len(rexprs) > 0 {
+                let (rr, rerr2) = sw_ret_row(c, rexprs, env, full)
+                if rerr2 != "" {
+                    return (cx0, [], [], rerr2)
+                }
+                retrows = std::array::push(retrows, rr)
+            }
+        }
+    }
+    return (sw_cx(c, c.pg, cx.lastid, changed), rnames, retrows, "")
+}
+
+fn sw_delete(cx0: Cx, del: any, scopes: array, env: array) -> (Cx, array, array, string) {
+    let cx = sw_with(cx0, del.with, del.rec)
+    let (tab, terr) = sw_find_target(cx, del.tbl)
+    if terr != "" {
+        return (cx0, [], [], terr)
+    }
+    let mut alias = del.alias
+    if alias == "" {
+        alias = tab.name
+    }
+    let (prep, perr) = sw_prepare(cx, tab, alias)
+    if perr != "" {
+        return (cx0, [], [], perr)
+    }
+    let fkerr = sf_validate_parent(cx, tab)
+    if fkerr != "" {
+        return (cx0, [], [], fkerr)
+    }
+    let (matched, merr) = sw_match(cx, tab, alias, del.wh, del.order, del.limit, del.offset, scopes, env)
+    if merr != "" {
+        return (cx0, [], [], merr)
+    }
+    let (rnames, rexprs, rerr) = sw_ret_prepare(cx, del.ret, tab, prep[2], scopes)
+    if rerr != "" {
+        return (cx0, [], [], rerr)
+    }
+    let nc = len(tab.cols)
+    let mut c = cx
+    let mut changed = 0
+    let mut retrows = []
+    for old in matched {
+        let rid = sc_to_int(old[nc])
+        let mut skiprow = false
+        if len(c.sch.trgs) > 0 {
+            let (cb, sb, eb) = st_fire(c, tab, "BEFORE", "DELETE", old, nil, [])
+            if eb != "" {
+                return (cx0, [], [], eb)
+            }
+            c = cb
+            if sb == 1 {
+                skiprow = true
+            }
+        }
+        if skiprow {
+            continue
+        }
+        c = sw_cx(c, sw_delete_row(c, tab, prep, old, rid), c.lastid, c.changes)
+        let (c1, ferr) = sw_fk_delete(c, tab, old)
+        if ferr != "" {
+            return (cx0, [], [], ferr)
+        }
+        c = c1
+        changed += 1
+        if len(c.sch.trgs) > 0 {
+            let (ca, sa, ea) = st_fire(c, tab, "AFTER", "DELETE", old, nil, [])
+            if ea != "" {
+                return (cx0, [], [], ea)
+            }
+            c = ca
+        }
+        if len(rexprs) > 0 {
+            let (rr, rerr2) = sw_ret_row(c, rexprs, env, old)
+            if rerr2 != "" {
+                return (cx0, [], [], rerr2)
+            }
+            retrows = std::array::push(retrows, rr)
+        }
+    }
+    return (sw_cx(c, c.pg, cx.lastid, changed), rnames, retrows, "")
+}

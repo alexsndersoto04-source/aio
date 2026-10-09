@@ -1,0 +1,42 @@
+// Errores de load_bert/run_bert/run_bert_pooled: deben coincidir en nativo y bajo zett.
+// Uso: bert_errors <modelo.onnx de 2 entradas con batch 2, seq 8>
+fn report(label: string, r: any) {
+    match r {
+        Result::Ok(v) => {
+            print(label + " => ok")
+        },
+        Result::Err(e) => {
+            print(label + " => ERR " + "{e}")
+        },
+        _ => {
+            print(label + " => ?")
+        },
+    }
+}
+
+fn ids(n: int) -> any {
+    let mut v = []
+    let mut i = 0
+    while i < n {
+        v = std::array::push(v, i % 7)
+        i = i + 1
+    }
+    v
+}
+
+fn main() {
+    let args = std::env::args()
+    let path = args[len(args) - 1]
+    report("no existe", std::try::catch(|| { std::onnx::load_bert("/no/existe.onnx", 2, 8) }))
+    report("batch 0", std::try::catch(|| { std::onnx::load_bert(path, 0, 8) }))
+    report("seq negativa", std::try::catch(|| { std::onnx::load_bert(path, 2, -1) }))
+    let h = std::onnx::load_bert(path, 2, 8)
+    report("datos cortos", std::try::catch(|| { std::onnx::run_bert(h, [2, 8], ids(16), ids(15)) }))
+    report("forma distinta", std::try::catch(|| { std::onnx::run_bert(h, [2, 9], ids(18), ids(18)) }))
+    report("agrupada con datos cortos", std::try::catch(|| { std::onnx::run_bert_pooled(h, 2, 8, ids(16), ids(3)) }))
+    report("run3 en modelo de dos", std::try::catch(|| { std::onnx::run_bert3(h, [2, 8], ids(16), ids(16), ids(16)) }))
+    report("ok", std::try::catch(|| { std::onnx::run_bert(h, [2, 8], ids(16), ids(16)) }))
+    std::onnx::close(h)
+    report("tras cerrar", std::try::catch(|| { std::onnx::run_bert(h, [2, 8], ids(16), ids(16)) }))
+    report("handle falso", std::try::catch(|| { std::onnx::run_bert(99, [2, 8], ids(16), ids(16)) }))
+}

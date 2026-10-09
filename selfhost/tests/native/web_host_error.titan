@@ -1,0 +1,7 @@
+fn main() {
+    println("a")
+    println(std::try::catch(|| { std::web::set_text("#x", "hola") }))
+    println(std::try::catch(|| { std::wasm::heap_used() }))
+    println(std::try::catch(|| { std::web::request("a", "b", "c", "d", 1, 2, "e") }))
+    std::web::event_x()
+}

@@ -1,0 +1,19 @@
+// std::postgres por socket Unix (servidor real en /tmp con puerto 55432).
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+fn main() {
+    let db = std::postgres::connect("postgresql://postgres@%2Ftmp:55432/tdb")
+    mostrar("q", std::postgres::query(db, "SELECT current_user AS u, inet_server_addr() IS NULL AS unix", []))
+    mostrar("close", std::postgres::close(db))
+    let d2 = std::postgres::connect("host=/tmp port=55432 user=postgres dbname=tdb")
+    mostrar("q2", std::postgres::query(d2, "SELECT 1::int8 AS x", []))
+    mostrar("cancel", std::postgres::cancel(d2))
+    mostrar("close2", std::postgres::close(d2))
+    mostrar("mal", std::try::catch(|| { std::postgres::connect("host=/nonexistent port=55432 user=postgres dbname=tdb") }))
+    let d3 = std::postgres::connect("postgresql://postgres@/tdb?host=/tmp&port=55432")
+    mostrar("q3", std::postgres::query(d3, "SELECT 3::int8 AS x", []))
+    mostrar("close3", std::postgres::close(d3))
+    let d4 = std::postgres::connect("host=/nonexistent,127.0.0.1 port=55432 user=postgres dbname=tdb")
+    mostrar("q4", std::postgres::query(d4, "SELECT 4::int8 AS x", []))
+}

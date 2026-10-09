@@ -1,0 +1,30 @@
+struct P {
+    x: int,
+    y: float,
+    name: string,
+}
+enum Forma {
+    Punto,
+    Circulo(float),
+    Par(int),
+}
+fn crea() -> P {
+    P { x: 3, y: 2.5, name: "ñandú \"q\"\n" }
+}
+fn main() {
+    let p = crea()
+    let f = Forma::Circulo(1.0)
+    let g = Forma::Punto
+    let t = (1, "dos", 3.0, 'c', true, nil)
+    let m = std::map::insert(std::map::insert(std::map::new(), "b", 2), "a", [1, 2])
+    let b = std::encoding::utf8_encode("hola")
+    let big = [1e21, 1e-7, 100.0, 0.5, -0.0, 123456.789, 1e15, 1e16]
+    let c1 = '\''
+    let c2 = '"'
+    let c3 = '\n'
+    let s = "tab\tuni é 😀 \\ \\u"
+    let cl = |a| a + 1
+    let h = Forma::Par(7)
+    print(p.name)
+    f
+}

@@ -1,0 +1,33 @@
+struct Point { x: int, y: int }
+enum Shape { Circle(int), Square, Rect(int) }
+enum Opt { None, Some(int) }
+impl Point {
+    fn sum(self) -> int { self.x + self.y }
+}
+fn area(s: Shape) -> int {
+    match s {
+        Shape::Circle(r) => r * r * 3,
+        Shape::Square => 1,
+        Shape::Rect(a) => a * a,
+    }
+}
+fn pairs(a: [int], c: map, d: Option) -> [Shape] { [Shape::Square] }
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    print(p.sum())
+    print(area(Shape::Circle(2)))
+    let k = |z| z + p.x
+    print(k(5))
+    for i in 0..3 { print(i) }
+    for i in 0..=3 { print(i) }
+    let arr = [1, 2, 3]
+    let t = (1, "a")
+    print(arr)
+    print(t)
+    print(Opt::Some(3))
+    let r = std::try::catch(|| { 1 })
+    print(r)
+    let mut i = 0
+    while i < 3 { i += 1 }
+    return i
+}

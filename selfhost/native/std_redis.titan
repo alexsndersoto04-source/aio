@@ -1,7 +1,8 @@
 // Cliente Redis real sobre TCP/RESP2. El transporte usa sockets del sistema
 // (nt_connect + read/sendto), mantiene handles opacos y nunca sustituye el
 // servidor por estado local. Límites alineados con redis_mod.rs.
-const RD_STATE_SLOT: int = 3560
+// El estado cuelga de la cabecera de la tabla TCP (tcp_st()+40): 3560 ya es TCP_SLOT.
+const RD_STATE_OFFSET: int = 40
 const RD_MAX_CONNECTIONS: int = 8
 const RD_READ_CHUNK: int = 4096
 const RD_MAX_URL_BYTES: int = 16384
@@ -23,7 +24,7 @@ const RD_OPERATION_TIMEOUT_MS: int = 5000
 // state: next_id, active_count, table pointer. entry: id, fd, read_buffer,
 // read_pos, read_len, broken, owning state, monotonic deadline, RESP budget. IDs never recycle after close.
 fn rd_state() -> int {
-    let slot = std::raw::globals() + RD_STATE_SLOT
+    let slot = tcp_st() + RD_STATE_OFFSET
     let state = std::raw::load(slot)
     if state != 0 { return state }
     let created = rt_alloc_zero(24)
@@ -638,8 +639,14 @@ fn std__redis__connect(url: any) -> any {
     let username = userinfo[0]
     let password = userinfo[1]
     let has_userinfo = userinfo[2]
-    let host_ptr = std::raw::bits(host) + 16
-    let fd = nt_connect(function, host_ptr, rt_slen(host), port)
+    let mut host_ptr = std::raw::bits(host) + 16
+    let mut host_len = rt_slen(host)
+    // Un host IPv6 de la URL llega entre corchetes; el socket necesita la dirección sola.
+    if host_len >= 2 && std::raw::load8(host_ptr) == 91 && std::raw::load8(host_ptr + host_len - 1) == 93 {
+        host_ptr = host_ptr + 1
+        host_len = host_len - 2
+    }
+    let fd = nt_connect_p(function, "Redis I/O error: ", host_ptr, host_len, port)
     let entry = rt_alloc_zero(112)
     std::raw::store(entry + 8, fd)
     std::raw::store(entry + 16, rt_alloc(RD_READ_CHUNK))

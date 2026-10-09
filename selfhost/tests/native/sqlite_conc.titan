@@ -1,0 +1,49 @@
+fn ok_or(r: any) -> string {
+    match r {
+        Result::Ok(v) => {
+            return "ok {v}"
+        },
+        Result::Err(m) => {
+            return "ERR {m}"
+        },
+        _ => {
+            return "?"
+        },
+    }
+}
+
+fn main() {
+    let path = "/tmp/titan_sqlite_conc_test.db"
+    let a = std::sqlite::open(path)
+    std::sqlite::execute(a, "drop table if exists w", [])
+    std::sqlite::execute(a, "create table w(x integer)", [])
+    let b = std::sqlite::open(path)
+    std::sqlite::begin(a)
+    std::sqlite::execute(a, "insert into w values (1)", [])
+    println(ok_or(std::try::catch(|| { std::sqlite::query(b, "select count(*) as c from w", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::execute(b, "insert into w values (2)", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::begin(b) })))
+    std::sqlite::commit(a)
+    println(ok_or(std::try::catch(|| { std::sqlite::query(b, "select count(*) as c from w", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::execute(b, "insert into w values (2)", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::query(a, "select count(*) as c from w", []) })))
+    // b lee en una transacción y a escribe
+    std::sqlite::begin(b)
+    println(ok_or(std::try::catch(|| { std::sqlite::query(b, "select count(*) as c from w", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::execute(a, "insert into w values (3)", []) })))
+    std::sqlite::rollback(b)
+    println(ok_or(std::try::catch(|| { std::sqlite::execute(a, "insert into w values (3)", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::query(b, "select group_concat(x) as c from w", []) })))
+    // esquema cambiado por otro
+    std::sqlite::execute(a, "create table w2(y text)", [])
+    println(ok_or(std::try::catch(|| { std::sqlite::execute(b, "insert into w2 values ('hola')", []) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::query(a, "select * from w2", []) })))
+    let p = std::sqlite::pool("/no/dir/x.db", 2)
+    println(ok_or(std::try::catch(|| { std::sqlite::acquire(p, 10) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::pool_health(p, 10) })))
+    println(std::sqlite::pool_stats(p))
+    println(ok_or(std::try::catch(|| { std::sqlite::pool(path, 0) })))
+    println(std::sqlite::close(a))
+    println(std::sqlite::close(b))
+    println(ok_or(std::try::catch(|| { std::sqlite::close(b) })))
+}

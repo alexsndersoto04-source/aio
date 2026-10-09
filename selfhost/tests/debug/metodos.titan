@@ -1,0 +1,15 @@
+struct Cuenta {
+    saldo: int,
+}
+impl Cuenta {
+    fn deposita(self, n: int) -> Cuenta {
+        Cuenta { saldo: self.saldo + n }
+    }
+}
+fn main() {
+    let c = Cuenta { saldo: 1 }
+    let d = c.deposita(5)
+    let s = d.saldo
+    print("{s}")
+    d
+}

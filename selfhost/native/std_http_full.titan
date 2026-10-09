@@ -1,7 +1,6 @@
 // std::http_full (4 funciones): cliente HTTP/HTTPS con transporte real.
-// HTTP usa std::http; HTTPS abre OpenSSL s_client como proceso real, valida
-// la cadena y el nombre del certificado y nunca baja a HTTP sin cifrar.
-// Dependencia para HTTPS: OpenSSL disponible en PATH. Prefijo `hf_`.
+// HTTP y HTTPS pasan por std::http (ht_single); HTTPS usa el TLS nativo de std_tls.titan,
+// valida la cadena y el nombre del certificado y nunca baja a HTTP sin cifrar. Prefijo `hf_`.
 
 fn hf_fail(function: string, message: string) {
     rt_native_fail(function, message)

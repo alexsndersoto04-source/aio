@@ -1,0 +1,265 @@
+// Parte común del servidor DAP (Debug Adapter Protocol) de Titan, la que no depende de dónde
+// corra: la usan `titan dap` (dap.titan, antes de lanzar el programa) y el ejecutable de
+// depuración (native/std_dap.titan, con el programa en marcha). Replica `titan_dap`
+// (crates/titan_dap/src/lib.rs): mismos mensajes, mismas claves (serde_json las ordena) y los
+// mismos textos de error. Solo Titan puro: nada de `std::raw` ni `rt_*`.
+// Prefijo `dc_`.
+
+fn dc_obj() -> map {
+    std::map::new()
+}
+
+fn dc_set(m: map, key: string, value: any) -> map {
+    std::map::insert(m, key, value)
+}
+
+// Mensaje con cabecera `Content-Length` (bytes del cuerpo en UTF-8).
+fn dc_framed(body: string) -> any {
+    let bytes = std::encoding::utf8_encode(body)
+    let n = std::bytes::length(bytes)
+    std::bytes::concat(std::encoding::utf8_encode("Content-Length: {n}\r\n\r\n"), bytes)
+}
+
+fn dc_response(seq: int, request_seq: int, command: string, success: bool, body: any, message: any) -> any {
+    let mut m = dc_obj()
+    m = dc_set(m, "seq", seq)
+    m = dc_set(m, "type", "response")
+    m = dc_set(m, "request_seq", request_seq)
+    m = dc_set(m, "success", success)
+    m = dc_set(m, "command", command)
+    m = dc_set(m, "body", body)
+    m = dc_set(m, "message", message)
+    dc_framed(std::json::stringify(m))
+}
+
+fn dc_event(seq: int, event: string, body: any) -> any {
+    let mut m = dc_obj()
+    m = dc_set(m, "seq", seq)
+    m = dc_set(m, "type", "event")
+    m = dc_set(m, "event", event)
+    m = dc_set(m, "body", body)
+    dc_framed(std::json::stringify(m))
+}
+
+fn dc_capabilities() -> map {
+    let mut m = dc_obj()
+    m = dc_set(m, "supportsConfigurationDoneRequest", true)
+    m = dc_set(m, "supportsTerminateRequest", true)
+    m = dc_set(m, "supportsRestartRequest", false)
+    m = dc_set(m, "supportsSetVariable", false)
+    m = dc_set(m, "supportsStepBack", false)
+    m = dc_set(m, "supportsEvaluateForHovers", false)
+    m
+}
+
+fn dc_threads() -> map {
+    let mut t = dc_obj()
+    t = dc_set(t, "id", 1)
+    t = dc_set(t, "name", "Titan main thread")
+    dc_set(dc_obj(), "threads", [t])
+}
+
+fn dc_scopes() -> map {
+    let mut a = dc_obj()
+    a = dc_set(a, "name", "Locals")
+    a = dc_set(a, "variablesReference", 100)
+    a = dc_set(a, "expensive", false)
+    let mut b = dc_obj()
+    b = dc_set(b, "name", "Operand Stack")
+    b = dc_set(b, "variablesReference", 101)
+    b = dc_set(b, "expensive", false)
+    dc_set(dc_obj(), "scopes", [a, b])
+}
+
+// `frame`: nil o [fid, nombre, archivo|nil, ip, profundidad, línea, columna, locales, pila].
+fn dc_stack_trace(frame: any) -> map {
+    let mut frames = []
+    if frame != nil {
+        let mut f = dc_obj()
+        f = dc_set(f, "id", 1)
+        f = dc_set(f, "name", frame[1])
+        let mut line = 1
+        let mut col = 1
+        if frame[5] > 0 {
+            line = frame[5]
+            col = frame[6]
+        }
+        f = dc_set(f, "line", line)
+        f = dc_set(f, "column", col)
+        let mut source: any = nil
+        let file = frame[2]
+        if file != nil {
+            let mut s = dc_obj()
+            s = dc_set(s, "name", std::path::file_name(file))
+            s = dc_set(s, "path", file)
+            source = s
+        }
+        f = dc_set(f, "source", source)
+        frames = [f]
+    }
+    let mut m = dc_obj()
+    m = dc_set(m, "stackFrames", frames)
+    m = dc_set(m, "totalFrames", len(frames))
+    m
+}
+
+// `items`: lista de [texto, tipo] por valor.
+fn dc_variables(items: array) -> map {
+    let mut out = []
+    let mut i = 0
+    for item in items {
+        let mut v = dc_obj()
+        v = dc_set(v, "name", "{i}")
+        v = dc_set(v, "value", item[0])
+        v = dc_set(v, "type", item[1])
+        v = dc_set(v, "variablesReference", 0)
+        out = std::array::push(out, v)
+        i += 1
+    }
+    dc_set(dc_obj(), "variables", out)
+}
+
+// Resultado de un punto de interrupción de `setBreakpoints`.
+fn dc_breakpoint(line: int, path: string, verified: bool) -> map {
+    let mut s = dc_obj()
+    s = dc_set(s, "path", path)
+    let mut m = dc_obj()
+    m = dc_set(m, "verified", verified)
+    m = dc_set(m, "line", line)
+    m = dc_set(m, "source", s)
+    let mut message: any = nil
+    if !verified {
+        message = "no executable instruction on this line"
+    }
+    dc_set(m, "message", message)
+}
+
+fn dc_stopped_body(depth: int) -> map {
+    let mut reason = "breakpoint"
+    if depth > 0 {
+        reason = "step"
+    }
+    let mut m = dc_obj()
+    m = dc_set(m, "reason", reason)
+    m = dc_set(m, "threadId", 1)
+    dc_set(m, "allThreadsStopped", true)
+}
+
+fn dc_continued_body() -> map {
+    let mut m = dc_obj()
+    m = dc_set(m, "threadId", 1)
+    dc_set(m, "allThreadsContinued", true)
+}
+
+fn dc_output_body(category: string, text: string) -> map {
+    let mut m = dc_obj()
+    m = dc_set(m, "category", category)
+    dc_set(m, "output", text)
+}
+
+// Línea de cabecera DAP -> -1 si no es `Content-Length`, -2 si el valor no es un entero válido,
+// o el valor. (`value.trim().parse::<usize>()`: dígitos decimales, un `+` inicial permitido.)
+fn dc_header_length(line: string) -> int {
+    let mut rest = ""
+    if std::text::starts_with(line, "Content-Length:") {
+        rest = std::text::substring(line, 15, std::text::length(line))
+    } else if std::text::starts_with(line, "content-length:") {
+        rest = std::text::substring(line, 15, std::text::length(line))
+    } else {
+        return -1
+    }
+    let t = std::text::trim(rest)
+    let n = std::text::length(t)
+    if n == 0 {
+        return -2
+    }
+    let mut digits = t
+    if std::text::substring(t, 0, 1) == "+" {
+        digits = std::text::substring(t, 1, n)
+    }
+    if std::text::length(digits) == 0 {
+        return -2
+    }
+    let mut v = 0
+    for c in digits {
+        let d = std::text::char_code(c) - 48
+        if d < 0 || d > 9 {
+            return -2
+        }
+        // Tope para no desbordar: cualquier cosa tan grande supera igualmente los 16 MiB.
+        if v < 100000000000 {
+            v = v * 10 + d
+        }
+        let seen = true
+    }
+    v
+}
+
+// ------------------------------------------------------------ valores JSON
+
+// Clase de un valor JSON: "s" texto, "m" objeto, "a" lista, "b" booleano, "n" nulo, "f" decimal, "i" entero.
+fn dc_kind(v: any) -> string {
+    let s = std::json::stringify(v)
+    let c = std::text::substring(s, 0, 1)
+    if c == "\"" {
+        return "s"
+    }
+    if c == "{" {
+        return "m"
+    }
+    if c == "[" {
+        return "a"
+    }
+    if c == "t" || c == "f" {
+        return "b"
+    }
+    if c == "n" {
+        return "n"
+    }
+    if std::text::contains(s, ".") || std::text::contains(s, "e") || std::text::contains(s, "E") {
+        return "f"
+    }
+    "i"
+}
+
+// Campo de un objeto, o nil si no es objeto o no existe (como `Value::get`).
+fn dc_get(m: any, key: string) -> any {
+    if dc_kind(m) != "m" {
+        return nil
+    }
+    if !std::map::contains(m, key) {
+        return nil
+    }
+    m[key]
+}
+
+fn dc_str(v: any) -> any {
+    if v != nil && dc_kind(v) == "s" {
+        return v
+    }
+    nil
+}
+
+// Entero (`as_i64`): nil si no es un entero.
+fn dc_int(v: any) -> any {
+    if v != nil && dc_kind(v) == "i" {
+        return v
+    }
+    nil
+}
+
+// Mensaje de una nativa que falló, sin el prefijo `native function 'x' failed: `.
+fn dc_clean(e: any) -> string {
+    let s = "{e}"
+    let mark = "' failed: "
+    let n = std::text::length(s)
+    let m = std::text::length(mark)
+    let mut i = 0
+    while i + m <= n {
+        if std::text::substring(s, i, i + m) == mark {
+            return std::text::substring(s, i + m, n)
+        }
+        i += 1
+    }
+    s
+}

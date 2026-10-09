@@ -1,0 +1,582 @@
+// std::tokenize en Titan, parte 1: utilidades de texto, tablas Unicode y normalización.
+// Titan "normal" (sin std::raw ni rt_*): corre igual bajo la VM de Rust y dentro del runtime nativo.
+// Traducción de `tokenizers` 0.22.2 (selfhost/fuentes/tokenizers-0.22.2.tar.gz) y de las crates que usa:
+//   unicode-normalization-alignments 0.1.12 (Unicode 9.0.0): NFC/NFD/NFKC/NFKD y clases de combinación;
+//   unicode_categories 0.1.1: is_other, is_punctuation, is_mark_nonspacing;
+//   regex-syntax 0.8.11 (Unicode 16.0.0): \w, \s, \d, \p{..}.
+// Los textos se manejan como arrays de puntos de código ("cps"). Prefijo `tk`.
+
+// ------------------------------------------------------------ texto
+
+// Enteros decimales separados por comas -> array.
+fn tk_ints(s: string) -> array {
+    let b = std::bytes::to_array(std::encoding::utf8_encode(s))
+    let n = len(b)
+    let mut out = []
+    let mut v = 0
+    let mut any = false
+    let mut i = 0
+    while i < n {
+        let x = b[i]
+        if x == 44 {
+            out = std::array::push(out, v)
+            v = 0
+            any = false
+        } else {
+            v = v * 10 + (x - 48)
+            any = true
+        }
+        i += 1
+    }
+    if any {
+        out = std::array::push(out, v)
+    }
+    out
+}
+
+// Bytes UTF-8 (array de enteros) -> puntos de código (la entrada es UTF-8 válido).
+fn tk_decode_valid(b: array) -> array {
+    let n = len(b)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let x = b[i]
+        if x < 128 {
+            out = std::array::push(out, x)
+            i += 1
+        } else if x < 224 {
+            out = std::array::push(out, (x & 31) * 64 + (b[i + 1] & 63))
+            i += 2
+        } else if x < 240 {
+            out = std::array::push(out, (x & 15) * 4096 + (b[i + 1] & 63) * 64 + (b[i + 2] & 63))
+            i += 3
+        } else {
+            out = std::array::push(out, (x & 7) * 262144 + (b[i + 1] & 63) * 4096 + (b[i + 2] & 63) * 64 + (b[i + 3] & 63))
+            i += 4
+        }
+    }
+    out
+}
+
+fn tk_cps(s: string) -> array {
+    tk_decode_valid(std::bytes::to_array(std::encoding::utf8_encode(s)))
+}
+
+fn tk_utf8_len(c: int) -> int {
+    if c < 128 {
+        return 1
+    }
+    if c < 2048 {
+        return 2
+    }
+    if c < 65536 {
+        return 3
+    }
+    4
+}
+
+// Puntos de código -> bytes UTF-8 (array de enteros).
+fn tk_utf8(cps: array) -> array {
+    let mut out = []
+    for c in cps {
+        if c < 128 {
+            out = std::array::push(out, c)
+        } else if c < 2048 {
+            out = std::array::push(out, 192 + c / 64)
+            out = std::array::push(out, 128 + c % 64)
+        } else if c < 65536 {
+            out = std::array::push(out, 224 + c / 4096)
+            out = std::array::push(out, 128 + (c / 64) % 64)
+            out = std::array::push(out, 128 + c % 64)
+        } else {
+            out = std::array::push(out, 240 + c / 262144)
+            out = std::array::push(out, 128 + (c / 4096) % 64)
+            out = std::array::push(out, 128 + (c / 64) % 64)
+            out = std::array::push(out, 128 + c % 64)
+        }
+    }
+    out
+}
+
+fn tk_str(cps: array) -> string {
+    std::encoding::utf8_decode(std::bytes::from_array(tk_utf8(cps)))
+}
+
+// String::from_utf8_lossy: cada subsecuencia máxima inválida se sustituye por U+FFFD.
+fn tk_lossy(b: array) -> array {
+    let n = len(b)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let x = b[i]
+        if x < 128 {
+            out = std::array::push(out, x)
+            i += 1
+        } else {
+            let mut need = 0
+            let mut lo = 128
+            let mut hi = 191
+            let mut cp = 0
+            if x >= 194 && x <= 223 {
+                need = 1
+                cp = x & 31
+            } else if x >= 224 && x <= 239 {
+                need = 2
+                cp = x & 15
+                if x == 224 {
+                    lo = 160
+                }
+                if x == 237 {
+                    hi = 159
+                }
+            } else if x >= 240 && x <= 244 {
+                need = 3
+                cp = x & 7
+                if x == 240 {
+                    lo = 144
+                }
+                if x == 244 {
+                    hi = 143
+                }
+            }
+            if need == 0 {
+                out = std::array::push(out, 65533)
+                i += 1
+            } else {
+                let mut j = i + 1
+                let mut ok = true
+                let mut k = 0
+                while k < need && ok {
+                    if j < n && b[j] >= lo && b[j] <= hi {
+                        cp = cp * 64 + (b[j] & 63)
+                        j += 1
+                        lo = 128
+                        hi = 191
+                        k += 1
+                        ok = true
+                    } else {
+                        ok = false
+                    }
+                }
+                if ok {
+                    out = std::array::push(out, cp)
+                } else {
+                    out = std::array::push(out, 65533)
+                }
+                i = j
+            }
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------ búsquedas en tablas
+
+// Índice de la entrada (de `stride` enteros) cuya clave (primer entero) es `key`, o -1.
+fn tkx_find(t: array, stride: int, key: int) -> int {
+    let mut lo = 0
+    let mut hi = len(t) / stride
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let k = t[mid * stride]
+        if k == key {
+            return mid * stride
+        }
+        if k < key {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return -1
+}
+
+// Pertenencia a una lista plana de rangos [a0, b0, a1, b1, ...] ordenada.
+fn tk_in(r: array, c: int) -> bool {
+    let mut lo = 0
+    let mut hi = len(r) / 2
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if c < r[mid * 2] {
+            hi = mid
+        } else if c > r[mid * 2 + 1] {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    false
+}
+
+// ------------------------------------------------------------ tablas Unicode
+
+struct TkU {
+    ccc: array,
+    comp: array,
+    canon_k: array,
+    canon_o: array,
+    canon_d: array,
+    compat_k: array,
+    compat_o: array,
+    compat_d: array,
+    marks: array,
+    other: array,
+    punct: array,
+    mn: array,
+    word: array,
+    space: array,
+    digit: array,
+}
+
+// Tabla de descomposiciones "cp,n,d1..dn,..." -> (claves, desplazamientos, datos).
+fn tku_dec(s: string) -> (array, array, array) {
+    let v = tk_ints(s)
+    let mut keys = []
+    let mut offs = []
+    let mut data = []
+    let n = len(v)
+    let mut i = 0
+    while i < n {
+        keys = std::array::push(keys, v[i])
+        offs = std::array::push(offs, len(data))
+        let cnt = v[i + 1]
+        data = std::array::push(data, cnt)
+        let mut k = 0
+        while k < cnt {
+            data = std::array::push(data, v[i + 2 + k])
+            k += 1
+        }
+        i += 2 + cnt
+    }
+    return (keys, offs, data)
+}
+
+fn tku_new() -> TkU {
+    let (ck, co, cd) = tku_dec(tkt_canon())
+    let (pk, po, pd) = tku_dec(tkt_compat())
+    TkU {
+        ccc: tk_ints(tkt_ccc()),
+        comp: tk_ints(tkt_comp()),
+        canon_k: ck,
+        canon_o: co,
+        canon_d: cd,
+        compat_k: pk,
+        compat_o: po,
+        compat_d: pd,
+        marks: tk_ints(tkt_marks()),
+        other: tk_ints(tkt_other()),
+        punct: tk_ints(tkt_punct()),
+        mn: tk_ints(tkt_mn()),
+        word: tk_ints(tkt_word()),
+        space: tk_ints(tkt_space()),
+        digit: tk_ints(tkt_digit()),
+    }
+}
+
+// char::is_whitespace (White_Space).
+fn tk_is_space(u: TkU, c: int) -> bool {
+    if c < 128 {
+        return c == 32 || (c >= 9 && c <= 13)
+    }
+    tk_in(u.space, c)
+}
+
+// \w de regex (Unicode).
+fn tk_is_word(u: TkU, c: int) -> bool {
+    tk_in(u.word, c)
+}
+
+// char::is_numeric (N*): categoría Number.
+fn tk_is_numeric(u: TkU, gcn: array, c: int) -> bool {
+    if c < 128 {
+        return c >= 48 && c <= 57
+    }
+    tk_in(gcn, c)
+}
+
+// char::is_ascii_punctuation
+fn tk_is_ascii_punct(c: int) -> bool {
+    return (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)
+}
+
+// UnicodeCategories::is_punctuation (Unicode 9 de unicode_categories 0.1.1).
+fn tk_is_punct(u: TkU, c: int) -> bool {
+    tk_in(u.punct, c)
+}
+
+fn tk_ccc(u: TkU, c: int) -> int {
+    if c < 768 {
+        return 0
+    }
+    let i = tkx_find(u.ccc, 2, c)
+    if i < 0 {
+        return 0
+    }
+    u.ccc[i + 1]
+}
+
+// ------------------------------------------------------------ normalización Unicode
+
+const TK_S_BASE: int = 44032
+const TK_L_BASE: int = 4352
+const TK_V_BASE: int = 4449
+const TK_T_BASE: int = 4519
+const TK_L_COUNT: int = 19
+const TK_V_COUNT: int = 21
+const TK_T_COUNT: int = 28
+const TK_N_COUNT: int = 588
+const TK_S_COUNT: int = 11172
+
+// Descompone c (canónica o de compatibilidad) añadiendo (cp, cambio) a out.
+// `first` = el primer carácter de la descomposición lleva cambio 0, los demás 1.
+fn tk_decompose(u: TkU, c: int, compat: bool, oc: array, og: array) -> (array, array) {
+    let mut oc2 = oc
+    let mut og2 = og
+    if c <= 127 {
+        oc2 = std::array::push(oc2, c)
+        og2 = std::array::push(og2, 0)
+        return (oc2, og2)
+    }
+    if c >= TK_S_BASE && c < TK_S_BASE + TK_S_COUNT {
+        let si = c - TK_S_BASE
+        oc2 = std::array::push(oc2, TK_L_BASE + si / TK_N_COUNT)
+        og2 = std::array::push(og2, 0)
+        oc2 = std::array::push(oc2, TK_V_BASE + (si % TK_N_COUNT) / TK_T_COUNT)
+        og2 = std::array::push(og2, 1)
+        let ti = si % TK_T_COUNT
+        if ti > 0 {
+            oc2 = std::array::push(oc2, TK_T_BASE + ti)
+            og2 = std::array::push(og2, 1)
+        }
+        return (oc2, og2)
+    }
+    let mut idx = -1
+    let mut data = u.canon_d
+    let mut offs = u.canon_o
+    if compat {
+        idx = tk_find_k(u.compat_k, c)
+        data = u.compat_d
+        offs = u.compat_o
+    }
+    if idx < 0 {
+        idx = tk_find_k(u.canon_k, c)
+        data = u.canon_d
+        offs = u.canon_o
+    }
+    if idx >= 0 {
+        let o = offs[idx]
+        let cnt = data[o]
+        let mut k = 0
+        while k < cnt {
+            oc2 = std::array::push(oc2, data[o + 1 + k])
+            og2 = std::array::push(og2, if k == 0 { 0 } else { 1 })
+            k += 1
+        }
+        return (oc2, og2)
+    }
+    oc2 = std::array::push(oc2, c)
+    og2 = std::array::push(og2, 0)
+    return (oc2, og2)
+}
+
+fn tk_find_k(keys: array, key: int) -> int {
+    let mut lo = 0
+    let mut hi = len(keys)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let k = keys[mid]
+        if k == key {
+            return mid
+        }
+        if k < key {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return -1
+}
+
+// Ordena de forma estable por clase de combinación el tramo [a, b) de (cps, cambios, clases).
+fn tk_sort_run(cs: array, gs: array, ks: array, a: int, b: int) -> (array, array, array) {
+    let mut c2 = cs
+    let mut g2 = gs
+    let mut k2 = ks
+    let mut i = a + 1
+    while i < b {
+        let cc = c2[i]
+        let gg = g2[i]
+        let kk = k2[i]
+        let mut j = i
+        while j > a && k2[j - 1] > kk {
+            c2 = std::array::set(c2, j, c2[j - 1])
+            g2 = std::array::set(g2, j, g2[j - 1])
+            k2 = std::array::set(k2, j, k2[j - 1])
+            j -= 1
+        }
+        c2 = std::array::set(c2, j, cc)
+        g2 = std::array::set(g2, j, gg)
+        k2 = std::array::set(k2, j, kk)
+        i += 1
+    }
+    return (c2, g2, k2)
+}
+
+// Decompositions de unicode-normalization-alignments: (cps, cambios).
+fn tk_nfd(u: TkU, cps: array, compat: bool) -> (array, array) {
+    let mut fc = []
+    let mut fg = []
+    for c in cps {
+        let (a, b) = tk_decompose(u, c, compat, fc, fg)
+        fc = a
+        fg = b
+    }
+    // clases y ordenación estable por tramos que empiezan en cada clase 0
+    let n = len(fc)
+    let mut ks = []
+    let mut i = 0
+    while i < n {
+        ks = std::array::push(ks, tk_ccc(u, fc[i]))
+        i += 1
+    }
+    let mut c2 = fc
+    let mut g2 = fg
+    let mut k2 = ks
+    let mut start = 0
+    i = 0
+    while i < n {
+        if k2[i] == 0 && i > start {
+            let (a, b, d) = tk_sort_run(c2, g2, k2, start, i)
+            c2 = a
+            g2 = b
+            k2 = d
+            start = i
+        } else if k2[i] == 0 {
+            start = i
+        }
+        i += 1
+    }
+    if n > start {
+        let (a, b, d) = tk_sort_run(c2, g2, k2, start, n)
+        c2 = a
+        g2 = b
+    }
+    return (c2, g2)
+}
+
+fn tk_compose_pair(u: TkU, a: int, b: int) -> int {
+    // Hangul
+    if a >= TK_L_BASE && a < TK_L_BASE + TK_L_COUNT && b >= TK_V_BASE && b < TK_V_BASE + TK_V_COUNT {
+        let li = a - TK_L_BASE
+        let vi = b - TK_V_BASE
+        return TK_S_BASE + (li * TK_V_COUNT + vi) * TK_T_COUNT
+    }
+    if a >= TK_S_BASE && a < TK_S_BASE + TK_S_COUNT && (a - TK_S_BASE) % TK_T_COUNT == 0 && b > TK_T_BASE && b < TK_T_BASE + TK_T_COUNT {
+        return a + (b - TK_T_BASE)
+    }
+    // tabla: tripletas (c1, c2, r) ordenadas por (c1, c2)
+    let t = u.comp
+    let mut lo = 0
+    let mut hi = len(t) / 3
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let k1 = t[mid * 3]
+        let k2 = t[mid * 3 + 1]
+        if k1 == a && k2 == b {
+            return t[mid * 3 + 2]
+        }
+        if k1 < a || (k1 == a && k2 < b) {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return -1
+}
+
+// Recompositions: máquina de estados de recompose.rs sobre la salida de la descomposición.
+fn tk_nfc(u: TkU, cps: array, compat: bool) -> (array, array) {
+    let (dc, dg) = tk_nfd(u, cps, compat)
+    let n = len(dc)
+    let mut oc = []
+    let mut og = []
+    let mut buf_c = []
+    let mut buf_g = []
+    let mut have = false
+    let mut kc = 0
+    let mut kg = 0
+    let mut last = -1
+    let mut i = 0
+    while i < n {
+        let ch = dc[i]
+        let chg = dg[i]
+        let cl = tk_ccc(u, ch)
+        if !have {
+            if cl != 0 {
+                oc = std::array::push(oc, ch)
+                og = std::array::push(og, chg)
+            } else {
+                have = true
+                kc = ch
+                kg = chg
+            }
+        } else if last < 0 {
+            let r = tk_compose_pair(u, kc, ch)
+            if r >= 0 {
+                kc = r
+                kg = kg + chg - 1
+            } else if cl == 0 {
+                oc = std::array::push(oc, kc)
+                og = std::array::push(og, kg)
+                kc = ch
+                kg = chg
+            } else {
+                buf_c = std::array::push(buf_c, ch)
+                buf_g = std::array::push(buf_g, chg)
+                last = cl
+            }
+        } else if last >= cl {
+            if cl == 0 {
+                oc = std::array::push(oc, kc)
+                og = std::array::push(og, kg)
+                let mut j = 0
+                while j < len(buf_c) {
+                    oc = std::array::push(oc, buf_c[j])
+                    og = std::array::push(og, buf_g[j])
+                    j += 1
+                }
+                buf_c = []
+                buf_g = []
+                kc = ch
+                kg = chg
+                last = -1
+            } else {
+                buf_c = std::array::push(buf_c, ch)
+                buf_g = std::array::push(buf_g, chg)
+                last = cl
+            }
+        } else {
+            let r = tk_compose_pair(u, kc, ch)
+            if r >= 0 {
+                kc = r
+                kg = kg + chg - 1
+            } else {
+                buf_c = std::array::push(buf_c, ch)
+                buf_g = std::array::push(buf_g, chg)
+                last = cl
+            }
+        }
+        i += 1
+    }
+    if have {
+        oc = std::array::push(oc, kc)
+        og = std::array::push(og, kg)
+    }
+    let mut j = 0
+    while j < len(buf_c) {
+        oc = std::array::push(oc, buf_c[j])
+        og = std::array::push(og, buf_g[j])
+        j += 1
+    }
+    return (oc, og)
+}

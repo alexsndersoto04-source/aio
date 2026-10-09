@@ -1,0 +1,771 @@
+// std::tokenize en Titan, parte 6: carga y validación de tokenizer.json. Prefijo `tkv` / `tk_load`.
+// Subconjunto compatible con `tokenizers` 0.22.2; lo que no se soporta se rechaza con un error claro.
+
+fn tkv_kind(v: any, kind: string) -> bool {
+    if kind == "s" {
+        return tj_str(v)
+    }
+    if kind == "b" {
+        return tj_isbool(v)
+    }
+    if kind == "i" {
+        return tj_isint(v) && v >= 0
+    }
+    if kind == "a" {
+        return tj_arr(v)
+    }
+    if kind == "m" {
+        return tj_map(v)
+    }
+    if kind == "c" {
+        return tj_str(v) && len(tk_cps(v)) == 1
+    }
+    return false
+}
+
+fn tkv_req(n: any, k: string, kind: string) -> string {
+    let v = tj_get(n, k)
+    if v == nil {
+        return "missing field `" + k + "`"
+    }
+    if !tkv_kind(v, kind) {
+        return "invalid type for field `" + k + "`"
+    }
+    return ""
+}
+
+fn tkv_opt(n: any, k: string, kind: string) -> string {
+    let v = tj_get(n, k)
+    if v == nil || tkv_kind(v, kind) {
+        return ""
+    }
+    return "invalid type for field `" + k + "`"
+}
+
+// Lista de comprobaciones: devuelve el primer error.
+fn tkv_all(n: any, reqs: array) -> string {
+    let mut i = 0
+    while i + 1 < len(reqs) {
+        let e = tkv_req(n, reqs[i], reqs[i + 1])
+        if e != "" {
+            return e
+        }
+        i += 2
+    }
+    return ""
+}
+
+fn tkv_pattern(n: any) -> string {
+    let p = tj_get(n, "pattern")
+    if p == nil {
+        return "missing field `pattern`"
+    }
+    let (s, e) = tk_pattern(p)
+    return e
+}
+
+fn tkv_seq(n: any, key: string, which: int) -> string {
+    let e = tkv_req(n, key, "a")
+    if e != "" {
+        return e
+    }
+    for x in tj_list(n, key) {
+        let e2 = tkv_node(x, which)
+        if e2 != "" {
+            return e2
+        }
+    }
+    return ""
+}
+
+// Valida un nodo. which: 0 normalizador, 1 pre-tokenizador, 2 post-procesador, 3 decodificador.
+fn tkv_node(n: any, which: int) -> string {
+    if !tj_map(n) {
+        return "invalid type: expected a map"
+    }
+    let ty = tj_gstr(n, "type", "")
+    let what = if which == 0 { "normalizer" } else if which == 1 { "pre_tokenizer" } else if which == 2 { "post_processor" } else { "decoder" }
+    let wrap = if which == 0 { "NormalizerWrapper" } else if which == 1 { "PreTokenizerWrapper" } else if which == 2 { "PostProcessorWrapper" } else { "DecoderWrapper" }
+    let nodata = "data did not match any variant of untagged enum " + wrap
+    if which == 0 {
+        if ty == "Sequence" {
+            return tkv_seq(n, "normalizers", 0)
+        }
+        if ty == "Lowercase" || ty == "NFC" || ty == "NFD" || ty == "NFKC" || ty == "NFKD" || ty == "StripAccents" || ty == "Nmt" || ty == "ByteLevel" {
+            return ""
+        }
+        if ty == "BertNormalizer" {
+            let e = tkv_all(n, ["clean_text", "b", "handle_chinese_chars", "b", "lowercase", "b"])
+            if e != "" {
+                return e
+            }
+            return tkv_opt(n, "strip_accents", "b")
+        }
+        if ty == "Strip" {
+            return tkv_all(n, ["strip_left", "b", "strip_right", "b"])
+        }
+        if ty == "Replace" {
+            let e = tkv_pattern(n)
+            if e != "" {
+                return e
+            }
+            return tkv_req(n, "content", "s")
+        }
+        if ty == "Prepend" {
+            return tkv_req(n, "prepend", "s")
+        }
+        if ty == "Precompiled" {
+            return "unsupported normalizer Precompiled"
+        }
+        return nodata
+    }
+    if which == 1 {
+        if ty == "Sequence" {
+            return tkv_seq(n, "pretokenizers", 1)
+        }
+        if ty == "BertPreTokenizer" || ty == "Whitespace" || ty == "WhitespaceSplit" {
+            return ""
+        }
+        if ty == "ByteLevel" {
+            let e = tkv_all(n, ["add_prefix_space", "b", "trim_offsets", "b"])
+            if e != "" {
+                return e
+            }
+            return tkv_opt(n, "use_regex", "b")
+        }
+        if ty == "CharDelimiterSplit" {
+            return tkv_req(n, "delimiter", "c")
+        }
+        if ty == "Metaspace" {
+            let e = tkv_req(n, "replacement", "c")
+            if e != "" {
+                return e
+            }
+            let e2 = tkv_opt(n, "prepend_scheme", "s")
+            if e2 != "" {
+                return e2
+            }
+            let sc = tj_gstr(n, "prepend_scheme", "always")
+            if sc != "always" && sc != "first" && sc != "never" {
+                return "unknown variant `" + sc + "`, expected one of `first`, `never`, `always`"
+            }
+            let e3 = tkv_opt(n, "add_prefix_space", "b")
+            if e3 != "" {
+                return e3
+            }
+            return tkv_opt(n, "split", "b")
+        }
+        if ty == "Split" {
+            let e = tkv_pattern(n)
+            if e != "" {
+                return e
+            }
+            let e2 = tkv_all(n, ["behavior", "s", "invert", "b"])
+            if e2 != "" {
+                return e2
+            }
+            if tkp_beh_id(tj_gstr(n, "behavior", "")) < 0 {
+                return "unknown variant `" + tj_gstr(n, "behavior", "") + "`"
+            }
+            return ""
+        }
+        if ty == "Punctuation" {
+            let e = tkv_opt(n, "behavior", "s")
+            if e != "" {
+                return e
+            }
+            if tj_has(n, "behavior") && tkp_beh_id(tj_gstr(n, "behavior", "")) < 0 {
+                return "unknown variant `" + tj_gstr(n, "behavior", "") + "`"
+            }
+            return ""
+        }
+        if ty == "Digits" {
+            return tkv_req(n, "individual_digits", "b")
+        }
+        if ty == "FixedLength" {
+            return tkv_opt(n, "length", "i")
+        }
+        if ty == "UnicodeScripts" {
+            return "unsupported pre_tokenizer UnicodeScripts"
+        }
+        return nodata
+    }
+    if which == 2 {
+        if ty == "Sequence" {
+            return tkv_seq(n, "processors", 2)
+        }
+        if ty == "ByteLevel" {
+            return tkv_all(n, ["add_prefix_space", "b", "trim_offsets", "b"])
+        }
+        if ty == "BertProcessing" || ty == "RobertaProcessing" {
+            for k in ["sep", "cls"] {
+                let v = tj_get(n, k)
+                if v == nil {
+                    return "missing field `" + k + "`"
+                }
+                if !tj_arr(v) || len(v) != 2 || !tj_str(v[0]) || !tj_isint(v[1]) {
+                    return "invalid type for field `" + k + "`"
+                }
+            }
+            if ty == "RobertaProcessing" {
+                return tkv_all(n, ["trim_offsets", "b", "add_prefix_space", "b"])
+            }
+            return ""
+        }
+        if ty == "TemplateProcessing" {
+            let e = tkv_all(n, ["single", "a", "pair", "a", "special_tokens", "m"])
+            if e != "" {
+                return e
+            }
+            let sts = tj_get(n, "special_tokens")
+            for k in std::map::keys(sts) {
+                let st = std::map::get(sts, k)
+                let e2 = tkv_all(st, ["id", "s", "ids", "a", "tokens", "a"])
+                if e2 != "" {
+                    return e2
+                }
+                if len(tj_list(st, "ids")) != len(tj_list(st, "tokens")) {
+                    return "SpecialToken: ids and tokens must be of the same length"
+                }
+            }
+            for which2 in ["single", "pair"] {
+                for piece in tj_list(n, which2) {
+                    let sq = tj_get(piece, "Sequence")
+                    let sp = tj_get(piece, "SpecialToken")
+                    if sq != nil {
+                        let sid = tj_gstr(sq, "id", "")
+                        if sid != "A" && sid != "B" {
+                            return "unknown variant `" + sid + "`, expected `A` or `B`"
+                        }
+                        if sid == "B" && which2 == "single" {
+                            return "unsupported TemplateProcessing: `$B` in `single`"
+                        }
+                        let e3 = tkv_req(sq, "type_id", "i")
+                        if e3 != "" {
+                            return e3
+                        }
+                    } else if sp != nil {
+                        let e3 = tkv_all(sp, ["id", "s", "type_id", "i"])
+                        if e3 != "" {
+                            return e3
+                        }
+                        if std::map::get(sts, tj_gstr(sp, "id", "")) == nil {
+                            return "unsupported TemplateProcessing: missing special token `" + tj_gstr(sp, "id", "") + "`"
+                        }
+                    } else {
+                        return "data did not match any variant of enum Piece"
+                    }
+                }
+            }
+            return ""
+        }
+        return nodata
+    }
+    // decodificadores
+    if ty == "Sequence" {
+        return tkv_seq(n, "decoders", 3)
+    }
+    if ty == "BPEDecoder" {
+        return tkv_req(n, "suffix", "s")
+    }
+    if ty == "ByteLevel" {
+        return tkv_all(n, ["add_prefix_space", "b", "trim_offsets", "b"])
+    }
+    if ty == "WordPiece" {
+        return tkv_all(n, ["prefix", "s", "cleanup", "b"])
+    }
+    if ty == "Metaspace" {
+        return tkv_node_ms(n)
+    }
+    if ty == "CTC" {
+        return tkv_all(n, ["pad_token", "s", "word_delimiter_token", "s", "cleanup", "b"])
+    }
+    if ty == "Replace" {
+        let e = tkv_pattern(n)
+        if e != "" {
+            return e
+        }
+        return tkv_req(n, "content", "s")
+    }
+    if ty == "Fuse" || ty == "ByteFallback" {
+        return ""
+    }
+    if ty == "Strip" {
+        return tkv_all(n, ["content", "c", "start", "i", "stop", "i"])
+    }
+    return nodata
+}
+
+fn tkv_node_ms(n: any) -> string {
+    let e = tkv_req(n, "replacement", "c")
+    if e != "" {
+        return e
+    }
+    let sc = tj_gstr(n, "prepend_scheme", "always")
+    if sc != "always" && sc != "first" && sc != "never" {
+        return "unknown variant `" + sc + "`, expected one of `first`, `never`, `always`"
+    }
+    return ""
+}
+
+// Patrones regex de un nodo (pre: ¿es un pre-tokenizador?).
+fn tkv_pats(n: any, pre: bool) -> array {
+    let ty = tj_gstr(n, "type", "")
+    let mut out = []
+    if ty == "Sequence" {
+        for key in ["normalizers", "pretokenizers", "decoders"] {
+            for x in tj_list(n, key) {
+                out = tk_cat(out, tkv_pats(x, pre))
+            }
+        }
+        return out
+    }
+    if ty == "Replace" || ty == "Split" {
+        let (pat, e) = tk_pattern(tj_get(n, "pattern"))
+        return [pat]
+    }
+    if pre && ty == "Whitespace" {
+        return ["\\w+|[^\\w\\s]+"]
+    }
+    if pre && ty == "ByteLevel" && tj_gbool(n, "use_regex", true) {
+        return [tk_bl_pattern()]
+    }
+    return out
+}
+
+// Compila los patrones nuevos y los añade al mapa; devuelve (mapa, error).
+fn tkv_compile(c: TkC, rxs: any, pats: array) -> (any, string) {
+    let mut m = rxs
+    for p in pats {
+        if !std::map::contains(m, p) {
+            let (rx, e) = rx_compile(c.u, p)
+            if e != "" {
+                return (m, e)
+            }
+            m = std::map::insert(m, p, rx)
+        }
+    }
+    return (m, "")
+}
+
+// ------------------------------------------------------------ construcción
+
+fn tk_blank(c: TkC) -> Tok {
+    Tok {
+        c: c, norm: nil, pre: nil, post: nil, dec: nil, trunc: nil, pad: nil,
+        mt: -1, vocab: nil, vr: nil, vsize: 0, unk: "", hasunk: false, prefix: "", maxc: 0, suffix: "",
+        fuse: false, bfall: false, ignm: false, mg: nil, mnew: [], uni: nil, spset: std::map::new(),
+        am: std::map::new(), ar: std::map::new(),
+        t0: TkT { pats: [], toks: [], first: std::map::new() },
+        t1: TkT { pats: [], toks: [], first: std::map::new() },
+    }
+}
+
+fn tkv_vocab(v: any) -> string {
+    if !tj_map(v) {
+        return "invalid type: expected a map for `vocab`"
+    }
+    let r = std::try::catch(|| {
+        let mut bad = 0
+        for k in std::map::keys(v) {
+            let x = std::map::get(v, k)
+            if x == nil || x < 0 || x > 4294967295 {
+                bad = 1
+            }
+        }
+        bad
+    })
+    match r {
+        Result::Ok(b) => {
+            if b == 1 {
+                return "invalid vocabulary: ids must be integers between 0 and 4294967295"
+            }
+            return ""
+        },
+        _ => {
+            return "invalid vocabulary: ids must be integers between 0 and 4294967295"
+        },
+    }
+}
+
+// Lee `merges` (lista de pares o de cadenas "a b") -> (lista plana [a0, b0, a1, b1...], error).
+fn tkv_merges(v: any) -> (array, string) {
+    if !tj_arr(v) {
+        return ([], "invalid type for field `merges`")
+    }
+    let mut out = []
+    if len(v) == 0 {
+        return (out, "")
+    }
+    if tj_str(v[0]) {
+        let mut rank = 0
+        for line in v {
+            if !tj_str(line) {
+                return ([], "data did not match any variant of untagged enum MergeType")
+            }
+            let cs = tk_cps(line)
+            let ver = tk_cps("#version")
+            if len(cs) >= len(ver) && tkt_match_at(ver, cs, 0) {
+                continue
+            }
+            rank += 1
+            let mut sp = -1
+            let mut cnt = 0
+            let mut i = 0
+            while i < len(cs) {
+                if cs[i] == 32 {
+                    cnt += 1
+                    sp = i
+                }
+                i += 1
+            }
+            if cnt != 1 {
+                return ([], "Merges text file invalid at line " + "{rank}")
+            }
+            out = std::array::push(out, tk_str(std::array::slice(cs, 0, sp)))
+            out = std::array::push(out, tk_str(std::array::slice(cs, sp + 1, len(cs))))
+        }
+        return (out, "")
+    }
+    for pr in v {
+        if !tj_arr(pr) || len(pr) != 2 || !tj_str(pr[0]) || !tj_str(pr[1]) {
+            return ([], "data did not match any variant of untagged enum MergeType")
+        }
+        out = std::array::push(out, pr[0])
+        out = std::array::push(out, pr[1])
+    }
+    return (out, "")
+}
+
+fn tka_key(a: TkA) -> string {
+    let f = [a.sw, a.ls, a.rs, a.nm, a.sp]
+    let mut k = a.s + tk_str([1])
+    for b in f {
+        if b {
+            k = k + "1"
+        } else {
+            k = k + "0"
+        }
+    }
+    return k
+}
+
+// add_tokens: reparte ids y construye las dos tries.
+fn tka_add(t: Tok, toks: array) -> Tok {
+    let mut specials = []
+    let mut spset = std::map::new()
+    for tk in toks {
+        if tk.sp && tk.s != "" && !std::map::contains(spset, tk.s) {
+            specials = std::array::push(specials, tk)
+            spset = std::map::insert(spset, tk.s, true)
+        }
+    }
+    let mut am = std::map::new()
+    let mut ar = std::map::new()
+    let mut existing = std::map::new()
+    let mut plain = []
+    let mut next_id = t.vsize
+    let mut cur = Tok { am: am, ar: ar, spset: spset, c: t.c, norm: t.norm, pre: t.pre, post: t.post, dec: t.dec, trunc: t.trunc, pad: t.pad, mt: t.mt, vocab: t.vocab, vr: t.vr, vsize: t.vsize, unk: t.unk, hasunk: t.hasunk, prefix: t.prefix, maxc: t.maxc, suffix: t.suffix, fuse: t.fuse, bfall: t.bfall, ignm: t.ignm, mg: t.mg, mnew: t.mnew, uni: t.uni, t0: t.t0, t1: t.t1 }
+    for tk in toks {
+        let key = tka_key(tk)
+        if tk.s == "" || std::map::contains(existing, key) {
+            continue
+        }
+        let mut id = tk_token_to_id(cur, tk.s)
+        if id < 0 {
+            id = next_id
+            next_id += 1
+        }
+        am = std::map::insert(am, tk.s, id)
+        ar = std::map::insert(ar, tk_idkey(id), tk)
+        if !std::map::contains(spset, tk.s) {
+            plain = std::array::push(plain, tk)
+        }
+        existing = std::map::insert(existing, key, true)
+        cur = Tok { am: am, ar: ar, spset: spset, c: t.c, norm: t.norm, pre: t.pre, post: t.post, dec: t.dec, trunc: t.trunc, pad: t.pad, mt: t.mt, vocab: t.vocab, vr: t.vr, vsize: t.vsize, unk: t.unk, hasunk: t.hasunk, prefix: t.prefix, maxc: t.maxc, suffix: t.suffix, fuse: t.fuse, bfall: t.bfall, ignm: t.ignm, mg: t.mg, mnew: t.mnew, uni: t.uni, t0: t.t0, t1: t.t1 }
+    }
+    // tries
+    let alls = tk_cat(specials, plain)
+    let mut p0 = []
+    let mut k0 = []
+    let mut p1 = []
+    let mut k1 = []
+    for tk in alls {
+        if tk.nm {
+            let mut c = tk.cps
+            if t.norm != nil {
+                let (c1, a1) = tkn_run(t.c, t.norm, tk.cps, tk_idseq(len(tk.cps)))
+                c = c1
+            }
+            if len(c) > 0 {
+                p1 = std::array::push(p1, c)
+                k1 = std::array::push(k1, tk)
+            }
+        } else if len(tk.cps) > 0 {
+            p0 = std::array::push(p0, tk.cps)
+            k0 = std::array::push(k0, tk)
+        }
+    }
+    return Tok { t0: tkt_build(p0, k0), t1: tkt_build(p1, k1), am: am, ar: ar, spset: spset, c: t.c, norm: t.norm, pre: t.pre, post: t.post, dec: t.dec, trunc: t.trunc, pad: t.pad, mt: t.mt, vocab: t.vocab, vr: t.vr, vsize: t.vsize, unk: t.unk, hasunk: t.hasunk, prefix: t.prefix, maxc: t.maxc, suffix: t.suffix, fuse: t.fuse, bfall: t.bfall, ignm: t.ignm, mg: t.mg, mnew: t.mnew, uni: t.uni }
+}
+
+// Tokenizer completo desde el JSON ya interpretado -> (Tok, error).
+fn tk_load_json(c0: TkC, root: any) -> (Tok, string) {
+    let bad = tk_blank(c0)
+    if !tj_map(root) {
+        return (bad, "invalid type: expected struct Tokenizer")
+    }
+    let ver = tj_get(root, "version")
+    if ver != nil {
+        if !tj_str(ver) {
+            return (bad, "invalid type for field `version`")
+        }
+        if ver != "1.0" {
+            return (bad, "Unknown tokenizer version '" + ver + "'")
+        }
+    }
+    let model = tj_get(root, "model")
+    if model == nil {
+        return (bad, "Model missing.")
+    }
+    if !tj_map(model) {
+        return (bad, "invalid type: expected a model")
+    }
+    // secciones opcionales
+    let norm = tj_get(root, "normalizer")
+    let pre = tj_get(root, "pre_tokenizer")
+    let post = tj_get(root, "post_processor")
+    let dec = tj_get(root, "decoder")
+    let trunc = tj_get(root, "truncation")
+    let pad = tj_get(root, "padding")
+    if norm != nil {
+        let e = tkv_node(norm, 0)
+        if e != "" {
+            return (bad, e)
+        }
+    }
+    if pre != nil {
+        let e = tkv_node(pre, 1)
+        if e != "" {
+            return (bad, e)
+        }
+    }
+    if post != nil {
+        let e = tkv_node(post, 2)
+        if e != "" {
+            return (bad, e)
+        }
+    }
+    if dec != nil {
+        let e = tkv_node(dec, 3)
+        if e != "" {
+            return (bad, e)
+        }
+    }
+    if trunc != nil {
+        let e = tkv_all(trunc, ["max_length", "i", "strategy", "s", "stride", "i"])
+        if e != "" {
+            return (bad, e)
+        }
+        let e2 = tkv_opt(trunc, "direction", "s")
+        if e2 != "" {
+            return (bad, e2)
+        }
+        let st = tj_gstr(trunc, "strategy", "")
+        if st != "LongestFirst" && st != "OnlyFirst" && st != "OnlySecond" {
+            return (bad, "unknown variant `" + st + "`, expected one of `LongestFirst`, `OnlyFirst`, `OnlySecond`")
+        }
+        let dr = tj_gstr(trunc, "direction", "Right")
+        if dr != "Left" && dr != "Right" {
+            return (bad, "unknown variant `" + dr + "`, expected `Left` or `Right`")
+        }
+    }
+    if pad != nil {
+        let e = tkv_all(pad, ["direction", "s", "pad_id", "i", "pad_type_id", "i", "pad_token", "s"])
+        if e != "" {
+            return (bad, e)
+        }
+        let e2 = tkv_opt(pad, "pad_to_multiple_of", "i")
+        if e2 != "" {
+            return (bad, e2)
+        }
+        let dr = tj_gstr(pad, "direction", "")
+        if dr != "Left" && dr != "Right" {
+            return (bad, "unknown variant `" + dr + "`, expected `Left` or `Right`")
+        }
+        let st = tj_get(pad, "strategy")
+        if st == nil {
+            return (bad, "missing field `strategy`")
+        }
+        if !(tj_str(st) && st == "BatchLongest") && !(tj_map(st) && tj_isint(tj_get(st, "Fixed"))) {
+            return (bad, "unknown variant for `strategy`, expected `BatchLongest` or `Fixed`")
+        }
+    }
+    // regex
+    let mut pats = []
+    if norm != nil {
+        pats = tk_cat(pats, tkv_pats(norm, false))
+    }
+    if pre != nil {
+        pats = tk_cat(pats, tkv_pats(pre, true))
+    }
+    if dec != nil {
+        pats = tk_cat(pats, tkv_pats(dec, false))
+    }
+    let (rxs, rerr) = tkv_compile(c0, c0.rxs, pats)
+    if rerr != "" {
+        return (bad, rerr)
+    }
+    let c = TkC { u: c0.u, gcn: c0.gcn, rxs: rxs, bl: c0.bl, blinv: c0.blinv }
+    // modelo
+    let mty = tj_gstr(model, "type", "")
+    let mut t = tk_blank(c)
+    let mut vocab = std::map::new()
+    if mty == "WordLevel" || mty == "WordPiece" || mty == "BPE" {
+        let e = tkv_req(model, "vocab", "m")
+        if e != "" {
+            return (bad, e)
+        }
+        let ev = tkv_vocab(tj_get(model, "vocab"))
+        if ev != "" {
+            return (bad, ev)
+        }
+        vocab = tj_get(model, "vocab")
+    }
+    if mty == "WordLevel" {
+        let e = tkv_req(model, "unk_token", "s")
+        if e != "" {
+            return (bad, e)
+        }
+        t = Tok { mt: 0, vocab: vocab, vr: tk_vocab_r(vocab), vsize: std::map::length(vocab), unk: tj_get(model, "unk_token"), c: c, norm: nil, pre: nil, post: nil, dec: nil, trunc: nil, pad: nil, hasunk: true, prefix: "", maxc: 0, suffix: "", fuse: false, bfall: false, ignm: false, mg: nil, mnew: [], uni: nil, spset: t.spset, am: t.am, ar: t.ar, t0: t.t0, t1: t.t1 }
+    } else if mty == "WordPiece" {
+        let e = tkv_all(model, ["unk_token", "s", "continuing_subword_prefix", "s", "max_input_chars_per_word", "i"])
+        if e != "" {
+            return (bad, e)
+        }
+        t = Tok { mt: 1, vocab: vocab, vr: tk_vocab_r(vocab), vsize: std::map::length(vocab), unk: tj_get(model, "unk_token"), c: c, norm: nil, pre: nil, post: nil, dec: nil, trunc: nil, pad: nil, hasunk: true, prefix: tj_get(model, "continuing_subword_prefix"), maxc: tj_get(model, "max_input_chars_per_word"), suffix: "", fuse: false, bfall: false, ignm: false, mg: nil, mnew: [], uni: nil, spset: t.spset, am: t.am, ar: t.ar, t0: t.t0, t1: t.t1 }
+    } else if mty == "BPE" {
+        let e = tkv_req(model, "merges", "a")
+        if e != "" {
+            return (bad, e)
+        }
+        for k in ["unk_token", "continuing_subword_prefix", "end_of_word_suffix"] {
+            let e2 = tkv_opt(model, k, "s")
+            if e2 != "" {
+                return (bad, e2)
+            }
+        }
+        for k in ["fuse_unk", "byte_fallback", "ignore_merges"] {
+            let e2 = tkv_opt(model, k, "b")
+            if e2 != "" {
+                return (bad, e2)
+            }
+        }
+        let dp = tj_get(model, "dropout")
+        if dp != nil {
+            if !tj_isnum(dp) || tj_str(dp) || tj_arr(dp) || tj_map(dp) {
+                return (bad, "invalid type for field `dropout`")
+            }
+            let dpf = tk_num(dp)
+            if dpf < 0.0 || dpf > 1.0 {
+                return (bad, "Dropout should be between 0 and 1, inclusive")
+            }
+            if dpf > 0.0 {
+                return (bad, "unsupported BPE dropout > 0 (nondeterministic)")
+            }
+        }
+        let (ml, me) = tkv_merges(tj_get(model, "merges"))
+        if me != "" {
+            return (bad, me)
+        }
+        let pre_s = tj_gstr(model, "continuing_subword_prefix", "")
+        let plen = len(tk_cps(pre_s))
+        let mut mg = std::map::new()
+        let mut mnew = []
+        let mut i = 0
+        let mut rank = 0
+        while i + 1 < len(ml) {
+            let a = ml[i]
+            let b = ml[i + 1]
+            let aid = std::map::get(vocab, a)
+            if aid == nil {
+                return (bad, "Token `" + a + "` out of vocabulary")
+            }
+            let bid = std::map::get(vocab, b)
+            if bid == nil {
+                return (bad, "Token `" + b + "` out of vocabulary")
+            }
+            let bc = tk_cps(b)
+            let nt = a + tk_str(std::array::slice(bc, plen, len(bc)))
+            let nid = std::map::get(vocab, nt)
+            if nid == nil {
+                return (bad, "Token `" + nt + "` out of vocabulary")
+            }
+            mg = std::map::insert(mg, tkm_pair_key(aid, bid), rank)
+            mnew = std::array::push(mnew, nid)
+            rank += 1
+            i += 2
+        }
+        let unk = tj_get(model, "unk_token")
+        t = Tok { mt: 2, vocab: vocab, vr: tk_vocab_r(vocab), vsize: std::map::length(vocab), unk: tj_gstr(model, "unk_token", ""), c: c, norm: nil, pre: nil, post: nil, dec: nil, trunc: nil, pad: nil, hasunk: unk != nil, prefix: pre_s, maxc: 0, suffix: tj_gstr(model, "end_of_word_suffix", ""), fuse: tj_gbool(model, "fuse_unk", false), bfall: tj_gbool(model, "byte_fallback", false), ignm: tj_gbool(model, "ignore_merges", false), mg: mg, mnew: mnew, uni: nil, spset: t.spset, am: t.am, ar: t.ar, t0: t.t0, t1: t.t1 }
+    } else if mty == "Unigram" {
+        let (tu, eu) = tku_load(c, model)
+        if eu != "" {
+            return (bad, eu)
+        }
+        t = tu
+    } else {
+        return (bad, "data did not match any variant of untagged enum ModelUntagged")
+    }
+    t = Tok { norm: norm, pre: pre, post: post, dec: dec, trunc: trunc, pad: pad, c: c, mt: t.mt, vocab: t.vocab, vr: t.vr, vsize: t.vsize, unk: t.unk, hasunk: t.hasunk, prefix: t.prefix, maxc: t.maxc, suffix: t.suffix, fuse: t.fuse, bfall: t.bfall, ignm: t.ignm, mg: t.mg, mnew: t.mnew, uni: t.uni, spset: t.spset, am: t.am, ar: t.ar, t0: t.t0, t1: t.t1 }
+    // tokens añadidos
+    let at = tj_get(root, "added_tokens")
+    if at != nil {
+        if !tj_arr(at) {
+            return (bad, "invalid type for field `added_tokens`")
+        }
+        let mut toks = []
+        for e in at {
+            if !tj_map(e) {
+                return (bad, "invalid type: expected an added token")
+            }
+            let e1 = tkv_all(e, ["id", "i", "content", "s", "single_word", "b", "lstrip", "b", "rstrip", "b", "normalized", "b", "special", "b"])
+            if e1 != "" {
+                return (bad, e1)
+            }
+            let s = tj_get(e, "content")
+            toks = std::array::push(toks, TkA { s: s, cps: tk_cps(s), sw: tj_gbool(e, "single_word", false), ls: tj_gbool(e, "lstrip", false), rs: tj_gbool(e, "rstrip", false), nm: tj_gbool(e, "normalized", false), sp: tj_gbool(e, "special", false) })
+        }
+        t = tka_add(t, toks)
+    } else {
+        t = tka_add(t, [])
+    }
+    return (t, "")
+}
+
+// Tokenizer desde el texto del JSON.
+fn tk_load(c: TkC, src: string) -> (Tok, string) {
+    let r = std::try::catch(|| { std::json::parse(src) })
+    match r {
+        Result::Ok(v) => {
+            return tk_load_json(c, v)
+        },
+        Result::Err(m) => {
+            return (tk_blank(c), std::text::replace(m, "native function 'std::json::parse' failed: ", ""))
+        },
+    }
+}
+
+// Tamaño del vocabulario (con o sin tokens añadidos).
+fn tk_vocab_size(t: Tok, with_added: bool) -> int {
+    let mut n = t.vsize
+    if with_added {
+        n = std::map::length(t.vocab)
+        for k in std::map::keys(t.am) {
+            if tk_vocab_id(t, k) < 0 {
+                n += 1
+            }
+        }
+    }
+    return n
+}

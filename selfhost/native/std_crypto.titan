@@ -463,28 +463,35 @@ fn cr_rotl32(x: int, n: int) -> int {
     (std::raw::shl(x, n) | std::raw::shr(x, 32 - n)) & 4294967295
 }
 
-// Expansión de la clave de 32 bytes: 60 palabras (15 claves de ronda).
+// Expansión de la clave (16 o 32 bytes): 4*(rondas+1) palabras; el número de rondas queda en la palabra 60.
 fn cr_aes_expand(key: int, sb: int) -> int {
-    let w = rt_alloc(60 * 8)
+    cr_aes_expand_n(key, 32, sb)
+}
+
+fn cr_aes_expand_n(key: int, klen: int, sb: int) -> int {
+    let w = rt_alloc(61 * 8)
+    let nk = klen / 4
+    let total = 4 * (nk + 7)
+    std::raw::store(w + 480, nk + 6)
     let mut i = 0
-    while i < 8 {
+    while i < nk {
         std::raw::store(w + 8 * i, cr_le32(key + 4 * i))
         i += 1
     }
     let mut rcon = 1
-    i = 8
-    while i < 60 {
+    i = nk
+    while i < total {
         let mut t = std::raw::load(w + 8 * (i - 1))
-        if i % 8 == 0 {
+        if i % nk == 0 {
             // RotWord + SubWord + Rcon (bytes: fila 0 abajo)
             t = cr_rotl32(t, 24)
             t = std::raw::load8(sb + (t & 255)) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 8) & 255)), 8) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 16) & 255)), 16) | std::raw::shl(std::raw::load8(sb + std::raw::shr(t, 24)), 24)
             t = t ^ rcon
             rcon = cr_xtime(rcon)
-        } else if i % 8 == 4 {
+        } else if nk > 6 && i % nk == 4 {
             t = std::raw::load8(sb + (t & 255)) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 8) & 255)), 8) | std::raw::shl(std::raw::load8(sb + (std::raw::shr(t, 16) & 255)), 16) | std::raw::shl(std::raw::load8(sb + std::raw::shr(t, 24)), 24)
         }
-        std::raw::store(w + 8 * i, std::raw::load(w + 8 * (i - 8)) ^ t)
+        std::raw::store(w + 8 * i, std::raw::load(w + 8 * (i - nk)) ^ t)
         i += 1
     }
     w
@@ -501,8 +508,9 @@ fn cr_aes_block(w: int, tb: int, src: int, dst: int) {
     let mut s1 = cr_le32(src + 4) ^ std::raw::load(w + 8)
     let mut s2 = cr_le32(src + 8) ^ std::raw::load(w + 16)
     let mut s3 = cr_le32(src + 12) ^ std::raw::load(w + 24)
+    let rounds = std::raw::load(w + 480)
     let mut round = 1
-    while round < 14 {
+    while round < rounds {
         let k = w + 32 * round
         let u0 = std::raw::load(t0 + 8 * (s0 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s1, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s2, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s3, 24)) ^ std::raw::load(k)
         let u1 = std::raw::load(t0 + 8 * (s1 & 255)) ^ std::raw::load(t1 + 8 * (std::raw::shr(s2, 8) & 255)) ^ std::raw::load(t2 + 8 * (std::raw::shr(s3, 16) & 255)) ^ std::raw::load(t3 + 8 * std::raw::shr(s0, 24)) ^ std::raw::load(k + 8)
@@ -514,7 +522,7 @@ fn cr_aes_block(w: int, tb: int, src: int, dst: int) {
         s3 = u3
         round += 1
     }
-    let k = w + 32 * 14
+    let k = w + 32 * rounds
     cr_put_le32(dst, cr_last(sb, s0, s1, s2, s3) ^ std::raw::load(k))
     cr_put_le32(dst + 4, cr_last(sb, s1, s2, s3, s0) ^ std::raw::load(k + 8))
     cr_put_le32(dst + 8, cr_last(sb, s2, s3, s0, s1) ^ std::raw::load(k + 16))
@@ -645,8 +653,13 @@ fn cr_inc32(cb: int) {
 // AES-256-GCM. Cifra/descifra src → dst con CTR y deja la etiqueta en tag
 // (calculada sobre el texto cifrado: src al descifrar, dst al cifrar).
 fn cr_gcm(key: int, nonce: int, aad: int, na: int, src: int, dst: int, n: int, encrypt: bool, tag: int) {
+    cr_gcm_n(32, key, nonce, aad, na, src, dst, n, encrypt, tag)
+}
+
+// Igual con clave de klen bytes (16 = AES-128-GCM, 32 = AES-256-GCM).
+fn cr_gcm_n(klen: int, key: int, nonce: int, aad: int, na: int, src: int, dst: int, n: int, encrypt: bool, tag: int) {
     let tb = cr_aes_tables()
-    let w = cr_aes_expand(key, std::raw::load(tb))
+    let w = cr_aes_expand_n(key, klen, std::raw::load(tb))
     let buf = rt_alloc(16)
     let hb = rt_alloc(16)
     cr_zero(buf, 16)

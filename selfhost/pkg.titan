@@ -1,0 +1,1853 @@
+// Gestor de paquetes escrito en Titan: traducción de crates/titan_pkg
+// (install.rs, registry.rs, resolver.rs, publish.rs, archive.rs) y de los
+// comandos `add`, `fetch`, `update`, `keygen`, `pack` y `publish` de titan_cli.
+//
+// Todas las funciones usan el prefijo pk_. Los errores son Result::Err(texto)
+// con el mismo texto que la CLI de Rust (sin la etiqueta `PACKAGE ERROR: `).
+//
+// Diferencias conocidas con Rust (documentadas en ESTADO.md):
+//  - los errores de JSON mal formado del registro dicen «invalid registry
+//    metadata: ...» sin la posición línea/columna de serde;
+//  - el tar se lee con un lector propio y estricto (regular, directorio, GNU
+//    long name, pax `path`); cualquier otro tipo se rechaza como entrada
+//    insegura;
+//  - el tamaño descomprimido de un .tpkg se acota con el ISIZE del gzip antes
+//    de descomprimir (Rust lo acota mientras descomprime).
+import loader
+import semver
+
+struct PkManifest {
+    name: string,
+    version: string,
+    edition: string,
+    description: string,
+    license: string,
+    deps: map,
+}
+
+// Error de la línea de comandos: label vacío = texto de clap (stderr tal cual, código 2).
+struct PkFail {
+    label: string,
+    message: string,
+    code: int,
+}
+
+fn pk_default_registry() -> string {
+    "https://registry.titan-lang.org"
+}
+
+// ------------------------------------------------------------ utilidades
+
+// «native function 'x' failed: No such file (os error 2)» -> «No such file (os error 2)».
+fn pk_msg(e: any) -> string {
+    let s = "{e}"
+    let mark = "' failed: "
+    let at = std::text::contains(s, mark)
+    if !at {
+        return s
+    }
+    let n = std::text::length(s)
+    let m = std::text::length(mark)
+    let mut i = 0
+    while i + m <= n {
+        if std::text::substring(s, i, i + m) == mark {
+            return std::text::substring(s, i + m, n)
+        }
+        i += 1
+    }
+    s
+}
+
+fn pk_io(e: any) -> string {
+    "I/O error: " + pk_msg(e)
+}
+
+fn pk_name_ok(name: string, max: int) -> bool {
+    let cs = sv_codes(name)
+    if len(cs) == 0 || len(cs) > max {
+        return false
+    }
+    for c in cs {
+        let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+        if !ok {
+            return false
+        }
+    }
+    true
+}
+
+fn pk_empty_bytes() -> any {
+    std::encoding::utf8_encode("")
+}
+
+fn pk_kind(v: any) -> string {
+    let s = std::json::stringify(v)
+    std::text::substring(s, 0, 1)
+}
+
+fn pk_is_str(v: any) -> bool {
+    pk_kind(v) == "\""
+}
+
+// Debug de String de Rust (para los mensajes de conflicto).
+fn pk_debug_str(s: string) -> string {
+    let mut out = "\""
+    for c in sv_codes(s) {
+        if c == 34 {
+            out += "\\\""
+        } else if c == 92 {
+            out += "\\\\"
+        } else if c == 10 {
+            out += "\\n"
+        } else if c == 13 {
+            out += "\\r"
+        } else if c == 9 {
+            out += "\\t"
+        } else if c == 0 {
+            out += "\\0"
+        } else if c < 32 || c == 127 {
+            out += "\\u{" + pk_hex_lower(c) + "}"
+        } else {
+            out += std::text::from_char_code(c)
+        }
+    }
+    out + "\""
+}
+
+fn pk_hex_lower(n: int) -> string {
+    if n < 16 {
+        return ld_hex_digit(n)
+    }
+    pk_hex_lower(n / 16) + ld_hex_digit(n % 16)
+}
+
+fn pk_hex_upper(d: int) -> string {
+    if d < 10 {
+        return std::text::from_char_code(48 + d)
+    }
+    std::text::from_char_code(55 + d)
+}
+
+// Path::with_extension para el último componente.
+fn pk_with_ext(path: string, ext: string) -> string {
+    let mut dir = ""
+    let mut file = path
+    let cs = sv_codes(path)
+    let mut slash = -1
+    let mut i = 0
+    while i < len(cs) {
+        if cs[i] == 47 {
+            slash = i
+        }
+        i += 1
+    }
+    if slash >= 0 {
+        dir = sv_text(cs, 0, slash + 1)
+        file = sv_text(cs, slash + 1, len(cs))
+    }
+    let fc = sv_codes(file)
+    let mut dot = -1
+    let mut j = 1
+    while j < len(fc) {
+        if fc[j] == 46 {
+            dot = j
+        }
+        j += 1
+    }
+    let mut stem = file
+    if dot > 0 {
+        stem = sv_text(fc, 0, dot)
+    }
+    dir + stem + "." + ext
+}
+
+fn pk_mkdirs(path: string) {
+    if path != "" && !std::fs::is_dir(path) {
+        std::fs::create_dir(path)
+    }
+}
+
+fn pk_temp_dir() -> string {
+    let t = std::env::get("TMPDIR")
+    if t != nil && t != "" && std::fs::is_dir(t) {
+        return t
+    }
+    "/tmp"
+}
+
+fn pk_pid_text() -> string {
+    let pid = std::process::self_pid()
+    "{pid}"
+}
+
+// ------------------------------------------------------------ TOML de salida (toml 0.8 / toml_edit 0.22)
+
+fn pk_ctrl(c: int) -> bool {
+    c <= 31 || c == 127
+}
+
+fn pk_esc(cs: array, ml: bool) -> string {
+    let mut out = ""
+    let mut run = 0
+    for c in cs {
+        if c == 34 {
+            run += 1
+            if ml && run < 3 {
+                out += "\""
+            } else {
+                out += "\\\""
+                run = 0
+            }
+            continue
+        }
+        run = 0
+        if c == 8 {
+            out += "\\b"
+        } else if c == 9 {
+            out += "\\t"
+        } else if c == 10 {
+            if ml {
+                out += "\n"
+            } else {
+                out += "\\n"
+            }
+        } else if c == 12 {
+            out += "\\f"
+        } else if c == 13 {
+            out += "\\r"
+        } else if c == 92 {
+            out += "\\\\"
+        } else if pk_ctrl(c) {
+            out += "\\u00" + pk_hex_upper(c / 16) + pk_hex_upper(c % 16)
+        } else {
+            out += std::text::from_char_code(c)
+        }
+    }
+    out
+}
+
+// Cadena TOML tal como la escribe toml_edit (comprobado contra `zett add`).
+fn pk_toml_str(v: string) -> string {
+    let cs = sv_codes(v)
+    let mut nl = false
+    let mut badc = false
+    let mut sq = false
+    let mut dq = false
+    let mut bs = false
+    for c in cs {
+        if c == 10 {
+            nl = true
+        } else if c == 39 {
+            sq = true
+        } else if c == 34 {
+            dq = true
+        } else if c == 92 {
+            bs = true
+        }
+        if c != 9 && c != 10 && pk_ctrl(c) {
+            badc = true
+        }
+    }
+    let q3 = "'''"
+    let has_q3 = std::text::contains(v, q3)
+    let has_d3 = std::text::contains(v, "\"\"\"")
+    if !nl {
+        if badc {
+            return "\"" + pk_esc(cs, false) + "\""
+        }
+        if !sq {
+            if dq || bs {
+                return "'" + v + "'"
+            }
+            return "\"" + pk_esc(cs, false) + "\""
+        }
+        if (bs || has_d3) && !has_q3 {
+            return q3 + v + q3
+        }
+        if dq && !has_d3 {
+            return "\"\"\"" + pk_esc(cs, true) + "\"\"\""
+        }
+        return "\"" + pk_esc(cs, false) + "\""
+    }
+    if badc {
+        return "\"\"\"\n" + pk_esc(cs, true) + "\"\"\""
+    }
+    if (bs || has_d3) && !has_q3 {
+        return q3 + "\n" + v + q3
+    }
+    "\"\"\"\n" + pk_esc(cs, true) + "\"\"\""
+}
+
+fn pk_toml_key(k: string) -> string {
+    if pk_name_ok(k, 1000000) {
+        return k
+    }
+    pk_toml_str(k)
+}
+
+fn pk_manifest_toml(m: PkManifest) -> string {
+    let mut out = "[package]\nname = " + pk_toml_str(m.name) + "\nversion = " + pk_toml_str(m.version) + "\nedition = " + pk_toml_str(m.edition) + "\ndescription = " + pk_toml_str(m.description) + "\nlicense = " + pk_toml_str(m.license) + "\n"
+    for alias in std::map::keys(m.deps) {
+        let spec = std::map::get(m.deps, alias)
+        out += "\n[dependencies." + pk_toml_key(alias) + "]\n"
+        if spec[0] != nil {
+            out += "version = " + pk_toml_str(spec[0]) + "\n"
+        }
+        if spec[1] != nil {
+            out += "path = " + pk_toml_str(spec[1]) + "\n"
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------ manifiesto
+
+// Manifest::from_dir. Err: texto de PkgError.
+fn pk_manifest(dir: string) -> Result {
+    let checked = ld_manifest_from_dir(dir)?
+    let text = std::fs::read_text(std::path::join(dir, "Titan.toml"))
+    let root = ld_toml_parse(text)?
+    let pkg = std::map::get(root, "package").t
+    let name = ld_str_field(pkg, "name", true)?
+    let edition = ld_str_field(pkg, "edition", true)?
+    let mut description = ld_str_field(pkg, "description", false)?
+    let mut license = ld_str_field(pkg, "license", false)?
+    if description == nil {
+        description = ""
+    }
+    if license == nil {
+        license = ""
+    }
+    Result::Ok(PkManifest { name: name, version: checked.version, edition: edition, description: description, license: license, deps: checked.deps })
+}
+
+// find_project_root(path).unwrap_or(path)
+fn pk_root(project: string) -> string {
+    let found = std::try::catch(|| { ld_find_project_root(project) })
+    match found {
+        Result::Ok(v) => {
+            if v != nil {
+                return v
+            }
+            project
+        },
+        Result::Err(_) => {
+            project
+        },
+    }
+}
+
+// ------------------------------------------------------------ add
+
+fn pk_add(root: string, name: string, requirement: string) -> Result {
+    if !pk_name_ok(name, 1000000) {
+        return Result::Err("invalid dependency: invalid package name")
+    }
+    match sv_parse_req(requirement) {
+        Result::Ok(_) => {},
+        Result::Err(m) => {
+            return Result::Err("invalid dependency: " + m)
+        },
+    }
+    let mut manifest = PkManifest { name: "", version: "", edition: "", description: "", license: "", deps: std::map::new() }
+    match pk_manifest(root) {
+        Result::Ok(m) => {
+            manifest = m
+        },
+        Result::Err(m) => {
+            return Result::Err("package error: " + m)
+        },
+    }
+    let deps = std::map::insert(manifest.deps, name, [requirement, nil])
+    manifest = PkManifest { name: manifest.name, version: manifest.version, edition: manifest.edition, description: manifest.description, license: manifest.license, deps: deps }
+    let text = pk_manifest_toml(manifest)
+    let path = std::path::join(root, "Titan.toml")
+    let temporary = std::path::join(root, "Titan.toml.tmp")
+    let wrote = std::try::catch(|| {
+        std::fs::write_text(temporary, text)
+        std::fs::rename(temporary, path)
+    })
+    match wrote {
+        Result::Ok(_) => {},
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    Result::Ok(true)
+}
+
+// ------------------------------------------------------------ keygen
+
+fn pk_keygen(path: string) -> Result {
+    if std::fs::exists(path) {
+        return Result::Err("I/O error: key already exists")
+    }
+    let made = std::try::catch(|| {
+        let mut parent = std::path::parent(path)
+        if parent == "" {
+            parent = "."
+        }
+        pk_mkdirs(parent)
+        std::fs::write_private(path, std::crypto::generate_key_32())
+    })
+    match made {
+        Result::Ok(_) => Result::Ok(true),
+        Result::Err(e) => Result::Err(pk_io(e)),
+    }
+}
+
+// ------------------------------------------------------------ pack
+
+fn pk_first_component(relative: string) -> string {
+    let cs = sv_codes(relative)
+    let mut i = 0
+    while i < len(cs) && cs[i] != 47 {
+        i += 1
+    }
+    sv_text(cs, 0, i)
+}
+
+fn pk_skip_file(relative: string) -> bool {
+    let first = pk_first_component(relative)
+    if first == ".git" || first == ".titan" || first == "target" {
+        return true
+    }
+    let name = std::path::file_name(relative)
+    name == "Titan.lock" || name == "Titan.remote.lock"
+}
+
+// collect: rutas relativas ordenadas; Err(texto) con Unsafe o E/S.
+fn pk_collect(root: string, current: string, out0: array) -> Result {
+    let mut out = out0
+    let listed = std::try::catch(|| { std::fs::list_dir(current) })
+    let mut entries: array = []
+    match listed {
+        Result::Ok(v) => {
+            entries = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    for path in entries {
+        let relative = ld_relative_display(path, root)
+        if pk_skip_file(relative) {
+            continue
+        }
+        if std::fs::is_symlink(path) {
+            return Result::Err("package source contains unsafe path or symlink")
+        }
+        if std::fs::is_dir(path) {
+            out = pk_collect(root, path, out)?
+        } else if std::fs::is_file(path) {
+            out = std::array::push(out, relative)
+        } else {
+            return Result::Err("package source contains unsafe path or symlink")
+        }
+    }
+    Result::Ok(out)
+}
+
+// Publication: mapa {name, version, archive, sha256, signing_key, signature}.
+fn pk_build(root: string, key_path: string, output: string) -> Result {
+    let canon = std::try::catch(|| { std::path::canonical(root) })
+    let mut canonical_root = ""
+    match canon {
+        Result::Ok(v) => {
+            canonical_root = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    let mut unsafe_path = false
+    if std::fs::exists(key_path) {
+        let kc = std::try::catch(|| { std::path::canonical(key_path) })
+        match kc {
+            Result::Ok(v) => {
+                if ld_path_starts_with(v, canonical_root) {
+                    unsafe_path = true
+                }
+            },
+            Result::Err(_) => {},
+        }
+    }
+    let parent = std::path::parent(output)
+    if parent != "" && std::fs::exists(parent) {
+        let pc = std::try::catch(|| { std::path::canonical(parent) })
+        match pc {
+            Result::Ok(v) => {
+                if ld_path_starts_with(v, canonical_root) {
+                    unsafe_path = true
+                }
+            },
+            Result::Err(_) => {},
+        }
+    }
+    if unsafe_path {
+        return Result::Err("package source contains unsafe path or symlink")
+    }
+    let mut manifest = PkManifest { name: "", version: "", edition: "", description: "", license: "", deps: std::map::new() }
+    match pk_manifest(root) {
+        Result::Ok(m) => {
+            manifest = m
+        },
+        Result::Err(m) => {
+            return Result::Err("package error: " + m)
+        },
+    }
+    let read_key = std::try::catch(|| { std::fs::read_bytes(key_path) })
+    let mut key: any = nil
+    match read_key {
+        Result::Ok(v) => {
+            key = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    if std::bytes::length(key) != 32 {
+        return Result::Err("private key must contain exactly 32 bytes")
+    }
+    let files = pk_collect(root, root, [])?
+    if len(files) > 10000 {
+        return Result::Err("package contains too many files or bytes")
+    }
+    let temporary = pk_with_ext(output, "tpkg.tmp")
+    if std::fs::exists(temporary) || std::fs::is_symlink(temporary) {
+        return Result::Err("I/O error: File exists (os error 17)")
+    }
+    let mut entries = []
+    let mut total = 0
+    for relative in files {
+        let source = std::path::join(root, relative)
+        let read = std::try::catch(|| { std::fs::read_bytes(source) })
+        match read {
+            Result::Ok(bytes) => {
+                total += std::bytes::length(bytes)
+                if total > 134217728 {
+                    return Result::Err("package contains too many files or bytes")
+                }
+                entries = std::array::push(entries, pk_entry(relative, bytes))
+            },
+            Result::Err(e) => {
+                return Result::Err(pk_io(e))
+            },
+        }
+    }
+    let built = std::try::catch(|| {
+        let tar = std::archive::tar_pack(entries)
+        let archive = std::compress::gzip_encode(tar, 9)
+        std::fs::write_bytes(temporary, archive)
+        archive
+    })
+    let mut archive: any = nil
+    match built {
+        Result::Ok(v) => {
+            archive = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    let digest = std::hash::sha256_bytes(archive)
+    let signature = std::crypto::ed25519_sign(key, digest)
+    let public = std::crypto::ed25519_public_key(key)
+    let moved = std::try::catch(|| { std::fs::rename(temporary, output) })
+    match moved {
+        Result::Ok(_) => {},
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    let mut result = std::map::new()
+    result = std::map::insert(result, "name", manifest.name)
+    result = std::map::insert(result, "version", manifest.version)
+    result = std::map::insert(result, "archive", output)
+    result = std::map::insert(result, "sha256", std::encoding::hex_encode(digest))
+    result = std::map::insert(result, "signing_key", std::encoding::base64_encode(public))
+    result = std::map::insert(result, "signature", std::encoding::base64_encode(signature))
+    Result::Ok(result)
+}
+
+fn pk_entry(name: string, bytes: any) -> any {
+    let mut e = std::map::new()
+    e = std::map::insert(e, "name", name)
+    e = std::map::insert(e, "bytes", bytes)
+    e
+}
+
+// ------------------------------------------------------------ tar (lector estricto)
+
+// Octal (o base 256 con el bit alto) de un campo numérico. Err si no es válido.
+fn pk_tar_num(b: array, from: int, count: int) -> int {
+    if b[from] >= 128 {
+        let mut v = b[from] - 128
+        let mut i = 1
+        while i < count {
+            v = v * 256 + b[from + i]
+            i += 1
+        }
+        return v
+    }
+    let mut v = 0
+    let mut i = 0
+    let mut started = false
+    while i < count {
+        let c = b[from + i]
+        if c == 0 || (c == 32 && started) {
+            break
+        }
+        if c == 32 && !started {
+            i += 1
+            continue
+        }
+        if c < 48 || c > 55 {
+            return -1
+        }
+        started = true
+        v = v * 8 + (c - 48)
+        i += 1
+    }
+    v
+}
+
+// Texto hasta el primer 0 de un campo.
+fn pk_tar_str(b: array, from: int, count: int) -> string {
+    let mut end = 0
+    while end < count && b[from + end] != 0 {
+        end += 1
+    }
+    std::encoding::utf8_decode(std::bytes::from_array(std::array::slice(b, from, from + end)))
+}
+
+fn pk_trim_nul(s: string) -> string {
+    let cs = sv_codes(s)
+    let mut n = len(cs)
+    while n > 0 && cs[n - 1] == 0 {
+        n -= 1
+    }
+    sv_text(cs, 0, n)
+}
+
+// Componentes de una ruta de archivo comprimido o [] si es insegura (safe()).
+fn pk_safe_parts(path: string) -> array {
+    if path == "" {
+        return []
+    }
+    if std::text::starts_with(path, "/") {
+        return []
+    }
+    let mut parts = []
+    let mut cur = ""
+    let mut first = true
+    let cs = sv_codes(path)
+    let mut i = 0
+    while i <= len(cs) {
+        if i == len(cs) || cs[i] == 47 {
+            if cur == ".." {
+                return []
+            }
+            if cur == "." {
+                if first {
+                    return []
+                }
+            } else if cur != "" {
+                parts = std::array::push(parts, cur)
+            }
+            if cur != "" || i < len(cs) {
+                first = false
+            }
+            cur = ""
+        } else {
+            cur += std::text::from_char_code(cs[i])
+        }
+        i += 1
+    }
+    parts
+}
+
+// pax: valor de `path` en los registros «len clave=valor\n»; "" si no hay;
+// «\u{0}size» si trae `size` (no soportado).
+fn pk_pax_path(data: any) -> string {
+    let text = std::encoding::utf8_decode(data)
+    let mut path = ""
+    for line in std::text::lines(text) {
+        let eq = pk_index_of(line, "=")
+        if eq < 0 {
+            continue
+        }
+        let sp = pk_index_of(line, " ")
+        if sp < 0 || sp > eq {
+            continue
+        }
+        let key = std::text::substring(line, sp + 1, eq)
+        let value = std::text::substring(line, eq + 1, std::text::length(line))
+        if key == "path" {
+            path = value
+        } else if key == "size" {
+            return "?size"
+        }
+    }
+    path
+}
+
+fn pk_index_of(s: string, needle: string) -> int {
+    let n = std::text::length(s)
+    let m = std::text::length(needle)
+    let mut i = 0
+    while i + m <= n {
+        if std::text::substring(s, i, i + m) == needle {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// extract_into: lee el .tpkg y vuelca en `destination` (ya creado). Err(texto de ArchiveError).
+fn pk_extract_into(archive: string, destination: string) -> Result {
+    let read = std::try::catch(|| { std::fs::read_bytes(archive) })
+    let mut gz: any = nil
+    match read {
+        Result::Ok(v) => {
+            gz = v
+        },
+        Result::Err(e) => {
+            return Result::Err("archive I/O error: " + pk_msg(e))
+        },
+    }
+    let gl = std::bytes::length(gz)
+    if gl < 18 {
+        return Result::Err("archive I/O error: invalid gzip header")
+    }
+    // ISIZE (tamaño original mod 2^32): cota previa contra bombas de descompresión.
+    let isize = std::bytes::read_u32_le(gz, gl - 4)
+    if isize > 134217728 + 10000 * 1536 + 4096 {
+        return Result::Err("archive exceeds extraction limits")
+    }
+    let inflated = std::try::catch(|| { std::compress::gzip_decode(gz) })
+    let mut tar: any = nil
+    match inflated {
+        Result::Ok(v) => {
+            tar = v
+        },
+        Result::Err(e) => {
+            return Result::Err("archive I/O error: " + pk_msg(e))
+        },
+    }
+    let total_len = std::bytes::length(tar)
+    let mut pos = 0
+    let mut seen = std::map::new()
+    let mut files = 0
+    let mut total = 0
+    let mut long_name = ""
+    let mut have_long = false
+    let mut pax_name = ""
+    let mut have_pax = false
+    loop {
+        if pos >= total_len {
+            break
+        }
+        if pos + 512 > total_len {
+            return Result::Err("archive I/O error: failed to read entire block")
+        }
+        let h = std::bytes::to_array(std::bytes::slice(tar, pos, pos + 512))
+        let mut zero = true
+        for x in h {
+            if x != 0 {
+                zero = false
+                break
+            }
+        }
+        if zero {
+            break
+        }
+        // suma de comprobación
+        let stored = pk_tar_num(h, 148, 8)
+        let mut sum = 0
+        let mut i = 0
+        while i < 512 {
+            if i >= 148 && i < 156 {
+                sum += 32
+            } else {
+                sum += h[i]
+            }
+            i += 1
+        }
+        if stored < 0 {
+            return Result::Err("archive I/O error: numeric field was not a number: " + pk_tar_str(h, 148, 8) + " when getting cksum for " + pk_tar_str(h, 0, 100))
+        }
+        if stored != sum {
+            return Result::Err("archive I/O error: archive header checksum mismatch")
+        }
+        let size = pk_tar_num(h, 124, 12)
+        if size < 0 {
+            return Result::Err("archive I/O error: invalid tar size field")
+        }
+        let kind = h[156]
+        let data_start = pos + 512
+        let data_end = data_start + size
+        if data_end > total_len {
+            return Result::Err("archive I/O error: archive size mismatch")
+        }
+        let padded = ((size + 511) / 512) * 512
+        let next = data_start + padded
+        if next > total_len {
+            return Result::Err("archive I/O error: unexpected EOF during skip")
+        }
+        if kind == 76 {
+            // GNU long name
+            if size > 1048576 {
+                return Result::Err("archive exceeds extraction limits")
+            }
+            long_name = pk_trim_nul(std::encoding::utf8_decode(std::bytes::slice(tar, data_start, data_end)))
+            have_long = true
+            pos = next
+            continue
+        }
+        if kind == 120 {
+            if size > 1048576 {
+                return Result::Err("archive exceeds extraction limits")
+            }
+            let p = pk_pax_path(std::bytes::slice(tar, data_start, data_end))
+            if p == "?size" {
+                return Result::Err("unsafe archive path or entry type")
+            }
+            if p != "" {
+                pax_name = p
+                have_pax = true
+            }
+            pos = next
+            continue
+        }
+        if kind == 103 {
+            pos = next
+            continue
+        }
+        let mut name = pk_tar_str(h, 0, 100)
+        // ustar con prefijo
+        let magic = pk_tar_str(h, 257, 5)
+        if magic == "ustar" && h[262] == 0 {
+            let prefix = pk_tar_str(h, 345, 155)
+            if prefix != "" {
+                name = prefix + "/" + name
+            }
+        }
+        if have_pax {
+            name = pax_name
+        } else if have_long {
+            name = long_name
+        }
+        have_pax = false
+        have_long = false
+        let parts = pk_safe_parts(name)
+        if len(parts) == 0 {
+            return Result::Err("unsafe archive path or entry type")
+        }
+        let key = ld_join(parts, "/")
+        if std::map::contains(seen, key) {
+            return Result::Err("unsafe archive path or entry type")
+        }
+        seen = std::map::insert(seen, key, true)
+        let target = std::path::join(destination, key)
+        if kind == 53 {
+            let made = std::try::catch(|| { pk_mkdirs(target) })
+            match made {
+                Result::Ok(_) => {},
+                Result::Err(e) => {
+                    return Result::Err("archive I/O error: " + pk_msg(e))
+                },
+            }
+            pos = next
+            continue
+        }
+        if kind != 48 && kind != 0 {
+            return Result::Err("unsafe archive path or entry type")
+        }
+        files += 1
+        if files > 10000 {
+            return Result::Err("archive exceeds extraction limits")
+        }
+        if size > 33554432 || total + size > 134217728 {
+            return Result::Err("archive exceeds extraction limits")
+        }
+        total += size
+        let prepared = std::try::catch(|| { pk_mkdirs(std::path::parent(target)) })
+        match prepared {
+            Result::Ok(_) => {},
+            Result::Err(e) => {
+                return Result::Err("archive I/O error: " + pk_msg(e))
+            },
+        }
+        if std::fs::exists(target) || std::fs::is_symlink(target) {
+            return Result::Err("archive I/O error: File exists (os error 17)")
+        }
+        let wrote = std::try::catch(|| { std::fs::write_bytes(target, std::bytes::slice(tar, data_start, data_end)) })
+        match wrote {
+            Result::Ok(_) => {},
+            Result::Err(e) => {
+                return Result::Err("archive I/O error: " + pk_msg(e))
+            },
+        }
+        pos = next
+    }
+    Result::Ok(true)
+}
+
+// archive::extract: staging + comprobación de Titan.toml + rename atómico.
+fn pk_extract(archive: string, destination: string) -> Result {
+    if std::fs::exists(destination) {
+        return Result::Err("destination already exists")
+    }
+    let parent = std::path::parent(destination)
+    let staging = std::path::join(parent, ".tpkg-extract-" + pk_pid_text())
+    let prep = std::try::catch(|| {
+        pk_mkdirs(parent)
+        if std::fs::exists(staging) {
+            std::fs::remove_dir(staging)
+        }
+        std::fs::create_dir(staging)
+    })
+    match prep {
+        Result::Ok(_) => {},
+        Result::Err(e) => {
+            return Result::Err("archive I/O error: " + pk_msg(e))
+        },
+    }
+    let inner = pk_extract_into(archive, staging)
+    match inner {
+        Result::Ok(_) => {},
+        Result::Err(m) => {
+            std::try::catch(|| { std::fs::remove_dir(staging) })
+            return Result::Err(m)
+        },
+    }
+    if !std::fs::is_file(std::path::join(staging, "Titan.toml")) {
+        std::try::catch(|| { std::fs::remove_dir(staging) })
+        return Result::Err("package does not contain root Titan.toml")
+    }
+    let moved = std::try::catch(|| { std::fs::rename(staging, destination) })
+    match moved {
+        Result::Ok(_) => Result::Ok(true),
+        Result::Err(e) => {
+            std::try::catch(|| { std::fs::remove_dir(staging) })
+            Result::Err("archive I/O error: " + pk_msg(e))
+        },
+    }
+}
+
+// ------------------------------------------------------------ registro
+
+fn pk_trim_slashes(s: string) -> string {
+    let mut n = std::text::length(s)
+    while n > 0 && std::text::substring(s, n - 1, n) == "/" {
+        n -= 1
+    }
+    std::text::substring(s, 0, n)
+}
+
+fn pk_http(method: string, url: string, headers: map, body: any, maximum: int, redirects: int) -> Result {
+    let r = std::try::catch(|| { std::http::request(method, url, headers, body, maximum, redirects, 30000) })
+    match r {
+        Result::Ok(resp) => {
+            Result::Ok(resp)
+        },
+        Result::Err(e) => {
+            Result::Err("registry request failed: " + pk_msg(e))
+        },
+    }
+}
+
+// RegistryClient::get -> Ok(bytes) | Err(RegistryError)
+fn pk_get(url: string, maximum: int) -> Result {
+    if !std::text::starts_with(url, "https://") {
+        return Result::Err("registry URL must use HTTPS")
+    }
+    let headers = std::map::insert(std::map::new(), "Accept", "application/json, application/octet-stream")
+    let resp = pk_http("GET", url, headers, pk_empty_bytes(), maximum, 3)?
+    if !std::text::starts_with(std::map::get(resp, "final_url"), "https://") {
+        return Result::Err("registry URL must use HTTPS")
+    }
+    let status = std::map::get(resp, "status")
+    if status != 200 {
+        return Result::Err("registry returned HTTP {status}")
+    }
+    Result::Ok(std::map::get(resp, "body"))
+}
+
+fn pk_req_str(obj: any, field: string) -> Result {
+    if !std::map::contains(obj, field) {
+        return Result::Err("invalid registry metadata: missing field `" + field + "`")
+    }
+    let v = std::map::get(obj, field)
+    if !pk_is_str(v) {
+        return Result::Err("invalid registry metadata: invalid type for `" + field + "`, expected a string")
+    }
+    Result::Ok(v)
+}
+
+// PackageVersion desde un valor JSON -> Ok(mapa)
+fn pk_release(obj: any) -> Result {
+    if pk_kind(obj) != "{" {
+        return Result::Err("invalid registry metadata: invalid type, expected struct PackageVersion")
+    }
+    let version = pk_req_str(obj, "version")?
+    let archive = pk_req_str(obj, "archive")?
+    let sha256 = pk_req_str(obj, "sha256")?
+    let signing_key = pk_req_str(obj, "signing_key")?
+    let signature = pk_req_str(obj, "signature")?
+    let mut deps = std::map::new()
+    if std::map::contains(obj, "dependencies") {
+        let d = std::map::get(obj, "dependencies")
+        if pk_kind(d) != "{" {
+            return Result::Err("invalid registry metadata: invalid type for `dependencies`, expected a map")
+        }
+        for k in std::map::keys(d) {
+            let v = std::map::get(d, k)
+            if !pk_is_str(v) {
+                return Result::Err("invalid registry metadata: invalid type for `dependencies`, expected a string")
+            }
+            deps = std::map::insert(deps, k, v)
+        }
+    }
+    let mut r = std::map::new()
+    r = std::map::insert(r, "version", version)
+    r = std::map::insert(r, "archive", archive)
+    r = std::map::insert(r, "sha256", sha256)
+    r = std::map::insert(r, "signing_key", signing_key)
+    r = std::map::insert(r, "signature", signature)
+    r = std::map::insert(r, "dependencies", deps)
+    Result::Ok(r)
+}
+
+// fetch_index -> Ok(array de releases)
+fn pk_fetch_index(base: string, name: string) -> Result {
+    if !pk_name_ok(name, 128) {
+        return Result::Err("invalid registry package name")
+    }
+    let url = base + "/v1/packages/" + std::encoding::percent_encode(name)
+    let body = pk_get(url, 1048576)?
+    let parsed = std::try::catch(|| { std::json::parse(std::encoding::utf8_decode(body)) })
+    let mut doc: any = nil
+    match parsed {
+        Result::Ok(v) => {
+            doc = v
+        },
+        Result::Err(e) => {
+            return Result::Err("invalid registry metadata: " + pk_msg(e))
+        },
+    }
+    if pk_kind(doc) != "{" {
+        return Result::Err("invalid registry metadata: invalid type, expected struct PackageIndex")
+    }
+    let doc_name = pk_req_str(doc, "name")?
+    if !std::map::contains(doc, "versions") {
+        return Result::Err("invalid registry metadata: missing field `versions`")
+    }
+    let versions = std::map::get(doc, "versions")
+    if pk_kind(versions) != "[" {
+        return Result::Err("invalid registry metadata: invalid type for `versions`, expected a sequence")
+    }
+    let mut releases = []
+    for item in versions {
+        releases = std::array::push(releases, pk_release(item)?)
+    }
+    if doc_name != name {
+        return Result::Err("registry package name mismatch")
+    }
+    Result::Ok(releases)
+}
+
+fn pk_hash_ok(s: string) -> bool {
+    if std::text::length(s) != 64 {
+        return false
+    }
+    for c in sv_codes(s) {
+        let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+        if !ok {
+            return false
+        }
+    }
+    true
+}
+
+fn pk_verify_signature(release: map) -> Result {
+    let bad = "package Ed25519 signature is invalid"
+    let mut key: any = nil
+    let mut sig: any = nil
+    let kr = std::try::catch(|| { std::encoding::base64_decode(std::map::get(release, "signing_key")) })
+    match kr {
+        Result::Ok(v) => {
+            key = v
+        },
+        Result::Err(_) => {
+            return Result::Err(bad)
+        },
+    }
+    let sr = std::try::catch(|| { std::encoding::base64_decode(std::map::get(release, "signature")) })
+    match sr {
+        Result::Ok(v) => {
+            sig = v
+        },
+        Result::Err(_) => {
+            return Result::Err(bad)
+        },
+    }
+    if std::bytes::length(key) != 32 || std::bytes::length(sig) != 64 {
+        return Result::Err(bad)
+    }
+    let sha = std::map::get(release, "sha256")
+    if !pk_hash_ok(sha) {
+        return Result::Err("package SHA-256 mismatch")
+    }
+    let digest = std::encoding::hex_decode(sha)
+    let ok = std::try::catch(|| { std::crypto::ed25519_verify(key, digest, sig) })
+    match ok {
+        Result::Ok(v) => {
+            if v {
+                return Result::Ok(true)
+            }
+            Result::Err(bad)
+        },
+        Result::Err(_) => {
+            Result::Err(bad)
+        },
+    }
+}
+
+fn pk_verify_hash(bytes: any, expected: string) -> Result {
+    if std::hash::sha256(bytes) == std::text::lowercase(expected) {
+        return Result::Ok(true)
+    }
+    Result::Err("package SHA-256 mismatch")
+}
+
+// RegistryClient::download -> Ok(ruta del .tpkg en caché)
+fn pk_download(cache: string, name: string, release: map, allow_network: bool) -> Result {
+    if !pk_name_ok(name, 128) {
+        return Result::Err("invalid registry package name")
+    }
+    let version = std::map::get(release, "version")
+    match sv_parse(version) {
+        Result::Ok(_) => {},
+        Result::Err(m) => {
+            return Result::Err("invalid semantic version/range: " + m)
+        },
+    }
+    let sha256 = std::map::get(release, "sha256")
+    if !pk_hash_ok(sha256) {
+        return Result::Err("package SHA-256 mismatch")
+    }
+    pk_verify_signature(release)?
+    let destination = std::path::join(std::path::join(std::path::join(cache, name), version), sha256 + ".tpkg")
+    if std::fs::is_file(destination) {
+        let existing = std::try::catch(|| { std::fs::read_bytes(destination) })
+        match existing {
+            Result::Ok(bytes) => {
+                pk_verify_hash(bytes, sha256)?
+                return Result::Ok(destination)
+            },
+            Result::Err(e) => {
+                return Result::Err("cache I/O error: " + pk_msg(e))
+            },
+        }
+    }
+    if !allow_network {
+        return Result::Err("package '" + name + "' is not in the offline cache")
+    }
+    let bytes = pk_get(std::map::get(release, "archive"), 67108864)?
+    pk_verify_hash(bytes, sha256)?
+    let temporary = pk_with_ext(destination, "tmp-" + pk_pid_text())
+    let saved = std::try::catch(|| {
+        pk_mkdirs(std::path::parent(destination))
+        std::fs::write_bytes(temporary, bytes)
+        std::fs::rename(temporary, destination)
+    })
+    match saved {
+        Result::Ok(_) => {},
+        Result::Err(e) => {
+            if std::fs::is_file(destination) {
+                std::try::catch(|| { std::fs::remove_file(temporary) })
+            } else {
+                std::try::catch(|| { std::fs::remove_file(temporary) })
+                return Result::Err("cache I/O error: " + pk_msg(e))
+            }
+        },
+    }
+    Result::Ok(destination)
+}
+
+// ------------------------------------------------------------ resolutor
+
+struct PkState {
+    constraints: map,
+    selected: map,
+    decisions: int,
+}
+
+// ResolveError::Requirement
+fn pk_req_error(package: string, requirement: string, message: string) -> string {
+    "resolution error: invalid requirement '" + requirement + "' for '" + package + "': " + message
+}
+
+fn pk_validate_requirement(package: string, requirement: string) -> Result {
+    match sv_parse_req(requirement) {
+        Result::Ok(_) => Result::Ok(true),
+        Result::Err(m) => Result::Err(pk_req_error(package, requirement, m)),
+    }
+}
+
+fn pk_matches_all(package: string, version: string, constraints: array) -> Result {
+    let mut parsed: any = nil
+    match sv_parse(version) {
+        Result::Ok(v) => {
+            parsed = v
+        },
+        Result::Err(m) => {
+            return Result::Err(pk_req_error(package, version, m))
+        },
+    }
+    for requirement in constraints {
+        match sv_parse_req(requirement) {
+            Result::Ok(req) => {
+                if !sv_matches(req, parsed) {
+                    return Result::Ok(false)
+                }
+            },
+            Result::Err(m) => {
+                return Result::Err(pk_req_error(package, requirement, m))
+            },
+        }
+    }
+    Result::Ok(true)
+}
+
+// Inserta [versión, release] en orden descendente y estable.
+fn pk_insert_desc(list: array, item: array) -> array {
+    let mut at = len(list)
+    let mut i = 0
+    while i < len(list) {
+        if sv_cmp(list[i][0], item[0]) < 0 {
+            at = i
+            break
+        }
+        i += 1
+    }
+    std::array::concat(std::array::push(std::array::slice(list, 0, at), item), std::array::slice(list, at, len(list)))
+}
+
+// search -> Ok([estado o nil, caché de índices])
+fn pk_search(base: string, state: PkState, cache0: map, max_packages: int, max_decisions: int) -> Result {
+    let mut cache = cache0
+    if len(std::map::keys(state.constraints)) > max_packages || state.decisions > max_decisions {
+        return Result::Err("resolution error: dependency graph exceeds package/decision limits")
+    }
+    for name in std::map::keys(state.selected) {
+        let release = std::map::get(state.selected, name)
+        let still = pk_matches_all(name, std::map::get(release, "version"), std::map::get(state.constraints, name))?
+        if !still {
+            return Result::Ok([nil, cache])
+        }
+    }
+    let mut unresolved = ""
+    let mut found = false
+    for name in std::map::keys(state.constraints) {
+        if !std::map::contains(state.selected, name) {
+            unresolved = name
+            found = true
+            break
+        }
+    }
+    if !found {
+        return Result::Ok([state, cache])
+    }
+    let name = unresolved
+    if !std::map::contains(cache, name) {
+        match pk_fetch_index(base, name) {
+            Result::Ok(index) => {
+                cache = std::map::insert(cache, name, index)
+            },
+            Result::Err(m) => {
+                return Result::Err("resolution error: registry error: " + m)
+            },
+        }
+    }
+    let index = std::map::get(cache, name)
+    let constraints = std::map::get(state.constraints, name)
+    let mut candidates = []
+    for release in index {
+        match sv_parse(std::map::get(release, "version")) {
+            Result::Ok(version) => {
+                let mut all = true
+                for requirement in constraints {
+                    match sv_parse_req(requirement) {
+                        Result::Ok(req) => {
+                            if !sv_matches(req, version) {
+                                all = false
+                            }
+                        },
+                        Result::Err(_) => {
+                            all = false
+                        },
+                    }
+                }
+                if all {
+                    candidates = pk_insert_desc(candidates, [version, release])
+                }
+            },
+            Result::Err(_) => {},
+        }
+    }
+    for entry in candidates {
+        let candidate = entry[1]
+        let mut next_constraints = state.constraints
+        let deps = std::map::get(candidate, "dependencies")
+        for dependency in std::map::keys(deps) {
+            let requirement = std::map::get(deps, dependency)
+            pk_validate_requirement(dependency, requirement)?
+            let mut list = []
+            if std::map::contains(next_constraints, dependency) {
+                list = std::map::get(next_constraints, dependency)
+            }
+            next_constraints = std::map::insert(next_constraints, dependency, std::array::push(list, requirement))
+        }
+        let next = PkState { constraints: next_constraints, selected: std::map::insert(state.selected, name, candidate), decisions: state.decisions + 1 }
+        let result = pk_search(base, next, cache, max_packages, max_decisions)?
+        cache = result[1]
+        if result[0] != nil {
+            return Result::Ok([result[0], cache])
+        }
+    }
+    Result::Ok([nil, cache])
+}
+
+// resolve -> Ok(array de releases ordenadas por nombre; cada una con "name")
+fn pk_resolve(base: string, roots: map) -> Result {
+    for name in std::map::keys(roots) {
+        pk_validate_requirement(name, std::map::get(roots, name))?
+    }
+    let mut constraints = std::map::new()
+    for name in std::map::keys(roots) {
+        constraints = std::map::insert(constraints, name, [std::map::get(roots, name)])
+    }
+    let state = PkState { constraints: constraints, selected: std::map::new(), decisions: 0 }
+    let result = pk_search(base, state, std::map::new(), 10000, 100000)?
+    if result[0] == nil {
+        let mut package = "root"
+        let mut list = "[]"
+        let keys = std::map::keys(roots)
+        if len(keys) > 0 {
+            package = keys[0]
+            list = "[" + pk_debug_str(std::map::get(roots, keys[0])) + "]"
+        }
+        return Result::Err("resolution error: no version of '" + package + "' satisfies constraints " + list)
+    }
+    let selected = result[0].selected
+    let mut packages = []
+    for name in std::map::keys(selected) {
+        packages = std::array::push(packages, std::map::insert(std::map::get(selected, name), "name", name))
+    }
+    Result::Ok(packages)
+}
+
+// ------------------------------------------------------------ lockfile remoto
+
+fn pk_lock_json(packages: array) -> string {
+    let mut entries = []
+    for p in packages {
+        let deps = std::map::get(p, "dependencies")
+        let mut dep_lines = []
+        for k in std::map::keys(deps) {
+            dep_lines = std::array::push(dep_lines, "        " + ld_json_str(k) + ": " + ld_json_str(std::map::get(deps, k)))
+        }
+        let mut dep_body = "{}"
+        if len(dep_lines) > 0 {
+            dep_body = "{\n" + ld_join(dep_lines, ",\n") + "\n      }"
+        }
+        entries = std::array::push(entries, "    {\n      \"name\": " + ld_json_str(std::map::get(p, "name")) + ",\n      \"version\": " + ld_json_str(std::map::get(p, "version")) + ",\n      \"archive\": " + ld_json_str(std::map::get(p, "archive")) + ",\n      \"sha256\": " + ld_json_str(std::map::get(p, "sha256")) + ",\n      \"signing_key\": " + ld_json_str(std::map::get(p, "signing_key")) + ",\n      \"signature\": " + ld_json_str(std::map::get(p, "signature")) + ",\n      \"dependencies\": " + dep_body + "\n    }")
+    }
+    let mut body = "[]"
+    if len(entries) > 0 {
+        body = "[\n" + ld_join(entries, ",\n") + "\n  ]"
+    }
+    "{\n  \"version\": 1,\n  \"packages\": " + body + "\n}\n"
+}
+
+// RemoteLockfile::read -> Ok(array de releases con "name")
+fn pk_read_lock(path: string) -> Result {
+    let text = std::try::catch(|| { std::fs::read_text(path) })
+    let mut content = ""
+    match text {
+        Result::Ok(v) => {
+            content = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    let parsed = std::try::catch(|| { std::json::parse(content) })
+    let mut doc: any = nil
+    match parsed {
+        Result::Ok(v) => {
+            doc = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    if pk_kind(doc) != "{" || !std::map::contains(doc, "version") || !std::map::contains(doc, "packages") {
+        return Result::Err("I/O error: missing field `packages`")
+    }
+    let packages = std::map::get(doc, "packages")
+    if pk_kind(packages) != "[" {
+        return Result::Err("I/O error: invalid type: expected a sequence")
+    }
+    let mut out = []
+    for p in packages {
+        if pk_kind(p) != "{" {
+            return Result::Err("I/O error: invalid type: expected struct LockedRemotePackage")
+        }
+        for field in ["name", "version", "archive", "sha256", "signing_key", "signature", "dependencies"] {
+            if !std::map::contains(p, field) {
+                return Result::Err("I/O error: missing field `" + field + "`")
+            }
+        }
+        let name = pk_req_str(p, "name")?
+        let release = pk_release(p)?
+        out = std::array::push(out, std::map::insert(release, "name", name))
+    }
+    Result::Ok(out)
+}
+
+fn pk_write_lock(path: string, packages: array) -> Result {
+    let temporary = pk_with_ext(path, "lock.tmp")
+    let text = pk_lock_json(packages)
+    let wrote = std::try::catch(|| {
+        std::fs::write_text(temporary, text)
+        if std::fs::exists(path) {
+            std::fs::remove_file(path)
+        }
+        std::fs::rename(temporary, path)
+    })
+    match wrote {
+        Result::Ok(_) => Result::Ok(true),
+        Result::Err(e) => Result::Err(pk_io(e)),
+    }
+}
+
+// ------------------------------------------------------------ sync (fetch / update)
+
+// Ok(número de paquetes). Err(texto sin etiqueta).
+fn pk_sync(root: string, registry: string, offline: bool) -> Result {
+    let mut manifest = PkManifest { name: "", version: "", edition: "", description: "", license: "", deps: std::map::new() }
+    match pk_manifest(root) {
+        Result::Ok(m) => {
+            manifest = m
+        },
+        Result::Err(m) => {
+            return Result::Err("package error: " + m)
+        },
+    }
+    let mut roots = std::map::new()
+    for alias in std::map::keys(manifest.deps) {
+        let spec = std::map::get(manifest.deps, alias)
+        if spec[1] != nil {
+            continue
+        }
+        if spec[0] == nil {
+            return Result::Err("remote dependency '" + alias + "' has no version requirement")
+        }
+        roots = std::map::insert(roots, alias, spec[0])
+    }
+    let titan = std::path::join(root, ".titan")
+    let lock_path = std::path::join(root, "Titan.remote.lock")
+    let cache = std::path::join(titan, "cache")
+    if !std::text::starts_with(registry, "https://") {
+        return Result::Err("registry error: registry URL must use HTTPS")
+    }
+    let base = pk_trim_slashes(registry)
+    let mut packages: array = []
+    if offline {
+        if !std::fs::is_file(lock_path) {
+            return Result::Err("offline lockfile is missing")
+        }
+        packages = pk_read_lock(lock_path)?
+    } else {
+        packages = pk_resolve(base, roots)?
+    }
+    for package in packages {
+        let name = std::map::get(package, "name")
+        let version = std::map::get(package, "version")
+        let archive = pk_download(cache, name, package, !offline)
+        let mut archive_path = ""
+        match archive {
+            Result::Ok(v) => {
+                archive_path = v
+            },
+            Result::Err(m) => {
+                return Result::Err("registry error: " + m)
+            },
+        }
+        let destination = std::path::join(std::path::join(std::path::join(titan, "packages"), name), version)
+        if !std::fs::exists(destination) {
+            match pk_extract(archive_path, destination) {
+                Result::Ok(_) => {},
+                Result::Err(m) => {
+                    return Result::Err("archive error: " + m)
+                },
+            }
+        }
+    }
+    if !offline {
+        pk_write_lock(lock_path, packages)?
+    }
+    Result::Ok(len(packages))
+}
+
+// ------------------------------------------------------------ publish
+
+fn pk_json_compact(name: string, version: string, sha: string, key: string, sig: string, archive_b64: string) -> string {
+    "{\"name\":" + ld_json_str(name) + ",\"version\":" + ld_json_str(version) + ",\"sha256\":" + ld_json_str(sha) + ",\"signing_key\":" + ld_json_str(key) + ",\"signature\":" + ld_json_str(sig) + ",\"archive_base64\":" + ld_json_str(archive_b64) + "}"
+}
+
+// Publisher::new + publish -> Ok(true) | Err(texto)
+fn pk_publish_archive(registry: string, token: string, publication: map) -> Result {
+    if !std::text::starts_with(registry, "https://") {
+        return Result::Err("registry URL must use HTTPS")
+    }
+    if token == "" || std::text::contains(token, "\r") || std::text::contains(token, "\n") {
+        return Result::Err("registry token is missing or invalid")
+    }
+    let base = pk_trim_slashes(registry)
+    let read = std::try::catch(|| { std::fs::read_bytes(std::map::get(publication, "archive")) })
+    let mut archive: any = nil
+    match read {
+        Result::Ok(v) => {
+            archive = v
+        },
+        Result::Err(e) => {
+            return Result::Err(pk_io(e))
+        },
+    }
+    let name = std::map::get(publication, "name")
+    let body = std::encoding::utf8_encode(pk_json_compact(name, std::map::get(publication, "version"), std::map::get(publication, "sha256"), std::map::get(publication, "signing_key"), std::map::get(publication, "signature"), std::encoding::base64_encode(archive)))
+    let url = base + "/v1/packages/" + std::encoding::percent_encode(name) + "/versions"
+    let mut headers = std::map::new()
+    headers = std::map::insert(headers, "Authorization", "Bearer " + token)
+    headers = std::map::insert(headers, "Content-Type", "application/json")
+    let resp = pk_http("POST", url, headers, body, 1048576, 0)?
+    let status = std::map::get(resp, "status")
+    if status == 200 || status == 201 {
+        return Result::Ok(true)
+    }
+    if status == 409 {
+        return Result::Err("publisher key does not match existing package ownership")
+    }
+    Result::Err("registry rejected publication with HTTP {status}")
+}
+
+// ------------------------------------------------------------ línea de comandos (estilo clap)
+
+fn pk_clap(message: string, usage: string) -> PkFail {
+    PkFail { label: "", message: "error: " + message + "\n\nUsage: " + usage + "\n\nFor more information, try '--help'.", code: 2 }
+}
+
+fn pk_help(command: string) -> string {
+    if command == "add" {
+        return "Add a remote dependency requirement to Titan.toml\n\nUsage: titan add [OPTIONS] <PACKAGE> [REQUIREMENT]\n\nArguments:\n  <PACKAGE>      \n  [REQUIREMENT]  [default: *]\n\nOptions:\n      --project <PROJECT>  [default: .]\n  -h, --help               Print help"
+    }
+    if command == "fetch" {
+        return "Resolve, download, verify, and install remote dependencies\n\nUsage: titan fetch [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n      --offline              \n  -h, --help                 Print help"
+    }
+    if command == "update" {
+        return "Re-resolve and update remote dependencies\n\nUsage: titan update [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n  -h, --help                 Print help"
+    }
+    if command == "keygen" {
+        return "Generate a private Ed25519 package signing key\n\nUsage: titan keygen <PATH>\n\nArguments:\n  <PATH>  \n\nOptions:\n  -h, --help  Print help"
+    }
+    if command == "pack" {
+        return "Build and sign a deterministic .tpkg archive\n\nUsage: titan pack [OPTIONS] --key <KEY> --output <OUTPUT>\n\nOptions:\n      --project <PROJECT>  [default: .]\n      --key <KEY>          \n      --output <OUTPUT>    \n  -h, --help               Print help"
+    }
+    "Build, sign, and upload a package using TITAN_REGISTRY_TOKEN\n\nUsage: titan publish [OPTIONS] --key <KEY>\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --key <KEY>            \n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n  -h, --help                 Print help"
+}
+
+// Uso completo (con [OPTIONS]) y mínimo (solo lo obligatorio) por comando.
+fn pk_usage(command: string, full: bool) -> string {
+    if command == "add" {
+        if full {
+            return "titan add [OPTIONS] <PACKAGE> [REQUIREMENT]"
+        }
+        return "titan add <PACKAGE> [REQUIREMENT]"
+    }
+    if command == "fetch" {
+        return "titan fetch [OPTIONS]"
+    }
+    if command == "update" {
+        return "titan update [OPTIONS]"
+    }
+    if command == "keygen" {
+        return "titan keygen <PATH>"
+    }
+    if command == "pack" {
+        if full {
+            return "titan pack [OPTIONS] --key <KEY> --output <OUTPUT>"
+        }
+        return "titan pack --key <KEY> --output <OUTPUT>"
+    }
+    if full {
+        return "titan publish [OPTIONS] --key <KEY>"
+    }
+    "titan publish --key <KEY>"
+}
+
+fn pk_value_opts(command: string) -> array {
+    if command == "add" {
+        return ["project"]
+    }
+    if command == "fetch" || command == "update" {
+        return ["project", "registry"]
+    }
+    if command == "pack" {
+        return ["project", "key", "output"]
+    }
+    if command == "publish" {
+        return ["project", "key", "registry"]
+    }
+    return []
+}
+
+fn pk_placeholder(opt: string) -> string {
+    "--" + opt + " <" + std::text::uppercase(opt) + ">"
+}
+
+fn pk_positionals(command: string) -> array {
+    if command == "add" {
+        return ["PACKAGE", "REQUIREMENT"]
+    }
+    if command == "keygen" {
+        return ["PATH"]
+    }
+    return []
+}
+
+fn pk_required_opts(command: string) -> array {
+    if command == "pack" {
+        return ["key", "output"]
+    }
+    if command == "publish" {
+        return ["key"]
+    }
+    return []
+}
+
+fn pk_contains(list: array, x: string) -> bool {
+    for v in list {
+        if v == x {
+            return true
+        }
+    }
+    false
+}
+
+// Analiza los argumentos de un comando. Ok(mapa con opciones y posicionales) o Err(PkFail).
+// Un mapa con "help" = true significa que se pidió la ayuda.
+fn pk_parse(command: string, args: array) -> Result {
+    let value_opts = pk_value_opts(command)
+    let positional_names = pk_positionals(command)
+    let has_offline = command == "fetch"
+    let mut out = std::map::new()
+    let mut positionals = []
+    let mut i = 0
+    let mut only_positional = false
+    while i < len(args) {
+        let a = args[i]
+        i += 1
+        if only_positional || !std::text::starts_with(a, "-") || a == "-" {
+            if len(positionals) >= len(positional_names) {
+                return Result::Err(pk_clap("unexpected argument '" + a + "' found", pk_usage(command, true)))
+            }
+            positionals = std::array::push(positionals, a)
+            continue
+        }
+        if a == "--" {
+            only_positional = true
+            continue
+        }
+        if a == "-h" || a == "--help" {
+            out = std::map::insert(out, "help", true)
+            return Result::Ok(out)
+        }
+        if std::text::starts_with(a, "--") {
+            let mut flag = std::text::substring(a, 2, std::text::length(a))
+            let mut inline: any = nil
+            let eq = pk_index_of(flag, "=")
+            if eq >= 0 {
+                inline = std::text::substring(flag, eq + 1, std::text::length(flag))
+                flag = std::text::substring(flag, 0, eq)
+            }
+            if has_offline && flag == "offline" {
+                if inline != nil {
+                    return Result::Err(pk_clap("unexpected value '" + inline + "' for '--offline' found; no more were expected", pk_usage(command, true)))
+                }
+                out = std::map::insert(out, "offline", true)
+                continue
+            }
+            if pk_contains(value_opts, flag) {
+                if std::map::contains(out, flag) {
+                    return Result::Err(pk_clap("the argument '" + pk_placeholder(flag) + "' cannot be used multiple times", pk_usage(command, true)))
+                }
+                let mut value: any = inline
+                if value == nil {
+                    if i >= len(args) {
+                        return Result::Err(PkFail { label: "", message: "error: a value is required for '" + pk_placeholder(flag) + "' but none was supplied\n\nFor more information, try '--help'.", code: 2 })
+                    }
+                    value = args[i]
+                    i += 1
+                }
+                out = std::map::insert(out, flag, value)
+                continue
+            }
+        }
+        let mut shown = a
+        if std::text::starts_with(a, "--") {
+            let eq = pk_index_of(a, "=")
+            if eq >= 0 {
+                shown = std::text::substring(a, 0, eq)
+            }
+        } else {
+            shown = std::text::substring(a, 0, 2)
+        }
+        return Result::Err(PkFail { label: "", message: "error: unexpected argument '" + shown + "' found\n\n  tip: to pass '" + shown + "' as a value, use '-- " + shown + "'\n\nUsage: " + pk_usage(command, true) + "\n\nFor more information, try '--help'.", code: 2 })
+    }
+    // obligatorios
+    let mut missing = []
+    let p = len(positionals)
+    if command == "add" {
+        if p < 1 {
+            missing = std::array::push(missing, "<PACKAGE>")
+        }
+    } else if command == "keygen" {
+        if p < 1 {
+            missing = std::array::push(missing, "<PATH>")
+        }
+    }
+    for opt in pk_required_opts(command) {
+        if !std::map::contains(out, opt) {
+            missing = std::array::push(missing, pk_placeholder(opt))
+        }
+    }
+    if len(missing) > 0 {
+        return Result::Err(PkFail { label: "", message: "error: the following required arguments were not provided:\n  " + ld_join(missing, "\n  ") + "\n\nUsage: " + pk_usage(command, false) + "\n\nFor more information, try '--help'.", code: 2 })
+    }
+    if len(positionals) > 0 {
+        out = std::map::insert(out, "arg0", positionals[0])
+    }
+    if len(positionals) > 1 {
+        out = std::map::insert(out, "arg1", positionals[1])
+    }
+    Result::Ok(out)
+}
+
+fn pk_opt(parsed: map, name: string, fallback: string) -> string {
+    if std::map::contains(parsed, name) {
+        return std::map::get(parsed, name)
+    }
+    fallback
+}
+
+fn pk_fail(message: string) -> PkFail {
+    PkFail { label: "PACKAGE ERROR", message: message, code: 1 }
+}
+
+// Ejecuta un comando del gestor. Ok(texto para stdout) o Err(PkFail).
+fn pk_run(command: string, args: array) -> Result {
+    let parsed = pk_parse(command, args)?
+    if std::map::contains(parsed, "help") {
+        return Result::Ok(pk_help(command))
+    }
+    if command == "add" {
+        let project = pk_opt(parsed, "project", ".")
+        let package = std::map::get(parsed, "arg0")
+        let requirement = pk_opt(parsed, "arg1", "*")
+        let root = pk_root(project)
+        match pk_add(root, package, requirement) {
+            Result::Ok(_) => {
+                return Result::Ok("Added " + package + " " + requirement)
+            },
+            Result::Err(m) => {
+                return Result::Err(pk_fail(m))
+            },
+        }
+    }
+    if command == "fetch" || command == "update" {
+        let project = pk_opt(parsed, "project", ".")
+        let registry = pk_opt(parsed, "registry", pk_default_registry())
+        let offline = command == "fetch" && std::map::contains(parsed, "offline")
+        let root = pk_root(project)
+        match pk_sync(root, registry, offline) {
+            Result::Ok(n) => {
+                let mut suffix = ""
+                if offline {
+                    suffix = " (offline)"
+                }
+                return Result::Ok("Synchronized {n} remote packages" + suffix)
+            },
+            Result::Err(m) => {
+                return Result::Err(pk_fail(m))
+            },
+        }
+    }
+    if command == "keygen" {
+        let path = std::map::get(parsed, "arg0")
+        match pk_keygen(path) {
+            Result::Ok(_) => {
+                return Result::Ok("Generated signing key at " + path)
+            },
+            Result::Err(m) => {
+                return Result::Err(pk_fail(m))
+            },
+        }
+    }
+    if command == "pack" {
+        let project = pk_opt(parsed, "project", ".")
+        let output = std::map::get(parsed, "output")
+        match pk_build(project, std::map::get(parsed, "key"), output) {
+            Result::Ok(p) => {
+                return Result::Ok("Packed " + std::map::get(p, "name") + " " + std::map::get(p, "version") + " -> " + output + "\nsha256=" + std::map::get(p, "sha256") + "\nsigning_key=" + std::map::get(p, "signing_key") + "\nsignature=" + std::map::get(p, "signature"))
+            },
+            Result::Err(m) => {
+                return Result::Err(pk_fail(m))
+            },
+        }
+    }
+    // publish
+    let project = pk_opt(parsed, "project", ".")
+    let registry = pk_opt(parsed, "registry", pk_default_registry())
+    let token_value = std::env::get("TITAN_REGISTRY_TOKEN")
+    if token_value == nil {
+        return Result::Err(pk_fail("TITAN_REGISTRY_TOKEN is not set"))
+    }
+    let token: string = token_value
+    let archive = std::path::join(pk_temp_dir(), "titan-publish-" + pk_pid_text() + ".tpkg")
+    if std::fs::exists(archive) {
+        std::try::catch(|| { std::fs::remove_file(archive) })
+    }
+    let mut publication = std::map::new()
+    match pk_build(project, std::map::get(parsed, "key"), archive) {
+        Result::Ok(p) => {
+            publication = p
+        },
+        Result::Err(m) => {
+            return Result::Err(pk_fail(m))
+        },
+    }
+    match pk_publish_archive(registry, token, publication) {
+        Result::Ok(_) => {},
+        Result::Err(m) => {
+            return Result::Err(pk_fail(m))
+        },
+    }
+    std::try::catch(|| { std::fs::remove_file(archive) })
+    Result::Ok("Published " + std::map::get(publication, "name") + " " + std::map::get(publication, "version"))
+}

@@ -1,0 +1,34 @@
+struct Grid {
+    cells: array,
+    width: int,
+}
+
+fn make(w: int, h: int) -> Grid {
+    let mut cells = []
+    let mut i = 0
+    while i < w * h {
+        cells = std::array::push(cells, (i * 7) % 5)
+        i += 1
+    }
+    Grid { cells: cells, width: w }
+}
+
+fn at(g: Grid, x: int, y: int) -> int {
+    g.cells[y * g.width + x]
+}
+
+fn main() -> int {
+    let g = make(4, 3)
+    let rows = [[1, 2], [3, 4], [5, 6]]
+    let mut flat = []
+    for r in rows {
+        flat = std::array::concat(flat, r)
+    }
+    let mut stack = std::array::slice(flat, 1, 5)
+    stack = std::array::pop(stack)
+    stack = std::array::pop(stack)
+    stack = std::array::push(stack, at(g, 2, 1))
+    let names = ["a", "bb", "ccc"]
+    let t = (len(names), names[2], 9)
+    len(stack) + stack[0] + stack[2] + at(g, 3, 2) + t.0 + t.2 + len(t.1)
+}

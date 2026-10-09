@@ -1,0 +1,601 @@
+// Curvas P-256 y P-384: ECDSA (verificar y firmar) y ECDH, sobre los enteros grandes de
+// std_rsa.titan (miembros de 30 bits, multiplicación de Montgomery). Prefijo ec_.
+// Los campos se manejan en forma de Montgomery; los puntos son jacobianos (a = -3).
+// Nota: las multiplicaciones por escalar no son de tiempo constante.
+
+const EC_P256: int = 1
+const EC_P384: int = 2
+
+fn ec_hexc(c: int) -> int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    c - 87
+}
+
+// Entero grande desde una cadena hexadecimal literal (minúsculas).
+fn ec_hex_bn(s: string, l: int) -> int {
+    let p = std::raw::bits(s) + 16
+    let n = rt_slen(s) / 2
+    let tmp = rt_alloc(n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store8(tmp + i, ec_hexc(std::raw::load8(p + 2 * i)) * 16 + ec_hexc(std::raw::load8(p + 2 * i + 1)))
+        i += 1
+    }
+    let r = jr_from_be(tmp, n, l)
+    rt_free_block(tmp)
+    r
+}
+
+fn ec_copy(dst: int, src: int, l: int) {
+    let mut i = 0
+    while i < l {
+        std::raw::store(dst + 8 + 8 * i, jr_limb(src, i))
+        i += 1
+    }
+}
+
+fn ec_zero(a: int) {
+    let l = std::raw::load(a)
+    let mut i = 0
+    while i < l {
+        std::raw::store(a + 8 + 8 * i, 0)
+        i += 1
+    }
+}
+
+// Estructura de curva: +0 ctx(p) +8 ctx(n) +16 L +24 bytes +32 p +40 n +48 b +56 Gx +64 Gy
+// +72 temporal +80 1 en forma de Montgomery (todo en Montgomery salvo p, n).
+fn ec_curve(id: int) -> int {
+    let mut sz = 32
+    if id == EC_P384 {
+        sz = 48
+    }
+    let l = jr_limbs_for(sz)
+    let cv = rt_alloc_zero(128)
+    let mut p = 0
+    let mut n = 0
+    let mut b = 0
+    let mut gx = 0
+    let mut gy = 0
+    if id == EC_P256 {
+        p = ec_hex_bn("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", l)
+        n = ec_hex_bn("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", l)
+        b = ec_hex_bn("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", l)
+        gx = ec_hex_bn("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", l)
+        gy = ec_hex_bn("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5", l)
+    } else {
+        p = ec_hex_bn("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff", l)
+        n = ec_hex_bn("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973", l)
+        b = ec_hex_bn("b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef", l)
+        gx = ec_hex_bn("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7", l)
+        gy = ec_hex_bn("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f", l)
+    }
+    let cp = jr_ctx(p)
+    let cn = jr_ctx(n)
+    std::raw::store(cv, cp)
+    std::raw::store(cv + 8, cn)
+    std::raw::store(cv + 16, l)
+    std::raw::store(cv + 24, sz)
+    std::raw::store(cv + 32, p)
+    std::raw::store(cv + 40, n)
+    let r2 = std::raw::load(cp + 24)
+    let bm = jr_new(l)
+    jr_mm(cp, b, r2, bm)
+    std::raw::store(cv + 48, bm)
+    let gxm = jr_new(l)
+    jr_mm(cp, gx, r2, gxm)
+    std::raw::store(cv + 56, gxm)
+    let gym = jr_new(l)
+    jr_mm(cp, gy, r2, gym)
+    std::raw::store(cv + 64, gym)
+    std::raw::store(cv + 72, jr_new(l))
+    let one = jr_new(l)
+    jr_mm(cp, std::raw::load(cp + 40), r2, one)
+    std::raw::store(cv + 80, one)
+    rt_free_block(b)
+    rt_free_block(gx)
+    rt_free_block(gy)
+    cv
+}
+
+fn ec_curve_free(cv: int) {
+    jr_ctx_free(std::raw::load(cv))
+    jr_ctx_free(std::raw::load(cv + 8))
+    let mut i = 4
+    while i <= 10 {
+        rt_free_block(std::raw::load(cv + 8 * i))
+        i += 1
+    }
+    rt_free_block(cv)
+}
+
+fn ec_fadd(cv: int, o: int, a: int, b: int) {
+    let l = std::raw::load(cv + 16)
+    let s = std::raw::load(cv + 72)
+    let p = std::raw::load(cv + 32)
+    ec_copy(s, a, l)
+    jr_add_into(s, b)
+    if jr_cmp(s, p) >= 0 {
+        jr_sub_into(s, p)
+    }
+    ec_copy(o, s, l)
+}
+
+fn ec_fsub(cv: int, o: int, a: int, b: int) {
+    let l = std::raw::load(cv + 16)
+    let s = std::raw::load(cv + 72)
+    let p = std::raw::load(cv + 32)
+    ec_copy(s, a, l)
+    if jr_cmp(s, b) < 0 {
+        jr_add_into(s, p)
+    }
+    jr_sub_into(s, b)
+    ec_copy(o, s, l)
+}
+
+fn ec_fmul(cv: int, o: int, a: int, b: int) {
+    jr_mm(std::raw::load(cv), a, b, o)
+}
+
+// Punto: bloque de 3 punteros a enteros (X, Y, Z).
+fn ec_pt_new(cv: int) -> int {
+    let l = std::raw::load(cv + 16)
+    let pt = rt_alloc(32)
+    let x = jr_new(l)
+    let y = jr_new(l)
+    let z = jr_new(l)
+    ec_copy(x, std::raw::load(cv + 80), l)
+    ec_copy(y, std::raw::load(cv + 80), l)
+    std::raw::store(pt, x)
+    std::raw::store(pt + 8, y)
+    std::raw::store(pt + 16, z)
+    pt
+}
+
+fn ec_pt_free(pt: int) {
+    rt_free_block(std::raw::load(pt))
+    rt_free_block(std::raw::load(pt + 8))
+    rt_free_block(std::raw::load(pt + 16))
+    rt_free_block(pt)
+}
+
+fn ec_pt_inf(cv: int, pt: int) {
+    let l = std::raw::load(cv + 16)
+    ec_copy(std::raw::load(pt), std::raw::load(cv + 80), l)
+    ec_copy(std::raw::load(pt + 8), std::raw::load(cv + 80), l)
+    ec_zero(std::raw::load(pt + 16))
+}
+
+// Se asigna (x, y) afines en forma de Montgomery.
+fn ec_pt_affine_set(cv: int, pt: int, x: int, y: int) {
+    let l = std::raw::load(cv + 16)
+    ec_copy(std::raw::load(pt), x, l)
+    ec_copy(std::raw::load(pt + 8), y, l)
+    ec_copy(std::raw::load(pt + 16), std::raw::load(cv + 80), l)
+}
+
+fn ec_work_new(cv: int) -> int {
+    let l = std::raw::load(cv + 16)
+    let w = rt_alloc(8 * 12)
+    let mut i = 0
+    while i < 12 {
+        std::raw::store(w + 8 * i, jr_new(l))
+        i += 1
+    }
+    w
+}
+
+fn ec_work_free(w: int) {
+    let mut i = 0
+    while i < 12 {
+        rt_free_block(std::raw::load(w + 8 * i))
+        i += 1
+    }
+    rt_free_block(w)
+}
+
+fn ec_dbl(cv: int, w: int, pt: int) {
+    let l = std::raw::load(cv + 16)
+    let x = std::raw::load(pt)
+    let y = std::raw::load(pt + 8)
+    let z = std::raw::load(pt + 16)
+    let w0 = std::raw::load(w)
+    let w1 = std::raw::load(w + 8)
+    let w2 = std::raw::load(w + 16)
+    let w3 = std::raw::load(w + 24)
+    let w4 = std::raw::load(w + 32)
+    let w5 = std::raw::load(w + 40)
+    let w6 = std::raw::load(w + 48)
+    ec_fmul(cv, w0, z, z)
+    ec_fmul(cv, w1, y, y)
+    ec_fmul(cv, w2, x, w1)
+    ec_fsub(cv, w3, x, w0)
+    ec_fadd(cv, w4, x, w0)
+    ec_fmul(cv, w3, w3, w4)
+    ec_fadd(cv, w4, w3, w3)
+    ec_fadd(cv, w3, w4, w3)
+    ec_fmul(cv, w4, w3, w3)
+    ec_fadd(cv, w5, w2, w2)
+    ec_fadd(cv, w5, w5, w5)
+    ec_fadd(cv, w6, w5, w5)
+    ec_fsub(cv, w4, w4, w6)
+    ec_fadd(cv, w6, y, z)
+    ec_fmul(cv, w6, w6, w6)
+    ec_fsub(cv, w6, w6, w1)
+    ec_fsub(cv, w6, w6, w0)
+    ec_fsub(cv, w5, w5, w4)
+    ec_fmul(cv, w5, w3, w5)
+    ec_fmul(cv, w1, w1, w1)
+    ec_fadd(cv, w1, w1, w1)
+    ec_fadd(cv, w1, w1, w1)
+    ec_fadd(cv, w1, w1, w1)
+    ec_fsub(cv, w5, w5, w1)
+    ec_copy(x, w4, l)
+    ec_copy(y, w5, l)
+    ec_copy(z, w6, l)
+}
+
+// pt += q
+fn ec_add(cv: int, w: int, pt: int, q: int) {
+    let l = std::raw::load(cv + 16)
+    let x1 = std::raw::load(pt)
+    let y1 = std::raw::load(pt + 8)
+    let z1 = std::raw::load(pt + 16)
+    let x2 = std::raw::load(q)
+    let y2 = std::raw::load(q + 8)
+    let z2 = std::raw::load(q + 16)
+    if jr_is_zero(z2) {
+        return
+    }
+    if jr_is_zero(z1) {
+        ec_copy(x1, x2, l)
+        ec_copy(y1, y2, l)
+        ec_copy(z1, z2, l)
+        return
+    }
+    let w0 = std::raw::load(w)
+    let w1 = std::raw::load(w + 8)
+    let w2 = std::raw::load(w + 16)
+    let w3 = std::raw::load(w + 24)
+    let w4 = std::raw::load(w + 32)
+    let w5 = std::raw::load(w + 40)
+    let w6 = std::raw::load(w + 48)
+    let w7 = std::raw::load(w + 56)
+    let w8 = std::raw::load(w + 64)
+    let w9 = std::raw::load(w + 72)
+    ec_fmul(cv, w0, z1, z1)
+    ec_fmul(cv, w1, z2, z2)
+    ec_fmul(cv, w2, x1, w1)
+    ec_fmul(cv, w3, x2, w0)
+    ec_fmul(cv, w4, z2, w1)
+    ec_fmul(cv, w4, y1, w4)
+    ec_fmul(cv, w5, z1, w0)
+    ec_fmul(cv, w5, y2, w5)
+    ec_fsub(cv, w3, w3, w2)
+    ec_fsub(cv, w5, w5, w4)
+    if jr_is_zero(w3) {
+        if jr_is_zero(w5) {
+            ec_dbl(cv, w, pt)
+        } else {
+            ec_pt_inf(cv, pt)
+        }
+        return
+    }
+    ec_fadd(cv, w5, w5, w5)
+    ec_fadd(cv, w6, w3, w3)
+    ec_fmul(cv, w6, w6, w6)
+    ec_fmul(cv, w7, w3, w6)
+    ec_fmul(cv, w2, w2, w6)
+    ec_fmul(cv, w8, w5, w5)
+    ec_fsub(cv, w8, w8, w7)
+    ec_fsub(cv, w8, w8, w2)
+    ec_fsub(cv, w8, w8, w2)
+    ec_fsub(cv, w9, w2, w8)
+    ec_fmul(cv, w9, w5, w9)
+    ec_fmul(cv, w4, w4, w7)
+    ec_fadd(cv, w4, w4, w4)
+    ec_fsub(cv, w9, w9, w4)
+    ec_fadd(cv, w6, z1, z2)
+    ec_fmul(cv, w6, w6, w6)
+    ec_fsub(cv, w6, w6, w0)
+    ec_fsub(cv, w6, w6, w1)
+    ec_fmul(cv, w6, w6, w3)
+    ec_copy(x1, w8, l)
+    ec_copy(y1, w9, l)
+    ec_copy(z1, w6, l)
+}
+
+// r = k*q (k en bytes big-endian).
+fn ec_scalar(cv: int, w: int, k: int, klen: int, q: int, r: int) {
+    ec_pt_inf(cv, r)
+    let mut i = 0
+    while i < klen * 8 {
+        let bit = std::raw::shr(std::raw::load8(k + i / 8), 7 - (i & 7)) & 1
+        ec_dbl(cv, w, r)
+        if bit == 1 {
+            ec_add(cv, w, r, q)
+        }
+        i += 1
+    }
+}
+
+// x afín normal (0 si es el infinito). Si `ysz` > 0 devuelve también y en `yout` (bignum nuevo).
+fn ec_affine(cv: int, pt: int, yout: int) -> int {
+    let cp = std::raw::load(cv)
+    let l = std::raw::load(cv + 16)
+    let sz = std::raw::load(cv + 24)
+    let z = std::raw::load(pt + 16)
+    if jr_is_zero(z) {
+        return 0
+    }
+    let one = std::raw::load(cp + 40)
+    let zn = jr_new(l)
+    jr_mm(cp, z, one, zn)
+    let pe = rt_alloc(sz + 8)
+    jr_to_be(std::raw::load(cv + 32), pe, sz)
+    std::raw::store8(pe + sz - 1, std::raw::load8(pe + sz - 1) - 2)
+    let zi = jr_modexp(cp, zn, pe, sz)
+    let zi2 = jr_modmul(cp, zi, zi)
+    let xn = jr_new(l)
+    jr_mm(cp, std::raw::load(pt), one, xn)
+    let x = jr_modmul(cp, xn, zi2)
+    if yout != 0 {
+        let yn = jr_new(l)
+        jr_mm(cp, std::raw::load(pt + 8), one, yn)
+        let zi3 = jr_modmul(cp, zi2, zi)
+        let y = jr_modmul(cp, yn, zi3)
+        ec_copy(yout, y, l)
+        rt_free_block(yn)
+        rt_free_block(zi3)
+        rt_free_block(y)
+    }
+    rt_free_block(zn)
+    rt_free_block(pe)
+    rt_free_block(zi)
+    rt_free_block(zi2)
+    rt_free_block(xn)
+    x
+}
+
+// Punto público 04||X||Y: ¿en la curva? Si lo está, lo deja como punto de Montgomery en `pt`.
+fn ec_load_pub(cv: int, pk: int, publen: int, pt: int) -> bool {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    if publen != 1 + 2 * sz || std::raw::load8(pk) != 4 {
+        return false
+    }
+    let cp = std::raw::load(cv)
+    let p = std::raw::load(cv + 32)
+    let x = jr_from_be(pk + 1, sz, l)
+    let y = jr_from_be(pk + 1 + sz, sz, l)
+    let mut ok = jr_cmp(x, p) < 0 && jr_cmp(y, p) < 0
+    if ok {
+        let r2 = std::raw::load(cp + 24)
+        let xm = jr_new(l)
+        let ym = jr_new(l)
+        jr_mm(cp, x, r2, xm)
+        jr_mm(cp, y, r2, ym)
+        let lhs = jr_new(l)
+        let rhs = jr_new(l)
+        ec_fmul(cv, lhs, ym, ym)
+        ec_fmul(cv, rhs, xm, xm)
+        ec_fmul(cv, rhs, rhs, xm)
+        let t = jr_new(l)
+        ec_fadd(cv, t, xm, xm)
+        ec_fadd(cv, t, t, xm)
+        ec_fsub(cv, rhs, rhs, t)
+        ec_fadd(cv, rhs, rhs, std::raw::load(cv + 48))
+        ok = jr_cmp(lhs, rhs) == 0
+        if ok {
+            ec_pt_affine_set(cv, pt, xm, ym)
+        }
+        rt_free_block(xm)
+        rt_free_block(ym)
+        rt_free_block(lhs)
+        rt_free_block(rhs)
+        rt_free_block(t)
+    }
+    rt_free_block(x)
+    rt_free_block(y)
+    ok
+}
+
+fn ec_n_minus_2(cv: int) -> int {
+    let sz = std::raw::load(cv + 24)
+    let ne = rt_alloc(sz + 8)
+    jr_to_be(std::raw::load(cv + 40), ne, sz)
+    std::raw::store8(ne + sz - 1, std::raw::load8(ne + sz - 1) - 2)
+    ne
+}
+
+// Entero (z) del resumen: los sz bytes de más a la izquierda, reducido módulo n.
+fn ec_hash_int(cv: int, hash: int, hlen: int) -> int {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    let mut take = hlen
+    if take > sz {
+        take = sz
+    }
+    let zb = jr_from_be(hash, take, l)
+    let z = jr_mod(zb, std::raw::load(cv + 40))
+    rt_free_block(zb)
+    z
+}
+
+fn ec_valid_scalar(cv: int, a: int) -> bool {
+    !jr_is_zero(a) && jr_cmp(a, std::raw::load(cv + 40)) < 0
+}
+
+// Verifica (r, s) de ECDSA. pk = 04||X||Y; r y s de sz bytes.
+fn ec_verify(cv: int, pk: int, publen: int, hash: int, hlen: int, rp: int, sp: int) -> bool {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    let cn = std::raw::load(cv + 8)
+    let n = std::raw::load(cv + 40)
+    let q = ec_pt_new(cv)
+    if !ec_load_pub(cv, pk, publen, q) {
+        ec_pt_free(q)
+        return false
+    }
+    let r = jr_from_be(rp, sz, l)
+    let s = jr_from_be(sp, sz, l)
+    let mut ok = false
+    if ec_valid_scalar(cv, r) && ec_valid_scalar(cv, s) {
+        let z = ec_hash_int(cv, hash, hlen)
+        let ne = ec_n_minus_2(cv)
+        let w = jr_modexp(cn, s, ne, sz)
+        let u1 = jr_modmul(cn, z, w)
+        let u2 = jr_modmul(cn, r, w)
+        let u1b = rt_alloc(sz + 8)
+        let u2b = rt_alloc(sz + 8)
+        jr_to_be(u1, u1b, sz)
+        jr_to_be(u2, u2b, sz)
+        let g = ec_pt_new(cv)
+        ec_pt_affine_set(cv, g, std::raw::load(cv + 56), std::raw::load(cv + 64))
+        let wk = ec_work_new(cv)
+        let r1 = ec_pt_new(cv)
+        let r2 = ec_pt_new(cv)
+        ec_scalar(cv, wk, u1b, sz, g, r1)
+        ec_scalar(cv, wk, u2b, sz, q, r2)
+        ec_add(cv, wk, r1, r2)
+        let x = ec_affine(cv, r1, 0)
+        if x != 0 {
+            let xr = jr_mod(x, n)
+            ok = jr_cmp(xr, r) == 0
+            rt_free_block(xr)
+            rt_free_block(x)
+        }
+        ec_pt_free(g)
+        ec_pt_free(r1)
+        ec_pt_free(r2)
+        ec_work_free(wk)
+        rt_free_block(z)
+        rt_free_block(ne)
+        rt_free_block(w)
+        rt_free_block(u1)
+        rt_free_block(u2)
+        rt_free_block(u1b)
+        rt_free_block(u2b)
+    }
+    rt_free_block(r)
+    rt_free_block(s)
+    ec_pt_free(q)
+    ok
+}
+
+// 04||X||Y de la clave pública de d (sz bytes) en out (1 + 2*sz bytes). false si d no es válida.
+fn ec_pub(cv: int, dp: int, out: int) -> bool {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    let d = jr_from_be(dp, sz, l)
+    if !ec_valid_scalar(cv, d) {
+        rt_free_block(d)
+        return false
+    }
+    let g = ec_pt_new(cv)
+    ec_pt_affine_set(cv, g, std::raw::load(cv + 56), std::raw::load(cv + 64))
+    let wk = ec_work_new(cv)
+    let r = ec_pt_new(cv)
+    ec_scalar(cv, wk, dp, sz, g, r)
+    let yb = jr_new(l)
+    let x = ec_affine(cv, r, yb)
+    std::raw::store8(out, 4)
+    jr_to_be(x, out + 1, sz)
+    jr_to_be(yb, out + 1 + sz, sz)
+    rt_free_block(x)
+    rt_free_block(yb)
+    rt_free_block(d)
+    ec_pt_free(g)
+    ec_pt_free(r)
+    ec_work_free(wk)
+    true
+}
+
+// ECDH: x del punto d*pk (sz bytes) en out. false si pk no es válido o d es inválida.
+fn ec_ecdh(cv: int, dp: int, pk: int, publen: int, out: int) -> bool {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    let d = jr_from_be(dp, sz, l)
+    let q = ec_pt_new(cv)
+    let mut ok = ec_valid_scalar(cv, d) && ec_load_pub(cv, pk, publen, q)
+    if ok {
+        let wk = ec_work_new(cv)
+        let r = ec_pt_new(cv)
+        ec_scalar(cv, wk, dp, sz, q, r)
+        let x = ec_affine(cv, r, 0)
+        if x == 0 {
+            ok = false
+        } else {
+            jr_to_be(x, out, sz)
+            rt_free_block(x)
+        }
+        ec_pt_free(r)
+        ec_work_free(wk)
+    }
+    rt_free_block(d)
+    ec_pt_free(q)
+    ok
+}
+
+// Firma ECDSA con k aleatorio; r y s de sz bytes en rout y sout. false si d no es válida.
+fn ec_sign(cv: int, dp: int, hash: int, hlen: int, rout: int, sout: int) -> bool {
+    let sz = std::raw::load(cv + 24)
+    let l = std::raw::load(cv + 16)
+    let cn = std::raw::load(cv + 8)
+    let n = std::raw::load(cv + 40)
+    let d = jr_from_be(dp, sz, l)
+    if !ec_valid_scalar(cv, d) {
+        rt_free_block(d)
+        return false
+    }
+    let z = ec_hash_int(cv, hash, hlen)
+    let g = ec_pt_new(cv)
+    ec_pt_affine_set(cv, g, std::raw::load(cv + 56), std::raw::load(cv + 64))
+    let wk = ec_work_new(cv)
+    let rp = ec_pt_new(cv)
+    let ne = ec_n_minus_2(cv)
+    let kb = rt_alloc(sz + 8)
+    let mut done = false
+    while !done {
+        rn_os_fill(kb, sz)
+        let k = jr_from_be(kb, sz, l)
+        if ec_valid_scalar(cv, k) {
+            ec_scalar(cv, wk, kb, sz, g, rp)
+            let x = ec_affine(cv, rp, 0)
+            if x != 0 {
+                let r = jr_mod(x, n)
+                if !jr_is_zero(r) {
+                    let kinv = jr_modexp(cn, k, ne, sz)
+                    let rd = jr_modmul(cn, r, d)
+                    let sum = jr_new(l)
+                    ec_copy(sum, z, l)
+                    jr_add_into(sum, rd)
+                    if jr_cmp(sum, n) >= 0 {
+                        jr_sub_into(sum, n)
+                    }
+                    let s = jr_modmul(cn, kinv, sum)
+                    if !jr_is_zero(s) {
+                        jr_to_be(r, rout, sz)
+                        jr_to_be(s, sout, sz)
+                        done = true
+                    }
+                    rt_free_block(kinv)
+                    rt_free_block(rd)
+                    rt_free_block(sum)
+                    rt_free_block(s)
+                }
+                rt_free_block(r)
+                rt_free_block(x)
+            }
+        }
+        rt_free_block(k)
+    }
+    rt_free_block(kb)
+    rt_free_block(ne)
+    rt_free_block(z)
+    rt_free_block(d)
+    ec_pt_free(g)
+    ec_pt_free(rp)
+    ec_work_free(wk)
+    true
+}

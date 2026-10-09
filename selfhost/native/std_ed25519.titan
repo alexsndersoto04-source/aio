@@ -1,0 +1,439 @@
+// Ed25519 (RFC 8032) sobre la aritmética de campo de std_x25519.titan (el método de TweetNaCl).
+// Prefijo e5_. Un elemento del campo son 16 palabras de 8 bytes; un punto son 4 elementos
+// (X, Y, Z, T) seguidos. El contexto `w` es un bloque de 40 elementos:
+//   0..8 temporales de la suma, 9 D2, 10 D, 11 I, 12 X, 13 Y, 14..15 temporal de la
+//   multiplicación, 16 temporal de inversión, 17/18 temporales de empaquetado, 20/21 búferes de
+//   32 bytes, 22..24 temporales de `pack`, 25..28 punto P, 29..32 punto Q, 33..36 punto R.
+
+const E5_SLOTS: int = 40
+
+fn e5_g(w: int, k: int) -> int {
+    w + 128 * k
+}
+
+fn e5_hexv(c: int) -> int {
+    if c >= 97 {
+        return c - 87
+    }
+    c - 48
+}
+
+// Carga 16 miembros de 16 bits desde 64 dígitos hexadecimales (el primero es el menos significativo).
+fn e5_const(o: int, s: string) {
+    let p = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < 16 {
+        let v = e5_hexv(std::raw::load8(p + 4 * i)) * 4096 + e5_hexv(std::raw::load8(p + 4 * i + 1)) * 256 + e5_hexv(std::raw::load8(p + 4 * i + 2)) * 16 + e5_hexv(std::raw::load8(p + 4 * i + 3))
+        x2_st(o, i, v)
+        i += 1
+    }
+}
+
+fn e5_new() -> int {
+    let w = rt_alloc_zero(128 * E5_SLOTS + 64)
+    e5_const(e5_g(w, 9), "f15926b29b94ebd6b1568283149a00e0d130eef380f2198efce756dfd9dc2406")
+    e5_const(e5_g(w, 10), "78a313594dca75ebd8ab41410a4d0070e898777940798cc7fe732b6f6cee5203")
+    e5_const(e5_g(w, 11), "a0b04a0e1b27c4eee478ad2f18062f43d7a73dfb00992b4ddf0b4fc124802b83")
+    e5_const(e5_g(w, 12), "d51a8f252d60c956a7b29525c760692cdc5cfdd6e231c0a453fecd6e36d32169")
+    e5_const(e5_g(w, 13), "6658666666666666666666666666666666666666666666666666666666666666")
+    w
+}
+
+fn e5_cp(r: int, a: int) {
+    let mut i = 0
+    while i < 16 {
+        x2_st(r, i, x2_ld(a, i))
+        i += 1
+    }
+}
+
+fn e5_mul(w: int, o: int, a: int, b: int) {
+    x2_mul(o, a, b, e5_g(w, 14))
+}
+
+fn e5_pow2523(w: int, o: int, i: int) {
+    let c = e5_g(w, 16)
+    e5_cp(c, i)
+    let mut a = 250
+    while a >= 0 {
+        e5_mul(w, c, c, c)
+        if a != 1 {
+            e5_mul(w, c, c, i)
+        }
+        a -= 1
+    }
+    e5_cp(o, c)
+}
+
+fn e5_par(w: int, a: int) -> int {
+    let d = e5_g(w, 20)
+    x2_pack(d, a, e5_g(w, 18), e5_g(w, 17))
+    std::raw::load8(d) & 1
+}
+
+fn e5_neq(w: int, a: int, b: int) -> bool {
+    let c = e5_g(w, 20)
+    let d = e5_g(w, 21)
+    x2_pack(c, a, e5_g(w, 18), e5_g(w, 17))
+    x2_pack(d, b, e5_g(w, 18), e5_g(w, 17))
+    let mut acc = 0
+    let mut i = 0
+    while i < 32 {
+        acc = acc | (std::raw::load8(c + i) ^ std::raw::load8(d + i))
+        i += 1
+    }
+    acc != 0
+}
+
+fn e5_ptadd(w: int, p: int, q: int) {
+    let a = e5_g(w, 0)
+    let b = e5_g(w, 1)
+    let c = e5_g(w, 2)
+    let d = e5_g(w, 3)
+    let t = e5_g(w, 4)
+    let e = e5_g(w, 5)
+    let f = e5_g(w, 6)
+    let g = e5_g(w, 7)
+    let h = e5_g(w, 8)
+    x2_sub(a, p + 128, p)
+    x2_sub(t, q + 128, q)
+    e5_mul(w, a, a, t)
+    x2_add(b, p, p + 128)
+    x2_add(t, q, q + 128)
+    e5_mul(w, b, b, t)
+    e5_mul(w, c, p + 384, q + 384)
+    e5_mul(w, c, c, e5_g(w, 9))
+    e5_mul(w, d, p + 256, q + 256)
+    x2_add(d, d, d)
+    x2_sub(e, b, a)
+    x2_sub(f, d, c)
+    x2_add(g, d, c)
+    x2_add(h, b, a)
+    e5_mul(w, p, e, f)
+    e5_mul(w, p + 128, h, g)
+    e5_mul(w, p + 256, g, f)
+    e5_mul(w, p + 384, e, h)
+}
+
+fn e5_cswap(p: int, q: int, b: int) {
+    let mut i = 0
+    while i < 4 {
+        x2_sel(p + 128 * i, q + 128 * i, b)
+        i += 1
+    }
+}
+
+// r[32] = codificación del punto p.
+fn e5_pack(w: int, r: int, p: int) {
+    let tx = e5_g(w, 22)
+    let ty = e5_g(w, 23)
+    let zi = e5_g(w, 24)
+    x2_inv(zi, p + 256, e5_g(w, 16), e5_g(w, 14))
+    e5_mul(w, tx, p, zi)
+    e5_mul(w, ty, p + 128, zi)
+    x2_pack(r, ty, e5_g(w, 18), e5_g(w, 17))
+    std::raw::store8(r + 31, std::raw::load8(r + 31) ^ std::raw::shl(e5_par(w, tx), 7))
+}
+
+// p = s * q (s: 32 bytes little-endian). q se modifica.
+fn e5_scalarmult(w: int, p: int, q: int, s: int) {
+    let mut i = 0
+    while i < 64 {
+        x2_st(p, i, 0)
+        i += 1
+    }
+    x2_st(p + 128, 0, 1)
+    x2_st(p + 256, 0, 1)
+    i = 255
+    while i >= 0 {
+        let b = std::raw::shr(std::raw::load8(s + i / 8), i & 7) & 1
+        e5_cswap(p, q, b)
+        e5_ptadd(w, q, p)
+        e5_ptadd(w, p, p)
+        e5_cswap(p, q, b)
+        i -= 1
+    }
+}
+
+fn e5_scalarbase(w: int, p: int, s: int) {
+    let q = e5_g(w, 29)
+    e5_cp(q, e5_g(w, 12))
+    e5_cp(q + 128, e5_g(w, 13))
+    let mut i = 0
+    while i < 16 {
+        x2_st(q + 256, i, 0)
+        i += 1
+    }
+    x2_st(q + 256, 0, 1)
+    e5_mul(w, q + 384, e5_g(w, 12), e5_g(w, 13))
+    e5_scalarmult(w, p, q, s)
+}
+
+// Orden del grupo L, byte j (little-endian).
+fn e5_l(j: int) -> int {
+    let s = "edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"
+    if j >= 32 {
+        return 0
+    }
+    let p = std::raw::bits(s) + 16
+    e5_hexv(std::raw::load8(p + 2 * j)) * 16 + e5_hexv(std::raw::load8(p + 2 * j + 1))
+}
+
+// Reduce x (64 palabras con signo) módulo L y escribe 32 bytes en r.
+fn e5_modl(r: int, x: int) {
+    let mut i = 63
+    while i >= 32 {
+        let mut carry = 0
+        let mut j = i - 32
+        while j < i - 12 {
+            x2_st(x, j, x2_ld(x, j) + carry - 16 * x2_ld(x, i) * e5_l(j - (i - 32)))
+            carry = std::raw::sar(x2_ld(x, j) + 128, 8)
+            x2_st(x, j, x2_ld(x, j) - std::raw::shl(carry, 8))
+            j += 1
+        }
+        x2_st(x, j, x2_ld(x, j) + carry)
+        x2_st(x, i, 0)
+        i -= 1
+    }
+    let mut carry = 0
+    let mut j = 0
+    while j < 32 {
+        x2_st(x, j, x2_ld(x, j) + carry - std::raw::sar(x2_ld(x, 31), 4) * e5_l(j))
+        carry = std::raw::sar(x2_ld(x, j), 8)
+        x2_st(x, j, x2_ld(x, j) & 255)
+        j += 1
+    }
+    j = 0
+    while j < 32 {
+        x2_st(x, j, x2_ld(x, j) - carry * e5_l(j))
+        j += 1
+    }
+    i = 0
+    while i < 32 {
+        x2_st(x, i + 1, x2_ld(x, i + 1) + std::raw::sar(x2_ld(x, i), 8))
+        std::raw::store8(r + i, x2_ld(x, i) & 255)
+        i += 1
+    }
+}
+
+// Reduce 64 bytes (en sitio): el resultado ocupa los 32 primeros.
+fn e5_reduce(r: int) {
+    let x = rt_alloc_zero(8 * 64 + 8)
+    let mut i = 0
+    while i < 64 {
+        x2_st(x, i, std::raw::load8(r + i))
+        std::raw::store8(r + i, 0)
+        i += 1
+    }
+    e5_modl(r, x)
+    rt_free_block(x)
+}
+
+// Descomprime -A en el punto r (Edwards con X negada). false si no es un punto válido.
+fn e5_unpackneg(w: int, r: int, p: int) -> bool {
+    let t = e5_g(w, 22)
+    let chk = e5_g(w, 23)
+    let num = e5_g(w, 24)
+    let den = e5_g(w, 37)
+    let den2 = e5_g(w, 38)
+    let den4 = e5_g(w, 39)
+    let den6 = e5_g(w, 36)
+    let one = r + 256
+    let mut i = 0
+    while i < 16 {
+        x2_st(one, i, 0)
+        i += 1
+    }
+    x2_st(one, 0, 1)
+    x2_unpack(r + 128, p)
+    e5_mul(w, num, r + 128, r + 128)
+    e5_mul(w, den, num, e5_g(w, 10))
+    x2_sub(num, num, one)
+    x2_add(den, one, den)
+    e5_mul(w, den2, den, den)
+    e5_mul(w, den4, den2, den2)
+    e5_mul(w, den6, den4, den2)
+    e5_mul(w, t, den6, num)
+    e5_mul(w, t, t, den)
+    e5_pow2523(w, t, t)
+    e5_mul(w, t, t, num)
+    e5_mul(w, t, t, den)
+    e5_mul(w, t, t, den)
+    e5_mul(w, r, t, den)
+    e5_mul(w, chk, r, r)
+    e5_mul(w, chk, chk, den)
+    if e5_neq(w, chk, num) {
+        e5_mul(w, r, r, e5_g(w, 11))
+    }
+    e5_mul(w, chk, r, r)
+    e5_mul(w, chk, chk, den)
+    if e5_neq(w, chk, num) {
+        return false
+    }
+    if e5_par(w, r) == std::raw::shr(std::raw::load8(p + 31), 7) {
+        let mut k = 0
+        while k < 16 {
+            x2_st(r, k, 0 - x2_ld(r, k))
+            k += 1
+        }
+    }
+    e5_mul(w, r + 384, r, r + 128)
+    true
+}
+
+// Escalar a partir de la semilla: SHA-512, recorte de bits. Devuelve un bloque de 64 bytes.
+fn e5_expand(seed: int) -> int {
+    let d = hs_digest(3, seed, 32)
+    std::raw::store8(d, std::raw::load8(d) & 248)
+    std::raw::store8(d + 31, (std::raw::load8(d + 31) & 127) | 64)
+    d
+}
+
+// pk[32] desde la semilla[32].
+fn e5_public(seed: int, pk: int) {
+    let w = e5_new()
+    let d = e5_expand(seed)
+    e5_scalarbase(w, e5_g(w, 25), d)
+    e5_pack(w, pk, e5_g(w, 25))
+    rt_free_block(d)
+    rt_free_block(w)
+}
+
+// sig[64] = firma de msg[n] con la semilla[32].
+fn e5_sign(msg: int, n: int, seed: int, sig: int) {
+    let w = e5_new()
+    let d = e5_expand(seed)
+    let pk = rt_alloc(40)
+    e5_scalarbase(w, e5_g(w, 25), d)
+    e5_pack(w, pk, e5_g(w, 25))
+    // r = H(d[32..64] || msg) mod L
+    let b1 = rt_alloc(n + 40)
+    rt_copy(b1, d + 32, 32)
+    rt_copy(b1 + 32, msg, n)
+    let r = hs_digest(3, b1, n + 32)
+    rt_free_block(b1)
+    e5_reduce(r)
+    e5_scalarbase(w, e5_g(w, 25), r)
+    e5_pack(w, sig, e5_g(w, 25))
+    // h = H(R || pk || msg) mod L
+    let b2 = rt_alloc(n + 72)
+    rt_copy(b2, sig, 32)
+    rt_copy(b2 + 32, pk, 32)
+    rt_copy(b2 + 64, msg, n)
+    let h = hs_digest(3, b2, n + 64)
+    rt_free_block(b2)
+    e5_reduce(h)
+    let x = rt_alloc_zero(8 * 64 + 8)
+    let mut i = 0
+    while i < 32 {
+        x2_st(x, i, std::raw::load8(r + i))
+        i += 1
+    }
+    i = 0
+    while i < 32 {
+        let mut j = 0
+        let hi = std::raw::load8(h + i)
+        while j < 32 {
+            x2_st(x, i + j, x2_ld(x, i + j) + hi * std::raw::load8(d + j))
+            j += 1
+        }
+        i += 1
+    }
+    e5_modl(sig + 32, x)
+    rt_free_block(x)
+    rt_free_block(h)
+    rt_free_block(r)
+    rt_free_block(pk)
+    rt_free_block(d)
+    rt_free_block(w)
+}
+
+// s < L (little-endian, 32 bytes)
+fn e5_canonical(s: int) -> bool {
+    let mut i = 31
+    while i >= 0 {
+        let a = std::raw::load8(s + i)
+        let b = e5_l(i)
+        if a < b {
+            return true
+        }
+        if a > b {
+            return false
+        }
+        i -= 1
+    }
+    false
+}
+
+fn e5_verify(msg: int, n: int, sig: int, pk: int) -> bool {
+    if !e5_canonical(sig + 32) {
+        return false
+    }
+    let w = e5_new()
+    let q = e5_g(w, 29)
+    if !e5_unpackneg(w, q, pk) {
+        rt_free_block(w)
+        return false
+    }
+    let b2 = rt_alloc(n + 72)
+    rt_copy(b2, sig, 32)
+    rt_copy(b2 + 32, pk, 32)
+    rt_copy(b2 + 64, msg, n)
+    let h = hs_digest(3, b2, n + 64)
+    rt_free_block(b2)
+    e5_reduce(h)
+    let p = e5_g(w, 25)
+    e5_scalarmult(w, p, q, h)
+    e5_scalarbase(w, e5_g(w, 33), sig + 32)
+    e5_ptadd(w, p, e5_g(w, 33))
+    let t = rt_alloc(40)
+    e5_pack(w, t, p)
+    let mut acc = 0
+    let mut i = 0
+    while i < 32 {
+        acc = acc | (std::raw::load8(t + i) ^ std::raw::load8(sig + i))
+        i += 1
+    }
+    rt_free_block(t)
+    rt_free_block(h)
+    rt_free_block(w)
+    acc == 0
+}
+
+// ---- std::crypto::ed25519_*
+
+fn e5_expect_len(v: any, n: int, what: string, function: string) {
+    rt_expect_bytes(v, function)
+    if rt_slen(v) != n {
+        rt_native_fail(function, rt_concat(what, rt_concat(" must contain exactly ", rt_concat(rt_int_to_str(n), " bytes"))))
+    }
+}
+
+fn std__crypto__ed25519_public_key(seed: any) -> any {
+    let function = "std::crypto::ed25519_public_key"
+    e5_expect_len(seed, 32, "Ed25519 seed", function)
+    let pk = rt_alloc(40)
+    e5_public(cr_ptr(seed), pk)
+    let b = rt_bytes_from(pk, 32)
+    rt_free_block(pk)
+    b
+}
+
+fn std__crypto__ed25519_sign(seed: any, message: any) -> any {
+    let function = "std::crypto::ed25519_sign"
+    e5_expect_len(seed, 32, "Ed25519 seed", function)
+    rt_expect_bytes(message, function)
+    let sig = rt_alloc(72)
+    e5_sign(cr_ptr(message), rt_slen(message), cr_ptr(seed), sig)
+    let b = rt_bytes_from(sig, 64)
+    rt_free_block(sig)
+    b
+}
+
+fn std__crypto__ed25519_verify(public_key: any, message: any, signature: any) -> any {
+    let function = "std::crypto::ed25519_verify"
+    e5_expect_len(public_key, 32, "Ed25519 public key", function)
+    rt_expect_bytes(message, function)
+    e5_expect_len(signature, 64, "Ed25519 signature", function)
+    e5_verify(cr_ptr(message), rt_slen(message), cr_ptr(signature), cr_ptr(public_key))
+}

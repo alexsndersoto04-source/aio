@@ -1,0 +1,155 @@
+// Caché del frente del runtime nativo.
+//
+// Compilar un programa nativo tarda ≈41 s, y el 98 % es cargar, revisar,
+// generar y optimizar `native/runtime.titan` + `std_*`, que no cambian entre
+// compilaciones. Este módulo guarda el resultado (lo único que el backend
+// lee del runtime: nombre, aridad, capturas, locales y operaciones de cada
+// función, más la tabla de cadenas) en un archivo JSON y lo reutiliza.
+//
+// La clave identifica lo que determina ese resultado: el SHA-512 del propio
+// ejecutable del compilador y el de cada `.titan` del directorio del runtime.
+// Si cualquiera cambia, la clave cambia y la caché se descarta. Bajo la VM
+// (`zett run build.titan`) no hay ejecutable que identificar, así que no se
+// usa. `TITAN_CACHE=0` la desactiva.
+import codegen
+
+fn rc_sort(items: array) -> array {
+    let mut out = []
+    for item in items {
+        let mut placed = false
+        let mut next = []
+        for other in out {
+            if !placed && item < other {
+                next = std::array::push(next, item)
+                placed = true
+            }
+            next = std::array::push(next, other)
+        }
+        if !placed {
+            next = std::array::push(next, item)
+        }
+        out = next
+    }
+    out
+}
+
+// Rutas (relativas) de todos los .titan bajo `dir`, ordenadas.
+fn rc_collect(dir: string, prefix: string, acc: array) -> array {
+    let mut found = acc
+    // list_dir devuelve las rutas completas (dir/nombre).
+    for full in rc_sort(std::fs::list_dir(dir)) {
+        let name = std::path::file_name(full)
+        let rel = if prefix == "" { name } else { prefix + "/" + name }
+        if std::fs::is_dir(full) {
+            found = rc_collect(full, rel, found)
+        } else if std::text::ends_with(name, ".titan") {
+            found = std::array::push(found, rel)
+        }
+    }
+    found
+}
+
+// Clave de la caché, o "" si no se puede calcular.
+fn rc_key(exe: string, runtime_dir: string) -> string {
+    if std::text::ends_with(exe, ".titan") {
+        return ""
+    }
+    let mut parts = [std::hash::sha512(std::fs::read_bytes(exe))]
+    for rel in rc_collect(runtime_dir, "", []) {
+        let digest = std::hash::sha512(std::fs::read_bytes(std::path::join(runtime_dir, rel)))
+        parts = std::array::push(parts, rel + ":" + digest)
+    }
+    std::hash::sha512(std::encoding::utf8_encode(ld_join(parts, "\n")))
+}
+
+// Un archivo por clave (cada compilador distinto tiene el suyo) y, al guardar,
+// se conservan como mucho `rc_keep` (los demás se borran) para que no se
+// acumulen 8 MB por cada ejecutable que se haya compilado.
+fn rc_keep() -> int {
+    4
+}
+
+fn rc_path(dir: string, key: string) -> string {
+    std::path::join(dir, ".runtime-cache-" + std::text::substring(key, 0, 16) + ".json")
+}
+
+fn rc_prune(dir: string, keep: string) {
+    let mut kept = 1
+    for full in std::fs::list_dir(dir) {
+        let name = std::path::file_name(full)
+        if full != keep && std::text::starts_with(name, ".runtime-cache-") && std::text::ends_with(name, ".json") {
+            if kept < rc_keep() {
+                kept += 1
+            } else {
+                std::fs::remove_file(full)
+            }
+            let handled = true
+        }
+    }
+}
+
+fn rc_op(op: Op) -> array {
+    let mut out = [op.k, op.n]
+    if op.m != 0 || op.s != "" || op.s2 != "" || op.flag || len(op.list) > 0 {
+        out = std::array::concat(out, [op.m, op.s, op.s2, op.flag, op.list])
+    }
+    out
+}
+
+fn rc_unop(v: array) -> Op {
+    if len(v) == 2 {
+        return Op { k: v[0], n: v[1], m: 0, s: "", s2: "", flag: false, list: [] }
+    }
+    Op { k: v[0], n: v[1], m: v[2], s: v[3], s2: v[4], flag: v[5], list: v[6] }
+}
+
+fn rc_pack(gr: G, key: string) -> string {
+    let mut funcs = []
+    for f in gr.funcs {
+        let mut code = []
+        for op in f.code {
+            code = std::array::push(code, rc_op(op))
+        }
+        funcs = std::array::push(funcs, [f.name, f.arity, f.captures, f.locals, code])
+    }
+    std::json::stringify([key, funcs, gr.table])
+}
+
+// Escribe la caché; un fallo al escribir (directorio de solo lectura) no es
+// un error de compilación: simplemente la próxima vez se recalcula.
+fn rc_save(dir: string, gr: G, key: string) {
+    let text = rc_pack(gr, key)
+    let path = rc_path(dir, key)
+    std::try::catch(|| {
+        std::fs::atomic_write(path, std::encoding::utf8_encode(text))
+        rc_prune(dir, path)
+    })
+}
+
+// El runtime guardado en `path` si existe y su clave coincide.
+fn rc_load(dir: string, key: string) -> any {
+    let path = rc_path(dir, key)
+    if !std::fs::is_file(path) {
+        return nil
+    }
+    let parsed = std::try::catch(|| {
+        std::json::parse(std::encoding::utf8_decode(std::fs::read_bytes(path)))
+    })
+    match parsed {
+        Result::Ok(v) => {
+            if len(v) != 3 || v[0] != key {
+                return nil
+            }
+            let mut funcs = []
+            for raw in v[1] {
+                let mut code = []
+                for op in raw[4] {
+                    code = std::array::push(code, rc_unop(op))
+                }
+                funcs = std::array::push(funcs, Func { name: raw[0], file: nil, arity: raw[1], params: [], ret: nil, captures: raw[2], locals: raw[3], max_stack: 0, code: code, locs: [] })
+            }
+            gs_table(gs_funcs(cg_new(std::map::new()), funcs), v[2])
+        },
+        Result::Err(e) => nil,
+    }
+}

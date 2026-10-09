@@ -1,0 +1,109 @@
+fn from_any(t: string, a: any) -> Sv {
+    if t == "null" {
+        return Sv::SNull
+    }
+    if t == "integer" {
+        return Sv::SInt(a)
+    }
+    if t == "real" {
+        return Sv::SReal(a)
+    }
+    if t == "text" {
+        return Sv::SText(a)
+    }
+    Sv::SBlob(a)
+}
+
+fn show_sv(v: Sv) -> string {
+    let t = match sx_typeof(v) {
+        Sv::SText(s) => s,
+        _ => "?",
+    }
+    t + ":" + sc_to_text(sx_quote(v))
+}
+
+fn sc_to_text2(v: Sv) -> string {
+    sc_to_text(v)
+}
+
+fn check(db: any, cx: Cx, ex: string) -> int {
+    let sql = "select " + ex + " as r"
+    let (all, err) = ss_parse_all(sql)
+    if err != "" {
+        print("PARSE", ex, err)
+        return 1
+    }
+    let st = all[0][0]
+    let e = st.v.cores[0].cols[0].e
+    let mine = sx_ev(cx, e, [])
+    let r = std::try::catch(|| { std::sqlite::query(db, "select typeof(" + ex + ") as t, " + ex + " as r", []) })
+    let mut theirs = ""
+    match r {
+        Result::Ok(rows) => {
+            theirs = show_sv(from_any(rows[0]["t"], rows[0]["r"]))
+        },
+        Result::Err(m) => {
+            theirs = "ERR"
+        },
+    }
+    let mut ms = ""
+    match mine {
+        Sv::SErr(m) => {
+            ms = "ERR"
+        },
+        _ => {
+            ms = show_sv(mine)
+        },
+    }
+    if ms != theirs {
+        print("DIFF", ex, "mine=", ms, "oracle=", theirs)
+        return 1
+    }
+    0
+}
+
+fn main() {
+    let db = std::sqlite::memory()
+    let (p0, err) = sqp_open(sqio_mem())
+    let sch = Sch { tabs: std::map::new(), idxs: std::map::new(), views: std::map::new(), trgs: [] }
+    let cx = Cx { sch: sch, pg: p0, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 0, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let exprs = [
+        "1+2", "1+2.5", "7/2", "7.0/2", "-7%3", "7%0", "1/0", "'a'||'b'", "1||2", "null||1", "1=1.0", "'1'=1", "'abc'<'abd'", "1 and null", "0 and null", "1 or null", "not null", "not 1",
+        "2.675*1", "0.1+0.2", "1e100", "9223372036854775807+1", "9223372036854775807*2", "-9223372036854775808", "9223372036854775808", "1<<3", "256>>4", "5&3", "5|3", "~5",
+        "cast('12abc' as integer)", "cast(1.9 as integer)", "cast('1e2' as real)", "cast(12 as text)", "cast(x'41' as text)", "cast('a' as blob)", "cast(1.5 as numeric)", "cast('0x10' as integer)", "cast(1e30 as integer)",
+        "abs(-5)", "abs(-5.5)", "abs('x')", "abs(null)", "coalesce(null,null,3)", "ifnull(null,2)", "nullif(1,1)", "nullif(1,2)", "iif(1,'y','n')",
+        "length('héllo')", "length(x'0102')", "length(12345)", "length(null)", "lower('ABÇ')", "upper('abç')", "substr('hello',2,3)", "substr('hello',-3)", "substr('hello',0,2)", "substr('hello',2,-1)", "substr('hello',-10,3)", "substr('héllo',2,2)", "substr(x'010203',2)", "substr(12345,2,2)",
+        "instr('abcabc','c')", "instr('abc','z')", "instr(x'010203',x'0203')", "replace('aaa','a','bb')", "replace('abc','','x')", "trim('  x ')", "ltrim('xxy','x')", "rtrim('yxx','x')", "trim('abcba','ab')",
+        "round(2.5)", "round(-2.5)", "round(2.675,2)", "round(0.125,2)", "round(1.005,2)", "round(1234567.891,-2)", "round(3.14159,3)", "round(5)", "round(1e20,2)",
+        "typeof(1)", "typeof(1.0)", "typeof('a')", "typeof(x'')", "typeof(null)", "hex('a')", "hex(x'00ff')", "hex(null)", "unhex('4142')", "unhex('4')", "quote('it''s')", "quote(1.0)", "quote(x'01')", "quote(null)",
+        "char(72,105)", "unicode('A')", "unicode('é')", "unicode('')", "min(1,2,3)", "max(1,2,3)", "max('a',1)", "min(null,1)", "sign(-3)", "sign(2.5)", "sign('x')",
+        "'abc' like 'A%'", "'abc' like 'a_c'", "'a%c' like 'a\\%c' escape '\\'", "'abc' glob 'a*'", "'abc' glob 'A*'", "'abc' not like 'x%'", "like('a%','abc')", "glob('a*','abc')", "'é' like 'É'",
+        "2 in (1,2,3)", "5 in (1,2,3)", "5 in (1,null)", "null in (1)", "2 not in (1,3)", "1 in ()",
+        "case when 1 then 'a' else 'b' end", "case 2 when 1 then 'a' when 2 then 'b' end", "case when null then 1 end", "1 is null", "null is null", "1 isnull", "1 notnull", "1 is 1", "null is not null",
+        "1 between 0 and 2", "'b' between 'a' and 'c'", "3 not between 1 and 2",
+        "printf('%d|%5d|%-5d|%05d', 1, 2, 3, 4)", "printf('%.2f', 3.14159)", "printf('%.2f', 2.675)", "printf('%.1f', 0.25)", "printf('%.0f', 2.5)", "printf('%.0f', 3.5)", "printf('%f', 1e20)", "printf('%.20f', 0.1)",
+        "printf('%g', 100000.0)", "printf('%g', 1000000.0)", "printf('%g', 0.0001)", "printf('%.10g', 1.0/3)", "printf('%e', 12345.6789)", "printf('%5s|%-5s|', 'ab', 'cd')", "printf('%x %X %o', 255, 255, 8)", "printf('%c', 65)", "printf('%q', 'a''b')", "printf('%Q', 'a''b')", "printf('%Q', null)", "printf('%s', 1.5)", "printf('%d', '12abc')", "printf('%%')", "printf('%5.1f|', 3.14159)", "printf('%+d', 5)", "printf('%s %s', 'a')",
+        "0.1+0.2", "cast(0.1+0.2 as text)", "cast(123456789012345678 as real)", "cast(1.5e-7 as text)", "2.5e-5 || ''", "1e15+0.5", "1.0*100", "3.0", "-0.0", "1e-5", "123456789.123456789", "100000000000000.0", "1e15", "1e16", "5e-324", "1.7976931348623157e308",
+        "'10' + 5", "'abc' + 1", "'3.5' * 2", "' 12 ' + 1", "1 + null", "'1e2' + 0", "x'31' + 1", "true", "false", "true and false", "9223372036854775807 + 0.0", "5 % 2.5", "-5 / 2", "-5 % 3", "5.5 % 2",
+        "concat('a',1,null)", "concat_ws(',',1,null,'x')", "octet_length('é')", "zeroblob(3)", "typeof(randomblob(4))", "length(randomblob(4))", "sqlite_version()", "ifnull(1)", "coalesce(1)"
+    ]
+    let mut exprs2 = exprs
+    let mut i = 1
+    while i < 70 {
+        exprs2 = std::array::push(exprs2, "{i}/7.0")
+        exprs2 = std::array::push(exprs2, "{i}*1.1e-3")
+        exprs2 = std::array::push(exprs2, "{i}e10/3")
+        exprs2 = std::array::push(exprs2, "{i}e-{i}/3")
+        exprs2 = std::array::push(exprs2, "{i}.5e17*{i}")
+        exprs2 = std::array::push(exprs2, "printf('%.3f %g %e %.12g', {i}/9.0, {i}/9.0*1e{i}, {i}/9.0, {i}e-5/3)")
+        exprs2 = std::array::push(exprs2, "round({i}/7.0, 3) || round({i}*1.0e5/7.0, -1) || round({i}/8.0, 1)")
+        exprs2 = std::array::push(exprs2, "{i}*{i}*{i}*{i}*{i}*{i}*{i}*{i}*{i}*{i}+0.0")
+        exprs2 = std::array::push(exprs2, "{i}*1e300*1e{i}")
+        i += 1
+    }
+    let mut bad = 0
+    for ex in exprs2 {
+        bad += check(db, cx, ex)
+    }
+    print("total", len(exprs2), "bad", bad)
+}

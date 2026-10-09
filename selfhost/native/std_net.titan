@@ -589,7 +589,8 @@ fn nt_gai_message(code: int, err: int) -> any {
 
 // TcpStream::connect((host, port)). Devuelve el descriptor; si falla,
 // termina con el mensaje de Rust.
-fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
+// `prefix` se antepone a cada mensaje de error (Redis: "Redis I/O error: ").
+fn nt_connect_p(f: string, prefix: string, hp: int, hn: int, port: int) -> int {
     let sa = rt_alloc_zero(32)
     let a = rt_alloc_zero(16)
     if nt_rust_v4(hp, hn, a) {
@@ -598,7 +599,7 @@ fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
         rt_free_block(sa)
         rt_free_block(a)
         if fd < 0 {
-            rt_native_fail(f, rt_os_error(0 - fd))
+            rt_native_fail(f, rt_concat(prefix, rt_os_error(0 - fd)))
         }
         return fd
     }
@@ -608,7 +609,7 @@ fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
         rt_free_block(sa)
         rt_free_block(a)
         if fd < 0 {
-            rt_native_fail(f, rt_os_error(0 - fd))
+            rt_native_fail(f, rt_concat(prefix, rt_os_error(0 - fd)))
         }
         return fd
     }
@@ -617,7 +618,7 @@ fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
     while i < hn {
         if std::raw::load8(hp + i) == 0 {
             rt_free_block(sa)
-            rt_native_fail(f, "file name contained an unexpected NUL byte")
+            rt_native_fail(f, rt_concat(prefix, "file name contained an unexpected NUL byte"))
         }
         i += 1
     }
@@ -629,7 +630,7 @@ fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
         let msg = nt_gai_message(code, std::raw::load(res + 8))
         rt_free_block(res)
         rt_free_block(sa)
-        rt_native_fail(f, msg)
+        rt_native_fail(f, rt_concat(prefix, msg))
     }
     let count = std::raw::load(res + 16)
     let mut last = 0
@@ -657,10 +658,14 @@ fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
     rt_free_block(res)
     rt_free_block(sa)
     if count == 0 {
-        rt_native_fail(f, "could not resolve to any addresses")
+        rt_native_fail(f, rt_concat(prefix, "could not resolve to any addresses"))
     }
-    rt_native_fail(f, rt_os_error(0 - last))
+    rt_native_fail(f, rt_concat(prefix, rt_os_error(0 - last)))
     -1
+}
+
+fn nt_connect(f: string, hp: int, hn: int, port: int) -> int {
+    nt_connect_p(f, "", hp, hn, port)
 }
 
 // ------------------------------------------------------------ HTTP

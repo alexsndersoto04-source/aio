@@ -1,0 +1,1907 @@
+// std::sqlite en Titan, parte 12: ejecución de SELECT (orígenes, uniones, agregación, orden,
+// operaciones compuestas, CTE). Prefijo `sy`.
+
+struct SrcR {
+    alias: string,
+    kind: string,
+    tab: any,
+    cols: array,
+    rows: any,
+    jt: string,
+    on: any,
+    using: array,
+    off: int,
+    width: int,
+    names: array,
+    fnsrc: any,
+}
+
+fn sy_ord(n: int) -> string {
+    let m = n % 100
+    if m >= 11 && m <= 13 {
+        return "{n}th"
+    }
+    let d = n % 10
+    if d == 1 {
+        return "{n}st"
+    }
+    if d == 2 {
+        return "{n}nd"
+    }
+    if d == 3 {
+        return "{n}rd"
+    }
+    "{n}th"
+}
+
+fn sy_cx_aggs(cx: Cx, aggs: array) -> Cx {
+    Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+}
+
+fn sy_cx_wvals(cx: Cx, w: array) -> Cx {
+    Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: w, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+}
+
+fn sy_cx_ctes(cx: Cx, c: any) -> Cx {
+    Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: c, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+}
+
+fn sy_nulls(n: int) -> array {
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        out = std::array::push(out, Sv::SNull)
+        i += 1
+    }
+    out
+}
+
+fn sy_row_err(row: array) -> string {
+    for v in row {
+        match v {
+            Sv::SErr(m) => {
+                return m
+            },
+            _ => {},
+        }
+    }
+    ""
+}
+
+fn sy_split_and(e: any) -> array {
+    if e == nil {
+        return []
+    }
+    match e {
+        Ex::EBin(p) => {
+            if p.0 == "AND" {
+                return std::array::concat(sy_split_and(p.1), sy_split_and(p.2))
+            }
+            return [e]
+        },
+        _ => [e],
+    }
+}
+
+// ------------------------------------------------------------ ordenación estable
+
+// items: [claves, carga]. descs/nulls/colls: por término.
+fn sy_cmp_items(a: array, b: array, descs: array, nulls: array, colls: array) -> int {
+    let ka = a[0]
+    let kb = b[0]
+    let mut i = 0
+    let n = len(descs)
+    while i < n {
+        let x = ka[i]
+        let y = kb[i]
+        let xn = sx_isnull(x)
+        let yn = sx_isnull(y)
+        let mut c = 0
+        if xn || yn {
+            if xn && yn {
+                c = 0
+            } else {
+                // NULL es menor; NULLS FIRST/LAST fijan la posición absoluta
+                let nf = nulls[i]
+                let mut xfirst = xn
+                if nf == 2 {
+                    xfirst = !xn
+                }
+                if nf == 0 {
+                    // por defecto: menor, y DESC invierte
+                    c = 0 - 1
+                    if !xn {
+                        c = 1
+                    }
+                    if descs[i] {
+                        c = 0 - c
+                    }
+                } else {
+                    if xfirst {
+                        c = 0 - 1
+                    } else {
+                        c = 1
+                    }
+                }
+                if c != 0 {
+                    return c
+                }
+            }
+        } else {
+            c = sq_cmp(x, y, colls[i])
+            if descs[i] {
+                c = 0 - c
+            }
+        }
+        if c != 0 {
+            return c
+        }
+        i += 1
+    }
+    0
+}
+
+fn sy_merge(a: array, b: array, descs: array, nulls: array, colls: array) -> array {
+    let la = len(a)
+    let lb = len(b)
+    let mut out = []
+    let mut i = 0
+    let mut j = 0
+    while i < la && j < lb {
+        if sy_cmp_items(b[j], a[i], descs, nulls, colls) < 0 {
+            out = std::array::push(out, b[j])
+            j += 1
+        } else {
+            out = std::array::push(out, a[i])
+            i += 1
+        }
+    }
+    while i < la {
+        out = std::array::push(out, a[i])
+        i += 1
+    }
+    while j < lb {
+        out = std::array::push(out, b[j])
+        j += 1
+    }
+    out
+}
+
+fn sy_msort(items: array, descs: array, nulls: array, colls: array) -> array {
+    let n = len(items)
+    if n <= 1 {
+        return items
+    }
+    let h = n / 2
+    let a = sy_msort(std::array::slice(items, 0, h), descs, nulls, colls)
+    let b = sy_msort(std::array::slice(items, h, n), descs, nulls, colls)
+    sy_merge(a, b, descs, nulls, colls)
+}
+
+// ------------------------------------------------------------ orígenes
+
+fn sy_cte_key(name: string) -> string {
+    sh_key(name)
+}
+
+fn sy_scols(alias: string, names: array, affs: array, colls: array) -> array {
+    let mut out = []
+    let mut i = 0
+    for n in names {
+        out = std::array::push(out, ScCol { alias: alias, name: n, aff: affs[i], coll: colls[i], hidden: false, merged: false })
+        i += 1
+    }
+    out
+}
+
+fn sy_empty_strs(n: int) -> array {
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        out = std::array::push(out, "")
+        i += 1
+    }
+    out
+}
+
+fn sy_src_from_rows(alias: string, kind: string, names: array, rows: array, s: Src, off: int) -> SrcR {
+    let n = len(names)
+    SrcR { alias: alias, kind: kind, tab: nil, cols: sy_scols(alias, names, sy_empty_strs(n), sy_empty_strs(n)), rows: rows, jt: s.jt, on: s.on, using: s.using, off: off, width: n, names: names, fnsrc: nil }
+}
+
+fn sy_refs_name(core: any, name: string) -> bool {
+    let k = sh_key(name)
+    for s in core.from {
+        if s.kind == "table" && sh_key(s.name) == k {
+            return true
+        }
+        if s.kind == "sub" && s.sub != nil {
+            for c in s.sub.cores {
+                if c.vals == nil && sy_refs_name(c, name) {
+                    return true
+                }
+            }
+        }
+        if s.kind == "group" {
+            let fake = Core { distinct: false, cols: [], from: s.sub, wh: nil, group: [], having: nil, wins: [], vals: nil }
+            if sy_refs_name(fake, name) {
+                return true
+            }
+        }
+    }
+    false
+}
+
+// Filas de un CTE (con nombres de columna). Devuelve (nombres, filas, error).
+fn sy_cte_rows(cx: Cx, name: string, ent: any) -> (array, array, string) {
+    if ent[0] == "mat" {
+        return (ent[1], ent[2], "")
+    }
+    let cte = ent[1]
+    let mut isrec = false
+    for c in cte.sel.cores {
+        if c.vals == nil && sy_refs_name(c, name) {
+            isrec = true
+        }
+    }
+    // el propio CTE no es visible dentro de su definición salvo que sea recursivo
+    let mut inner = cx
+    if !isrec {
+        inner = sy_cx_ctes(cx, std::map::remove(cx.ctes, sy_cte_key(name)))
+    }
+    if !isrec {
+        let (names, rows, err) = sy_select(inner, cte.sel, [], [], -1)
+        if err != "" {
+            return ([], [], err)
+        }
+        if len(cte.cols) > 0 {
+            if len(cte.cols) != len(names) {
+                let nn = len(names)
+                let nc = len(cte.cols)
+                return ([], [], "table " + name + " has {nn} values for {nc} columns")
+            }
+            return (cte.cols, rows, "")
+        }
+        return (names, rows, "")
+    }
+    // recursivo: la primera parte es la inicial; las demás se repiten sobre las filas nuevas
+    let sel = cte.sel
+    let (n0, init, e0) = sy_core(cx, sel.cores[0], [], [], [], -1)
+    if e0 != "" {
+        return ([], [], e0)
+    }
+    let mut names = n0
+    if len(cte.cols) > 0 {
+        names = cte.cols
+    }
+    let mut cap = -1
+    if sel.limit != nil {
+        let (lv, off, le) = sy_limits(cx, sel.limit, sel.offset, [], [])
+        if le != "" {
+            return ([], [], le)
+        }
+        if lv >= 0 {
+            cap = lv + off
+        }
+    }
+    let mut all = init
+    let mut work = init
+    let mut seen = std::map::new()
+    let mut distinct = false
+    for o in sel.ops {
+        if o == "UNION" {
+            distinct = true
+        }
+    }
+    if distinct {
+        let mut dd = []
+        for r in init {
+            let k = sx_row_key(r)
+            if !std::map::contains(seen, k) {
+                seen = std::map::insert(seen, k, 1)
+                dd = std::array::push(dd, r)
+            }
+        }
+        all = dd
+        work = dd
+    }
+    while len(work) > 0 {
+        if cap >= 0 && len(all) >= cap {
+            break
+        }
+        let cx2 = sy_cx_ctes(cx, std::map::insert(cx.ctes, sy_cte_key(name), ["mat", names, work]))
+        let mut fresh = []
+        let mut ci = 1
+        while ci < len(sel.cores) {
+            let (n1, rr, e1) = sy_core(cx2, sel.cores[ci], [], [], [], -1)
+            if e1 != "" {
+                return ([], [], e1)
+            }
+            for r in rr {
+                if distinct {
+                    let k = sx_row_key(r)
+                    if !std::map::contains(seen, k) {
+                        seen = std::map::insert(seen, k, 1)
+                        fresh = std::array::push(fresh, r)
+                    }
+                } else {
+                    fresh = std::array::push(fresh, r)
+                }
+            }
+            ci += 1
+        }
+        all = std::array::concat(all, fresh)
+        work = fresh
+    }
+    // ORDER BY / LIMIT del propio CTE
+    let (nn, rows2, e2) = sy_finish(cx, sel, names, all, [], [])
+    if e2 != "" {
+        return ([], [], e2)
+    }
+    return (names, rows2, "")
+}
+
+fn sy_open_src(cx: Cx, s: Src, scopes: array, env: array, off: int) -> (any, string) {
+    if s.kind == "sub" {
+        let (names, rows, err) = sy_select(cx, s.sub, scopes, env, -1)
+        if err != "" {
+            return (nil, err)
+        }
+        return (sy_src_from_rows(s.alias, "sub", names, rows, s, off), "")
+    }
+    if s.kind == "fn" {
+        let (names, err) = sj_table_cols(s.name)
+        if err != "" {
+            return (nil, err)
+        }
+        let mut al = s.alias
+        if al == "" {
+            al = s.name
+        }
+        let sr0 = sy_src_from_rows(al, "fn", names, [], s, off)
+        let mut cs = sr0.cols
+        if len(cs) == 10 {
+            let c8 = cs[8]
+            let c9 = cs[9]
+            cs = std::array::set(cs, 8, ScCol { alias: c8.alias, name: c8.name, aff: "HID", coll: c8.coll, hidden: true, merged: false })
+            cs = std::array::set(cs, 9, ScCol { alias: c9.alias, name: c9.name, aff: "HID", coll: c9.coll, hidden: true, merged: false })
+        }
+        return (SrcR { alias: sr0.alias, kind: "fn", tab: nil, cols: cs, rows: [], jt: sr0.jt, on: sr0.on, using: sr0.using, off: off, width: sr0.width, names: names, fnsrc: s }, "")
+    }
+    let key = sy_cte_key(s.name)
+    let ent = std::map::get(cx.ctes, key)
+    if ent != nil {
+        let (names, rows, err) = sy_cte_rows(cx, s.name, ent)
+        if err != "" {
+            return (nil, err)
+        }
+        let mut al = s.alias
+        if al == "" {
+            al = s.name
+        }
+        return (sy_src_from_rows(al, "cte", names, rows, s, off), "")
+    }
+    let tab = sh_find_tab(cx.sch, s.name)
+    if tab != nil {
+        let mut al = s.alias
+        if al == "" {
+            al = tab.name
+        }
+        let mut cols = []
+        let mut names = []
+        for c in tab.cols {
+            cols = std::array::push(cols, ScCol { alias: al, name: c.name, aff: c.aff, coll: c.coll, hidden: false, merged: false })
+            names = std::array::push(names, c.name)
+        }
+        cols = std::array::push(cols, ScCol { alias: al, name: sy_rowid_name(tab), aff: "INTEGER", coll: "", hidden: true, merged: false })
+        return (SrcR { alias: al, kind: "table", tab: tab, cols: cols, rows: nil, jt: s.jt, on: s.on, using: s.using, off: off, width: len(cols), names: names, fnsrc: nil }, "")
+    }
+    let v = sh_find_view(cx.sch, s.name)
+    if v != nil {
+        let (names, rows, err) = sy_select(cx, v.sel, [], [], -1)
+        if err != "" {
+            return (nil, err)
+        }
+        let mut nm = names
+        if len(v.cols) > 0 {
+            nm = v.cols
+        }
+        let mut al = s.alias
+        if al == "" {
+            al = v.name
+        }
+        return (sy_src_from_rows(al, "view", nm, rows, s, off), "")
+    }
+    return (nil, "no such table: " + s.name)
+}
+
+fn sy_rowid_name(tab: TabI) -> string {
+    if tab.rowid >= 0 {
+        return tab.cols[tab.rowid].name
+    }
+    return "rowid"
+}
+
+fn sy_flatten(from: array) -> array {
+    let mut out = []
+    for s in from {
+        if s.kind == "group" {
+            let inner = sy_flatten(s.sub)
+            let mut i = 0
+            for x in inner {
+                if i == 0 {
+                    out = std::array::push(out, Src { kind: x.kind, name: x.name, alias: x.alias, sub: x.sub, jt: s.jt, on: s.on, using: s.using, args: x.args })
+                } else {
+                    out = std::array::push(out, x)
+                }
+                i += 1
+            }
+        } else {
+            out = std::array::push(out, s)
+        }
+    }
+    out
+}
+
+fn sy_wmisuse(wins: array, k: int) -> string {
+    let pos = wins[k][7]
+    "misuse of window function " + wins[k][0] + "()" + sr_sep() + "{pos}"
+}
+
+fn push_env(env: array, r: array) -> array {
+    std::array::push(env, r)
+}
+
+fn sy_with_rows(sr: SrcR, rows: array) -> SrcR {
+    SrcR { alias: sr.alias, kind: sr.kind, tab: sr.tab, cols: sr.cols, rows: rows, jt: sr.jt, on: sr.on, using: sr.using, off: sr.off, width: sr.width, names: sr.names, fnsrc: sr.fnsrc }
+}
+
+// Filas de una función con valores de tabla para una fila de contexto.
+fn sy_fn_rows(cx: Cx, sr: SrcR, exprs: array, env2: array) -> (array, string) {
+    let mut argv = []
+    for e in exprs {
+        argv = std::array::push(argv, sx_ev(cx, e, env2))
+    }
+    let er = sy_row_err(argv)
+    if er != "" {
+        return ([], er)
+    }
+    sj_table_rows(cx, sr.fnsrc.name, argv)
+}
+
+// Todas las filas de un origen (materializadas).
+fn sy_all_rows(cx: Cx, sr: SrcR) -> array {
+    if sr.rows != nil {
+        return sr.rows
+    }
+    sh_scan(cx, sr.tab)
+}
+
+// ------------------------------------------------------------ expansión de la lista de columnas
+
+// Devuelve (nombres, expresiones resueltas, aliases explícitos [nombre, expr], Rc)
+fn sy_expand_cols(cols: array, srcs: array, scopes2: array, rc0: Rc) -> (array, array, array, Rc) {
+    let mut names = []
+    let mut exprs = []
+    let mut aliases = []
+    let mut rc = rc0
+    let flat = scopes2[len(scopes2) - 1]
+    for c in cols {
+        if c.star {
+            let mut found = c.qual == ""
+            let mut i = 0
+            for sc in flat {
+                if !sc.hidden && !sc.merged && (c.qual == "" || sh_key(sc.alias) == sh_key(c.qual)) {
+                    names = std::array::push(names, sc.name)
+                    exprs = std::array::push(exprs, Ex::ESlot((0, i, sc.aff, sc.coll)))
+                    found = true
+                }
+                i += 1
+            }
+            if !found {
+                return ([], [], [], sr_fail(rc, "no such table: " + c.qual, -1))
+            }
+            if len(srcs) == 0 && c.qual == "" {
+                return ([], [], [], sr_fail(rc, "no tables specified", -1))
+            }
+        } else {
+            let (e, r2) = sr_ex(c.e, scopes2, rc)
+            rc = r2
+            if rc.err != "" {
+                return ([], [], [], rc)
+            }
+            let mut nm = c.qual
+            if c.alias != "" {
+                nm = c.alias
+                aliases = std::array::push(aliases, [c.alias, e])
+            } else {
+                match c.e {
+                    Ex::ECol(p) => {
+                        nm = p.1
+                    },
+                    _ => {},
+                }
+                match e {
+                    Ex::ESlot(q) => {
+                        if flat[q.1].hidden {
+                            nm = flat[q.1].name
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            names = std::array::push(names, nm)
+            exprs = std::array::push(exprs, e)
+        }
+    }
+    return (names, exprs, aliases, rc)
+}
+
+// ------------------------------------------------------------ LIMIT / OFFSET
+
+fn sy_limit_val(cx: Cx, e: any, scopes: array, env: array) -> (int, string) {
+    let rc = Rc { aggs: [], wins: [], wdefs: [], allow_agg: false, err: "", aliases: [], alias_first: false, cx: cx }
+    let (r, rc2) = sr_ex(e, scopes, rc)
+    if rc2.err != "" {
+        return (0, rc2.err)
+    }
+    let v = sc_apply_aff(sx_ev(cx, r, env), "NUMERIC")
+    match v {
+        Sv::SInt(i) => {
+            return (i, "")
+        },
+        Sv::SReal(f) => {
+            if std::math::floor(f) == f {
+                return (std::math::to_int(f), "")
+            }
+            return (0, "datatype mismatch")
+        },
+        Sv::SErr(m) => {
+            return (0, m)
+        },
+        _ => {
+            return (0, "datatype mismatch")
+        },
+    }
+}
+
+// (límite (-1 = sin), desplazamiento, error)
+fn sy_limits(cx: Cx, limit: any, offset: any, scopes: array, env: array) -> (int, int, string) {
+    let mut lv = -1
+    let mut ov = 0
+    if limit != nil {
+        let (v, err) = sy_limit_val(cx, limit, scopes, env)
+        if err != "" {
+            return (0, 0, err)
+        }
+        lv = v
+        if lv < 0 {
+            lv = -1
+        }
+    }
+    if offset != nil {
+        let (v, err) = sy_limit_val(cx, offset, scopes, env)
+        if err != "" {
+            return (0, 0, err)
+        }
+        ov = v
+        if ov < 0 {
+            ov = 0
+        }
+    }
+    return (lv, ov, "")
+}
+
+fn sy_apply_limit(rows: array, lv: int, ov: int) -> array {
+    let n = len(rows)
+    if ov == 0 && (lv < 0 || lv >= n) {
+        return rows
+    }
+    let mut a = ov
+    if a > n {
+        a = n
+    }
+    let mut b = n
+    if lv >= 0 && a + lv < n {
+        b = a + lv
+    }
+    std::array::slice(rows, a, b)
+}
+
+// ------------------------------------------------------------ índices utilizables
+
+fn sy_last_int(name: string) -> int {
+    let cs = std::text::chars(name)
+    let mut i = len(cs)
+    while i > 0 && std::text::char_code(cs[i - 1]) >= 48 && std::text::char_code(cs[i - 1]) <= 57 {
+        i -= 1
+    }
+    match std::text::parse_int(std::collections::join(std::array::slice(cs, i, len(cs)), "")) {
+        Option::Some(x) => {
+            return x
+        },
+        _ => {
+            return 0
+        },
+    }
+}
+
+// Columnas de un índice como [índice de columna, desc (0/1), collation (código)]; [] si hay expresiones.
+fn sy_idx_cols(sch: Sch, tab: TabI, ix: IdxI) -> array {
+    let mut out = []
+    if ix.auto {
+        let n = sy_last_int(ix.name)
+        if n < 1 || n > len(tab.uniqs) {
+            return []
+        }
+        for ci in tab.uniqs[n - 1][0] {
+            out = std::array::push(out, [ci, 0, sx_coll_code(tab.cols[ci].coll)])
+        }
+        return out
+    }
+    for c in ix.cols {
+        let ci = sh_col_of_expr(tab.cols, c[0])
+        if ci < 0 {
+            return []
+        }
+        let mut cn = c[2]
+        if cn == "" {
+            cn = tab.cols[ci].coll
+        }
+        let mut d = 0
+        if c[1] {
+            d = 1
+        }
+        out = std::array::push(out, [ci, d, sx_coll_code(cn)])
+    }
+    out
+}
+
+// Plan de acceso para el origen k a partir de condiciones de igualdad candidatas.
+fn sy_plan(cx: Cx, sr: SrcR, cands: array) -> array {
+    let mut eqs = []
+    let off = sr.off
+    for c in cands {
+        match c {
+            Ex::EBin(p) => {
+                if p.0 == "=" {
+                    let l = p.1
+                    let r = p.2
+                    let mut done = false
+                    match l {
+                        Ex::ESlot(q) => {
+                            if q.0 == 0 && q.1 >= off && q.1 < off + sr.width {
+                                let (ms, hs) = sr_max_slot(r)
+                                if ms < off && !hs {
+                                    eqs = std::array::push(eqs, [q.1 - off, r, sx_cmp_coll(l, r)])
+                                    done = true
+                                }
+                            }
+                        },
+                        _ => {},
+                    }
+                    if !done {
+                        match r {
+                            Ex::ESlot(q) => {
+                                if q.0 == 0 && q.1 >= off && q.1 < off + sr.width {
+                                    let (ms, hs) = sr_max_slot(l)
+                                    if ms < off && !hs {
+                                        eqs = std::array::push(eqs, [q.1 - off, l, sx_cmp_coll(l, r)])
+                                    }
+                                }
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    if len(eqs) == 0 {
+        return ["none"]
+    }
+    if sr.kind == "table" {
+        let tab = sr.tab
+        let nc = len(tab.cols)
+        for q in eqs {
+            if q[0] == nc || q[0] == tab.rowid {
+                return ["rowid", q[1]]
+            }
+        }
+        let mut best = []
+        let mut bestm = 0
+        for ix in sh_tab_indexes(cx.sch, tab) {
+            if ix.wh == nil {
+                let ic = sy_idx_cols(cx.sch, tab, ix)
+                let mut m = 0
+                let mut keys = []
+                let mut colls = []
+                let mut descs = []
+                let mut j = 0
+                while j < len(ic) {
+                    let mut hit: any = nil
+                    for q in eqs {
+                        if hit == nil && q[0] == ic[j][0] && q[2] == ic[j][2] {
+                            hit = q
+                        }
+                    }
+                    if hit == nil {
+                        break
+                    }
+                    keys = std::array::push(keys, hit[1])
+                    colls = std::array::push(colls, ic[j][2])
+                    descs = std::array::push(descs, ic[j][1])
+                    m += 1
+                    j += 1
+                }
+                let full = m == len(ic) && ix.unique
+                if m > bestm || (m == bestm && m > 0 && full && best[7] == false) {
+                    bestm = m
+                    best = ["index", ix, keys, m, colls, descs, ic, full]
+                }
+            }
+        }
+        if bestm > 0 {
+            return best
+        }
+    }
+    for q in eqs {
+        if q[2] == 0 {
+            return ["hash", q[0], q[1]]
+        }
+    }
+    return ["none"]
+}
+
+// Estructura de encadenamiento para un plan hash: [primero, último, siguiente].
+fn sy_hash_build(rows: array, ci: int) -> array {
+    let mut hfirst = std::map::new()
+    let mut hlast = std::map::new()
+    let mut nxt = std::array::filled(len(rows), -1)
+    let mut i = 0
+    for r in rows {
+        let v = r[ci]
+        if !sx_isnull(v) {
+            let k = sx_key(v)
+            let l = std::map::get(hlast, k)
+            if l == nil {
+                hfirst = std::map::insert(hfirst, k, i)
+            } else {
+                nxt = std::array::set(nxt, l, i)
+            }
+            hlast = std::map::insert(hlast, k, i)
+        }
+        i += 1
+    }
+    return [hfirst, hlast, nxt]
+}
+
+// Candidatos del origen para la fila parcial `arow`.
+fn sy_cands(cx: Cx, env: array, sr: SrcR, plan: array, arow: array, allrows: array, hm: array) -> (array, string) {
+    let kind = plan[0]
+    if kind == "none" {
+        return (allrows, "")
+    }
+    let e2 = std::array::push(env, arow)
+    if kind == "hash" {
+        let v = sx_ev(cx, plan[2], e2)
+        if sx_iserr(v) {
+            return ([], sy_row_err([v]))
+        }
+        if sx_isnull(v) {
+            return ([], "")
+        }
+        let mut i = std::map::get(hm[0], sx_key(v))
+        let mut out = []
+        while i != nil && i >= 0 {
+            out = std::array::push(out, allrows[i])
+            i = hm[2][i]
+        }
+        return (out, "")
+    }
+    let tab = sr.tab
+    if kind == "rowid" {
+        let v = sc_apply_aff(sx_ev(cx, plan[1], e2), "NUMERIC")
+        match v {
+            Sv::SInt(rid) => {
+                let (found, pl) = sqt_t_find(cx.pg, tab.root, rid)
+                if found {
+                    return ([sh_row(cx, tab, rid, pl)], "")
+                }
+                return ([], "")
+            },
+            Sv::SErr(m) => {
+                return ([], m)
+            },
+            _ => {
+                return ([], "")
+            },
+        }
+    }
+    // índice
+    let keyexs = plan[2]
+    let m = plan[3]
+    let mut key = []
+    for ke in keyexs {
+        let v = sx_ev(cx, ke, e2)
+        if sx_iserr(v) {
+            return ([], sy_row_err([v]))
+        }
+        if sx_isnull(v) {
+            return ([], "")
+        }
+        key = std::array::push(key, v)
+    }
+    let ix = plan[1]
+    let mut st = sqi_seek(cx.pg, ix.root, key, m, plan[4], plan[5])
+    let mut out = []
+    while len(st) > 0 {
+        let vals = sqi_cu_vals(cx.pg, st)
+        if sqi_cmp(vals, key, m, plan[4], plan[5]) != 0 {
+            break
+        }
+        let rid = sc_to_int(vals[len(vals) - 1])
+        let (found, pl) = sqt_t_find(cx.pg, tab.root, rid)
+        if found {
+            out = std::array::push(out, sh_row(cx, tab, rid, pl))
+        }
+        st = sqt_cu_adv(cx.pg, st)
+    }
+    return (out, "")
+}
+
+// ¿Todas las condiciones son verdaderas? Devuelve (resultado, error).
+fn sy_conj_ok(cx: Cx, conj: array, env2: array) -> (bool, string) {
+    for c in conj {
+        let v = sx_ev(cx, c, env2)
+        match v {
+            Sv::SErr(m) => {
+                return (false, m)
+            },
+            _ => {},
+        }
+        if sc_truth(v) != 1 {
+            return (false, "")
+        }
+    }
+    return (true, "")
+}
+
+// Un paso de unión: combina las filas parciales `acc` con el origen sr.
+fn sy_step(cx: Cx, env: array, sr: SrcR, jk: string, acc: array, onc: array, filt: array, plan: array, need: int, allrows: array, hm: array) -> (array, string) {
+    let isleft = jk == "LEFT" || jk == "FULL"
+    let isright = jk == "RIGHT" || jk == "FULL"
+    let mut out = []
+    let mut rmatched = []
+    if isright {
+        rmatched = std::array::filled(len(allrows), false)
+    }
+    let nulls = sy_nulls(sr.width)
+    for a in acc {
+        if need >= 0 && len(out) >= need {
+            break
+        }
+        let mut matched = false
+        if isright {
+            let mut i = 0
+            for r in allrows {
+                let full = std::array::concat(a, r)
+                let e2 = std::array::push(env, full)
+                let (ok, err) = sy_conj_ok(cx, onc, e2)
+                if err != "" {
+                    return ([], err)
+                }
+                if ok {
+                    matched = true
+                    rmatched = std::array::set(rmatched, i, true)
+                    let (ok2, err2) = sy_conj_ok(cx, filt, e2)
+                    if err2 != "" {
+                        return ([], err2)
+                    }
+                    if ok2 {
+                        out = std::array::push(out, full)
+                    }
+                }
+                i += 1
+            }
+        } else {
+            let (cands, cerr) = sy_cands(cx, env, sr, plan, a, allrows, hm)
+            if cerr != "" {
+                return ([], cerr)
+            }
+            for r in cands {
+                let full = std::array::concat(a, r)
+                let e2 = std::array::push(env, full)
+                let (ok, err) = sy_conj_ok(cx, onc, e2)
+                if err != "" {
+                    return ([], err)
+                }
+                if ok {
+                    matched = true
+                    let (ok2, err2) = sy_conj_ok(cx, filt, e2)
+                    if err2 != "" {
+                        return ([], err2)
+                    }
+                    if ok2 {
+                        out = std::array::push(out, full)
+                    }
+                    if need >= 0 && len(out) >= need {
+                        break
+                    }
+                }
+            }
+        }
+        if !matched && isleft {
+            let full = std::array::concat(a, nulls)
+            let e2 = std::array::push(env, full)
+            let (ok2, err2) = sy_conj_ok(cx, filt, e2)
+            if err2 != "" {
+                return ([], err2)
+            }
+            if ok2 {
+                out = std::array::push(out, full)
+            }
+        }
+    }
+    if isright {
+        let lnulls = sy_nulls(sr.off)
+        let mut i = 0
+        for r in allrows {
+            if !rmatched[i] {
+                let full = std::array::concat(lnulls, r)
+                let e2 = std::array::push(env, full)
+                let (ok2, err2) = sy_conj_ok(cx, filt, e2)
+                if err2 != "" {
+                    return ([], err2)
+                }
+                if ok2 {
+                    out = std::array::push(out, full)
+                }
+            }
+            i += 1
+        }
+    }
+    return (out, "")
+}
+
+// Primer origen: lectura (con índice si hay plan) y filtros del nivel 0.
+fn sy_first(cx: Cx, env: array, sr: SrcR, plan: array, filt: array, need: int) -> (array, string) {
+    let mut out = []
+    if plan[0] == "rowid" || plan[0] == "index" {
+        let (cands, cerr) = sy_cands(cx, env, sr, plan, [], [], [])
+        if cerr != "" {
+            return ([], cerr)
+        }
+        for r in cands {
+            let (ok, err) = sy_conj_ok(cx, filt, std::array::push(env, r))
+            if err != "" {
+                return ([], err)
+            }
+            if ok {
+                out = std::array::push(out, r)
+                if need >= 0 && len(out) >= need {
+                    break
+                }
+            }
+        }
+        return (out, "")
+    }
+    if sr.kind == "table" {
+        let tab = sr.tab
+        let mut st = sqt_cu_first(cx.pg, tab.root)
+        while len(st) > 0 {
+            let (rid, pl) = sqt_cu_row(cx.pg, st)
+            let r = sh_row(cx, tab, rid, pl)
+            let (ok, err) = sy_conj_ok(cx, filt, std::array::push(env, r))
+            if err != "" {
+                return ([], err)
+            }
+            if ok {
+                out = std::array::push(out, r)
+                if need >= 0 && len(out) >= need {
+                    break
+                }
+            }
+            st = sqt_cu_adv(cx.pg, st)
+        }
+        return (out, "")
+    }
+    for r in sr.rows {
+        let (ok, err) = sy_conj_ok(cx, filt, std::array::push(env, r))
+        if err != "" {
+            return ([], err)
+        }
+        if ok {
+            out = std::array::push(out, r)
+            if need >= 0 && len(out) >= need {
+                break
+            }
+        }
+    }
+    return (out, "")
+}
+
+// Nivel (índice de origen) al que pertenece una ranura.
+fn sy_level_of(srcs: array, slot: int) -> int {
+    let mut lv = 0
+    let mut i = 0
+    for s in srcs {
+        if s.off <= slot {
+            lv = i
+        }
+        i += 1
+    }
+    lv
+}
+
+fn sy_join_kind(jt: string) -> string {
+    let mut k = jt
+    if std::text::starts_with(k, "NATURAL ") {
+        k = std::text::substring(k, 8, len(k))
+    }
+    if k == "," || k == "" {
+        return "INNER"
+    }
+    k
+}
+
+// ------------------------------------------------------------ núcleo del SELECT
+
+fn sy_values(cx: Cx, core: Core, scopes: array, env: array) -> (array, array, string) {
+    let rc = Rc { aggs: [], wins: [], wdefs: [], allow_agg: false, err: "", aliases: [], alias_first: false, cx: cx }
+    let mut rows = []
+    let mut width = -1
+    for rw in core.vals {
+        if width >= 0 && width != len(rw) {
+            return ([], [], "all VALUES must have the same number of terms")
+        }
+        width = len(rw)
+        let (ex, r2) = sr_list(rw, scopes, rc)
+        if r2.err != "" {
+            return ([], [], r2.err)
+        }
+        let mut row = []
+        for e in ex {
+            row = std::array::push(row, sx_ev(cx, e, env))
+        }
+        let er = sy_row_err(row)
+        if er != "" {
+            return ([], [], er)
+        }
+        rows = std::array::push(rows, row)
+    }
+    let mut names = []
+    let mut i = 1
+    while i <= width {
+        names = std::array::push(names, "column{i}")
+        i += 1
+    }
+    return (names, rows, "")
+}
+
+fn sy_core(cx: Cx, core: any, scopes: array, env: array, order: array, need: int) -> (array, array, string) {
+    if core.vals != nil {
+        return sy_values(cx, core, scopes, env)
+    }
+    let flat = sy_flatten(core.from)
+    let n = len(flat)
+    let mut srcs = []
+    let mut off = 0
+    for s in flat {
+        let (sr, err) = sy_open_src(cx, s, scopes, env, off)
+        if err != "" {
+            return ([], [], err)
+        }
+        srcs = std::array::push(srcs, sr)
+        off += sr.width
+    }
+    let mut cols = []
+    for sr in srcs {
+        cols = std::array::concat(cols, sr.cols)
+    }
+    // USING / NATURAL: condiciones de igualdad y columnas fusionadas
+    let mut usingc = []
+    let mut k = 0
+    while k < n {
+        let sr = srcs[k]
+        let mut uc = []
+        let mut names = sr.using
+        if std::text::starts_with(sr.jt, "NATURAL ") && k > 0 {
+            names = []
+            let mut i = 0
+            while i < sr.off {
+                let lc = cols[i]
+                if !lc.hidden && !lc.merged {
+                    let mut dup = false
+                    for x in names {
+                        if sh_key(x) == sh_key(lc.name) {
+                            dup = true
+                        }
+                    }
+                    let mut inr = false
+                    let mut j = sr.off
+                    while j < sr.off + sr.width {
+                        if !cols[j].hidden && sh_key(cols[j].name) == sh_key(lc.name) {
+                            inr = true
+                        }
+                        j += 1
+                    }
+                    if inr && !dup {
+                        names = std::array::push(names, lc.name)
+                    }
+                }
+                i += 1
+            }
+        }
+        for nm in names {
+            let mut li = -1
+            let mut i = 0
+            while i < sr.off {
+                if li < 0 && !cols[i].hidden && !cols[i].merged && sh_key(cols[i].name) == sh_key(nm) {
+                    li = i
+                }
+                i += 1
+            }
+            let mut ri = -1
+            let mut j = sr.off
+            while j < sr.off + sr.width {
+                if ri < 0 && !cols[j].hidden && sh_key(cols[j].name) == sh_key(nm) {
+                    ri = j
+                }
+                j += 1
+            }
+            if li < 0 || ri < 0 {
+                return ([], [], "cannot join using column " + nm + " - column not present in both tables")
+            }
+            let lc = cols[li]
+            let rcl = cols[ri]
+            let (le, re) = sr_pair(Ex::ESlot((0, li, lc.aff, lc.coll)), Ex::ESlot((0, ri, rcl.aff, rcl.coll)))
+            uc = std::array::push(uc, Ex::EBin(("=", le, re)))
+            cols = std::array::set(cols, ri, ScCol { alias: rcl.alias, name: rcl.name, aff: rcl.aff, coll: rcl.coll, hidden: false, merged: true })
+        }
+        usingc = std::array::push(usingc, uc)
+        k += 1
+    }
+    let scopes2 = std::array::push(scopes, cols)
+    let rc0 = Rc { aggs: [], wins: [], wdefs: core.wins, allow_agg: true, err: "", aliases: [], alias_first: false, cx: cx }
+    let mut fnargs = []
+    for sr in srcs {
+        let mut fa = []
+        if sr.kind == "fn" {
+            let (fe, rcf) = sr_list(sr.fnsrc.args, scopes2, rc0)
+            if rcf.err != "" {
+                return ([], [], rcf.err)
+            }
+            fa = fe
+        }
+        fnargs = std::array::push(fnargs, fa)
+    }
+    let (names, exprs, aliases, rc1) = sy_expand_cols(core.cols, srcs, scopes2, rc0)
+    if rc1.err != "" {
+        return ([], [], rc1.err)
+    }
+    let rcw = Rc { aggs: rc1.aggs, wins: rc1.wins, wdefs: rc1.wdefs, allow_agg: false, err: "", aliases: aliases, alias_first: false, cx: cx }
+    // condiciones ON
+    let mut onc = []
+    k = 0
+    let mut rcc = rcw
+    while k < n {
+        let sr = srcs[k]
+        let mut cs = usingc[k]
+        if sr.on != nil {
+            let (oe, r2) = sr_ex(sr.on, scopes2, rcc)
+            rcc = r2
+            if rcc.err != "" {
+                return ([], [], rcc.err)
+            }
+            cs = std::array::concat(cs, sy_split_and(oe))
+        }
+        onc = std::array::push(onc, cs)
+        k += 1
+    }
+    let mut whc = []
+    if core.wh != nil {
+        let nw0 = len(rcc.wins)
+        let (we, r3) = sr_ex(core.wh, scopes2, rcc)
+        if r3.err == "" && len(r3.wins) > nw0 {
+            return ([], [], sy_wmisuse(r3.wins, nw0))
+        }
+        rcc = r3
+        if rcc.err != "" {
+            return ([], [], rcc.err)
+        }
+        whc = sy_split_and(we)
+    }
+    // GROUP BY
+    let mut gexprs = []
+    let mut gi = 0
+    for g in core.group {
+        gi += 1
+        let mut isint = false
+        match g {
+            Ex::ELit(v) => {
+                match v {
+                    Sv::SInt(pos) => {
+                        isint = true
+                        if pos < 1 || pos > len(exprs) {
+                            return ([], [], sy_ord(gi) + " GROUP BY term out of range - should be between 1 and {len(exprs)}")
+                        }
+                        gexprs = std::array::push(gexprs, exprs[pos - 1])
+                    },
+                    _ => {},
+                }
+            },
+            _ => {},
+        }
+        if !isint {
+            let nw1 = len(rcc.wins)
+            let (ge, r4) = sr_ex(g, scopes2, rcc)
+            if r4.err == "" && len(r4.wins) > nw1 {
+                return ([], [], sy_wmisuse(r4.wins, nw1))
+            }
+            rcc = r4
+            if rcc.err != "" {
+                return ([], [], rcc.err)
+            }
+            gexprs = std::array::push(gexprs, ge)
+        }
+    }
+    // HAVING y ORDER BY (pueden contener agregados)
+    let rch = Rc { aggs: rcc.aggs, wins: rcc.wins, wdefs: rcc.wdefs, allow_agg: true, err: "", aliases: aliases, alias_first: false, cx: cx }
+    let mut having: any = nil
+    let mut rcx = rch
+    if core.having != nil {
+        let nw2 = len(rcx.wins)
+        let (he, r5) = sr_ex(core.having, scopes2, rcx)
+        if r5.err == "" && len(r5.wins) > nw2 {
+            return ([], [], sy_wmisuse(r5.wins, nw2))
+        }
+        rcx = r5
+        if rcx.err != "" {
+            return ([], [], rcx.err)
+        }
+        having = he
+    }
+    let mut oexprs = []
+    let mut odesc = []
+    let mut onulls = []
+    let mut ocoll = []
+    let mut oi = 0
+    for o in order {
+        oi += 1
+        let mut resolved: any = nil
+        match o.e {
+            Ex::ELit(v) => {
+                match v {
+                    Sv::SInt(pos) => {
+                        if pos < 1 || pos > len(exprs) {
+                            return ([], [], sy_ord(oi) + " ORDER BY term out of range - should be between 1 and {len(exprs)}")
+                        }
+                        resolved = exprs[pos - 1]
+                    },
+                    _ => {
+                        resolved = o.e
+                    },
+                }
+            },
+            _ => {},
+        }
+        if resolved == nil {
+            let rco = Rc { aggs: rcx.aggs, wins: rcx.wins, wdefs: rcx.wdefs, allow_agg: true, err: "", aliases: aliases, alias_first: true, cx: cx }
+            let (oe, r6) = sr_ex(o.e, scopes2, rco)
+            rcx = Rc { aggs: r6.aggs, wins: r6.wins, wdefs: r6.wdefs, allow_agg: true, err: r6.err, aliases: aliases, alias_first: false, cx: cx }
+            if rcx.err != "" {
+                return ([], [], rcx.err)
+            }
+            resolved = oe
+        }
+        oexprs = std::array::push(oexprs, resolved)
+        odesc = std::array::push(odesc, o.desc)
+        onulls = std::array::push(onulls, o.nulls)
+        ocoll = std::array::push(ocoll, sx_coll_code(sx_coll_of(resolved)))
+    }
+    if need == -2 {
+        let mut affs = []
+        for e in exprs {
+            let a = sx_aff_of(e)
+            affs = std::array::push(affs, Sv::SText(a))
+        }
+        return (names, [affs], "")
+    }
+    let aggs = rcx.aggs
+    let isagg = len(aggs) > 0 || len(gexprs) > 0
+    if core.having != nil && !isagg {
+        return ([], [], "HAVING clause on a non-aggregate query")
+    }
+    let haswin = len(rcx.wins) > 0
+
+    // --- niveles de filtro
+    let nlev = if_max1(n)
+    let mut hasright = false
+    let mut kinds = []
+    for sr in srcs {
+        let jk = sy_join_kind(sr.jt)
+        kinds = std::array::push(kinds, jk)
+        if jk == "RIGHT" || jk == "FULL" {
+            hasright = true
+        }
+    }
+    let mut filt = []
+    let mut li = 0
+    while li < nlev {
+        filt = std::array::push(filt, [])
+        li += 1
+    }
+    for c in whc {
+        let (ms, hs) = sr_max_slot(c)
+        let mut lvl = 0
+        if ms >= 0 {
+            lvl = sy_level_of(srcs, ms)
+        }
+        if hs || hasright {
+            lvl = nlev - 1
+        }
+        filt = std::array::set(filt, lvl, std::array::push(filt[lvl], c))
+    }
+    // --- ejecutar uniones
+    let simple = !isagg && len(order) == 0 && !core.distinct && !haswin
+    let mut rows = []
+    if n == 0 {
+        let (ok, err) = sy_conj_ok(cx, filt[0], std::array::push(env, []))
+        if err != "" {
+            return ([], [], err)
+        }
+        if ok {
+            rows = [[]]
+        }
+    } else {
+        let mut acc = []
+        let mut sk = 0
+        while sk < n {
+            let sr = srcs[sk]
+            let jk = kinds[sk]
+            let mut cands = []
+            if sk == 0 || jk == "INNER" || jk == "CROSS" {
+                cands = std::array::concat(onc[sk], filt[sk])
+            } else if jk == "LEFT" {
+                cands = onc[sk]
+            }
+            let mut plan: any = ["none"]
+            if jk != "RIGHT" && jk != "FULL" {
+                plan = sy_plan(cx, sr, cands)
+            }
+            let mut stepneed = -1
+            if simple && sk == n - 1 {
+                stepneed = need
+            }
+            if sr.kind == "fn" {
+                if sk == 0 {
+                    let (rw0, ew0) = sy_fn_rows(cx, sr, fnargs[0], push_env(env, []))
+                    if ew0 != "" {
+                        return ([], [], ew0)
+                    }
+                    let sr2 = sy_with_rows(sr, rw0)
+                    let (r0, e0) = sy_first(cx, env, sr2, ["none"], filt[0], stepneed)
+                    if e0 != "" {
+                        return ([], [], e0)
+                    }
+                    acc = r0
+                } else {
+                    let mut outacc = []
+                    for a in acc {
+                        let (rw1, ew1) = sy_fn_rows(cx, sr, fnargs[sk], push_env(env, a))
+                        if ew1 != "" {
+                            return ([], [], ew1)
+                        }
+                        let sr3 = sy_with_rows(sr, rw1)
+                        let (r1, e1) = sy_step(cx, env, sr3, jk, [a], onc[sk], filt[sk], ["none"], -1, rw1, [])
+                        if e1 != "" {
+                            return ([], [], e1)
+                        }
+                        outacc = std::array::concat(outacc, r1)
+                    }
+                    acc = outacc
+                }
+            } else if sk == 0 {
+                let (r0, e0) = sy_first(cx, env, sr, plan, filt[0], stepneed)
+                if e0 != "" {
+                    return ([], [], e0)
+                }
+                acc = r0
+            } else {
+                let mut allrows = []
+                let mut hm = []
+                if plan[0] == "none" || plan[0] == "hash" {
+                    allrows = sy_all_rows(cx, sr)
+                }
+                if plan[0] == "hash" {
+                    hm = sy_hash_build(allrows, plan[1])
+                }
+                let (r1, e1) = sy_step(cx, env, sr, jk, acc, onc[sk], filt[sk], plan, stepneed, allrows, hm)
+                if e1 != "" {
+                    return ([], [], e1)
+                }
+                acc = r1
+            }
+            sk += 1
+        }
+        rows = acc
+    }
+    // --- proyección / agregación
+    let mut items = []
+    let mut wcols = []
+    let mut wperm = []
+    if haswin && !isagg {
+        let mut wcxs = []
+        let mut wenvs = []
+        for r in rows {
+            wcxs = std::array::push(wcxs, cx)
+            wenvs = std::array::push(wenvs, std::array::push(env, r))
+        }
+        let (wc, wp, we) = swn_all(wcxs, wenvs, rcx.wins)
+        if we != "" {
+            return ([], [], we)
+        }
+        wcols = wc
+        wperm = wp
+        let mut rows2 = []
+        for pi in wp {
+            rows2 = std::array::push(rows2, rows[pi])
+        }
+        rows = rows2
+    }
+    if !isagg {
+        let mut ri = 0
+        for r in rows {
+            let e2 = std::array::push(env, r)
+            let mut cxr = cx
+            if haswin {
+                cxr = sy_cx_wvals(cx, swn_row(wcols, wperm[ri]))
+            }
+            ri += 1
+            let mut out = []
+            for e in exprs {
+                out = std::array::push(out, sx_ev(cxr, e, e2))
+            }
+            let er = sy_row_err(out)
+            if er != "" {
+                return ([], [], er)
+            }
+            let mut keys = []
+            for e in oexprs {
+                keys = std::array::push(keys, sx_ev(cxr, e, e2))
+            }
+            let er2 = sy_row_err(keys)
+            if er2 != "" {
+                return ([], [], er2)
+            }
+            items = std::array::push(items, [keys, out])
+        }
+    } else {
+        let (it2, err) = sy_aggregate(cx, env, rows, srcs, aggs, gexprs, having, exprs, oexprs, sy_total_width(srcs), rcx.wins)
+        if err != "" {
+            return ([], [], err)
+        }
+        items = it2
+    }
+    // --- DISTINCT
+    if core.distinct {
+        let mut seen = std::map::new()
+        let mut dd = []
+        for it in items {
+            let k2 = sx_row_key(it[1])
+            if !std::map::contains(seen, k2) {
+                seen = std::map::insert(seen, k2, 1)
+                dd = std::array::push(dd, it)
+            }
+        }
+        items = dd
+    }
+    if len(oexprs) > 0 {
+        items = sy_msort(items, odesc, onulls, ocoll)
+    }
+    let mut res = []
+    for it in items {
+        res = std::array::push(res, it[1])
+    }
+    return (names, res, "")
+}
+
+fn if_max1(n: int) -> int {
+    if n < 1 {
+        return 1
+    }
+    n
+}
+
+fn sy_total_width(srcs: array) -> int {
+    let mut w = 0
+    for s in srcs {
+        w += s.width
+    }
+    w
+}
+
+// Agregación: devuelve (items [claves de orden, fila], error).
+fn sy_aggregate(cx: Cx, env: array, rows: array, srcs: array, aggs: array, gexprs: array, having: any, exprs: array, oexprs: array, width: int, wins: array) -> (array, string) {
+    let na = len(aggs)
+    let mut gmap = std::map::new()
+    let mut greps = []
+    let mut gstates = []
+    let mut gkeys = []
+    let mut singleminmax = false
+    if na == 1 && (aggs[0][0] == "min" || aggs[0][0] == "max") {
+        singleminmax = true
+    }
+    let mut inits = []
+    for a in aggs {
+        inits = std::array::push(inits, sx_agg_init(a[0]))
+    }
+    for r in rows {
+        let e2 = std::array::push(env, r)
+        let mut gk = []
+        for g in gexprs {
+            gk = std::array::push(gk, sx_ev(cx, g, e2))
+        }
+        let er = sy_row_err(gk)
+        if er != "" {
+            return ([], er)
+        }
+        let key = sx_row_key(gk)
+        let mut gi = std::map::get(gmap, key)
+        if gi == nil {
+            gi = len(greps)
+            gmap = std::map::insert(gmap, key, gi)
+            greps = std::array::push(greps, r)
+            gstates = std::array::push(gstates, inits)
+            gkeys = std::array::push(gkeys, gk)
+        }
+        let mut sts = gstates[gi]
+        let mut ai = 0
+        while ai < na {
+            let a = aggs[ai]
+            let mut take = true
+            if a[3] != nil {
+                take = sc_truth(sx_ev(cx, a[3], e2)) == 1
+            }
+            if take {
+                let mut args = []
+                for x in a[1] {
+                    args = std::array::push(args, sx_ev(cx, x, e2))
+                }
+                let er2 = sy_row_err(args)
+                if er2 != "" {
+                    return ([], er2)
+                }
+                let before = sts[ai]
+                args = sj_mark(cx, a[0], a[1], args)
+                let after = sx_agg_step(a[0], before, args, a[4], a[2])
+                if singleminmax {
+                    let changed = (before[0] == 0 && after[0] != 0) || (before[0] != 0 && sx_key(before[6]) != sx_key(after[6]))
+                    if changed {
+                        greps = std::array::set(greps, gi, r)
+                    }
+                }
+                sts = std::array::set(sts, ai, after)
+            }
+            ai += 1
+        }
+        gstates = std::array::set(gstates, gi, sts)
+    }
+    let mut noGroupEmpty = false
+    if len(greps) == 0 && len(gexprs) == 0 {
+        greps = [sy_nulls(width)]
+        gstates = [inits]
+        gkeys = [[]]
+        noGroupEmpty = true
+    }
+    // orden de los grupos por clave
+    let ng = len(greps)
+    let mut order = []
+    if len(gexprs) > 0 {
+        let mut its = []
+        let mut i = 0
+        while i < ng {
+            its = std::array::push(its, [gkeys[i], i])
+            i += 1
+        }
+        let mut descs = []
+        let mut nulls = []
+        let mut colls = []
+        for g in gexprs {
+            descs = std::array::push(descs, false)
+            nulls = std::array::push(nulls, 0)
+            colls = std::array::push(colls, sx_coll_code(sx_coll_of(g)))
+        }
+        let sorted = sy_msort(its, descs, nulls, colls)
+        for s in sorted {
+            order = std::array::push(order, s[1])
+        }
+    } else {
+        let mut i = 0
+        while i < ng {
+            order = std::array::push(order, i)
+            i += 1
+        }
+    }
+    let mut items = []
+    let mut gcxs = []
+    let mut genvs = []
+    for gi in order {
+        let mut finals = []
+        let mut ai = 0
+        while ai < na {
+            let mut fv = sx_agg_final(aggs[ai][0], gstates[gi][ai])
+            if aggs[ai][0] == "json_group_array" || aggs[ai][0] == "json_group_object" {
+                fv = sj_mark_sv(fv)
+            }
+            finals = std::array::push(finals, fv)
+            ai += 1
+        }
+        let er = sy_row_err(finals)
+        if er != "" {
+            return ([], er)
+        }
+        let cxg = sy_cx_aggs(cx, finals)
+        let e2 = std::array::push(env, greps[gi])
+        if having != nil {
+            let hv = sx_ev(cxg, having, e2)
+            let he = sy_row_err([hv])
+            if he != "" {
+                return ([], he)
+            }
+            if sc_truth(hv) != 1 {
+                continue
+            }
+        }
+        gcxs = std::array::push(gcxs, cxg)
+        genvs = std::array::push(genvs, e2)
+    }
+    let mut wcols = []
+    let mut gord = []
+    if len(wins) > 0 {
+        let (wc, wp, we) = swn_all(gcxs, genvs, wins)
+        if we != "" {
+            return ([], we)
+        }
+        wcols = wc
+        gord = wp
+    } else {
+        let mut k = 0
+        while k < len(gcxs) {
+            gord = std::array::push(gord, k)
+            k += 1
+        }
+    }
+    for k in gord {
+        let mut cxg = gcxs[k]
+        if len(wins) > 0 {
+            cxg = sy_cx_wvals(cxg, swn_row(wcols, k))
+        }
+        let e2 = genvs[k]
+        let mut out = []
+        for e in exprs {
+            out = std::array::push(out, sx_ev(cxg, e, e2))
+        }
+        let er2 = sy_row_err(out)
+        if er2 != "" {
+            return ([], er2)
+        }
+        let mut keys = []
+        for e in oexprs {
+            keys = std::array::push(keys, sx_ev(cxg, e, e2))
+        }
+        let er3 = sy_row_err(keys)
+        if er3 != "" {
+            return ([], er3)
+        }
+        items = std::array::push(items, [keys, out])
+    }
+    return (items, "")
+}
+
+// ------------------------------------------------------------ operaciones compuestas
+
+fn sy_sort_all(rows: array) -> array {
+    let mut items = []
+    for r in rows {
+        items = std::array::push(items, [r, r])
+    }
+    let mut descs = []
+    let mut nulls = []
+    let mut colls = []
+    let mut i = 0
+    let mut nc = 0
+    if len(rows) > 0 {
+        nc = len(rows[0])
+    }
+    while i < nc {
+        descs = std::array::push(descs, false)
+        nulls = std::array::push(nulls, 0)
+        colls = std::array::push(colls, 0)
+        i += 1
+    }
+    let sorted = sy_msort(items, descs, nulls, colls)
+    let mut out = []
+    for s in sorted {
+        out = std::array::push(out, s[1])
+    }
+    out
+}
+
+fn sy_compound(a: array, b: array, op: string) -> array {
+    if op == "UNION ALL" {
+        return std::array::concat(a, b)
+    }
+    let mut seen = std::map::new()
+    let mut out = []
+    if op == "UNION" {
+        for r in std::array::concat(a, b) {
+            let k = sx_row_key(r)
+            if !std::map::contains(seen, k) {
+                seen = std::map::insert(seen, k, 1)
+                out = std::array::push(out, r)
+            }
+        }
+        return sy_sort_all(out)
+    }
+    let mut inb = std::map::new()
+    for r in b {
+        inb = std::map::insert(inb, sx_row_key(r), 1)
+    }
+    for r in a {
+        let k = sx_row_key(r)
+        if !std::map::contains(seen, k) {
+            let has = std::map::contains(inb, k)
+            if (op == "INTERSECT" && has) || (op == "EXCEPT" && !has) {
+                seen = std::map::insert(seen, k, 1)
+                out = std::array::push(out, r)
+            }
+        }
+    }
+    sy_sort_all(out)
+}
+
+// ORDER BY de una operación compuesta (sobre las columnas del resultado) y LIMIT/OFFSET.
+fn sy_finish(cx: Cx, sel: any, names: array, rows: array, scopes: array, env: array) -> (array, array, string) {
+    let mut r = rows
+    if len(sel.order) > 0 && len(sel.cores) > 1 {
+        let mut idxs = []
+        let mut descs = []
+        let mut nulls = []
+        let mut colls = []
+        let mut oi = 0
+        for o in sel.order {
+            oi += 1
+            let mut e = o.e
+            let mut coll = 0
+            match e {
+                Ex::ECollate(p) => {
+                    coll = sx_coll_code(p.1)
+                    e = p.0
+                },
+                _ => {},
+            }
+            let mut ix = -1
+            match e {
+                Ex::ELit(v) => {
+                    match v {
+                        Sv::SInt(pos) => {
+                            if pos < 1 || pos > len(names) {
+                                return ([], [], sy_ord(oi) + " ORDER BY term out of range - should be between 1 and {len(names)}")
+                            }
+                            ix = pos - 1
+                        },
+                        _ => {},
+                    }
+                },
+                Ex::ECol(p) => {
+                    let mut j = 0
+                    for nm in names {
+                        if ix < 0 && sh_key(nm) == sh_key(p.1) {
+                            ix = j
+                        }
+                        j += 1
+                    }
+                },
+                _ => {},
+            }
+            if ix < 0 {
+                return ([], [], sy_ord(oi) + " ORDER BY term does not match any column in the result set")
+            }
+            idxs = std::array::push(idxs, ix)
+            descs = std::array::push(descs, o.desc)
+            nulls = std::array::push(nulls, o.nulls)
+            colls = std::array::push(colls, coll)
+        }
+        let mut items = []
+        for row in r {
+            let mut keys = []
+            for ix in idxs {
+                keys = std::array::push(keys, row[ix])
+            }
+            items = std::array::push(items, [keys, row])
+        }
+        let sorted = sy_msort(items, descs, nulls, colls)
+        r = []
+        for s in sorted {
+            r = std::array::push(r, s[1])
+        }
+    }
+    let (lv, ov, err) = sy_limits(cx, sel.limit, sel.offset, scopes, env)
+    if err != "" {
+        return ([], [], err)
+    }
+    return (names, sy_apply_limit(r, lv, ov), "")
+}
+
+// SELECT completo. lim >= 0: basta con ese número de filas (EXISTS, subconsulta escalar).
+fn sy_select(cx0: Cx, sel: any, scopes: array, env: array, lim: int) -> (array, array, string) {
+    let mut cx = cx0
+    if len(sel.with) > 0 {
+        let mut m = cx.ctes
+        for c in sel.with {
+            m = std::map::insert(m, sy_cte_key(c.name), ["def", c, sel.rec])
+        }
+        cx = sy_cx_ctes(cx, m)
+    }
+    if len(sel.cores) == 1 {
+        let (lv, ov, lerr) = sy_limits(cx, sel.limit, sel.offset, scopes, env)
+        if lerr != "" {
+            return ([], [], lerr)
+        }
+        let mut need = -1
+        if lv >= 0 {
+            need = lv + ov
+        }
+        if lim >= 0 && (need < 0 || lim < need) {
+            need = lim
+        }
+        let (names, rows, err) = sy_core(cx, sel.cores[0], scopes, env, sel.order, need)
+        if err != "" {
+            return ([], [], err)
+        }
+        return (names, sy_apply_limit(rows, lv, ov), "")
+    }
+    let (names, rows0, err0) = sy_core(cx, sel.cores[0], scopes, env, [], -1)
+    if err0 != "" {
+        return ([], [], err0)
+    }
+    let mut rows = rows0
+    let mut ci = 1
+    while ci < len(sel.cores) {
+        let (n1, rr, e1) = sy_core(cx, sel.cores[ci], scopes, env, [], -1)
+        if e1 != "" {
+            return ([], [], e1)
+        }
+        if len(n1) != len(names) {
+            return ([], [], "SELECTs to the left and right of " + sel.ops[ci - 1] + " do not have the same number of result columns")
+        }
+        rows = sy_compound(rows, rr, sel.ops[ci - 1])
+        ci += 1
+    }
+    sy_finish(cx, sel, names, rows, scopes, env)
+}
+
+// Da forma final a un error: los errores con posición llevan un separador (código 1) y el
+// desplazamiento en caracteres; se convierten al formato "<msg> in <sql> at offset <bytes>".
+fn sy_fmt_err(sql: string, err: string) -> string {
+    let cs = std::text::chars(err)
+    let n = len(cs)
+    let mut i = 0
+    while i < n {
+        if std::text::char_code(cs[i]) == 1 {
+            let msg = std::collections::join(std::array::slice(cs, 0, i), "")
+            let ps = std::collections::join(std::array::slice(cs, i + 1, n), "")
+            let pos = match std::text::parse_int(ps) {
+                Option::Some(x) => x,
+                _ => 0,
+            }
+            let off = len(sq_utf8(std::text::substring(sql, 0, pos)))
+            return msg + " in " + sql + " at offset {off}"
+        }
+        i += 1
+    }
+    err
+}

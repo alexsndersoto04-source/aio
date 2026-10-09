@@ -1,0 +1,33 @@
+// Errores de las operaciones TCP capturados con try.
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    // Dirección ocupada.
+    print(std::try::catch(|| std::net::tcp_listen(addr)))
+    // Direcciones mal escritas.
+    print(std::try::catch(|| std::net::tcp_listen("sin-puerto")))
+    print(std::try::catch(|| std::net::tcp_listen("127.0.0.1:abc")))
+    print(std::try::catch(|| std::net::tcp_listen("127.0.0.1:70000")))
+    print(std::try::catch(|| std::net::tcp_connect("127.0.0.1")))
+    print(std::try::catch(|| std::net::tcp_connect("")))
+    // Puerto sin nadie escuchando.
+    let tmp = std::net::tcp_listen("127.0.0.1:0")
+    let cerrado = std::net::tcp_local_addr(tmp)
+    std::net::tcp_close(tmp)
+    print(std::try::catch(|| std::net::tcp_connect(cerrado)))
+    // Cuenta de handles, uso tras cerrar, tiempos de espera.
+    let c = std::net::tcp_connect(addr)
+    print(std::net::tcp_set_timeout(c, 50))
+    print(std::try::catch(|| std::net::tcp_set_timeout(c, 0)))
+    print(std::try::catch(|| std::net::tcp_set_timeout(c, 0 - 1)))
+    let inicio = std::time::unix_millis()
+    print(std::try::catch(|| std::net::tcp_read(c, 10)))
+    print(std::time::unix_millis() - inicio >= 40)
+    print(std::try::catch(|| std::net::tcp_read(c, 0 - 1)))
+    print(std::net::tcp_close(c))
+    print(std::try::catch(|| std::net::tcp_read(c, 10)))
+    print(std::try::catch(|| std::net::tcp_write(c, "x")))
+    print(std::net::tcp_close(l))
+    print(std::try::catch(|| std::net::tcp_local_addr(l)))
+    print(std::try::catch(|| std::net::tcp_accept(l)))
+}

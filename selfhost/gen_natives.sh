@@ -4,6 +4,8 @@
 # (nombre, parámetros, resultado) con la que el typechecker comprueba las
 # llamadas a std::*. Temporal hasta la fase de la stdlib en Titan, cuando la
 # tabla se generará desde las propias nativas escritas en Titan.
+# `selfhost/natives_titan.txt` lista las nativas que existen solo en Titan (no en el registro de
+# Rust): se añaden al final de la tabla.
 # Uso: bash selfhost/gen_natives.sh [--check]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -14,7 +16,8 @@ tmp=$(mktemp)
   echo "// Una línea por nativa: \"nombre Param,Param -> Resultado\"."
   echo "fn native_table() -> [string] {"
   echo "    ["
-  titan natives | sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/        "&",/'
+  # `std::audio::cloud_*` (Telegram/MTProto) se eliminó: no se puede verificar de verdad sin servicio real.
+  { titan natives | grep -v '^std::audio::cloud_'; cat selfhost/natives_titan.txt; } | sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/        "&",/'
   echo "    ]"
   echo "}"
 } > "$tmp"

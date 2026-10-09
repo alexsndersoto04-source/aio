@@ -1,0 +1,887 @@
+// std::sqlite en Titan, parte 19: funciones de fecha y hora (date, time, datetime, julianday,
+// unixepoch, strftime, timediff) con la semántica de date.c de SQLite 3.46. UTC como zona local.
+// Prefijo `sd_`. El tiempo interno es un entero de milisegundos julianos (iJD).
+
+struct SdSt {
+    jd: int,
+    ok: bool,
+    raw: bool,
+    rawv: float,
+    sub: bool,
+    hy: bool,
+    y: int,
+    mo: int,
+    d: int,
+    ms: int,
+    tz: int,
+}
+
+struct SdP {
+    ok: bool,
+    jd: int,
+    raw: bool,
+    rawv: float,
+    hy: bool,
+    y: int,
+    mo: int,
+    d: int,
+    ms: int,
+    tz: int,
+}
+
+fn sd_arity(name: string) -> (int, int) {
+    if name == "date" || name == "time" || name == "datetime" || name == "julianday" || name == "unixepoch" {
+        return (0, -1)
+    }
+    if name == "strftime" {
+        return (1, -1)
+    }
+    if name == "timediff" {
+        return (2, 2)
+    }
+    return (-2, 0)
+}
+
+fn sd_ymd_to_jd(y0: int, m0: int, d: int) -> int {
+    let mut y = y0
+    let mut m = m0
+    if m <= 2 {
+        y -= 1
+        m += 12
+    }
+    let a = y / 100
+    let b = 2 - a + a / 4
+    let x1 = 36525 * (y + 4716) / 100
+    let x2 = 306001 * (m + 1) / 10000
+    return (x1 + x2 + d + b - 1525) * 86400000 + 43200000
+}
+
+fn sd_jd_to_ymd(jd: int) -> (int, int, int) {
+    let z = (jd + 43200000) / 86400000
+    let mut a = (4 * z - 7468865) / 146097
+    a = z + 1 + a - a / 4
+    let b = a + 1524
+    let c = (20 * b - 2442) / 7305
+    let d0 = (36525 * (c % 32768)) / 100
+    let e = ((b - d0) * 10000) / 306001
+    let x1 = (306001 * e) / 10000
+    let d = b - d0 - x1
+    let mut m = e - 13
+    if e < 14 {
+        m = e - 1
+    }
+    let mut y = c - 4715
+    if m > 2 {
+        y = c - 4716
+    }
+    return (y, m, d)
+}
+
+// Hora del día: (h, m, milisegundos dentro del minuto)
+fn sd_jd_to_hms(jd: int) -> (int, int, int) {
+    let s = (jd + 43200000) % 86400000
+    let secs = s / 1000
+    let ms = s % 1000
+    let h = secs / 3600
+    let rem = secs - h * 3600
+    let m = rem / 60
+    let sec = rem - m * 60
+    return (h, m, sec * 1000 + ms)
+}
+
+fn sd_p2(n: int) -> string {
+    if n < 10 {
+        return "0{n}"
+    }
+    return "{n}"
+}
+
+fn sd_p3(n: int) -> string {
+    if n < 10 {
+        return "00{n}"
+    }
+    if n < 100 {
+        return "0{n}"
+    }
+    return "{n}"
+}
+
+fn sd_p4(n: int) -> string {
+    if n < 0 {
+        return "-" + sd_p4(0 - n)
+    }
+    if n < 10 {
+        return "000{n}"
+    }
+    if n < 100 {
+        return "00{n}"
+    }
+    if n < 1000 {
+        return "0{n}"
+    }
+    return "{n}"
+}
+
+fn sd_sp2(n: int) -> string {
+    if n < 10 {
+        return " {n}"
+    }
+    return "{n}"
+}
+
+fn sd_fmt_date(jd: int) -> string {
+    let (y, m, d) = sd_jd_to_ymd(jd)
+    return sd_p4(y) + "-" + sd_p2(m) + "-" + sd_p2(d)
+}
+
+fn sd_fmt_time(jd: int, subsec: bool) -> string {
+    let (h, mi, sms) = sd_jd_to_hms(jd)
+    if subsec {
+        let s = sms / 1000
+        let ms = sms % 1000
+        return sd_p2(h) + ":" + sd_p2(mi) + ":" + sd_p2(s) + "." + sd_p3(ms)
+    }
+    return sd_p2(h) + ":" + sd_p2(mi) + ":" + sd_p2(sms / 1000)
+}
+
+// Fecha y hora UTC a partir de milisegundos Unix.
+fn sd_fmt_datetime(t: int) -> string {
+    let jd = t + 210866760000000
+    return sd_fmt_date(jd) + " " + sd_fmt_time(jd, false)
+}
+
+fn sd_digit(cs: array, i: int) -> int {
+    if i >= len(cs) {
+        return -1
+    }
+    let c = cs[i]
+    if c == "0" {
+        return 0
+    }
+    if c == "1" {
+        return 1
+    }
+    if c == "2" {
+        return 2
+    }
+    if c == "3" {
+        return 3
+    }
+    if c == "4" {
+        return 4
+    }
+    if c == "5" {
+        return 5
+    }
+    if c == "6" {
+        return 6
+    }
+    if c == "7" {
+        return 7
+    }
+    if c == "8" {
+        return 8
+    }
+    if c == "9" {
+        return 9
+    }
+    return -1
+}
+
+// n dígitos desde i: valor o -1
+fn sd_num(cs: array, i: int, n: int) -> int {
+    let mut v = 0
+    let mut j = 0
+    while j < n {
+        let d = sd_digit(cs, i + j)
+        if d < 0 {
+            return -1
+        }
+        v = v * 10 + d
+        j += 1
+    }
+    return v
+}
+
+fn sd_is(cs: array, i: int, c: string) -> bool {
+    return i < len(cs) && cs[i] == c
+}
+
+// Analiza HH:MM[:SS[.fff]] desde i. Devuelve (ok, ms del día, siguiente posición).
+fn sd_parse_hms(cs: array, i: int) -> (bool, int, int) {
+    let h = sd_num(cs, i, 2)
+    if h < 0 || h > 24 || !sd_is(cs, i + 2, ":") {
+        return (false, 0, i)
+    }
+    let m = sd_num(cs, i + 3, 2)
+    if m < 0 || m > 59 {
+        return (false, 0, i)
+    }
+    let mut k = i + 5
+    let mut sms = 0
+    if sd_is(cs, k, ":") {
+        let s = sd_num(cs, k + 1, 2)
+        if s < 0 || s > 59 {
+            return (false, 0, i)
+        }
+        sms = s * 1000
+        k += 3
+        if sd_is(cs, k, ".") && sd_digit(cs, k + 1) >= 0 {
+            let mut scale = 100
+            let mut j = k + 1
+            let mut frac = 0
+            while sd_digit(cs, j) >= 0 {
+                frac += sd_digit(cs, j) * scale
+                if scale > 0 {
+                    scale = scale / 10
+                }
+                j += 1
+            }
+            // el redondeo de SQLite trabaja con coma flotante; con 3 dígitos la fracción es exacta
+            sms += frac
+            k = j
+        }
+    }
+    return (true, h * 3600000 + m * 60000 + sms, k)
+}
+
+// Interpreta una cadena de fecha/hora. Devuelve (ok, jd, esNumeroCrudo, valorCrudo)
+fn sd_parse_time(cx: Cx, s: string) -> SdP {
+    let t = sq_trim_ws(s)
+    let low = sql_upper_ascii(t)
+    if low == "NOW" {
+        return sd_p_plain(true, cx.now + 210866760000000, false, 0.0)
+    }
+    let cs = sql_chars(t)
+    let mut k = 0
+    let mut neg = false
+    if sd_is(cs, 0, "-") {
+        neg = true
+        k = 1
+    }
+    let y = sd_num(cs, k, 4)
+    if y >= 0 && sd_is(cs, k + 4, "-") {
+        let mo = sd_num(cs, k + 5, 2)
+        let d = sd_num(cs, k + 8, 2)
+        if mo >= 1 && mo <= 12 && sd_is(cs, k + 7, "-") && d >= 1 && d <= 31 {
+            let mut yy = y
+            if neg {
+                yy = 0 - y
+            }
+            let mut jd = sd_compose(yy, mo, d, 0, 0, 0)
+            let mut p = k + 10
+            let mut dayms = 0
+            if sd_is(cs, p, " ") || sd_is(cs, p, "T") {
+                let mut q = p + 1
+                while sd_is(cs, q, " ") {
+                    q += 1
+                }
+                let (ok, ms, nx) = sd_parse_hms(cs, q)
+                if ok {
+                    // día de 24:00 = día siguiente a 00:00 (por la aritmética de JD)
+                    jd = sd_compose(yy, mo, d, 0, 0, ms)
+                    dayms = ms
+                    p = nx
+                }
+            }
+            let mut tz = 0
+            let mut tzok = true
+            while sd_is(cs, p, " ") {
+                p += 1
+            }
+            if sd_is(cs, p, "Z") || sd_is(cs, p, "z") {
+                p += 1
+            } else if sd_is(cs, p, "+") || sd_is(cs, p, "-") {
+                let hh = sd_num(cs, p + 1, 2)
+                let mm = sd_num(cs, p + 4, 2)
+                let good = hh >= 0 && hh <= 14 && sd_is(cs, p + 3, ":") && mm >= 0 && mm <= 59
+                if good {
+                    tz = hh * 60 + mm
+                    if sd_is(cs, p, "-") {
+                        tz = 0 - tz
+                    }
+                    p += 6
+                }
+                if !good {
+                    tzok = false
+                }
+            }
+            while sd_is(cs, p, " ") {
+                p += 1
+            }
+            if tzok && p == len(cs) {
+                return SdP { ok: true, jd: jd - tz * 60000, raw: false, rawv: 0.0, hy: true, y: yy, mo: mo, d: d, ms: dayms, tz: tz }
+            }
+            return sd_p_plain(false, 0, false, 0.0)
+        }
+    }
+    if !neg {
+        let (ok, ms, nx) = sd_parse_hms(cs, 0)
+        if ok {
+            let mut p = nx
+            let mut tz = 0
+            let mut tzok = true
+            while sd_is(cs, p, " ") {
+                p += 1
+            }
+            if sd_is(cs, p, "Z") || sd_is(cs, p, "z") {
+                p += 1
+            } else if sd_is(cs, p, "+") || sd_is(cs, p, "-") {
+                let hh = sd_num(cs, p + 1, 2)
+                let mm = sd_num(cs, p + 4, 2)
+                let good = hh >= 0 && hh <= 14 && sd_is(cs, p + 3, ":") && mm >= 0 && mm <= 59
+                if good {
+                    tz = hh * 60 + mm
+                    if sd_is(cs, p, "-") {
+                        tz = 0 - tz
+                    }
+                    p += 6
+                }
+                if !good {
+                    tzok = false
+                }
+            }
+            while sd_is(cs, p, " ") {
+                p += 1
+            }
+            if tzok && p == len(cs) {
+                return SdP { ok: true, jd: sd_compose(2000, 1, 1, 0, 0, ms) - tz * 60000, raw: false, rawv: 0.0, hy: true, y: 2000, mo: 1, d: 1, ms: ms, tz: tz }
+            }
+            return sd_p_plain(false, 0, false, 0.0)
+        }
+    }
+    // número crudo
+    let nv = sc_apply_aff(Sv::SText(t), "NUMERIC")
+    match nv {
+        Sv::SInt(i) => {
+            return sd_p_raw(sd_raw_number(std::math::to_float(i)))
+        },
+        Sv::SReal(f) => {
+            return sd_p_raw(sd_raw_number(f))
+        },
+        _ => {},
+    }
+    return sd_p_plain(false, 0, false, 0.0)
+}
+
+fn sd_p_plain(ok: bool, jd: int, raw: bool, rawv: float) -> SdP {
+    return SdP { ok: ok, jd: jd, raw: raw, rawv: rawv, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+}
+
+fn sd_p_raw(t: (bool, int, bool, float)) -> SdP {
+    return sd_p_plain(t.0, t.1, t.2, t.3)
+}
+
+fn sd_raw_number(r: float) -> (bool, int, bool, float) {
+    if r >= 0.0 && r < 5373484.5 {
+        let ms = std::math::to_int(std::math::floor(r * 86400000.0 + 0.5))
+        return (true, ms, true, r)
+    }
+    return (false, 0, false, 0.0)
+}
+
+// Un modificador. Estado: [jd, ok, raw?, rawvalor, subsec]. Devuelve el estado nuevo.
+fn sd_modifier(st: SdSt, m0: string) -> SdSt {
+    let m = sq_trim_ws(m0)
+    let low = sx_lc(m)
+    let jd = st.jd
+    let raw = st.raw
+    let rawv = st.rawv
+    let subsec = st.sub
+    if raw && (rawv < 0.0 || rawv >= 5373484.5) && low != "auto" && low != "unixepoch" && low != "julianday" && low != "subsec" && low != "subsecond" && low != "localtime" && low != "utc" && low != "ceiling" && low != "floor" {
+        return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "auto" {
+        if raw {
+            if rawv >= 0.0 && rawv < 5373484.5 {
+                return st
+            }
+            if rawv >= -210866760000.0 && rawv <= 253402300799.0 {
+                let nj = std::math::to_int(std::math::floor(rawv * 1000.0 + 210866760000000.5))
+                return SdSt { jd: nj, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+        }
+        return st
+    }
+    if low == "unixepoch" {
+        if raw && rawv >= -210866760000.0 && rawv <= 253402300799.0 {
+            let nj = std::math::to_int(std::math::floor(rawv * 1000.0 + 210866760000000.5))
+            return SdSt { jd: nj, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+        }
+        return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "julianday" {
+        if raw && rawv >= 0.0 && rawv < 5373484.5 {
+            return SdSt { jd: jd, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+        }
+        return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "localtime" || low == "utc" {
+        return SdSt { jd: jd, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "subsec" || low == "subsecond" {
+        return SdSt { jd: jd, ok: true, raw: false, rawv: 0.0, sub: true, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "ceiling" || low == "floor" {
+        return SdSt { jd: jd, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    let (y0, mo0, d0) = sd_jd_to_ymd(jd)
+    let (h0, mi0, sms0) = sd_jd_to_hms(jd)
+    let mut y = y0
+    let mut mo = mo0
+    let mut d = d0
+    let mut h = h0
+    let mut mi = mi0
+    let mut sms = sms0
+    let mut tzoff = 0
+    if st.hy {
+        y = st.y
+        mo = st.mo
+        d = st.d
+        h = st.ms / 3600000
+        mi = (st.ms % 3600000) / 60000
+        sms = st.ms % 60000
+        tzoff = st.tz * 60000
+    }
+    if low == "start of day" {
+        return SdSt { jd: sd_compose(y, mo, d, 0, 0, 0), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "start of month" {
+        return SdSt { jd: sd_compose(y, mo, 1, 0, 0, 0), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if low == "start of year" {
+        return SdSt { jd: sd_compose(y, 1, 1, 0, 0, 0), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    if std::text::starts_with(low, "weekday ") {
+        let arg = sq_trim_ws(std::text::substring(low, 8, len(low)))
+        let nv = sc_apply_aff(Sv::SText(arg), "NUMERIC")
+        let mut n = -1
+        match nv {
+            Sv::SInt(i) => {
+                n = i
+            },
+            Sv::SReal(f) => {
+                if f == std::math::floor(f) {
+                    n = std::math::to_int(f)
+                }
+            },
+            _ => {},
+        }
+        if n >= 0 && n <= 6 {
+            let mut z = ((jd + 129600000) / 86400000) % 7
+            if z > n {
+                z -= 7
+            }
+            return SdSt { jd: jd + (n - z) * 86400000, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+        }
+        return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    // ±HH:MM[:SS[.SSS]]
+    let cs = sql_chars(low)
+    if len(cs) > 0 && (cs[0] == "+" || cs[0] == "-") && sd_digit(cs, 1) >= 0 && sd_digit(cs, 2) >= 0 && sd_is(cs, 3, ":") {
+        let (ok, ms, nx) = sd_parse_hms(cs, 1)
+        if ok && nx == len(cs) {
+            if cs[0] == "-" {
+                return SdSt { jd: jd - ms, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            return SdSt { jd: jd + ms, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+        }
+        return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+    }
+    // NNN unidad
+    let mut i = 0
+    if i < len(cs) && (cs[i] == "+" || cs[i] == "-") {
+        i += 1
+    }
+    let ds = i
+    while i < len(cs) && (sd_digit(cs, i) >= 0 || cs[i] == ".") {
+        i += 1
+    }
+    if i > ds {
+        let numtxt = std::collections::join(std::array::slice(cs, 0, i), "")
+        let nv = sc_apply_aff(Sv::SText(numtxt), "NUMERIC")
+        let mut r = 0.0
+        let mut okn = false
+        match nv {
+            Sv::SInt(x) => {
+                r = std::math::to_float(x)
+                okn = true
+            },
+            Sv::SReal(f) => {
+                r = f
+                okn = true
+            },
+            _ => {},
+        }
+        let mut unit = sq_trim_ws(std::collections::join(std::array::slice(cs, i, len(cs)), ""))
+        if okn {
+            if std::text::ends_with(unit, "s") {
+                unit = std::text::substring(unit, 0, len(unit) - 1)
+            }
+            if unit == "second" {
+                return SdSt { jd: jd + std::math::to_int(r * 1000.0 + 0.5 * sd_sign(r)), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            if unit == "minute" {
+                return SdSt { jd: jd + std::math::to_int(r * 60000.0 + 0.5 * sd_sign(r)), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            if unit == "hour" {
+                return SdSt { jd: jd + std::math::to_int(r * 3600000.0 + 0.5 * sd_sign(r)), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            if unit == "day" {
+                return SdSt { jd: jd + std::math::to_int(r * 86400000.0 + 0.5 * sd_sign(r)), ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            if unit == "month" {
+                let whole = std::math::to_int(r)
+                let frac = r - std::math::to_float(whole)
+                let mut mm = mo + whole
+                let x = sd_floordiv(mm - 1, 12)
+                let yy = y + x
+                mm = mm - x * 12
+                let mut nj = sd_compose(yy, mm, d, h, mi, sms) - tzoff
+                if frac != 0.0 {
+                    nj += std::math::to_int(std::math::floor(frac * 30.0 * 86400000.0 + 0.5))
+                }
+                return SdSt { jd: nj, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+            if unit == "year" {
+                let whole = std::math::to_int(r)
+                let frac = r - std::math::to_float(whole)
+                let mut nj = sd_compose(y + whole, mo, d, h, mi, sms) - tzoff
+                if frac != 0.0 {
+                    nj += std::math::to_int(std::math::floor(frac * 365.0 * 86400000.0 + 0.5))
+                }
+                return SdSt { jd: nj, ok: true, raw: false, rawv: 0.0, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+            }
+        }
+    }
+    return SdSt { jd: jd, ok: false, raw: raw, rawv: rawv, sub: subsec, hy: false, y: 0, mo: 0, d: 0, ms: 0, tz: 0 }
+}
+
+fn sd_sign(r: float) -> float {
+    if r < 0.0 {
+        return -1.0
+    }
+    return 1.0
+}
+
+fn sd_floordiv(a: int, b: int) -> int {
+    let q = a / b
+    if a % b != 0 && ((a < 0) != (b < 0)) {
+        return q - 1
+    }
+    return q
+}
+
+// Compone un instante: medianoche del día (y, m, d) más la hora del día.
+fn sd_compose(y: int, m: int, d: int, h: int, mi: int, sms: int) -> int {
+    return sd_ymd_to_jd(y, m, d) + h * 3600000 + mi * 60000 + sms
+}
+
+// Evalúa los argumentos de una función de fecha: (ok, jd, subsec)
+fn sd_eval(cx: Cx, args: array, first: int) -> (bool, int, bool) {
+    let mut jd = cx.now + 210866760000000
+    let mut raw = false
+    let mut rawv = 0.0
+    let mut ok = true
+    let mut hy = false
+    let mut ry = 0
+    let mut rmo = 0
+    let mut rd = 0
+    let mut rms = 0
+    let mut rtz = 0
+    let n = len(args)
+    let mut i = first
+    if n > first {
+        let a = args[first]
+        match a {
+            Sv::SNull => {
+                return (false, 0, false)
+            },
+            Sv::SInt(v) => {
+                let (o, j, r, rv) = sd_raw_number(std::math::to_float(v))
+                if o {
+                    jd = j
+                    raw = true
+                    rawv = rv
+                } else {
+                    raw = true
+                    rawv = std::math::to_float(v)
+                }
+            },
+            Sv::SReal(f) => {
+                let (o, j, r, rv) = sd_raw_number(f)
+                if o {
+                    jd = j
+                    raw = true
+                    rawv = rv
+                } else {
+                    raw = true
+                    rawv = f
+                }
+            },
+            Sv::SBlob(_) => {
+                return (false, 0, false)
+            },
+            _ => {
+                let pp = sd_parse_time(cx, sc_to_text(a))
+                if !pp.ok {
+                    return (false, 0, false)
+                }
+                jd = pp.jd
+                raw = pp.raw
+                rawv = pp.rawv
+                hy = pp.hy
+                ry = pp.y
+                rmo = pp.mo
+                rd = pp.d
+                rms = pp.ms
+                rtz = pp.tz
+            },
+        }
+        i = first + 1
+    }
+    let mut st = SdSt { jd: jd, ok: ok, raw: raw, rawv: rawv, sub: false, hy: hy, y: ry, mo: rmo, d: rd, ms: rms, tz: rtz }
+    while i < n {
+        match args[i] {
+            Sv::SNull => {
+                return (false, 0, false)
+            },
+            _ => {},
+        }
+        st = sd_modifier(st, sc_to_text(args[i]))
+        if !st.ok || st.jd < 0 || st.jd > 464269060799999 {
+            return (false, 0, false)
+        }
+        i += 1
+    }
+    if st.jd < 0 || st.jd > 464269060799999 || (st.raw && (st.rawv < 0.0 || st.rawv >= 5373484.5)) {
+        return (false, 0, false)
+    }
+    return (true, st.jd, st.sub)
+}
+
+fn sd_dow(jd: int) -> int {
+    return ((jd + 129600000) / 86400000) % 7
+}
+
+fn sd_yday(jd: int) -> int {
+    let (y, m, d) = sd_jd_to_ymd(jd)
+    let j0 = sd_ymd_to_jd(y, 1, 1)
+    return (jd - j0 + 43200000) / 86400000
+}
+
+fn sd_strftime(fmt: string, jd: int) -> Sv {
+    let cs = sql_chars(fmt)
+    let (y, mo, d) = sd_jd_to_ymd(jd)
+    let (h, mi, sms) = sd_jd_to_hms(jd)
+    let mut out = []
+    let mut i = 0
+    let n = len(cs)
+    while i < n {
+        let c = cs[i]
+        if c != "%" {
+            out = std::array::push(out, c)
+            i += 1
+            continue
+        }
+        i += 1
+        if i >= n {
+            return Sv::SNull
+        }
+        let f = cs[i]
+        i += 1
+        if f == "d" {
+            out = std::array::push(out, sd_p2(d))
+        } else if f == "e" {
+            out = std::array::push(out, sd_sp2(d))
+        } else if f == "f" {
+            let s = sms / 1000
+            let ms = sms % 1000
+            out = std::array::push(out, sd_p2(s) + "." + sd_p3(ms))
+        } else if f == "F" {
+            out = std::array::push(out, sd_p4(y) + "-" + sd_p2(mo) + "-" + sd_p2(d))
+        } else if f == "H" {
+            out = std::array::push(out, sd_p2(h))
+        } else if f == "I" {
+            let mut h12 = h % 12
+            if h12 == 0 {
+                h12 = 12
+            }
+            out = std::array::push(out, sd_p2(h12))
+        } else if f == "j" {
+            out = std::array::push(out, sd_p3(sd_yday(jd) + 1))
+        } else if f == "J" {
+            out = std::array::push(out, sc_fmt_g(std::math::to_float(jd) / 86400000.0, 16, false, true))
+        } else if f == "k" {
+            out = std::array::push(out, sd_sp2(h))
+        } else if f == "l" {
+            let mut h12 = h % 12
+            if h12 == 0 {
+                h12 = 12
+            }
+            out = std::array::push(out, sd_sp2(h12))
+        } else if f == "m" {
+            out = std::array::push(out, sd_p2(mo))
+        } else if f == "M" {
+            out = std::array::push(out, sd_p2(mi))
+        } else if f == "p" {
+            if h >= 12 {
+                out = std::array::push(out, "PM")
+            } else {
+                out = std::array::push(out, "AM")
+            }
+        } else if f == "P" {
+            if h >= 12 {
+                out = std::array::push(out, "pm")
+            } else {
+                out = std::array::push(out, "am")
+            }
+        } else if f == "R" {
+            out = std::array::push(out, sd_p2(h) + ":" + sd_p2(mi))
+        } else if f == "s" {
+            let secs = (jd - 210866760000000) / 1000
+            let mut sv = secs
+            if jd - 210866760000000 < 0 && (jd - 210866760000000) % 1000 != 0 {
+                sv = secs - 1
+            }
+            out = std::array::push(out, "{sv}")
+        } else if f == "S" {
+            out = std::array::push(out, sd_p2(sms / 1000))
+        } else if f == "T" {
+            out = std::array::push(out, sd_p2(h) + ":" + sd_p2(mi) + ":" + sd_p2(sms / 1000))
+        } else if f == "u" {
+            let w = sd_dow(jd)
+            if w == 0 {
+                out = std::array::push(out, "7")
+            } else {
+                out = std::array::push(out, "{w}")
+            }
+        } else if f == "w" {
+            let w = sd_dow(jd)
+            out = std::array::push(out, "{w}")
+        } else if f == "U" {
+            let w = sd_dow(jd)
+            out = std::array::push(out, sd_p2((sd_yday(jd) + 7 - w) / 7))
+        } else if f == "W" {
+            let w = sd_dow(jd)
+            out = std::array::push(out, sd_p2((sd_yday(jd) + 7 - ((w + 6) % 7)) / 7))
+        } else if f == "Y" {
+            out = std::array::push(out, sd_p4(y))
+        } else if f == "G" || f == "g" || f == "V" {
+            let jt = jd + (3 - (((jd + 43200000) / 86400000 + 6) % 7)) * 86400000
+            let (yy, mm, dd) = sd_jd_to_ymd(jt)
+            if f == "g" {
+                out = std::array::push(out, sd_p2(yy % 100))
+            } else if f == "G" {
+                out = std::array::push(out, sd_p4(yy))
+            } else {
+                let j1 = sd_ymd_to_jd(yy, 1, 1)
+                let nday = (jt - j1 + 43200000) / 86400000
+                out = std::array::push(out, sd_p2(nday / 7 + 1))
+            }
+        } else if f == "%" {
+            out = std::array::push(out, "%")
+        } else {
+            return Sv::SNull
+        }
+    }
+    return Sv::SText(std::collections::join(out, ""))
+}
+
+fn sd_func(cx: Cx, name: string, args: array) -> Option {
+    if name == "strftime" {
+        match args[0] {
+            Sv::SNull => {
+                return Option::Some(Sv::SNull)
+            },
+            _ => {},
+        }
+        let (ok, jd, sub) = sd_eval(cx, args, 1)
+        if !ok {
+            return Option::Some(Sv::SNull)
+        }
+        return Option::Some(sd_strftime(sc_to_text(args[0]), jd))
+    }
+    if name == "timediff" {
+        let (ok1, j1, s1) = sd_eval(cx, [args[0]], 0)
+        let (ok2, j2, s2) = sd_eval(cx, [args[1]], 0)
+        if !ok1 || !ok2 {
+            return Option::Some(Sv::SNull)
+        }
+        return Option::Some(sd_timediff(j1, j2))
+    }
+    if name == "date" || name == "time" || name == "datetime" || name == "julianday" || name == "unixepoch" {
+        let (ok, jd, sub) = sd_eval(cx, args, 0)
+        if !ok {
+            return Option::Some(Sv::SNull)
+        }
+        if name == "date" {
+            return Option::Some(Sv::SText(sd_fmt_date(jd)))
+        }
+        if name == "time" {
+            return Option::Some(Sv::SText(sd_fmt_time(jd, sub)))
+        }
+        if name == "datetime" {
+            return Option::Some(Sv::SText(sd_fmt_date(jd) + " " + sd_fmt_time(jd, sub)))
+        }
+        if name == "julianday" {
+            return Option::Some(Sv::SReal(std::math::to_float(jd) / 86400000.0))
+        }
+        let ms = jd - 210866760000000
+        if sub {
+            return Option::Some(Sv::SReal(std::math::to_float(ms) / 1000.0))
+        }
+        let mut secs = ms / 1000
+        if ms < 0 && ms % 1000 != 0 {
+            secs -= 1
+        }
+        return Option::Some(Sv::SInt(secs))
+    }
+    return Option::None
+}
+
+// timediff(A, B): A - B como "+YYYY-MM-DD HH:MM:SS.SSS"
+fn sd_timediff(ja: int, jb: int) -> Sv {
+    let mut sign = "+"
+    let mut a = ja
+    let mut b = jb
+    if ja < jb {
+        sign = "-"
+        a = jb
+        b = ja
+    }
+    let (y1, m1, d1) = sd_jd_to_ymd(a)
+    let (h1, mi1, s1) = sd_jd_to_hms(a)
+    let (y2, m2, d2) = sd_jd_to_ymd(b)
+    let (h2, mi2, s2) = sd_jd_to_hms(b)
+    let mut y = y1 - y2
+    let mut m = m1 - m2
+    let mut d = d1 - d2
+    let mut sms = (h1 * 3600000 + mi1 * 60000 + s1) - (h2 * 3600000 + mi2 * 60000 + s2)
+    if sms < 0 {
+        sms += 86400000
+        d -= 1
+    }
+    if d < 0 {
+        m -= 1
+        // días del mes anterior a (y1, m1)
+        let mut py = y1
+        let mut pm = m1 - 1
+        if pm < 1 {
+            pm = 12
+            py -= 1
+        }
+        let dim = (sd_ymd_to_jd(py + (pm / 12), pm % 12 + 1, 1) - sd_ymd_to_jd(py, pm, 1)) / 86400000
+        d += dim
+    }
+    if m < 0 {
+        y -= 1
+        m += 12
+    }
+    let hh = sms / 3600000
+    let mm = (sms % 3600000) / 60000
+    let ss = (sms % 60000) / 1000
+    let ms = sms % 1000
+    return Sv::SText(sign + sd_p4(y) + "-" + sd_p2(m) + "-" + sd_p2(d) + " " + sd_p2(hh) + ":" + sd_p2(mm) + ":" + sd_p2(ss) + "." + sd_p3(ms))
+}

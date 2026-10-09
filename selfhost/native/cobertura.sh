@@ -4,8 +4,20 @@
 # funciones `std__modulo__nombre` alcanzables desde los imports de
 # native/runtime.titan. Uso: bash selfhost/native/cobertura.sh [-v]
 #   -v: lista también las que faltan, por módulo.
+# Una función solo cuenta si el runtime COMPILA: antes de contar se ejecuta
+# selfhost/revisar_runtime.titan (cargador + typechecker de Titan sobre
+# native/runtime.titan). Si hay errores, el script termina con código 3 y no
+# imprime ninguna cifra. SIN_REVISION=1 se salta la revisión (solo para
+# depurar; esa cifra no se debe publicar). ZETT=/ruta/al/zett elige el binario.
 set -u
 cd "$(dirname "$0")/.."
+if [ "${SIN_REVISION:-0}" != "1" ]; then
+  if ! out=$("${ZETT:-zett}" run revisar_runtime.titan 2>&1) || [ "$out" != "ok" ]; then
+    echo "cobertura: el runtime nativo NO compila; no se cuenta nada:" >&2
+    echo "$out" | head -40 >&2
+    exit 3
+  fi
+fi
 all=$(grep -o '"std::[a-z_0-9]*::[a-z_0-9]*' natives.titan | tr -d '"' | sort -u)
 have=$(python3 - "$PWD/native/runtime.titan" <<'PY'
 import re

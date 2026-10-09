@@ -1,0 +1,37 @@
+// puerto: 53303
+// servidor: --handshake sha2
+// std::mysql con un servidor cuyo saludo anuncia caching_sha2_password: autenticación directa del
+// usuario sha2 (completa la primera vez, rápida después) y cambio de plugin para los demás.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn probar(nombre: string, url: string) {
+    let r = std::try::catch(|| {
+        let db = std::mysql::connect(url)
+        let v = std::mysql::query(db, "SELECT 1 AS uno", [])
+        std::mysql::close(db)
+        v
+    })
+    mostrar(nombre, r)
+}
+
+fn main() {
+    let b = "127.0.0.1:53303/test?prefer_socket=false"
+    probar("sha2_primera", "mysql://sha2:sha2pw@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_segunda", "mysql://sha2:sha2pw@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_tercera", "mysql://sha2:sha2pw@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_mala", "mysql://sha2:otra@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_mala_otra_vez", "mysql://sha2:otra@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_ya_cacheada_mala", "mysql://sha2:sha2px@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_vacia", "mysql://sha2v@127.0.0.1:53303/test?prefer_socket=false")
+    probar("sha2_vacia_con_clave", "mysql://sha2v:x@127.0.0.1:53303/test?prefer_socket=false")
+    probar("native_con_cambio", "mysql://app:secret@127.0.0.1:53303/test?prefer_socket=false")
+    probar("native_mala", "mysql://app:wrong@127.0.0.1:53303/test?prefer_socket=false")
+    probar("vacio", "mysql://vacio@127.0.0.1:53303/test?prefer_socket=false")
+    probar("clear_desactivado", "mysql://clear:clave@127.0.0.1:53303/test?prefer_socket=false")
+    probar("clear", "mysql://clear:clave@127.0.0.1:53303/test?prefer_socket=false&enable_cleartext_plugin=true")
+    probar("old_desactivado", "mysql://old:oldpw@127.0.0.1:53303/test?prefer_socket=false")
+    probar("old", "mysql://old:oldpw@127.0.0.1:53303/test?prefer_socket=false&secure_auth=false")
+    probar("usuario_inexistente", "mysql://nouser:x@127.0.0.1:53303/test?prefer_socket=false")
+}

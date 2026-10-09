@@ -1,0 +1,36 @@
+// Prueba de la API std::onnx: se ejecuta tal cual bajo `zett` (tract) y como
+// ejecutable nativo (motor propio) y escribe una línea JSON por modelo con las
+// formas y la salida; compare.py las compara con onnxruntime y entre sí.
+// Uso: api <ruta/modelo sin extensión> [load_shape]
+fn emit(key: string, value: any) {
+    let m = std::map::insert(std::map::new(), key, value)
+    print(std::json::stringify(m))
+}
+
+fn main() {
+    let args = std::env::args()
+    let base = args[len(args) - 1]
+    let pinned = len(args) >= 3 && args[len(args) - 2] == "pin"
+    let doc = std::json::parse(std::fs::read_text(base + ".json"))
+    let mut h = 0
+    if pinned {
+        h = std::onnx::load_shape(base + ".onnx", doc.shape)
+    } else {
+        h = std::onnx::load(base + ".onnx")
+    }
+    let mut res = std::map::new()
+    res = std::map::insert(res, "inputs", std::onnx::input_count(h))
+    res = std::map::insert(res, "outputs", std::onnx::output_count(h))
+    res = std::map::insert(res, "in_shape", std::onnx::input_shape(h, 0))
+    res = std::map::insert(res, "out_shape", std::onnx::output_shape(h, 0))
+    let mut r = std::map::new()
+    if doc.ids {
+        r = std::onnx::run_ids(h, doc.shape, doc.data)
+    } else {
+        r = std::onnx::run_f32(h, doc.shape, doc.data)
+    }
+    res = std::map::insert(res, "shape", r.shape)
+    res = std::map::insert(res, "values", r.values)
+    std::onnx::close(h)
+    print(std::json::stringify(res))
+}

@@ -1,0 +1,99 @@
+fn main() {
+    let db = std::sqlite::memory()
+    let (p0, perr) = sqp_open(sqio_mem())
+    let mut p = sqp_begin(p0)
+    let t_sql = "CREATE TABLE t(a integer primary key, b text, c integer)"
+    let u_sql = "CREATE TABLE u(x, y)"
+    let d_sql = "CREATE TABLE d(k, v)"
+    std::sqlite::execute(db, t_sql, [])
+    std::sqlite::execute(db, u_sql, [])
+    std::sqlite::execute(db, d_sql, [])
+    let mut trows = []
+    let mut s = 7
+    let mut i = 1
+    while i <= 40 {
+        s = rnd(s)
+        let c = (s / 16) % 10
+        s = rnd(s)
+        let letters = ["a", "b", "c", "d", "e"]
+        let b = letters[(s / 16) % 5] + "{i % 7}"
+        trows = std::array::push(trows, [Sv::SInt(i), Sv::SText(b), Sv::SInt(c)])
+        std::sqlite::execute(db, "insert into t values (?,?,?)", [i, b, c])
+        i += 1
+    }
+    let urows = [[Sv::SInt(1), Sv::SText("a")], [Sv::SInt(2), Sv::SText("b")], [Sv::SInt(3), Sv::SText("c")]]
+    for r in urows {
+        std::sqlite::execute(db, "insert into u values (?,?)", [sv_any(r[0]), sv_any(r[1])])
+    }
+    let mut drows = []
+    i = 0
+    while i < 25 {
+        s = rnd(s)
+        let k = (s / 16) % 6
+        let v = i * 3
+        drows = std::array::push(drows, [Sv::SInt(k), Sv::SInt(v)])
+        std::sqlite::execute(db, "insert into d values (?,?)", [k, v])
+        i += 1
+    }
+    drows = std::array::push(drows, [Sv::SNull, Sv::SInt(99)])
+    std::sqlite::execute(db, "insert into d values (null, 99)", [])
+    let (p1, m1, troot) = mk_table(p, 1, "t", t_sql, trows, 0)
+    let (p2, m2, uroot) = mk_table(p1, m1, "u", u_sql, urows, -1)
+    let (p3, m3, droot) = mk_table(p2, m2, "d", d_sql, drows, -1)
+    std::sqlite::execute(db, "create index tc on t(c)", [])
+    std::sqlite::execute(db, "create index dk on d(k)", [])
+    let (p4, m4) = mk_index(p3, m3, "tc", "t", Sv::SText("CREATE INDEX tc on t(c)"), troot, [2], -1)
+    let (p5, m5) = mk_index(p4, m4, "dk", "d", Sv::SText("CREATE INDEX dk on d(k)"), droot, [0], -1)
+    let (sch, serr) = sh_load(p5)
+    if serr != "" {
+        print("SCHEMA ERR", serr)
+        return
+    }
+    let cx = Cx { sch: sch, pg: p5, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 0, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let qs = [
+        "select y, count(*) from u", "select y, sum(x) from u", "select y, max(x) from u", "select y, min(x) from u",
+        "select y, x, count(*) from u group by x > 1", "select y from u group by x > 1", "select x, y from u order by y desc",
+        "select y, count(*) from u where 0", "select y, count(*) from u where 0 group by y", "select 1 where 1 limit 0",
+        "select x from u limit 1 offset 1", "select x from u limit 1, 1", "select x, y from u union select 5, 'q' order by 1 desc",
+        "select x from u intersect select 2", "select x from u except select 2", "select x from u union all select x from u order by x",
+        "select x+1, x+1 from u", "select u.*, x from u limit 1", "select * from u, u u2 limit 1",
+        "select u.x, u2.x from u join u u2 on u.x=u2.x limit 1", "select a.x from u a left join u b on b.x = a.x+1 where b.x is null",
+        "select x from u order by x collate nocase limit 1", "select count(distinct y), group_concat(y), group_concat(y, '-') from u",
+        "values (1,2),(3,4)", "with c(n) as (select 1 union all select n+1 from c where n<5) select n from c",
+        "select rowid, oid, _rowid_ from u", "select x, rowid from u order by rowid desc",
+        "select x from u where x in (select x from u where x > 1)", "select (select count(*) from u u2 where u2.x <= u.x) c from u",
+        "select x as z from u order by z desc", "select x as z from u where z > 1",
+        "select x, count(*) c from u group by x having c > 0 order by c, x desc", "select 1 as a, 2 as b union select 3, 4",
+        "select x from u order by 1.5", "select u.x ux from u", "select * from (select 1 a, 2 b)", "select \"x\", 'x' from u limit 1",
+        "select x from u where y = 'a' or y = 'b'", "select typeof(x), typeof(y) from u limit 1", "select 1 from u having 1",
+        "select max(x) from u group by y order by max(x) desc", "select distinct y from u", "select x from u order by y limit 1 offset 5",
+        "select group_concat(x) from (select x from u order by x desc)",
+        "select * from t", "select a, b from t where c = 3", "select a from t where c = 3 order by a desc", "select a from t where c = '3'",
+        "select a, b from t where a = 7", "select a from t where a = '7'", "select a from t where a = 7.5", "select count(*), sum(c), avg(c), min(c), max(c) from t",
+        "select c, count(*), sum(a) from t group by c", "select c, count(*) n from t group by c having n > 3 order by n desc, c",
+        "select b, count(*) from t group by b order by b", "select distinct c from t order by c desc",
+        "select t.a, d.v from t join d on d.k = t.c order by t.a, d.v", "select t.a, d.v from t left join d on d.k = t.c and d.v > 50 order by t.a, d.v",
+        "select t.a, d.v from t, d where d.k = t.c and t.a < 10 order by t.a, d.v", "select count(*) from t join d on d.k = t.c",
+        "select k, count(*), sum(v) from d group by k", "select k, count(*) from d group by k order by k desc",
+        "select d.k, t.b from d join t on t.a = d.k order by d.k, d.v", "select d1.v, d2.v from d d1 join d d2 on d1.k = d2.k and d1.v < d2.v order by d1.v, d2.v limit 10",
+        "select a from t where c in (1,2,3) order by a", "select a from t where c between 2 and 4 order by a", "select a from t where b like 'a%' order by a",
+        "select a from t where c is null", "select a from t where b > 'b' and c < 5 order by a limit 5 offset 2",
+        "select (select max(v) from d where d.k = t.c) m from t order by a limit 6", "select a from t where exists (select 1 from d where d.k = t.c and d.v > 60) order by a",
+        "select a from t where c not in (select k from d) order by a", "select a from t where c in (select k from d where v > 30) order by a",
+        "select * from t left join d on d.k = t.c where d.k is null order by a", "select * from d right join t on d.k = t.c where t.a < 4 order by t.a, d.v",
+        "select * from d full join u on d.k = u.x order by d.v, u.x", "select * from u natural join u u2", "select * from d join u using (k) order by v",
+        "select * from u join d on u.x = d.k order by d.v limit 3", "select k from d order by k limit 3", "select k from d order by k desc nulls last limit 3",
+        "select k from d order by k nulls last limit 3", "select k, v from d order by k, v desc limit 8",
+        "select x from u union select k from d", "select x from u union all select k from d order by 1 desc", "select k from d intersect select x from u", "select k from d except select x from u",
+        "select a, row_number() over (order by a) from t", "select nosuch from t", "select a from nosuch", "select count(count(a)) from t", "select a from t where sum(a) > 1",
+        "select a from t order by 5", "select 1 union select 1, 2", "select a, a from t t1 join t t2", "select (select 1, 2)",
+        "select a from t group by 7", "select abs(1,2)", "select nosuch(1)", "select  nosuch(1)", "select from t", "select 1 from", "selec 1", "select x y z from t", "select 'abc", "select a from t where c = nosuch", "select t.nosuch from t", "select a from t order by nosuch", "select * from t t1, t t2 where a = 1", "select x.a from t",
+        "select b, count(*) from t group by 1 order by 2 desc, 1", "select upper(b), length(b) from t where a < 4", "select group_concat(b) from t where a < 6", "select min(b), max(b) from t",
+        "select total(c), sum(c) from t where a < 0", "select c+1 as q, count(*) from t group by q order by q", "select a from t order by c, a desc limit 5"
+    ]
+    let mut bad = 0
+    for q in qs {
+        bad += check(db, cx, q)
+    }
+    print("total", len(qs), "bad", bad)
+}

@@ -1,0 +1,132 @@
+// Conexiones WebSocket reales sobre TCP local: cliente (ws://) y servidor (attach_tcp).
+fn texto(b: bytes) -> string {
+    std::encoding::utf8_decode(b)
+}
+
+fn leer_peticion(s: TcpStream) -> string {
+    let mut acumulado = ""
+    while !std::text::contains(acumulado, "\r\n\r\n") {
+        acumulado = acumulado + texto(std::net::tcp_read(s, 4096))
+    }
+    acumulado
+}
+
+fn clave(peticion: string) -> string {
+    let mut k = ""
+    for linea in std::text::lines(peticion) {
+        if std::text::starts_with(linea, "Sec-WebSocket-Key: ") {
+            k = std::text::substring(linea, 19, len(linea))
+        }
+    }
+    k
+}
+
+// Los números de handle dependen de qué tarea registra antes su WebSocket: se ocultan.
+fn sin_numeros(r: any) {
+    let mut t = "{r}"
+    for d in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] {
+        t = std::text::replace(t, d, "#")
+    }
+    println(t)
+}
+
+fn servidor(l: TcpListener, protocolo: string) -> int {
+    let (s, peer) = std::net::tcp_accept(l)
+    let peticion = leer_peticion(s)
+    if protocolo != "otro" {
+        println("servidor: " + std::text::lines(peticion)[0])
+    }
+    std::net::tcp_write(s, std::ws::upgrade_response(clave(peticion), protocolo))
+    let ws = std::ws::attach_tcp(s, true, 1048576)
+    let mut n = 0
+    let mut seguir = true
+    while seguir {
+        let m = std::ws::receive(ws)
+        let tipo = std::map::get(m, "type")
+        if tipo == "text" {
+            std::ws::send_text(ws, "eco: " + std::map::get(m, "text"))
+            n += 1
+        }
+        if tipo == "binary" {
+            std::ws::send_binary(ws, std::map::get(m, "data"))
+            n += 1
+        }
+        if tipo == "close" {
+            println("servidor recibe cierre " + std::json::stringify(std::map::get(m, "code")))
+            seguir = false
+        }
+    }
+    n
+}
+
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    let t = spawn || { servidor(l, "chat") }
+    let ws = std::ws::connect("ws://" + addr + "/sala?x=1", "chat", 1048576)
+    std::ws::send_text(ws, "hola")
+    println(std::json::stringify(std::ws::receive(ws)))
+    std::ws::send_binary(ws, std::encoding::utf8_encode("datos"))
+    println(std::json::stringify(std::ws::receive(ws)))
+    // Mensaje grande (marco de 64 bits no hace falta: 70 000 bytes usan longitud de 64 bits).
+    let mut grande = "x"
+    while len(grande) < 70000 {
+        grande = grande + grande
+    }
+    std::ws::send_text(ws, grande)
+    let r = std::ws::receive(ws)
+    print(len(std::map::get(r, "text")))
+    std::ws::close(ws, 1000, "adios")
+    print(join(t))
+    sin_numeros(std::try::catch(|| std::ws::send_text(ws, "x")))
+    sin_numeros(std::try::catch(|| std::ws::receive(ws)))
+    sin_numeros(std::try::catch(|| std::ws::close(ws, 1000, "")))
+    // Errores de los argumentos.
+    print(std::try::catch(|| std::ws::connect("http://x", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://a@b/", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://h:0/", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://h:x/", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://[::1/", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://127.0.0.1:1/a", "", 10)))
+    print(std::try::catch(|| std::ws::connect("ws://127.0.0.1:1/a", "", 0)))
+    print(std::try::catch(|| std::ws::connect("ws://127.0.0.1:1/a\tb", "", 10)))
+    sin_numeros(std::try::catch(|| std::ws::close(ws, 5, "")))
+    // Cierre con códigos y razones inválidos (la conexión sigue abierta).
+    let t2 = spawn || { servidor(l, "") }
+    let ws2 = std::ws::connect("ws://" + addr + "/", "", 1000)
+    print(std::try::catch(|| std::ws::close(ws2, 5, "")))
+    print(std::try::catch(|| std::ws::close(ws2, 70000, "")))
+    print(std::try::catch(|| std::ws::close(ws2, 0 - 1, "")))
+    let mut razon = "r"
+    while len(razon) < 124 {
+        razon = razon + razon
+    }
+    print(std::try::catch(|| std::ws::close(ws2, 1000, razon)))
+    std::ws::send_text(ws2, "uno")
+    println(std::json::stringify(std::ws::receive(ws2)))
+    std::ws::close(ws2, 1001, "")
+    print(join(t2))
+    // El servidor elige otro subprotocolo, o cierra sin responder.
+    let t3 = spawn || { servidor(l, "otro") }
+    sin_numeros(std::try::catch(|| std::ws::connect("ws://" + addr + "/", "chat", 1000)))
+    let t4 = spawn || {
+        let (s, peer) = std::net::tcp_accept(l)
+        leer_peticion(s)
+        std::net::tcp_close(s)
+        0
+    }
+    print(std::try::catch(|| std::ws::connect("ws://" + addr + "/", "", 1000)))
+    print(join(t4))
+    let t5 = spawn || {
+        let (s, peer) = std::net::tcp_accept(l)
+        leer_peticion(s)
+        std::net::tcp_write(s, "HTTP/1.1 200 OK\r\n\r\n")
+        std::net::tcp_close(s)
+        0
+    }
+    print(std::try::catch(|| std::ws::connect("ws://" + addr + "/", "", 1000)))
+    print(join(t5))
+    print(std::try::catch(|| std::ws::connect("ws://localhost:1/", "", 1000)))
+    print(std::try::catch(|| std::ws::connect("ws://sin-nombre.invalid/", "", 1000)))
+}

@@ -1,0 +1,348 @@
+// std::web y std::wasm en el runtime nativo. Son importaciones del módulo WebAssembly (host JS del
+// navegador, `examples/browser/host.js`) y funciones del montón del backend Wasm: un ejecutable nativo
+// no tiene ni navegador ni montón Wasm. Igual que la VM de Rust, fallan en tiempo de ejecución con un
+// error que se puede capturar (`std::try::catch`) en lugar de no compilar. La implementación de verdad de
+// estas funciones es el backend Wasm de Titan (selfhost/wasm.titan), verificado en tests/wasm_diff.
+
+fn wb_host_fail(name: string) {
+    rt_native_fail(name, "std::web functions require the WebAssembly browser host")
+}
+
+fn wb_heap_fail(name: string) {
+    rt_native_fail(name, "std::wasm heap functions require the WebAssembly backend")
+}
+
+fn std__wasm__heap_used() -> any {
+    wb_heap_fail("std::wasm::heap_used")
+    nil
+}
+
+fn std__wasm__heap_capacity() -> any {
+    wb_heap_fail("std::wasm::heap_capacity")
+    nil
+}
+
+fn std__wasm__heap_limit() -> any {
+    wb_heap_fail("std::wasm::heap_limit")
+    nil
+}
+
+fn std__wasm__heap_set_limit(a0: any) -> any {
+    wb_heap_fail("std::wasm::heap_set_limit")
+    nil
+}
+
+fn std__wasm__heap_checkpoint() -> any {
+    wb_heap_fail("std::wasm::heap_checkpoint")
+    nil
+}
+
+fn std__wasm__heap_restore(a0: any) -> any {
+    wb_heap_fail("std::wasm::heap_restore")
+    nil
+}
+
+fn std__wasm__heap_allocations() -> any {
+    wb_heap_fail("std::wasm::heap_allocations")
+    nil
+}
+
+fn std__wasm__heap_allocated_bytes() -> any {
+    wb_heap_fail("std::wasm::heap_allocated_bytes")
+    nil
+}
+
+fn std__wasm__heap_restores() -> any {
+    wb_heap_fail("std::wasm::heap_restores")
+    nil
+}
+
+fn std__wasm__heap_reclaimed_bytes() -> any {
+    wb_heap_fail("std::wasm::heap_reclaimed_bytes")
+    nil
+}
+
+fn std__wasm__heap_peak_used() -> any {
+    wb_heap_fail("std::wasm::heap_peak_used")
+    nil
+}
+
+fn std__wasm__heap_reset_counters() -> any {
+    wb_heap_fail("std::wasm::heap_reset_counters")
+    nil
+}
+
+fn std__wasm__heap_scope_begin() -> any {
+    wb_heap_fail("std::wasm::heap_scope_begin")
+    nil
+}
+
+fn std__wasm__heap_scope_end(a0: any) -> any {
+    wb_heap_fail("std::wasm::heap_scope_end")
+    nil
+}
+
+fn std__web__query_exists(a0: any) -> any {
+    wb_host_fail("std::web::query_exists")
+    nil
+}
+
+fn std__web__set_text(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::set_text")
+    nil
+}
+
+fn std__web__set_html(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::set_html")
+    nil
+}
+
+fn std__web__set_attribute(a0: any, a1: any, a2: any) -> any {
+    wb_host_fail("std::web::set_attribute")
+    nil
+}
+
+fn std__web__add_class(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::add_class")
+    nil
+}
+
+fn std__web__remove_class(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::remove_class")
+    nil
+}
+
+fn std__web__focus(a0: any) -> any {
+    wb_host_fail("std::web::focus")
+    nil
+}
+
+fn std__web__set_title(a0: any) -> any {
+    wb_host_fail("std::web::set_title")
+    nil
+}
+
+fn std__web__listen(a0: any, a1: any, a2: any) -> any {
+    wb_host_fail("std::web::listen")
+    nil
+}
+
+fn std__web__unlisten(a0: any) -> any {
+    wb_host_fail("std::web::unlisten")
+    nil
+}
+
+fn std__web__event_type() -> any {
+    wb_host_fail("std::web::event_type")
+    nil
+}
+
+fn std__web__event_value() -> any {
+    wb_host_fail("std::web::event_value")
+    nil
+}
+
+fn std__web__event_key() -> any {
+    wb_host_fail("std::web::event_key")
+    nil
+}
+
+fn std__web__event_target_id() -> any {
+    wb_host_fail("std::web::event_target_id")
+    nil
+}
+
+fn std__web__event_checked() -> any {
+    wb_host_fail("std::web::event_checked")
+    nil
+}
+
+fn std__web__event_x() -> any {
+    wb_host_fail("std::web::event_x")
+    nil
+}
+
+fn std__web__event_y() -> any {
+    wb_host_fail("std::web::event_y")
+    nil
+}
+
+fn std__web__fetch(a0: any, a1: any, a2: any, a3: any) -> any {
+    wb_host_fail("std::web::fetch")
+    nil
+}
+
+fn std__web__fetch_cancel(a0: any) -> any {
+    wb_host_fail("std::web::fetch_cancel")
+    nil
+}
+
+fn std__web__fetch_ok() -> any {
+    wb_host_fail("std::web::fetch_ok")
+    nil
+}
+
+fn std__web__fetch_status() -> any {
+    wb_host_fail("std::web::fetch_status")
+    nil
+}
+
+fn std__web__fetch_body() -> any {
+    wb_host_fail("std::web::fetch_body")
+    nil
+}
+
+fn std__web__fetch_url() -> any {
+    wb_host_fail("std::web::fetch_url")
+    nil
+}
+
+fn std__web__fetch_error() -> any {
+    wb_host_fail("std::web::fetch_error")
+    nil
+}
+
+fn std__web__fetch_headers() -> any {
+    wb_host_fail("std::web::fetch_headers")
+    nil
+}
+
+fn std__web__request(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any, a6: any) -> any {
+    wb_host_fail("std::web::request")
+    nil
+}
+
+fn std__web__ws_connect(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any, a6: any) -> any {
+    wb_host_fail("std::web::ws_connect")
+    nil
+}
+
+fn std__web__ws_send(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::ws_send")
+    nil
+}
+
+fn std__web__ws_close(a0: any, a1: any, a2: any) -> any {
+    wb_host_fail("std::web::ws_close")
+    nil
+}
+
+fn std__web__ws_id() -> any {
+    wb_host_fail("std::web::ws_id")
+    nil
+}
+
+fn std__web__ws_message() -> any {
+    wb_host_fail("std::web::ws_message")
+    nil
+}
+
+fn std__web__ws_protocol() -> any {
+    wb_host_fail("std::web::ws_protocol")
+    nil
+}
+
+fn std__web__ws_close_code() -> any {
+    wb_host_fail("std::web::ws_close_code")
+    nil
+}
+
+fn std__web__ws_close_reason() -> any {
+    wb_host_fail("std::web::ws_close_reason")
+    nil
+}
+
+fn std__web__ws_was_clean() -> any {
+    wb_host_fail("std::web::ws_was_clean")
+    nil
+}
+
+fn std__web__ws_error() -> any {
+    wb_host_fail("std::web::ws_error")
+    nil
+}
+
+fn std__web__canvas_resize(a0: any, a1: any, a2: any) -> any {
+    wb_host_fail("std::web::canvas_resize")
+    nil
+}
+
+fn std__web__canvas_clear(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::canvas_clear")
+    nil
+}
+
+fn std__web__canvas_fill_rect(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any) -> any {
+    wb_host_fail("std::web::canvas_fill_rect")
+    nil
+}
+
+fn std__web__canvas_stroke_rect(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any, a6: any) -> any {
+    wb_host_fail("std::web::canvas_stroke_rect")
+    nil
+}
+
+fn std__web__canvas_line(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any, a6: any) -> any {
+    wb_host_fail("std::web::canvas_line")
+    nil
+}
+
+fn std__web__canvas_text(a0: any, a1: any, a2: any, a3: any, a4: any, a5: any) -> any {
+    wb_host_fail("std::web::canvas_text")
+    nil
+}
+
+fn std__web__animation_start(a0: any) -> any {
+    wb_host_fail("std::web::animation_start")
+    nil
+}
+
+fn std__web__animation_cancel(a0: any) -> any {
+    wb_host_fail("std::web::animation_cancel")
+    nil
+}
+
+fn std__web__frame_id() -> any {
+    wb_host_fail("std::web::frame_id")
+    nil
+}
+
+fn std__web__frame_time_ms() -> any {
+    wb_host_fail("std::web::frame_time_ms")
+    nil
+}
+
+fn std__web__frame_delta_ms() -> any {
+    wb_host_fail("std::web::frame_delta_ms")
+    nil
+}
+
+fn std__web__frame_count() -> any {
+    wb_host_fail("std::web::frame_count")
+    nil
+}
+
+fn std__web__webgl_supported(a0: any) -> any {
+    wb_host_fail("std::web::webgl_supported")
+    nil
+}
+
+fn std__web__webgl_create(a0: any, a1: any, a2: any, a3: any, a4: any) -> any {
+    wb_host_fail("std::web::webgl_create")
+    nil
+}
+
+fn std__web__webgl_uniform_f32(a0: any, a1: any, a2: any, a3: any) -> any {
+    wb_host_fail("std::web::webgl_uniform_f32")
+    nil
+}
+
+fn std__web__webgl_draw(a0: any, a1: any) -> any {
+    wb_host_fail("std::web::webgl_draw")
+    nil
+}
+
+fn std__web__webgl_delete(a0: any) -> any {
+    wb_host_fail("std::web::webgl_delete")
+    nil
+}

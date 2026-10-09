@@ -1,0 +1,94 @@
+// Prueba del motor regex: compara con `tokenizers` (oráculo: la VM de Rust, fancy-regex) vía Split/Isolated.
+fn rxd_json(pat: string, pieces: array) -> string {
+    let lb = "{"
+    let mut vocab = lb + "\"[UNK]\": 0"
+    let mut i = 0
+    let mut seen = []
+    for p in pieces {
+        let mut dup = false
+        for s in seen {
+            if s == p {
+                dup = true
+            }
+        }
+        if !dup {
+            seen = std::array::push(seen, p)
+            i += 1
+            vocab = vocab + ", " + std::json::stringify(p) + ": " + "{i}"
+        }
+    }
+    vocab = vocab + "}"
+    lb + "\"version\":\"1.0\",\"truncation\":null,\"padding\":null,\"added_tokens\":[],\"normalizer\":null,\"pre_tokenizer\":" + lb + "\"type\":\"Split\",\"pattern\":" + lb + "\"Regex\":" + std::json::stringify(pat) + "},\"behavior\":\"Isolated\",\"invert\":false},\"post_processor\":null,\"decoder\":null,\"model\":" + lb + "\"type\":\"WordLevel\",\"vocab\":" + vocab + ",\"unk_token\":\"[UNK]\"}}"
+}
+
+fn main() {
+    let u = tku_new()
+    let cases = rx_cases()
+    let mut bad = 0
+    let mut skipped = 0
+    for cs in cases {
+        let pat = cs[0]
+        let text = cs[1]
+        let (rx, e) = rx_compile(u, pat)
+        if e != "" {
+            println("COMPILE {pat}: {e}")
+            bad += 1
+        } else if text != "" {
+            let t = tk_cps(text)
+            let m = rx_find_iter(rx, t)
+            let mut pieces = []
+            let mut prev = 0
+            let mut k = 0
+            while k < len(m) {
+                if prev != m[k] {
+                    pieces = std::array::push(pieces, tk_str(std::array::slice(t, prev, m[k])))
+                }
+                if m[k] != m[k + 1] {
+                    pieces = std::array::push(pieces, tk_str(std::array::slice(t, m[k], m[k + 1])))
+                }
+                prev = m[k + 1]
+                k += 2
+            }
+            if prev != len(t) {
+                pieces = std::array::push(pieces, tk_str(std::array::slice(t, prev, len(t))))
+            }
+            let js = rxd_json(pat, pieces)
+            let r = std::try::catch(|| {
+                let h = std::tokenize::from_json(js)
+                let enc = std::tokenize::encode(h, text, false)
+                let ids = std::map::get(enc, "ids")
+                std::tokenize::close(h)
+                ids
+            })
+            // ids esperados: orden de aparición único
+            let mut seen = []
+            let mut want = []
+            for p in pieces {
+                let mut idx = -1
+                let mut z = 0
+                while z < len(seen) {
+                    if seen[z] == p {
+                        idx = z
+                    }
+                    z += 1
+                }
+                if idx < 0 {
+                    seen = std::array::push(seen, p)
+                    idx = len(seen) - 1
+                }
+                want = std::array::push(want, idx + 1)
+            }
+            let got = match r {
+                Result::Ok(v) => v,
+                Result::Err(e) => ["ERR " + e],
+            }
+            if std::json::stringify(got) != std::json::stringify(want) {
+                println("DIFF pat={pat} text={std::json::stringify(text)}")
+                println("  mine={std::json::stringify(pieces)}")
+                println("  oracle={std::json::stringify(got)}")
+                bad += 1
+            }
+        }
+    }
+    println("casos {len(cases)} fallos {bad}")
+}

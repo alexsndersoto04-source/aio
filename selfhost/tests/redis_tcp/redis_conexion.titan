@@ -1,0 +1,7 @@
+// Errores de conexión de std::redis (rechazada, host inexistente, IPv6 entre corchetes): idénticos a la VM.
+fn main() {
+    print(std::try::catch(|| { std::redis::connect("redis://127.0.0.1:1/0") }))
+    print(std::try::catch(|| { std::redis::connect("redis://[::1]:1/0") }))
+    print(std::try::catch(|| { std::redis::connect("redis://nohost.invalid:6379/0") }))
+    print(std::try::catch(|| { std::redis::connect("redis://localhost:1/0") }))
+}

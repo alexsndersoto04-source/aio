@@ -54,3 +54,13 @@ projects/moon/uploads/
 
 # Empaquetado para subida a Cloudflare (se entrega por el visor, no al repo)
 moon-web-cloudflare.zip
+
+# Compiladores nativos del bootstrap (selfhost/verify_fixpoint.sh)
+selfhost/titanc0
+selfhost/titanc1
+selfhost/titanc2
+selfhost/titanc3
+selfhost/native/.runtime-cache*.json
+selfhost/titan
+selfhost/build_c
+selfhost/tests/audio/fixtures/

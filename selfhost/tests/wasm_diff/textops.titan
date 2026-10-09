@@ -1,0 +1,51 @@
+struct Entry {
+    key: string,
+    count: int,
+}
+
+fn label(n: int) -> string {
+    if n % 3 == 0 {
+        return "tres"
+    }
+    if n % 2 == 0 {
+        return "par"
+    }
+    "impar"
+}
+
+fn tally(n: int) -> int {
+    let mut counts = std::map::new()
+    let mut i = 0
+    while i < n {
+        let k = label(i)
+        if std::map::contains(counts, k) {
+            counts = std::map::insert(counts, k, std::map::get(counts, k) + 1)
+        } else {
+            counts = std::map::insert_new(counts, k, 1)
+        }
+        i += 1
+    }
+    std::map::get(counts, "par") * 100 + std::map::get(counts, "tres") * 10 + std::map::get(counts, "impar")
+}
+
+fn join3(a: string, b: string, c: string) -> string {
+    a + "-" + b + "-" + c
+}
+
+fn main() -> int {
+    let e = Entry { key: "k", count: 2 }
+    let words = ["uno", "dos", "tres"]
+    let mut acc = ""
+    for w in words {
+        acc = acc + w + ","
+    }
+    let j = join3("a", "é", "🚀")
+    let mut score = tally(30) + e.count
+    if std::text::equals(acc, "uno,dos,tres,") {
+        score += 1
+    }
+    if !std::text::equals(j, "a-é-🚀") {
+        score += 1000
+    }
+    score + std::text::hash64(j) % 97
+}

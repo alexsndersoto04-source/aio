@@ -1,0 +1,21 @@
+// Reproduce un archivo con el motor y espera a que termine. Para pruebas con TITAN_AUDIO_SINK=file:<ruta>.
+// Uso: engine_sink <archivo> <volumen> <bajos> <medios> <agudos>
+fn num(s: string) -> int {
+    match std::text::parse_int(s) {
+        Option::Some(v) => v,
+        _ => 0,
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    std::audio::engine_set_volume(num(args[2]))
+    std::audio::engine_set_eq(num(args[3]), num(args[4]), num(args[5]))
+    println(std::audio::engine_play(args[1]))
+    let mut i = 0
+    while std::audio::engine_state() != "idle" && i < 500 {
+        std::time::sleep_ms(20)
+        i += 1
+    }
+    println(std::audio::engine_state())
+}

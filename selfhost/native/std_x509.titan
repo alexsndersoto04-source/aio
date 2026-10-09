@@ -1,0 +1,987 @@
+// X.509 para TLS: lectura de certificados (DER), firmas RSA (PKCS#1 v1.5 y PSS) y ECDSA,
+// validación de cadenas contra las anclas de std_roots.titan y de nombres de servidor.
+// Prefijo xc_. Los punteros apuntan a bytes DER que el llamador mantiene vivos.
+//
+// Registro de certificado (rt_alloc_zero(256), todo en palabras de 8 bytes):
+//  +0 DER, +8 largo, +16 TBS (TLV completo), +24 largo TBS, +32 OID del algoritmo de firma,
+//  +40 su largo, +48 firma (sin el byte de bits sobrantes), +56 su largo, +64 emisor (Name TLV),
+//  +72 largo, +80 sujeto, +88 largo, +96 SPKI (TLV), +104 largo, +112 notBefore, +120 notAfter
+//  (segundos Unix), +128 SAN (SEQUENCE), +136 largo, +144 cA, +152 pathLen (-1 ninguno),
+//  +160 hay keyUsage, +168 primer byte de keyUsage, +176 hay basicConstraints, +184 EKU (SEQUENCE),
+//  +192 largo, +200 hay nameConstraints.
+//
+// Errores de cadena (códigos de xc_err_name): 1 UnknownIssuer, 2 Expired, 3 NotValidYet,
+// 4 NotValidForName, 5 BadSignature, 6 BadEncoding, 7 UnsupportedSignatureAlgorithm,
+// 8 InvalidPurpose, 9 CaUsedAsEndEntity, 10 NotACa, 11 PathLenExceeded, 12 UnsupportedNameConstraints.
+// Límites: no se aplican restricciones de nombre (una CA con ellas se rechaza), no hay revocación.
+
+fn xc_eq(a: int, b: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(a + i) != std::raw::load8(b + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn xc_hexv(c: int) -> int {
+    if c <= 57 { return c - 48 }
+    c - 87
+}
+
+// ¿Los n bytes de p son los de la cadena hexadecimal s?
+fn xc_hex_eq(p: int, n: int, s: string) -> bool {
+    if rt_slen(s) != 2 * n {
+        return false
+    }
+    let sp = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) != xc_hexv(std::raw::load8(sp + 2 * i)) * 16 + xc_hexv(std::raw::load8(sp + 2 * i + 1)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn xc_set(c: int, off: int, v: int) {
+    std::raw::store(c + off, v)
+}
+
+fn xc_get(c: int, off: int) -> int {
+    std::raw::load(c + off)
+}
+
+// Días desde 1970-01-01 de una fecha civil.
+fn xc_days(y0: int, m: int, d: int) -> int {
+    let mut y = y0
+    if m <= 2 {
+        y -= 1
+    }
+    let era = y / 400
+    let yoe = y - era * 400
+    let mut mp = m + 9
+    if m > 2 {
+        mp = m - 3
+    }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+fn xc_dd(p: int, i: int) -> int {
+    let a = std::raw::load8(p + i)
+    let b = std::raw::load8(p + i + 1)
+    if a < 48 || a > 57 || b < 48 || b > 57 {
+        return -1
+    }
+    let r = (a - 48) * 10 + (b - 48)
+    r
+}
+
+// UTCTime (23) o GeneralizedTime (24) en segundos Unix; -1 si no es válido.
+fn xc_time(p: int, tag: int, n: int) -> int {
+    let mut y = 0
+    let mut o = 0
+    if tag == 23 {
+        if n != 13 { return -1 }
+        let yy = xc_dd(p, 0)
+        if yy < 0 { return -1 }
+        y = 2000 + yy
+        if yy >= 50 {
+            y = 1900 + yy
+        }
+        o = 2
+    } else {
+        if n != 15 { return -1 }
+        let a = xc_dd(p, 0)
+        let b = xc_dd(p, 2)
+        if a < 0 || b < 0 { return -1 }
+        y = a * 100 + b
+        o = 4
+    }
+    let mo = xc_dd(p, o)
+    let d = xc_dd(p, o + 2)
+    let h = xc_dd(p, o + 4)
+    let mi = xc_dd(p, o + 6)
+    let s = xc_dd(p, o + 8)
+    if mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 60 {
+        return -1
+    }
+    if std::raw::load8(p + o + 10) != 90 {
+        return -1
+    }
+    xc_days(y, mo, d) * 86400 + h * 3600 + mi * 60 + s
+}
+
+// Interpreta un Extension: guarda lo que usamos. false si no es válido o es crítica y no se conoce.
+fn xc_extension(c: int, p: int, s: int, e: int) -> bool {
+    let (to, so, lo, no) = jr_der_tlv(p, s, e)
+    if to != 6 {
+        return false
+    }
+    let mut i = no
+    let mut critical = false
+    let (tb, sb, lb, nb) = jr_der_tlv(p, i, e)
+    if tb == 1 {
+        if lb != 1 {
+            return false
+        }
+        critical = std::raw::load8(p + sb) != 0
+        i = nb
+    }
+    let (tv, sv, lv, nv) = jr_der_tlv(p, i, e)
+    if tv != 4 || nv != e {
+        return false
+    }
+    if xc_hex_eq(p + so, lo, "551d13") {
+        // basicConstraints
+        let (t0, s0, l0, n0) = jr_der_tlv(p, sv, sv + lv)
+        if t0 != 48 || n0 != sv + lv {
+            return false
+        }
+        xc_set(c, 176, 1)
+        let mut j = s0
+        let (t1, s1, l1, n1) = jr_der_tlv(p, j, s0 + l0)
+        if t1 == 1 {
+            if l1 != 1 {
+                return false
+            }
+            if std::raw::load8(p + s1) != 0 {
+                xc_set(c, 144, 1)
+            }
+            j = n1
+        }
+        let (t2, s2, l2, n2) = jr_der_tlv(p, j, s0 + l0)
+        if t2 == 2 {
+            if l2 != 1 || std::raw::load8(p + s2) >= 128 {
+                return false
+            }
+            xc_set(c, 152, std::raw::load8(p + s2))
+            j = n2
+        }
+        return j == s0 + l0
+    }
+    if xc_hex_eq(p + so, lo, "551d0f") {
+        // keyUsage
+        let (t0, s0, l0, n0) = jr_der_tlv(p, sv, sv + lv)
+        if t0 != 3 || l0 < 2 || n0 != sv + lv {
+            return false
+        }
+        xc_set(c, 160, 1)
+        xc_set(c, 168, std::raw::load8(p + s0 + 1))
+        return true
+    }
+    if xc_hex_eq(p + so, lo, "551d11") {
+        let (t0, s0, l0, n0) = jr_der_tlv(p, sv, sv + lv)
+        if t0 != 48 || n0 != sv + lv {
+            return false
+        }
+        xc_set(c, 128, p + sv)
+        xc_set(c, 136, lv)
+        return true
+    }
+    if xc_hex_eq(p + so, lo, "551d25") {
+        let (t0, s0, l0, n0) = jr_der_tlv(p, sv, sv + lv)
+        if t0 != 48 || n0 != sv + lv {
+            return false
+        }
+        xc_set(c, 184, p + sv)
+        xc_set(c, 192, lv)
+        return true
+    }
+    if xc_hex_eq(p + so, lo, "551d1e") {
+        xc_set(c, 200, 1)
+        return true
+    }
+    if critical {
+        // Conocidas que no afectan a esta validación.
+        if xc_hex_eq(p + so, lo, "551d0e") || xc_hex_eq(p + so, lo, "551d23") || xc_hex_eq(p + so, lo, "551d20") || xc_hex_eq(p + so, lo, "551d1f") || xc_hex_eq(p + so, lo, "2b06010505070101") || xc_hex_eq(p + so, lo, "551d24") || xc_hex_eq(p + so, lo, "551d36") || xc_hex_eq(p + so, lo, "551d2e") {
+            return true
+        }
+        return false
+    }
+    true
+}
+
+// Certificado DER → registro (o 0 si está mal formado).
+fn xc_parse(p: int, n: int) -> int {
+    let (t0, s0, l0, n0) = jr_der_tlv(p, 0, n)
+    if t0 != 48 || n0 != n {
+        return 0
+    }
+    let (t1, s1, l1, n1) = jr_der_tlv(p, s0, n)
+    if t1 != 48 {
+        return 0
+    }
+    let (t2, s2, l2, n2) = jr_der_tlv(p, n1, n)
+    if t2 != 48 {
+        return 0
+    }
+    let (to, so, lo, no) = jr_der_tlv(p, s2, s2 + l2)
+    if to != 6 {
+        return 0
+    }
+    let (t3, s3, l3, n3) = jr_der_tlv(p, n2, n)
+    if t3 != 3 || n3 != n || l3 < 1 || std::raw::load8(p + s3) != 0 {
+        return 0
+    }
+    let c = rt_alloc_zero(256)
+    xc_set(c, 0, p)
+    xc_set(c, 8, n)
+    xc_set(c, 16, p + s0)
+    xc_set(c, 24, n1 - s0)
+    xc_set(c, 32, p + so)
+    xc_set(c, 40, lo)
+    xc_set(c, 48, p + s3 + 1)
+    xc_set(c, 56, l3 - 1)
+    xc_set(c, 152, -1)
+    let e = s1 + l1
+    let mut i = s1
+    let (ta, sa, la, na) = jr_der_tlv(p, i, e)
+    let mut version = 0
+    if ta == 160 {
+        let (tv, sv, lv, nv) = jr_der_tlv(p, sa, sa + la)
+        if tv != 2 || lv != 1 || nv != na {
+            rt_free_block(c)
+            return 0
+        }
+        version = std::raw::load8(p + sv)
+        i = na
+    }
+    // serie
+    let (ts, ss, ls, ns) = jr_der_tlv(p, i, e)
+    if ts != 2 || ls == 0 {
+        rt_free_block(c)
+        return 0
+    }
+    i = ns
+    // algoritmo de firma interno: igual al externo
+    let (tg, sg, lg, ng) = jr_der_tlv(p, i, e)
+    if tg != 48 {
+        rt_free_block(c)
+        return 0
+    }
+    let (tgo, sgo, lgo, ngo) = jr_der_tlv(p, sg, sg + lg)
+    if tgo != 6 || lgo != lo || !xc_eq(p + sgo, p + so, lo) {
+        rt_free_block(c)
+        return 0
+    }
+    i = ng
+    // emisor
+    let (ti, si, li, ni) = jr_der_tlv(p, i, e)
+    if ti != 48 {
+        rt_free_block(c)
+        return 0
+    }
+    xc_set(c, 64, p + i)
+    xc_set(c, 72, ni - i)
+    i = ni
+    // validez
+    let (tvv, svv, lvv, nvv) = jr_der_tlv(p, i, e)
+    if tvv != 48 {
+        rt_free_block(c)
+        return 0
+    }
+    let (tn1, sn1, ln1, nn1) = jr_der_tlv(p, svv, svv + lvv)
+    let (tn2, sn2, ln2, nn2) = jr_der_tlv(p, nn1, svv + lvv)
+    if (tn1 != 23 && tn1 != 24) || (tn2 != 23 && tn2 != 24) || nn2 != svv + lvv {
+        rt_free_block(c)
+        return 0
+    }
+    let nb = xc_time(p + sn1, tn1, ln1)
+    let na2 = xc_time(p + sn2, tn2, ln2)
+    if nb < 0 || na2 < 0 {
+        rt_free_block(c)
+        return 0
+    }
+    xc_set(c, 112, nb)
+    xc_set(c, 120, na2)
+    i = nvv
+    // sujeto
+    let (tj, sj, lj, nj) = jr_der_tlv(p, i, e)
+    if tj != 48 {
+        rt_free_block(c)
+        return 0
+    }
+    xc_set(c, 80, p + i)
+    xc_set(c, 88, nj - i)
+    i = nj
+    // clave pública
+    let (tk, sk, lk, nk) = jr_der_tlv(p, i, e)
+    if tk != 48 {
+        rt_free_block(c)
+        return 0
+    }
+    xc_set(c, 96, p + i)
+    xc_set(c, 104, nk - i)
+    i = nk
+    // identificadores únicos (v2/v3) y extensiones (v3)
+    let (tu, su, lu, nu) = jr_der_tlv(p, i, e)
+    if tu == 129 && version >= 1 {
+        i = nu
+    }
+    let (tu2, su2, lu2, nu2) = jr_der_tlv(p, i, e)
+    if tu2 == 130 && version >= 1 {
+        i = nu2
+    }
+    if i < e {
+        let (tx, sx, lx, nx) = jr_der_tlv(p, i, e)
+        if tx != 163 || version != 2 || nx != e {
+            rt_free_block(c)
+            return 0
+        }
+        let (ty, sy, ly, ny) = jr_der_tlv(p, sx, nx)
+        if ty != 48 || ny != nx {
+            rt_free_block(c)
+            return 0
+        }
+        let mut j = sy
+        while j < ny {
+            let (te, se, le, ne) = jr_der_tlv(p, j, ny)
+            if te != 48 || !xc_extension(c, p, se, ne) {
+                rt_free_block(c)
+                return 0
+            }
+            j = ne
+        }
+    }
+    c
+}
+
+// ------------------------------------------------------------ firmas
+
+// Prefijo DigestInfo de PKCS#1 v1.5 por tipo de hash (1 SHA-256, 2 SHA-384, 3 SHA-512).
+fn xc_digest_info(hk: int) -> string {
+    if hk == 1 { return "3031300d060960864801650304020105000420" }
+    if hk == 2 { return "3041300d060960864801650304020205000430" }
+    "3051300d060960864801650304020305000440"
+}
+
+fn xc_hex_put(dst: int, s: string) -> int {
+    let n = rt_slen(s) / 2
+    let sp = std::raw::bits(s) + 16
+    let mut i = 0
+    while i < n {
+        std::raw::store8(dst + i, xc_hexv(std::raw::load8(sp + 2 * i)) * 16 + xc_hexv(std::raw::load8(sp + 2 * i + 1)))
+        i += 1
+    }
+    n
+}
+
+// MGF1 (RFC 8017) con el hash hk: out[0..n) a partir de seed[0..sl).
+fn xc_mgf1(hk: int, seed: int, sl: int, out: int, n: int) {
+    let buf = rt_alloc(sl + 16)
+    rt_copy(buf, seed, sl)
+    let hl = hs_out_len(hk)
+    let mut counter = 0
+    let mut done = 0
+    while done < n {
+        std::raw::store8(buf + sl, std::raw::shr(counter, 24) & 255)
+        std::raw::store8(buf + sl + 1, std::raw::shr(counter, 16) & 255)
+        std::raw::store8(buf + sl + 2, std::raw::shr(counter, 8) & 255)
+        std::raw::store8(buf + sl + 3, counter & 255)
+        let d = hs_digest(hk, buf, sl + 4)
+        let mut k = 0
+        while k < hl && done < n {
+            std::raw::store8(out + done, std::raw::load8(d + k))
+            done += 1
+            k += 1
+        }
+        rt_free_block(d)
+        counter += 1
+    }
+    rt_free_block(buf)
+}
+
+// Firma PSS (RFC 8017 §9.1.1) del resumen mh (hl bytes) para un módulo de modbits bits:
+// devuelve un bloque de k = ceil(modbits/8) bytes listo para la operación con la clave privada.
+fn xc_pss_encode(hk: int, mh: int, modbits: int) -> int {
+    let hl = hs_out_len(hk)
+    let k = (modbits + 7) / 8
+    let embits = modbits - 1
+    let emlen = (embits + 7) / 8
+    let em = rt_alloc_zero(k + 8)
+    let base = em + (k - emlen)
+    let dblen = emlen - hl - 1
+    let mp = rt_alloc_zero(8 + hl + hl + 8)
+    rt_copy(mp + 8, mh, hl)
+    rn_os_fill(mp + 8 + hl, hl)
+    let h = hs_digest(hk, mp, 8 + hl + hl)
+    let db = rt_alloc_zero(dblen + 8)
+    std::raw::store8(db + dblen - hl - 1, 1)
+    rt_copy(db + dblen - hl, mp + 8 + hl, hl)
+    let mask = rt_alloc(dblen + 8)
+    xc_mgf1(hk, h, hl, mask, dblen)
+    let mut i = 0
+    while i < dblen {
+        std::raw::store8(base + i, std::raw::load8(db + i) ^ std::raw::load8(mask + i))
+        i += 1
+    }
+    let top = 8 * emlen - embits
+    std::raw::store8(base, std::raw::load8(base) & std::raw::shr(255, top))
+    rt_copy(base + dblen, h, hl)
+    std::raw::store8(base + emlen - 1, 188)
+    rt_free_block(mp)
+    rt_free_block(h)
+    rt_free_block(db)
+    rt_free_block(mask)
+    em
+}
+
+// Comprobación PSS (sLen = hLen) sobre EM de k bytes frente al resumen mh.
+fn xc_pss_check(hk: int, mh: int, em: int, k: int, modbits: int) -> bool {
+    let hl = hs_out_len(hk)
+    let embits = modbits - 1
+    let emlen = (embits + 7) / 8
+    if emlen < hl + hl + 2 {
+        return false
+    }
+    let mut z = 0
+    while z < k - emlen {
+        if std::raw::load8(em + z) != 0 {
+            return false
+        }
+        z += 1
+    }
+    let base = em + (k - emlen)
+    if std::raw::load8(base + emlen - 1) != 188 {
+        return false
+    }
+    let dblen = emlen - hl - 1
+    let top = 8 * emlen - embits
+    if (std::raw::load8(base) & (255 - std::raw::shr(255, top))) != 0 {
+        return false
+    }
+    let mask = rt_alloc(dblen + 8)
+    xc_mgf1(hk, base + dblen, hl, mask, dblen)
+    let db = rt_alloc(dblen + 8)
+    let mut i = 0
+    while i < dblen {
+        std::raw::store8(db + i, std::raw::load8(base + i) ^ std::raw::load8(mask + i))
+        i += 1
+    }
+    std::raw::store8(db, std::raw::load8(db) & std::raw::shr(255, top))
+    let mut ok = true
+    i = 0
+    while i < dblen - hl - 1 {
+        if std::raw::load8(db + i) != 0 {
+            ok = false
+        }
+        i += 1
+    }
+    if std::raw::load8(db + dblen - hl - 1) != 1 {
+        ok = false
+    }
+    if ok {
+        let mp = rt_alloc_zero(8 + hl + hl + 8)
+        rt_copy(mp + 8, mh, hl)
+        rt_copy(mp + 8 + hl, db + dblen - hl, hl)
+        let h2 = hs_digest(hk, mp, 8 + hl + hl)
+        ok = xc_eq(h2, base + dblen, hl)
+        rt_free_block(mp)
+        rt_free_block(h2)
+    }
+    rt_free_block(mask)
+    rt_free_block(db)
+    ok
+}
+
+// Firma RSA (modo 1 = PKCS#1 v1.5, 2 = PSS) con la clave pública RSAPublicKey DER kp[0..kl).
+fn xc_rsa_verify(kp: int, kl: int, mode: int, hk: int, msg: int, mlen: int, sig: int, slen: int) -> bool {
+    let (tag, s0, len0, next0) = jr_der_tlv(kp, 0, kl)
+    if tag != 48 || next0 != kl {
+        return false
+    }
+    let e0 = s0 + len0
+    let (ns, nl, i1) = jr_positive(kp, s0, e0)
+    if ns < 0 {
+        return false
+    }
+    let (es, el, i2) = jr_positive(kp, i1, e0)
+    if es < 0 || i2 != e0 {
+        return false
+    }
+    if jr_pub_check(kp, ns, nl, es, el, 8192, 3) != nil {
+        return false
+    }
+    let k = nl
+    if slen != k {
+        return false
+    }
+    let ln = jr_limbs_for(k)
+    let n = jr_from_be(kp + ns, nl, ln)
+    let s = jr_from_be(sig, k, ln)
+    if jr_cmp(s, n) >= 0 || jr_is_zero(s) {
+        rt_free_block(s)
+        rt_free_block(n)
+        return false
+    }
+    let cn = jr_ctx(n)
+    let m = jr_modexp(cn, s, kp + es, el)
+    let got = rt_alloc(k + 8)
+    jr_to_be(m, got, k)
+    let mh = hs_digest(hk, msg, mlen)
+    let hl = hs_out_len(hk)
+    let mut same = false
+    if mode == 1 {
+        let di = xc_digest_info(hk)
+        let dl = rt_slen(di) / 2
+        if k >= dl + hl + 11 {
+            let em = rt_alloc(k + 8)
+            std::raw::store8(em, 0)
+            std::raw::store8(em + 1, 1)
+            let ps = k - 3 - dl - hl
+            let mut i = 0
+            while i < ps {
+                std::raw::store8(em + 2 + i, 255)
+                i += 1
+            }
+            std::raw::store8(em + 2 + ps, 0)
+            xc_hex_put(em + 3 + ps, di)
+            rt_copy(em + 3 + ps + dl, mh, hl)
+            same = xc_eq(got, em, k)
+            rt_free_block(em)
+        }
+    } else {
+        let modbits = jr_bits(n)
+        same = xc_pss_check(hk, mh, got, k, modbits)
+    }
+    rt_free_block(mh)
+    rt_free_block(got)
+    rt_free_block(m)
+    jr_ctx_free(cn)
+    rt_free_block(s)
+    rt_free_block(n)
+    same
+}
+
+// SPKI → (tipo, puntero, largo): 1 RSA (RSAPublicKey DER), 2 P-256 y 3 P-384 (punto sin comprimir); 0 no soportada.
+fn xc_key_info(sp: int, sl: int) -> (int, int, int) {
+    let (t0, s0, l0, n0) = jr_der_tlv(sp, 0, sl)
+    if t0 != 48 || n0 != sl {
+        return (0, 0, 0)
+    }
+    let (t1, s1, l1, n1) = jr_der_tlv(sp, s0, n0)
+    if t1 != 48 {
+        return (0, 0, 0)
+    }
+    let (t2, s2, l2, n2) = jr_der_tlv(sp, n1, n0)
+    if t2 != 3 || n2 != n0 || l2 < 1 || std::raw::load8(sp + s2) != 0 {
+        return (0, 0, 0)
+    }
+    let (to, so, lo, no) = jr_der_tlv(sp, s1, n1)
+    if to != 6 {
+        return (0, 0, 0)
+    }
+    if xc_hex_eq(sp + so, lo, "2a864886f70d010101") {
+        return (1, sp + s2 + 1, l2 - 1)
+    }
+    if xc_hex_eq(sp + so, lo, "2a8648ce3d0201") {
+        let (tc, sc, lc, nc) = jr_der_tlv(sp, no, n1)
+        if tc != 6 || nc != n1 {
+            return (0, 0, 0)
+        }
+        if xc_hex_eq(sp + sc, lc, "2a8648ce3d030107") {
+            return (2, sp + s2 + 1, l2 - 1)
+        }
+        if xc_hex_eq(sp + sc, lc, "2b81040022") {
+            return (3, sp + s2 + 1, l2 - 1)
+        }
+    }
+    return (0, 0, 0)
+}
+
+// ECDSA con la firma en DER (SEQUENCE { INTEGER r, INTEGER s }).
+fn xc_ecdsa_verify(kind: int, pt: int, pl: int, hk: int, msg: int, mlen: int, sig: int, slen: int) -> bool {
+    let mut id = EC_P256
+    if kind == 3 {
+        id = EC_P384
+    }
+    let (t0, s0, l0, n0) = jr_der_tlv(sig, 0, slen)
+    if t0 != 48 || n0 != slen {
+        return false
+    }
+    let (sa, la, na) = jr_der_int(sig, s0, n0)
+    if sa < 0 {
+        return false
+    }
+    let (sb, lb, nb) = jr_der_int(sig, na, n0)
+    if sb < 0 || nb != n0 {
+        return false
+    }
+    let cv = ec_curve(id)
+    let sz = std::raw::load(cv + 24)
+    if la > sz || lb > sz {
+        ec_curve_free(cv)
+        return false
+    }
+    let rb = rt_alloc_zero(sz + 8)
+    let sbuf = rt_alloc_zero(sz + 8)
+    rt_copy(rb + sz - la, sig + sa, la)
+    rt_copy(sbuf + sz - lb, sig + sb, lb)
+    let mh = hs_digest(hk, msg, mlen)
+    let ok = ec_verify(cv, pt, pl, mh, hs_out_len(hk), rb, sbuf)
+    rt_free_block(mh)
+    rt_free_block(rb)
+    rt_free_block(sbuf)
+    ec_curve_free(cv)
+    ok
+}
+
+// Algoritmo de firma de un certificado (OID) → código: 1-3 RSA PKCS#1 (SHA-256/384/512),
+// 11-13 ECDSA (SHA-256/384/512), 0 no soportado.
+fn xc_sigalg(p: int, n: int) -> int {
+    if xc_hex_eq(p, n, "2a864886f70d01010b") { return 1 }
+    if xc_hex_eq(p, n, "2a864886f70d01010c") { return 2 }
+    if xc_hex_eq(p, n, "2a864886f70d01010d") { return 3 }
+    if xc_hex_eq(p, n, "2a8648ce3d040302") { return 11 }
+    if xc_hex_eq(p, n, "2a8648ce3d040303") { return 12 }
+    if xc_hex_eq(p, n, "2a8648ce3d040304") { return 13 }
+    0
+}
+
+// Verifica una firma. alg: 1-3 RSA PKCS#1, 11-13 ECDSA, 21-23 RSA-PSS (SHA-256/384/512);
+// need: tipo de clave exigido (0 cualquiera, 2 = P-256, 3 = P-384).
+fn xc_verify_sig(alg: int, need: int, sp: int, sl: int, msg: int, mlen: int, sig: int, slen: int) -> bool {
+    let (kind, kp, kl) = xc_key_info(sp, sl)
+    if kind == 0 {
+        return false
+    }
+    if need != 0 && kind != need {
+        return false
+    }
+    if alg >= 21 {
+        if kind != 1 { return false }
+        return xc_rsa_verify(kp, kl, 2, alg - 20, msg, mlen, sig, slen)
+    }
+    if alg >= 11 {
+        if kind == 1 { return false }
+        return xc_ecdsa_verify(kind, kp, kl, alg - 10, msg, mlen, sig, slen)
+    }
+    if kind != 1 {
+        return false
+    }
+    xc_rsa_verify(kp, kl, 1, alg, msg, mlen, sig, slen)
+}
+
+// ------------------------------------------------------------ cadenas
+
+fn xc_roots_load() -> any {
+    let (err, bytes) = jr_b64_decode(std::raw::bits(xr_data()) + 16, rt_slen(xr_data()), 0)
+    bytes
+}
+
+fn xc_dns_char_ok(c: int) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+}
+
+// Nombre DNS válido (como DnsName::try_from).
+fn xc_dns_valid(p: int, n: int) -> bool {
+    if n == 0 || n > 253 {
+        return false
+    }
+    let mut label = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 46 {
+            if label == 0 || std::raw::load8(p + i - 1) == 45 {
+                return false
+            }
+            label = 0
+        } else {
+            if !xc_dns_char_ok(c) {
+                return false
+            }
+            if label == 0 && c == 45 {
+                return false
+            }
+            label += 1
+            if label > 63 {
+                return false
+            }
+        }
+        i += 1
+    }
+    label != 0 && std::raw::load8(p + n - 1) != 45
+}
+
+// "a.b.c.d" → 4 bytes en out; false si no es una IPv4.
+fn xc_ipv4(p: int, n: int, out: int) -> bool {
+    let mut part = 0
+    let mut v = 0
+    let mut digits = 0
+    let mut i = 0
+    while i <= n {
+        let mut c = 46
+        if i < n {
+            c = std::raw::load8(p + i)
+        }
+        if c == 46 {
+            if digits == 0 || part > 3 {
+                return false
+            }
+            std::raw::store8(out + part, v)
+            part += 1
+            v = 0
+            digits = 0
+        } else {
+            if c < 48 || c > 57 {
+                return false
+            }
+            if digits > 0 && v == 0 {
+                return false
+            }
+            v = v * 10 + (c - 48)
+            digits += 1
+            if v > 255 || digits > 3 {
+                return false
+            }
+        }
+        i += 1
+    }
+    part == 4
+}
+
+fn xc_lower(c: int) -> int {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    c
+}
+
+fn xc_ieq(a: int, b: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        if xc_lower(std::raw::load8(a + i)) != xc_lower(std::raw::load8(b + i)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ¿El patrón del certificado (dNSName) cubre el nombre pedido?
+fn xc_dns_match(pp: int, pl: int, hp: int, hl: int) -> bool {
+    if pl >= 4 && std::raw::load8(pp) == 42 && std::raw::load8(pp + 1) == 46 {
+        let mut i = 2
+        let mut dots = 0
+        while i < pl {
+            if std::raw::load8(pp + i) == 42 {
+                return false
+            }
+            if std::raw::load8(pp + i) == 46 {
+                dots += 1
+            }
+            i += 1
+        }
+        if dots < 1 {
+            return false
+        }
+        // El nombre debe tener una primera etiqueta no vacía y el resto igual a pp[1..].
+        let mut d = 0
+        while d < hl && std::raw::load8(hp + d) != 46 {
+            d += 1
+        }
+        if d == 0 || d >= hl {
+            return false
+        }
+        return hl - d == pl - 1 && xc_ieq(hp + d, pp + 1, pl - 1)
+    }
+    let mut i = 0
+    while i < pl {
+        if std::raw::load8(pp + i) == 42 {
+            return false
+        }
+        i += 1
+    }
+    pl == hl && xc_ieq(pp, hp, hl)
+}
+
+// ¿El certificado es válido para el nombre (DNS o IPv4)? Solo cuenta el SAN.
+fn xc_host_ok(c: int, hp: int, hl: int) -> bool {
+    let san = xc_get(c, 128)
+    if san == 0 {
+        return false
+    }
+    let ip = rt_alloc_zero(16)
+    let is_ip = xc_ipv4(hp, hl, ip)
+    let (t0, s0, l0, n0) = jr_der_tlv(san, 0, xc_get(c, 136))
+    let mut ok = false
+    let mut i = s0
+    while i < n0 && !ok {
+        let (t, s, l, nx) = jr_der_tlv(san, i, n0)
+        if t < 0 {
+            rt_free_block(ip)
+            return false
+        }
+        if t == 130 && !is_ip {
+            ok = xc_dns_match(san + s, l, hp, hl)
+        }
+        if t == 135 && is_ip {
+            ok = l == 4 && xc_eq(san + s, ip, 4)
+        }
+        i = nx
+    }
+    rt_free_block(ip)
+    ok
+}
+
+fn xc_valid_at(c: int, now: int) -> int {
+    if now < xc_get(c, 112) {
+        return 3
+    }
+    if now > xc_get(c, 120) {
+        return 2
+    }
+    0
+}
+
+// ¿El EKU permite autenticar servidores (o no existe)?
+fn xc_eku_server(c: int) -> bool {
+    let e = xc_get(c, 184)
+    if e == 0 {
+        return true
+    }
+    let (t0, s0, l0, n0) = jr_der_tlv(e, 0, xc_get(c, 192))
+    let mut i = s0
+    while i < n0 {
+        let (t, s, l, nx) = jr_der_tlv(e, i, n0)
+        if t != 6 {
+            return false
+        }
+        if xc_hex_eq(e + s, l, "2b06010505070301") || xc_hex_eq(e + s, l, "551d2500") {
+            return true
+        }
+        i = nx
+    }
+    false
+}
+
+// Comprueba que `ca` puede emitir certificados con `below` intermedios por debajo.
+fn xc_ca_ok(ca: int, below: int, now: int) -> int {
+    let v = xc_valid_at(ca, now)
+    if v != 0 {
+        return v
+    }
+    if xc_get(ca, 176) != 1 || xc_get(ca, 144) != 1 {
+        return 10
+    }
+    if xc_get(ca, 160) == 1 && (xc_get(ca, 168) & 4) == 0 {
+        return 10
+    }
+    if xc_get(ca, 152) >= 0 && below > xc_get(ca, 152) {
+        return 11
+    }
+    if xc_get(ca, 200) == 1 {
+        return 12
+    }
+    if !xc_eku_server(ca) {
+        return 8
+    }
+    0
+}
+
+// Verifica la firma de `c` con la clave del SPKI (0 = bien, 5/7 error).
+fn xc_cert_sig(c: int, sp: int, sl: int) -> int {
+    let alg = xc_sigalg(xc_get(c, 32), xc_get(c, 40))
+    if alg == 0 {
+        return 7
+    }
+    if xc_verify_sig(alg, 0, sp, sl, xc_get(c, 16), xc_get(c, 24), xc_get(c, 48), xc_get(c, 56)) {
+        return 0
+    }
+    5
+}
+
+// Primero las anclas, luego los intermedios presentados. chain: +0 cuántos, +8+8*i registros.
+fn xc_build(chain: int, roots: any, cur: int, depth: int, now: int) -> int {
+    let mut best = 1
+    let rp = rt_bdata(roots)
+    let rn = rt_slen(roots)
+    let mut i = 0
+    while i + 2 <= rn {
+        let sl = std::raw::load8(rp + i) * 256 + std::raw::load8(rp + i + 1)
+        let sp = rp + i + 2
+        let kl = std::raw::load8(sp + sl) * 256 + std::raw::load8(sp + sl + 1)
+        let kp = sp + sl + 2
+        if sl == xc_get(cur, 72) && xc_eq(sp, xc_get(cur, 64), sl) {
+            let r = xc_cert_sig(cur, kp, kl)
+            if r == 0 {
+                return 0
+            }
+            if best == 1 {
+                best = r
+            }
+        }
+        i += 4 + sl + kl
+    }
+    if depth >= 6 {
+        return best
+    }
+    let count = std::raw::load(chain)
+    let mut j = 1
+    while j < count {
+        let cand = std::raw::load(chain + 8 + 8 * j)
+        if cand != cur && xc_get(cand, 88) == xc_get(cur, 72) && xc_eq(xc_get(cand, 80), xc_get(cur, 64), xc_get(cur, 72)) {
+            let mut r = xc_ca_ok(cand, depth, now)
+            if r == 0 {
+                r = xc_cert_sig(cur, xc_get(cand, 96), xc_get(cand, 104))
+            }
+            if r == 0 {
+                r = xc_build(chain, roots, cand, depth + 1, now)
+            }
+            if r == 0 {
+                return 0
+            }
+            if best == 1 {
+                best = r
+            }
+        }
+        j += 1
+    }
+    best
+}
+
+// Valida la cadena presentada por un servidor para el nombre host[0..hn). 0 = válida.
+fn xc_verify_server(chain: int, hp: int, hn: int, now: int) -> int {
+    let leaf = std::raw::load(chain + 8)
+    let v = xc_valid_at(leaf, now)
+    if v != 0 {
+        return v
+    }
+    if xc_get(leaf, 176) == 1 && xc_get(leaf, 144) == 1 {
+        return 9
+    }
+    if !xc_eku_server(leaf) {
+        return 8
+    }
+    let roots = xc_roots_load()
+    let r = xc_build(chain, roots, leaf, 0, now)
+    if r != 0 {
+        return r
+    }
+    if !xc_host_ok(leaf, hp, hn) {
+        return 4
+    }
+    0
+}
+
+fn xc_err_name(code: int) -> string {
+    if code == 1 { return "UnknownIssuer" }
+    if code == 2 { return "Expired" }
+    if code == 3 { return "NotValidYet" }
+    if code == 4 { return "NotValidForName" }
+    if code == 5 { return "BadSignature" }
+    if code == 6 { return "BadEncoding" }
+    if code == 7 { return "UnsupportedSignatureAlgorithm" }
+    if code == 8 { return "InvalidPurpose" }
+    if code == 9 { return "CaUsedAsEndEntity" }
+    if code == 10 { return "IssuerNotCa" }
+    if code == 11 { return "PathLenConstraintViolated" }
+    "UnsupportedNameConstraints"
+}

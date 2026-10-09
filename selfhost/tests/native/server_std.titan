@@ -1,7 +1,8 @@
-// Prueba std::server: arranca un servidor HTTP real y verifica respuestas.
-// La VM pasa todas las pruebas. El nativo tiene un problema conocido con
-// accept (syscall 43 devuelve -1 en este entorno) que requiere depuración
-// de la integración raw-syscall del compilador nativo.
+// Prueba std::server: arranca un servidor HTTP real y verifica respuestas con
+// curl. Debe dar la misma salida y código de salida en la VM y en el nativo
+// (selfhost/native/verify_native.sh). El fallo que se atribuía a `accept` era
+// en realidad `sv_to_str`, que devolvía bytes en vez de string y hacía que
+// toda petición recibiera 400; ya corregido.
 fn main() {
     let srv = std::server::start("127.0.0.1:19877")
     std::testing::assert(srv >= 0, "start server on 127.0.0.1:19877")

@@ -1,0 +1,4 @@
+fn main() {
+let (a, b) = channel(1)
+print(recv_timeout(b, 0 - 5))
+}

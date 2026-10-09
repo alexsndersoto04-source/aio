@@ -1,0 +1,452 @@
+// std::http con estado: enrutador (router, route, middleware, after, on_error,
+// dispatch) y serve_connection del backend nativo. Reproduce las instrucciones
+// Http* de crates/titan_vm/src/lib.rs (y los ayudantes http_* de ese archivo);
+// el códec HTTP es el de std_http.titan (parse_request, build_response, route_match).
+// Prefijos `hr_` (enrutador) y `hs_` (serve_connection).
+//
+// Enrutador (etiqueta 18, objeto [cuenta][id][ptr]) → bloque de 88 bytes con cuatro
+// listas {ptr, +8 cuántas, +16 capacidad}:
+//   +0 rutas (32 B c/u: método en mayúsculas, patrón, cierre; cada uno con su referencia)
+//   +24 middleware (8 B: cierre)   +48 after (8 B: cierre)   +72 manejador de errores (0 = ninguno)
+// Como en la VM, un enrutador gasta un handle de red para siempre y no se libera.
+// Las listas no devuelven memoria al crecer: dispatch trabaja con una copia de
+// cuántas hay (como la VM, que clona las listas) y las rutas añadidas durante un
+// dispatch no cuentan para ese dispatch.
+
+// ------------------------------------------------------------ enrutador
+
+fn hr_closure(v: any, message: string) {
+    if std::raw::tag(v) != 12 {
+        rt_fatal(rt_concat("type error: ", message))
+    }
+}
+
+fn hr_router(v: any, message: string) -> int {
+    if std::raw::tag(v) != 18 {
+        rt_fatal(rt_concat("type error: ", message))
+    }
+    std::raw::load(std::raw::bits(v) + 16)
+}
+
+// Añade una entrada de `esize` bytes a la lista que empieza en r+off; devuelve su dirección.
+fn hr_list_add(r: int, off: int, esize: int) -> int {
+    let n = std::raw::load(r + off + 8)
+    let cap = std::raw::load(r + off + 16)
+    if n == cap {
+        let mut nc = cap * 2
+        if nc < 4 {
+            nc = 4
+        }
+        let np = rt_alloc_zero(nc * esize)
+        let old = std::raw::load(r + off)
+        if old != 0 {
+            rt_copy(np, old, n * esize)
+        }
+        std::raw::store(r + off, np)
+        std::raw::store(r + off + 16, nc)
+    }
+    std::raw::store(r + off + 8, n + 1)
+    std::raw::load(r + off) + n * esize
+}
+
+fn hr_upper(s: any) -> any {
+    let n = rt_slen(s)
+    let out = rt_str_alloc(n)
+    let src = rt_bdata(s)
+    let mut i = 0
+    while i < n {
+        let mut c = std::raw::load8(src + i)
+        if c >= 97 && c <= 122 {
+            c = c - 32
+        }
+        std::raw::store8(out + 16 + i, c)
+        i += 1
+    }
+    rt_sval(out)
+}
+
+fn rt_http_router_new() -> any {
+    tcp_reserve()
+    let rs = rtm_state()
+    let id = std::raw::load(rs + 8)
+    std::raw::store(rs + 8, id + 1)
+    let st = tcp_st()
+    std::raw::store(st + 8, std::raw::load(st + 8) + 1)
+    tk_handle(18, id, rt_alloc_zero(88))
+}
+
+fn rt_http_route_add(router: any, method: any, pattern: any, handler: any) -> any {
+    hr_closure(handler, "route handler must be closure")
+    if std::raw::tag(pattern) != 5 {
+        rt_fatal("type error: route pattern must be string")
+    }
+    if std::raw::tag(method) != 5 {
+        rt_fatal("type error: route method must be string")
+    }
+    let r = hr_router(router, "route requires router")
+    ht_validate_pattern(pattern, "std::http::route")
+    let e = hr_list_add(r, 0, 32)
+    let up = hr_upper(method)
+    std::raw::retain(5, std::raw::bits(up))
+    std::raw::store(e, std::raw::bits(up))
+    std::raw::retain(5, std::raw::bits(pattern))
+    std::raw::store(e + 8, std::raw::bits(pattern))
+    std::raw::retain(12, std::raw::bits(handler))
+    std::raw::store(e + 16, std::raw::bits(handler))
+    nil
+}
+
+fn rt_http_middleware_add(router: any, layer: any) -> any {
+    hr_closure(layer, "middleware must be closure")
+    let r = hr_router(router, "middleware requires router")
+    let e = hr_list_add(r, 24, 8)
+    std::raw::retain(12, std::raw::bits(layer))
+    std::raw::store(e, std::raw::bits(layer))
+    nil
+}
+
+fn rt_http_after_add(router: any, layer: any) -> any {
+    hr_closure(layer, "response middleware must be closure")
+    let r = hr_router(router, "after requires router")
+    let e = hr_list_add(r, 48, 8)
+    std::raw::retain(12, std::raw::bits(layer))
+    std::raw::store(e, std::raw::bits(layer))
+    nil
+}
+
+fn rt_http_error_handler_add(router: any, handler: any) -> any {
+    hr_closure(handler, "error handler must be closure")
+    let r = hr_router(router, "on_error requires router")
+    std::raw::retain(12, std::raw::bits(handler))
+    std::raw::store(r + 72, std::raw::bits(handler))
+    nil
+}
+
+// Valor de la clave `key` de un mapa (o nil).
+fn hr_get(m: any, key: string) -> any {
+    let pos = rt_map_find(m, key)
+    if pos < 0 {
+        return nil
+    }
+    rt_map_value_at(m, pos)
+}
+
+fn hr_not_found() -> any {
+    let mut headers = std::map::new()
+    headers = std::map::insert(headers, "Content-Type", "text/plain; charset=utf-8")
+    let mut m = std::map::new()
+    m = std::map::insert(m, "status", 404)
+    m = std::map::insert(m, "headers", headers)
+    m = std::map::insert(m, "body", "Not Found")
+    m = std::map::insert(m, "keep_alive", false)
+    m
+}
+
+// http_error_value: {kind, message}; la clase sale del texto del error, que es la
+// Display de VmError.
+fn hr_error_value(message: any) -> any {
+    let mut kind = "runtime"
+    if std::text::starts_with(message, "type error: ") {
+        kind = "type"
+    } else if std::text::starts_with(message, "native function '") && std::text::contains(message, "' failed: ") {
+        kind = "native"
+    } else if message == "division by zero" {
+        kind = "division_by_zero"
+    } else if message == "integer overflow" {
+        kind = "overflow"
+    } else if message == "task cancelled" {
+        kind = "cancelled"
+    }
+    let mut m = std::map::new()
+    m = std::map::insert(m, "message", message)
+    m = std::map::insert(m, "kind", kind)
+    m
+}
+
+// record_http_metrics.
+fn hr_metrics(response: any, started_ns: int) {
+    let mut status = 500
+    if std::raw::tag(response) == 9 {
+        let s = hr_get(response, "status")
+        if std::raw::tag(s) == 1 {
+            status = std::raw::bits(s)
+        }
+    }
+    if status < 0 {
+        status = 0
+    }
+    if status > 999 {
+        status = 999
+    }
+    let class = rt_concat(rt_concat("http.responses.", rt_int_to_str(status / 100)), "xx")
+    let elapsed = rtm_now_ns() - started_ns
+    std__metrics__counter_add("http.requests.total", 1)
+    std__metrics__counter_add(class, 1)
+    let ms = std::raw::fdiv(std::raw::ffromint(elapsed), std::raw::ffromint(1000000))
+    std__metrics__histogram_record("http.request.duration_ms", rt_float(ms))
+}
+
+fn rt_http_dispatch(router: any, request: any) -> any {
+    let started = rtm_now_ns()
+    let r = hr_router(router, "dispatch requires router")
+    let nroutes = std::raw::load(r + 8)
+    let routes = std::raw::load(r)
+    let nmid = std::raw::load(r + 32)
+    let mids = std::raw::load(r + 24)
+    let nafter = std::raw::load(r + 56)
+    let afters = std::raw::load(r + 48)
+    let eh = std::raw::load(r + 72)
+    let mut req = request
+    let mut i = 0
+    while i < nmid {
+        let layer: fn(any) -> any = std::raw::value(12, std::raw::load(mids + 8 * i))
+        req = layer(req)
+        if std::raw::tag(req) != 9 {
+            rt_fatal("type error: middleware must return request map")
+        }
+        i += 1
+    }
+    if std::raw::tag(req) != 9 {
+        rt_fatal("type error: dispatch request must be map")
+    }
+    let mv = hr_get(req, "method")
+    if std::raw::tag(mv) != 5 {
+        rt_fatal("type error: request.method must be string")
+    }
+    let method = hr_upper(mv)
+    let path = hr_get(req, "path")
+    if std::raw::tag(path) != 5 {
+        rt_fatal("type error: request.path must be string")
+    }
+    let mut found = -1
+    let mut params: any = nil
+    i = 0
+    while i < nroutes && found < 0 {
+        let e = routes + 32 * i
+        let rm = std::raw::value(5, std::raw::load(e))
+        if rm == method {
+            let m = ht_route_match(std::raw::value(5, std::raw::load(e + 8)), path, "std::http::dispatch")
+            if rt_enum_is(m, "Option", "Some") {
+                found = i
+                params = rt_enum_payload(m)
+            }
+        }
+        i += 1
+    }
+    let request_for_error = req
+    let mut response: any = nil
+    if found < 0 {
+        response = hr_not_found()
+    } else {
+        req = std::map::insert(req, "params", params)
+        let handler: fn(any) -> any = std::raw::value(12, std::raw::load(routes + 32 * found + 16))
+        if eh == 0 {
+            response = handler(req)
+        } else {
+            let attempt = std::try::catch(handler, req)
+            if rt_enum_is(attempt, "Result", "Ok") {
+                response = rt_enum_payload(attempt)
+            } else {
+                let on_error: fn(any, any) -> any = std::raw::value(12, eh)
+                response = on_error(request_for_error, hr_error_value(rt_enum_payload(attempt)))
+            }
+        }
+    }
+    i = nafter - 1
+    while i >= 0 {
+        let layer: fn(any) -> any = std::raw::value(12, std::raw::load(afters + 8 * i))
+        response = layer(response)
+        if std::raw::tag(response) != 9 {
+            rt_fatal("type error: response middleware must return response map")
+        }
+        i -= 1
+    }
+    hr_metrics(response, started)
+    response
+}
+
+// ------------------------------------------------------------ serve_connection
+
+// http_response_value + build_response: bytes de la respuesta y keep-alive final.
+fn hs_response(resp: any, request_keep_alive: int, f: string) -> (any, int) {
+    if std::raw::tag(resp) != 9 {
+        rt_fatal("type error: HTTP handler must return a response map")
+    }
+    let mut status: any = 200
+    let sv = hr_get(resp, "status")
+    if rt_map_find(resp, "status") >= 0 {
+        if std::raw::tag(sv) != 1 {
+            rt_fatal("type error: HTTP response status must be int")
+        }
+        if std::raw::bits(sv) < 0 || std::raw::bits(sv) > 65535 {
+            rt_fatal("type error: HTTP response status out of range")
+        }
+        status = sv
+    }
+    let mut headers: any = std::map::new()
+    if rt_map_find(resp, "headers") >= 0 {
+        headers = hr_get(resp, "headers")
+        if std::raw::tag(headers) != 9 {
+            rt_fatal("type error: HTTP response headers must be a map")
+        }
+        let hp = std::raw::bits(headers)
+        let hn = std::raw::load(hp + 8)
+        let hd = std::raw::load(hp + 24)
+        let mut k = 0
+        while k < hn {
+            if std::raw::load(hd + 24 * k + 8) != 5 {
+                rt_fatal("type error: HTTP response headers must be strings")
+            }
+            k += 1
+        }
+    }
+    let mut body: any = rt_bytes_from(0, 0)
+    if rt_map_find(resp, "body") >= 0 {
+        let bv = hr_get(resp, "body")
+        let bt = std::raw::tag(bv)
+        if bt == 6 {
+            body = bv
+        } else if bt == 5 {
+            body = rt_bytes_from(rt_bdata(bv), rt_slen(bv))
+        } else {
+            rt_fatal("type error: HTTP response body must be bytes or string")
+        }
+    }
+    let mut keep = request_keep_alive
+    if rt_map_find(resp, "keep_alive") >= 0 {
+        let kv = hr_get(resp, "keep_alive")
+        if std::raw::tag(kv) != 3 {
+            rt_fatal("type error: HTTP response keep_alive must be bool")
+        }
+        keep = 0
+        if std::raw::bits(kv) != 0 && request_keep_alive != 0 {
+            keep = 1
+        }
+    }
+    let mut keepv: any = false
+    if keep != 0 {
+        keepv = true
+    }
+    let bytes = ht_build_response(status, headers, body, keepv, f)
+    return (bytes, keep)
+}
+
+// Atiende hasta `max` peticiones en el socket fd. Los errores salen sin cerrar el fd:
+// quien llama lo cierra siempre (rt_http_serve_connection).
+fn hs_loop(fd: int, h: fn(any) -> any, max: int, peer: any, f: string) {
+    let gb = sv_gb_new()
+    let chunk = rt_alloc(8192)
+    let mut served = 0
+    let mut done = false
+    while served < max && !done {
+        served += 1
+        // Una petición completa en el búfer (o el cliente se fue).
+        let mut request: any = nil
+        let mut have = false
+        let mut consumed = 0
+        while !have && !done {
+            let parsed = ht_parse_raw(std::raw::load(gb), std::raw::load(gb + 8), f)
+            if rt_enum_is(parsed, "Option", "Some") {
+                let pm = rt_enum_payload(parsed)
+                consumed = std::raw::bits(hr_get(pm, "consumed"))
+                request = std::map::insert(std::map::remove(pm, "consumed"), "peer", peer)
+                have = true
+            } else {
+                tcp_wait(fd, 1, -1)
+                let n = std::raw::syscall(0, fd, chunk, 8192, 0, 0, 0)
+                if n == -4 || n == -11 {
+                    continue
+                }
+                if n < 0 {
+                    rt_native_fail(f, rt_os_error(0 - n))
+                }
+                if n == 0 {
+                    done = true
+                } else {
+                    sv_gb_push(gb, chunk, n)
+                    if std::raw::load(gb + 8) > 16777216 + 65536 {
+                        rt_fatal("type error: HTTP connection buffer limit exceeded")
+                    }
+                }
+            }
+        }
+        if have {
+            sv_gb_drain(gb, consumed)
+            let mut ka = 0
+            if std::raw::bits(hr_get(request, "keep_alive")) != 0 {
+                ka = 1
+            }
+            let (bytes, keep) = hs_response(h(request), ka, f)
+            let p = rt_bdata(bytes)
+            let total = rt_slen(bytes)
+            let mut sent = 0
+            while sent < total {
+                tcp_wait(fd, 4, -1)
+                let w = std::raw::syscall(44, fd, p + sent, total - sent, 16384, 0, 0)
+                if w == -4 || w == -11 {
+                    continue
+                }
+                if w < 0 {
+                    rt_native_fail(f, rt_os_error(0 - w))
+                }
+                sent += w
+            }
+            if keep == 0 {
+                done = true
+            }
+        }
+    }
+    rt_free_block(chunk)
+    sv_gb_free(gb)
+}
+
+fn rt_http_serve_connection(listener: any, handler: any, maximum: any) -> any {
+    let f = "std::http::serve_connection"
+    if std::raw::tag(maximum) != 1 {
+        rt_fatal("type error: maximum requests must be int")
+    }
+    let max = std::raw::bits(maximum)
+    if max < 0 {
+        rt_fatal("type error: maximum requests must be positive")
+    }
+    if max == 0 || max > 10000 {
+        rt_fatal("type error: maximum requests must be between 1 and 10000")
+    }
+    hr_closure(handler, "HTTP handler must be a closure")
+    if std::raw::tag(listener) != 16 {
+        rt_fatal("type error: serve_connection requires a listener")
+    }
+    let le = tcp_entry(tcp_handle_id(listener))
+    if le == 0 || std::raw::load(le + 8) != 1 {
+        rt_fatal("type error: unknown TCP listener")
+    }
+    let lfd = std::raw::load(le + 16)
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    let mut fd = -1
+    loop {
+        tcp_wait(lfd, 1, -1)
+        std::raw::store(lenp, 32)
+        let a = std::raw::syscall(288, lfd, sa, lenp, 524288, 0, 0)
+        if a >= 0 {
+            fd = a
+            break
+        }
+        if a == -4 || a == -11 {
+            continue
+        }
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        rt_native_fail(f, rt_os_error(0 - a))
+    }
+    let peer = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    rt_free_block(lenp)
+    let h: fn(any) -> any = handler
+    let attempt = std::try::catch(|| hs_loop(fd, h, max, peer, f))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if rt_enum_is(attempt, "Result", "Err") {
+        rt_fatal(rt_enum_payload(attempt))
+    }
+    peer
+}

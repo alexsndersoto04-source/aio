@@ -80,12 +80,67 @@ import std_gui
 import std_window
 import std_termux
 import std_audio
+import std_audio_decode
+import std_audio_vorbis
+import std_audio_ogg
+import std_audio_engine
 import std_audio_tags
 import std_email
 import std_kv
 import std_redis
 import std_server
+import std_onnx_engine
+import std_onnx_ops
+import std_onnx
+import std_tokenize_tab
+import std_tokenize_uni
+import std_tokenize_rx
+import std_tokenize_eng
+import std_tokenize_mod
+import std_tokenize_dec
+import std_tokenize_unigram
+import std_sqlite_val
+import std_sqlite_pg
+import std_sqlite_bt
+import std_sqlite_ix
+import std_sqlite_lex
+import std_sqlite_pe
+import std_sqlite_ps
+import std_sqlite_cv
+import std_sqlite_dt
+import std_sqlite_js
+import std_sqlite_ev
+import std_sqlite_sch
+import std_sqlite_rs
+import std_sqlite_win
+import std_sqlite_sy
+import std_sqlite_dm
+import std_sqlite_fk
+import std_sqlite_ddl
+import std_sqlite_ex
+import std_sqlite_cn
+import std_sqlite_io
+import std_sqlite
+import std_tokenize_load
 import std_tokenize
+import std_web
+import std_task
+import std_tcp
+import std_runtime
+import std_ws_conn
+import std_http_router
+import std_x25519
+import std_ed25519
+import std_fs_extra
+import std_debug
+import dap_core
+import std_dap
+import std_ec
+import std_roots
+import std_x509
+import std_tls
+import std_postgres
+import std_mysql
 import image::std_image
 import image::std_image_png_read
 import image::std_image_bmp_read
@@ -120,7 +175,10 @@ import sys_bare
 //
 // Representación (16 bytes por valor: etiqueta + contenido):
 //   0 nil, 1 int, 2 float, 3 bool, 4 char (código), 5 string, 6 bytes,
-//   7 array, 8 tupla, 9 mapa, 10 struct, 11 enum, 12 closure.
+//   7 array, 8 tupla, 9 mapa, 10 struct, 11 enum, 12 closure,
+//   13 Task, 14 Sender, 15 Receiver, 16 TcpListener, 17 TcpStream, 18..29 resto de handles
+//   (ver rt_handle_name) (objetos
+//   [cuenta][id][ptr], ver std_task.titan y std_tcp.titan).
 // Objetos en memoria (el primer campo, +0, es el contador de referencias; -1
 // = inmortal, datos estáticos del ejecutable):
 //   string/bytes: +8 longitud en bytes, +16 bytes (UTF-8)
@@ -175,12 +233,18 @@ fn rt_alloc(size: int) -> int {
         let block = 16 * c
         let mut b = std::raw::load(g)
         if b == 0 || b + block > std::raw::load(g + 8) {
+            // El resto del trozo anterior se pierde (g+3576 cuenta solo lo usable).
+            let mut lost = 0
+            if b != 0 {
+                lost = std::raw::load(g + 8) - b
+            }
             // mmap(NULL, 64 MiB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
             b = std::raw::syscall(9, 0, 67108864, 3, 34, -1, 0)
             if b < 0 {
                 rt_die("out of memory")
             }
             std::raw::store(g + 8, b + 67108864)
+            std::raw::store(g + 3576, std::raw::load(g + 3576) + 67108864 - lost)
         }
         std::raw::store(g, b + block)
         std::raw::store(b, block - 8)
@@ -209,8 +273,41 @@ fn rt_alloc(size: int) -> int {
     if b < 0 {
         rt_die("out of memory")
     }
+    std::raw::store(g + 3576, std::raw::load(g + 3576) + total)
     std::raw::store(b, total - 8)
     b + 8
+}
+
+// Bytes del montón en uso ahora: lo reservado al sistema menos la cola sin
+// usar del trozo actual y los bloques en las listas de libres (std::runtime::allocated_bytes).
+fn rt_heap_allocated() -> int {
+    let g = std::raw::globals()
+    let mut used = std::raw::load(g + 3576)
+    let cur = std::raw::load(g)
+    if cur != 0 {
+        used = used - (std::raw::load(g + 8) - cur)
+    }
+    let mut c = 1
+    while c <= 256 {
+        let mut p = std::raw::load(g + 128 + 8 * c)
+        while p != 0 {
+            used = used - 16 * c
+            p = std::raw::load(p)
+        }
+        c += 1
+    }
+    let mut k = 13
+    let mut size = 8192
+    while k <= 28 {
+        let mut p = std::raw::load(rt_big_head(k))
+        while p != 0 {
+            used = used - size
+            p = std::raw::load(p)
+        }
+        k += 1
+        size = size * 2
+    }
+    used
 }
 
 // Como rt_alloc, pero con los `size` primeros bytes a cero. En un bloque
@@ -265,7 +362,8 @@ fn rt_alloc_zero(size: int) -> int {
 // + 3152 estado de std::mobile; + 3160/+3168 registro de std::pdf;
 // + 3176 estado de std::input; +3184 siguiente handle KV, +3200..3256 bases
 // de handles de DB, +3264..3512 handles de árboles, +3520 estado std::gui y
-// +3528 registro X11 de std::window. Libre desde +3536 hasta +3584 (ARM64
+// +3528 registro X11 de std::window, +3536/+3544 registro de modelos de
+// std::onnx. Libre desde +3552 hasta +3584 (ARM64
 // reserva +3584..+4096).
 fn rt_big_head(k: int) -> int {
     std::raw::globals() + 2688 + 8 * (k - 13)
@@ -298,6 +396,7 @@ fn rt_free_block(p: int) {
         std::raw::store(head, p)
         return
     }
+    std::raw::store(std::raw::globals() + 3576, std::raw::load(std::raw::globals() + 3576) - total)
     std::raw::syscall(11, p - 8, total, 0, 0, 0, 0)
 }
 
@@ -730,7 +829,64 @@ fn rt_to_string(v: any) -> any {
         let p = std::raw::bits(v)
         return rt_concat(rt_concat("<closure:", rt_int_to_str(std::raw::load(p + 32))), ">")
     }
+    if t >= 13 && t <= 29 {
+        let p = std::raw::bits(v)
+        return rt_concat(rt_concat(rt_handle_name(t), rt_int_to_str(std::raw::load(p + 8))), ">")
+    }
     std::raw::fail("native backend: unknown value")
+}
+
+// Nombre con el que `print` muestra cada handle (etiquetas 13..29, ver arriba).
+fn rt_handle_name(t: int) -> string {
+    if t == 13 {
+        return "<task:"
+    }
+    if t == 14 {
+        return "<sender:"
+    }
+    if t == 15 {
+        return "<receiver:"
+    }
+    if t == 16 {
+        return "<tcp-listener:"
+    }
+    if t == 17 {
+        return "<tcp-stream:"
+    }
+    if t == 18 {
+        return "<http-router:"
+    }
+    if t == 19 {
+        return "<tls-stream:"
+    }
+    if t == 20 {
+        return "<tls-server-config:"
+    }
+    if t == 21 {
+        return "<websocket-decoder:"
+    }
+    if t == 22 {
+        return "<websocket:"
+    }
+    if t == 23 {
+        return "<server-control:"
+    }
+    if t == 24 {
+        return "<sqlite:"
+    }
+    if t == 25 {
+        return "<sqlite-pool:"
+    }
+    if t == 26 {
+        return "<postgres:"
+    }
+    if t == 27 {
+        return "<postgres-pool:"
+    }
+    if t == 28 {
+        return "<mysql:"
+    }
+    "<mysql-pool:"
 }
 
 // Print(n): una línea con los valores separados por espacios.
@@ -1066,6 +1222,9 @@ fn rt_eq(a: any, b: any) -> bool {
             return true
         }
         return rt_eq(std::raw::value(std::raw::load(pa + 32), std::raw::load(pa + 40)), std::raw::value(std::raw::load(pb + 32), std::raw::load(pb + 40)))
+    }
+    if t >= 13 && t <= 29 {
+        return std::raw::load(pa + 8) == std::raw::load(pb + 8)
     }
     if t == 12 {
         if std::raw::load(pa + 32) != std::raw::load(pb + 32) {
@@ -2457,6 +2616,115 @@ fn rt_sort_by(values0: any, compare: any) -> any {
         values = std::array::concat(std::array::slice(values, 0, min), std::array::slice(values, min + 1, len(values)))
     }
     out
+}
+
+// ------------------------------------------------------------ métodos de colección
+// `recv.map(f)` & co (Op::CallMethod con un receptor que no es un struct): los
+// mismos resultados y mensajes que execute_builtin_collection_method de la VM.
+
+fn rt_m_array(v: any) {
+    let t = std::raw::tag(v)
+    if t != 7 && t != 8 {
+        std::raw::fail("type error: operation requires an array")
+    }
+}
+
+fn rt_m_fn(f: any, name: string) {
+    if std::raw::tag(f) != 12 {
+        std::raw::fail(rt_concat(rt_concat("type error: ", name), " requires a function"))
+    }
+}
+
+fn rt_m_is_true(v: any, name: string) -> bool {
+    if std::raw::tag(v) != 3 {
+        std::raw::fail(rt_concat(rt_concat("type error: ", name), " predicate must return bool"))
+    }
+    std::raw::bits(v) != 0
+}
+
+fn rt_m_map(values: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "map")
+    let f: fn(any) -> any = callable
+    let mut out = []
+    for v in values {
+        out = std::array::push(out, f(v))
+    }
+    out
+}
+
+fn rt_m_filter(values: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "filter")
+    let f: fn(any) -> any = callable
+    let mut out = []
+    for v in values {
+        if rt_m_is_true(f(v), "filter") {
+            out = std::array::push(out, v)
+        }
+    }
+    out
+}
+
+fn rt_m_fold(values: any, init: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "fold")
+    let f: fn(any, any) -> any = callable
+    let mut acc = init
+    for v in values {
+        acc = f(acc, v)
+    }
+    acc
+}
+
+fn rt_m_find(values: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "find")
+    let f: fn(any) -> any = callable
+    for v in values {
+        if rt_m_is_true(f(v), "find") {
+            return v
+        }
+    }
+    nil
+}
+
+fn rt_m_any(values: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "any")
+    let f: fn(any) -> any = callable
+    for v in values {
+        if rt_m_is_true(f(v), "any") {
+            return true
+        }
+    }
+    false
+}
+
+fn rt_m_all(values: any, callable: any) -> any {
+    rt_m_array(values)
+    rt_m_fn(callable, "all")
+    let f: fn(any) -> any = callable
+    for v in values {
+        if !rt_m_is_true(f(v), "all") {
+            return false
+        }
+    }
+    true
+}
+
+fn rt_arity_error(name: any, expected: int, found: int) {
+    std::raw::fail(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("function '", name), "' expected "), rt_int_to_str(expected)), " arguments, found "), rt_int_to_str(found)))
+}
+
+// Método inexistente: un struct sin esa implementación, o un valor que no tiene
+// una operación de colección con ese nombre y aridad.
+fn rt_method_error(recv: any, name: any) {
+    if std::raw::tag(recv) == 10 {
+        let owner = rt_sref(std::raw::load(std::raw::bits(recv) + 8))
+        std::raw::fail(rt_concat(rt_concat(rt_concat(rt_concat("type error: undefined method '", owner), "::"), name), "'"))
+    }
+    std::raw::fail(rt_concat(rt_concat(rt_concat("type error: no method '", name), "' for value "), rt_to_string(recv)))
 }
 
 // ------------------------------------------------------------ bytes y escritura de archivos

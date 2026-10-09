@@ -1,0 +1,2182 @@
+// Decodificador de audio de std::audio::engine_* (prefijo ad_ / sr_).
+//
+// Es el mismo conjunto que usa la VM de Rust (symphonia 0.5.5 con sus características por
+// defecto): contenedores WAV, FLAC, Ogg y MKV; códecs PCM, ADPCM (MS e IMA), FLAC y Vorbis.
+// MP3, Opus, AAC, AIFF y CAF NO se decodifican (symphonia tampoco los trae activados aquí) y se
+// informan con el mismo error de «formato no soportado».
+//
+// Las muestras salen como f32 en [-1, 1], guardadas como bits de f64 (valor exacto de f32), 8
+// bytes por muestra. Las operaciones en coma flotante se hacen con std::raw::f* y se redondean a
+// f32 con vec_f32 tras cada operación, igual que lo haría el código f32 de Rust.
+//
+// Errores: se lanzan con std::raw::fail y un primer carácter que indica la clase:
+//   D = DecodeError («malformed stream: …»)   U = Unsupported («unsupported feature: …»)
+//   I = E/S («end of stream»)                 L = límite   S = DecodeError durante decode()
+// (el resto del texto ya es el Display de symphonia).
+
+// ------------------------------------------------------------ constantes de códec
+const AD_PCM_S32LE: int = 256
+const AD_PCM_S32BE: int = 258
+const AD_PCM_S24LE: int = 260
+const AD_PCM_S24BE: int = 262
+const AD_PCM_S16LE: int = 264
+const AD_PCM_S16BE: int = 266
+const AD_PCM_S8: int = 268
+const AD_PCM_U32LE: int = 270
+const AD_PCM_U32BE: int = 272
+const AD_PCM_U24LE: int = 274
+const AD_PCM_U24BE: int = 276
+const AD_PCM_U16LE: int = 278
+const AD_PCM_U16BE: int = 280
+const AD_PCM_U8: int = 282
+const AD_PCM_F32LE: int = 284
+const AD_PCM_F32BE: int = 286
+const AD_PCM_F64LE: int = 288
+const AD_PCM_F64BE: int = 290
+const AD_PCM_ALAW: int = 292
+const AD_PCM_MULAW: int = 293
+const AD_ADPCM_MS: int = 515
+const AD_ADPCM_IMA: int = 516
+const AD_VORBIS: int = 4096
+const AD_FLAC: int = 8192
+
+// ------------------------------------------------------------ utilidades
+fn ad_ld(p: int, i: int) -> int { std::raw::load(p + 8 * i) }
+fn ad_st(p: int, i: int, v: int) { std::raw::store(p + 8 * i, v) }
+
+fn ad_fail_decode(msg: string) { std::raw::fail(rt_concat("Dmalformed stream: ", msg)) }
+fn ad_fail_skip(msg: string) { std::raw::fail(rt_concat("Smalformed stream: ", msg)) }
+fn ad_fail_unsup(msg: string) { std::raw::fail(rt_concat("Uunsupported feature: ", msg)) }
+fn ad_fail_limit(msg: string) { std::raw::fail(rt_concat("Llimit reached: ", msg)) }
+fn ad_fail_eof() { std::raw::fail("Iend of stream") }
+
+fn ad_wrap32(v: int) -> int {
+    let m = v & 4294967295
+    if m >= 2147483648 { return m - 4294967296 }
+    m
+}
+
+fn ad_sext(v: int, bits: int) -> int {
+    let m = std::raw::shl(1, bits - 1)
+    let x = v & (std::raw::shl(1, bits) - 1)
+    if x >= m { return x - std::raw::shl(1, bits) }
+    x
+}
+
+// f32 desde un entero dividido por 2^k (exacto en f64; después se redondea a f32).
+fn ad_i2f32(i: int, pow2: int) -> int {
+    vec_f32(std::raw::fdiv(std::raw::ffromint(i), std::raw::ffromint(pow2)))
+}
+
+fn ad_f32_add(a: int, b: int) -> int { vec_f32(std::raw::fadd(a, b)) }
+fn ad_f32_sub(a: int, b: int) -> int { vec_f32(std::raw::fsub(a, b)) }
+fn ad_f32_mul(a: int, b: int) -> int { vec_f32(std::raw::fmul(a, b)) }
+fn ad_f32_div(a: int, b: int) -> int { vec_f32(std::raw::fdiv(a, b)) }
+
+fn ad_codec_name(codec: int) -> string {
+    rt_concat(rt_concat("codectype(", rt_int_to_str(codec)), ")")
+}
+
+// ------------------------------------------------------------ búfer de salida (muestras)
+// ob: bloque {+0 puntero, +8 muestras, +16 capacidad en muestras}
+fn ob_new() -> int {
+    let ob = rt_alloc_zero(24)
+    let cap = 16384
+    std::raw::store(ob, rt_alloc(cap * 8))
+    std::raw::store(ob + 16, cap)
+    ob
+}
+
+fn ob_free(ob: int) {
+    rt_free_block(std::raw::load(ob))
+    rt_free_block(ob)
+}
+
+fn ob_len(ob: int) -> int { std::raw::load(ob + 8) }
+fn ob_clear(ob: int) { std::raw::store(ob + 8, 0) }
+fn ob_get(ob: int, i: int) -> int { std::raw::load(std::raw::load(ob) + 8 * i) }
+
+fn ob_reserve(ob: int, extra: int) {
+    let n = std::raw::load(ob + 8)
+    let cap = std::raw::load(ob + 16)
+    if n + extra <= cap { return }
+    let mut ncap = cap * 2
+    while ncap < n + extra {
+        ncap = ncap * 2
+    }
+    let np = rt_alloc(ncap * 8)
+    rt_copy(np, std::raw::load(ob), n * 8)
+    rt_free_block(std::raw::load(ob))
+    std::raw::store(ob, np)
+    std::raw::store(ob + 16, ncap)
+}
+
+fn ob_push(ob: int, v: int) {
+    let n = std::raw::load(ob + 8)
+    if n >= std::raw::load(ob + 16) {
+        ob_reserve(ob, 1)
+    }
+    std::raw::store(std::raw::load(ob) + 8 * n, v)
+    std::raw::store(ob + 8, n + 1)
+}
+
+// ------------------------------------------------------------ fuente de bytes (archivo)
+// s: {0 fd, 1 tamaño, 2 posición, 3 ventana, 4 inicio de la ventana, 5 bytes válidos}
+const SR_FD: int = 0
+const SR_SIZE: int = 1
+const SR_POS: int = 2
+const SR_WIN: int = 3
+const SR_WSTART: int = 4
+const SR_WLEN: int = 5
+const SR_LIMIT: int = 6     // posición máxima legible (0 = sin límite): ScopedStream
+const SR_WCAP: int = 65536
+
+fn sr_new(fd: int) -> int {
+    let s = rt_alloc_zero(64)
+    ad_st(s, SR_FD, fd)
+    let end = std::raw::syscall(8, fd, 0, 2, 0, 0, 0)
+    ad_st(s, SR_SIZE, end)
+    ad_st(s, SR_WIN, rt_alloc(SR_WCAP))
+    ad_st(s, SR_WSTART, -1)
+    s
+}
+
+fn sr_close(s: int) {
+    std::raw::syscall(3, ad_ld(s, SR_FD), 0, 0, 0, 0, 0)
+    rt_free_block(ad_ld(s, SR_WIN))
+    rt_free_block(s)
+}
+
+fn sr_pos(s: int) -> int { ad_ld(s, SR_POS) }
+fn sr_size(s: int) -> int { ad_ld(s, SR_SIZE) }
+fn sr_seek(s: int, pos: int) { ad_st(s, SR_POS, pos) }
+fn sr_skip(s: int, n: int) { ad_st(s, SR_POS, ad_ld(s, SR_POS) + n) }
+
+// Asegura que la posición actual esté dentro de la ventana; devuelve los bytes disponibles desde ahí.
+fn sr_avail(s: int) -> int {
+    let lim = ad_ld(s, SR_LIMIT)
+    if lim > 0 {
+        let p0 = ad_ld(s, SR_POS)
+        if p0 >= lim { return 0 }
+        let a = sr_avail_raw(s)
+        if a > lim - p0 { return lim - p0 }
+        return a
+    }
+    sr_avail_raw(s)
+}
+
+fn sr_avail_raw(s: int) -> int {
+    let pos = ad_ld(s, SR_POS)
+    let ws = ad_ld(s, SR_WSTART)
+    let wl = ad_ld(s, SR_WLEN)
+    if ws >= 0 && pos >= ws && pos < ws + wl {
+        return ws + wl - pos
+    }
+    let got = std::raw::syscall(17, ad_ld(s, SR_FD), ad_ld(s, SR_WIN), SR_WCAP, pos, 0, 0)
+    if got <= 0 {
+        ad_st(s, SR_WSTART, -1)
+        ad_st(s, SR_WLEN, 0)
+        return 0
+    }
+    ad_st(s, SR_WSTART, pos)
+    ad_st(s, SR_WLEN, got)
+    got
+}
+
+// Siguiente byte o -1 al final.
+fn sr_byte_or_eof(s: int) -> int {
+    if sr_avail(s) == 0 { return -1 }
+    let pos = ad_ld(s, SR_POS)
+    let b = std::raw::load8(ad_ld(s, SR_WIN) + pos - ad_ld(s, SR_WSTART))
+    ad_st(s, SR_POS, pos + 1)
+    b
+}
+
+fn sr_u8(s: int) -> int {
+    let b = sr_byte_or_eof(s)
+    if b < 0 { ad_fail_eof() }
+    b
+}
+
+fn sr_u16(s: int) -> int {
+    let a = sr_u8(s)
+    a + 256 * sr_u8(s)
+}
+
+fn sr_u24(s: int) -> int {
+    let a = sr_u8(s)
+    let b = sr_u8(s)
+    a + 256 * b + 65536 * sr_u8(s)
+}
+
+fn sr_u32(s: int) -> int {
+    let a = sr_u8(s)
+    let b = sr_u8(s)
+    let c = sr_u8(s)
+    a + 256 * b + 65536 * c + 16777216 * sr_u8(s)
+}
+
+fn sr_be16(s: int) -> int {
+    let a = sr_u8(s)
+    a * 256 + sr_u8(s)
+}
+
+fn sr_be24(s: int) -> int {
+    let a = sr_u8(s)
+    let b = sr_u8(s)
+    a * 65536 + b * 256 + sr_u8(s)
+}
+
+fn sr_be32(s: int) -> int {
+    let a = sr_u8(s)
+    let b = sr_u8(s)
+    let c = sr_u8(s)
+    a * 16777216 + b * 65536 + c * 256 + sr_u8(s)
+}
+
+fn sr_be64(s: int) -> int {
+    let hi = sr_be32(s)
+    let lo = sr_be32(s)
+    std::raw::shl(hi, 32) | lo
+}
+
+// Lee n bytes en dst; falla con fin de flujo si no hay tantos.
+fn sr_read(s: int, dst: int, n: int) {
+    let mut done = 0
+    while done < n {
+        let av = sr_avail(s)
+        if av == 0 { ad_fail_eof() }
+        let take = if av < n - done { av } else { n - done }
+        let pos = ad_ld(s, SR_POS)
+        rt_copy(dst + done, ad_ld(s, SR_WIN) + pos - ad_ld(s, SR_WSTART), take)
+        ad_st(s, SR_POS, pos + take)
+        done += take
+    }
+}
+
+fn sr_quad(s: int) -> int { sr_be32(s) }
+
+// ------------------------------------------------------------ tiempo (symphonia TimeBase::calc_time)
+// Devuelve los segundos como bits de f64.
+fn ad_calc_time(ts: int, numer: int, denom: int) -> int {
+    let dividend = ts * numer
+    if dividend < std::raw::shl(1, 52) {
+        return std::raw::fdiv(std::raw::ffromint(dividend), std::raw::ffromint(denom))
+    }
+    let quotient = dividend / denom
+    let rem = dividend - quotient * denom
+    let frac = std::raw::fdiv(std::raw::ffromint(rem), std::raw::ffromint(denom))
+    std::raw::fadd(std::raw::ffromint(quotient), frac)
+}
+
+// ------------------------------------------------------------ sondeo de formato (symphonia Probe)
+// Filtro de Bloom de 2 bytes (FNV-1a) con los prefijos de los marcadores registrados.
+fn ad_fnv(a: int, b: int) -> int {
+    let mut st = 2166136261
+    st = ((st ^ a) * 16777619) & 4294967295
+    st = ((st ^ b) * 16777619) & 4294967295
+    st
+}
+
+fn ad_bloom_bits(a: int, b: int) -> int {
+    // Devuelve los tres índices empaquetados en 16 bits cada uno.
+    let h = ad_fnv(a, b)
+    let h0 = std::raw::shr(h, 16) & 65535
+    let h1 = h & 65535
+    let i0 = h0 & 16383
+    let i1 = (h0 + h1) & 65535 & 16383
+    let i2 = (h0 + (h1 * 2) & 65535) & 65535 & 16383
+    i0 | std::raw::shl(i1, 16) | std::raw::shl(i2, 32)
+}
+
+fn ad_bloom_new() -> int {
+    let f = rt_alloc_zero(2048)
+    let prefixes = [102, 76, 26, 69, 79, 103, 82, 73, 73, 68]
+    let mut k = 0
+    while k < 5 {
+        let bits = ad_bloom_bits(prefixes[2 * k], prefixes[2 * k + 1])
+        let mut j = 0
+        while j < 3 {
+            let idx = std::raw::shr(bits, 16 * j) & 65535
+            let byte = f + std::raw::shr(idx, 3)
+            std::raw::store8(byte, std::raw::load8(byte) | std::raw::shl(1, idx & 7))
+            j += 1
+        }
+        k += 1
+    }
+    f
+}
+
+fn ad_bloom_has(f: int, a: int, b: int) -> bool {
+    let bits = ad_bloom_bits(a, b)
+    let mut j = 0
+    while j < 3 {
+        let idx = std::raw::shr(bits, 16 * j) & 65535
+        if (std::raw::load8(f + std::raw::shr(idx, 3)) & std::raw::shl(1, idx & 7)) == 0 {
+            return false
+        }
+        j += 1
+    }
+    true
+}
+
+// Busca el siguiente marcador de formato. Devuelve 1 wav, 2 flac, 3 ogg, 4 mkv, 5 id3v2; la
+// posición queda al principio del marcador. Falla como Probe::next.
+fn ad_probe_next(s: int, bloom: int) -> int {
+    let mut win = 0
+    let mut count = 0
+    let ctx = rt_alloc(16)
+    loop {
+        let b = sr_byte_or_eof(s)
+        if b < 0 { break }
+        win = ((win * 256) | b) & 65535
+        count += 1
+        if count > 1048576 { break }
+        let hi = std::raw::shr(win, 8)
+        let lo = win & 255
+        if ad_bloom_has(bloom, hi, lo) {
+            let after = sr_pos(s)
+            // Se leen 14 bytes más; si no quedan, es un error de E/S (como read_buf_exact).
+            std::raw::store8(ctx, hi)
+            std::raw::store8(ctx + 1, lo)
+            let mut i = 2
+            while i < 16 {
+                let c = sr_byte_or_eof(s)
+                if c < 0 {
+                    rt_free_block(ctx)
+                    ad_fail_eof()
+                }
+                std::raw::store8(ctx + i, c)
+                i += 1
+            }
+            let c0 = std::raw::load8(ctx)
+            let c1 = std::raw::load8(ctx + 1)
+            let c2 = std::raw::load8(ctx + 2)
+            let c3 = std::raw::load8(ctx + 3)
+            let mut kind = 0
+            if c0 == 102 && c1 == 76 && c2 == 97 && c3 == 67 {
+                kind = 2
+            } else if c0 == 82 && c1 == 73 && c2 == 70 && c3 == 70 {
+                kind = 1
+            } else if c0 == 79 && c1 == 103 && c2 == 103 && c3 == 83 {
+                kind = 3
+            } else if c0 == 26 && c1 == 69 && c2 == 223 && c3 == 163 {
+                kind = 4
+            } else if c0 == 73 && c1 == 68 && c2 == 51 {
+                kind = 5
+            }
+            if kind != 0 {
+                // seek_buffered_rev(16): vuelve al inicio del marcador.
+                sr_seek(s, after - 2)
+                rt_free_block(ctx)
+                return kind
+            }
+            // seek_buffered_rev(14): vuelve justo después de la ventana de 2 bytes.
+            sr_seek(s, after)
+        }
+    }
+    rt_free_block(ctx)
+    ad_fail_unsup("core (probe): no suitable format reader found")
+    0
+}
+
+// ID3v2: cabecera, versión y bytes de la etiqueta (el contenido se salta).
+fn ad_read_id3v2(s: int) {
+    let a = sr_u8(s)
+    let b = sr_u8(s)
+    let c = sr_u8(s)
+    if a != 73 || b != 68 || c != 51 {
+        ad_fail_unsup("id3v2: not an ID3v2 tag")
+    }
+    let major = sr_u8(s)
+    let minor = sr_u8(s)
+    let flags = sr_u8(s)
+    // read_syncsafe_leq32(reader, 28): 4 bytes de 7 bits.
+    let mut size = 0
+    let mut i = 0
+    while i < 4 {
+        let x = sr_u8(s)
+        if (x & 128) != 0 {
+            ad_fail_decode("id3v2: invalid syncsafe integer")
+        }
+        size = size * 128 + x
+        i += 1
+    }
+    if major == 255 || minor == 255 {
+        ad_fail_decode("id3v2: invalid version number(s)")
+    }
+    if major < 2 || major > 4 {
+        ad_fail_unsup("id3v2: unsupported ID3v2 version")
+    }
+    if major == 2 && (flags & 64) != 0 {
+        ad_fail_unsup("id3v2: ID3v2.2 compression is not supported")
+    }
+    // Se salta todo el cuerpo (y el pie, si lo hay, queda como datos que el sondeo ignora).
+    if sr_pos(s) + size > sr_size(s) {
+        ad_fail_eof()
+    }
+    sr_skip(s, size)
+}
+
+// ============================================================ WAV (RIFF) + PCM + ADPCM
+// Decoder D (bloque de ranuras de 8 bytes)
+const D_KIND: int = 0      // 1 wav, 2 flac, 3 ogg, 4 mkv
+const D_SRC: int = 1
+const D_CODEC: int = 2
+const D_RATE: int = 3
+const D_CH: int = 4
+const D_NFRAMES: int = 5   // -1 si se desconoce
+const D_TBN: int = 6
+const D_TBD: int = 7
+const D_DECODED: int = 8   // fotogramas decodificados
+const D_FINISHED: int = 9
+const D_FMT: int = 10      // estado del contenedor
+const D_DEC: int = 11      // estado del códec
+const D_LABEL: int = 12
+const D_FPB: int = 13      // fotogramas por bloque (ADPCM)
+const D_BITS: int = 14     // bits por muestra codificada (PCM)
+const D_DUR: int = 15      // duración en segundos (bits de f64)
+const D_SLOTS: int = 18
+
+// Estado WAV W
+const W_BLOCK: int = 0
+const W_FPB: int = 1
+const W_MAXBLK: int = 2
+const W_DSTART: int = 3
+const W_DEND: int = 4
+const W_PKT: int = 5       // búfer de paquete
+const W_PKTCAP: int = 6
+const W_TABLE: int = 7     // tabla a-law / µ-law
+const W_ADPCM: int = 8     // tablas ADPCM
+const W_SLOTS: int = 10
+
+fn ad_popcount(v: int) -> int {
+    let mut c = 0
+    let mut x = v & 4294967295
+    while x != 0 {
+        c += x & 1
+        x = std::raw::shr(x, 1)
+    }
+    c
+}
+
+fn ad_bitlen(v: int) -> int {
+    let mut n = 0
+    let mut x = v & 4294967295
+    while x != 0 {
+        n += 1
+        x = std::raw::shr(x, 1)
+    }
+    n
+}
+
+// fix_channel_mask de symphonia-format-riff.
+fn ad_fix_channel_mask(mask0: int, n: int) -> int {
+    let mut mask = mask0 & 4294967295
+    let diff = n - ad_popcount(mask)
+    if diff > 0 {
+        let shift = ad_bitlen(mask)
+        mask = (mask | std::raw::shl(std::raw::shl(1, diff) - 1, shift)) & 4294967295
+    } else {
+        while ad_popcount(mask) != n {
+            let hi = ad_bitlen(mask) - 1
+            mask = mask & (4294967295 ^ std::raw::shl(1, hi))
+        }
+    }
+    mask
+}
+
+fn ad_channels_for_count(n: int) -> int {
+    if n < 1 || n > 26 { ad_fail_decode("riff: invalid channel count") }
+    n
+}
+
+fn ad_guid_is(s: int, g: int, sub: int, tail: int) -> bool {
+    // g = puntero a 16 bytes; sub = primer byte; tail = 0 estándar, 1 ambisonic.
+    if std::raw::load8(g) != sub { return false }
+    let mut i = 1
+    while i < 16 {
+        let want = if tail == 0 {
+            if i == 6 { 16 } else if i == 8 { 128 } else if i == 11 { 170 } else if i == 13 { 56 } else if i == 14 { 155 } else if i == 15 { 113 } else { 0 }
+        } else {
+            if i == 4 { 33 } else if i == 5 { 7 } else if i == 6 { 211 } else if i == 7 { 17 } else if i == 8 { 134 } else if i == 9 { 68 } else if i == 10 { 200 } else if i == 11 { 193 } else if i == 12 { 202 } else { 0 }
+        }
+        if std::raw::load8(g + i) != want { return false }
+        i += 1
+    }
+    true
+}
+
+// Analiza el trozo «fmt »; rellena D (códec, canales, frecuencia) y W (tamaños de bloque).
+fn wav_parse_fmt(s: int, d: int, w: int, len: int) {
+    if len < 16 { ad_fail_decode("wav: malformed fmt chunk") }
+    let format = sr_u16(s)
+    let n_channels = sr_u16(s)
+    let rate = sr_u32(s)
+    let avg = sr_u32(s)
+    let block_align = sr_u16(s)
+    let bits = sr_u16(s)
+    let mut codec = 0
+    let mut channels = 0
+    let mut coded = bits
+    if format == 1 {
+        if len == 16 {
+        } else if len == 18 {
+            sr_be16(s)
+        } else if len == 40 {
+            sr_u16(s)
+            sr_skip(s, 22)
+        } else {
+            ad_fail_decode("wav: malformed fmt_pcm chunk")
+        }
+        if bits == 8 {
+            codec = AD_PCM_U8
+        } else if bits == 16 {
+            codec = AD_PCM_S16LE
+        } else if bits == 24 {
+            codec = AD_PCM_S24LE
+        } else if bits == 32 {
+            codec = AD_PCM_S32LE
+        } else {
+            ad_fail_decode("wav: bits per sample for fmt_pcm must be 8, 16, 24 or 32 bits")
+        }
+        channels = ad_channels_for_count(n_channels)
+    } else if format == 2 || format == 17 {
+        if bits != 4 { ad_fail_decode("wav: bits per sample for fmt_adpcm must be 4 bits") }
+        if len < 20 { ad_fail_decode("wav: malformed fmt_adpcm chunk") }
+        let extra = sr_u16(s)
+        if format == 2 {
+            codec = AD_ADPCM_MS
+            if extra < 32 { ad_fail_decode("wav: malformed fmt_adpcm chunk") }
+        } else {
+            codec = AD_ADPCM_IMA
+            if extra != 2 { ad_fail_decode("wav: malformed fmt_adpcm chunk") }
+        }
+        sr_skip(s, extra)
+        channels = ad_channels_for_count(n_channels)
+    } else if format == 3 {
+        if len == 16 {
+        } else if len == 18 {
+            let extra = sr_u16(s)
+            if extra != 0 { ad_fail_decode("wav: extra data not expected for fmt_ieee chunk") }
+        } else if len == 40 {
+            sr_skip(s, 24)
+        } else {
+            ad_fail_decode("wav: malformed fmt_ieee chunk")
+        }
+        if bits == 32 {
+            codec = AD_PCM_F32LE
+        } else if bits == 64 {
+            codec = AD_PCM_F64LE
+        } else {
+            ad_fail_decode("wav: bits per sample for fmt_ieee must be 32 or 64 bits")
+        }
+        channels = ad_channels_for_count(n_channels)
+    } else if format == 65534 {
+        if len < 40 { ad_fail_decode("wav: malformed fmt_ext chunk") }
+        let extra = sr_u16(s)
+        if extra != 22 { ad_fail_decode("wav: extra data size not 22 bytes for fmt_ext chunk") }
+        let valid = sr_u16(s)
+        if (bits & 7) != 0 { ad_fail_decode("wav: bits per coded sample for fmt_ext must be a multiple of 8") }
+        if valid > bits { ad_fail_decode("wav: bits per sample must be <= bits per coded sample for fmt_ext") }
+        let mask = ad_fix_channel_mask(sr_u32(s), n_channels)
+        if mask >= 67108864 { ad_fail_unsup("wav: too many channels in mask for fmt_ext") }
+        let guid = rt_alloc(16)
+        sr_read(s, guid, 16)
+        if ad_guid_is(s, guid, 1, 0) || ad_guid_is(s, guid, 1, 1) {
+            if bits > 32 { ad_fail_decode("bits per sample for fmt_ext PCM sub-type must be <= 32 bits") }
+            if bits == 8 {
+                codec = AD_PCM_U8
+            } else if bits == 16 {
+                codec = AD_PCM_S16LE
+            } else if bits == 24 {
+                codec = AD_PCM_S24LE
+            } else if bits == 32 {
+                codec = AD_PCM_S32LE
+            } else {
+                // Rust: unreachable!() (pánico). Aquí es un error normal.
+                rt_free_block(guid)
+                ad_fail_decode("wav: bits per coded sample for fmt_ext PCM sub-type must be 8, 16, 24 or 32")
+            }
+        } else if ad_guid_is(s, guid, 3, 0) || ad_guid_is(s, guid, 3, 1) {
+            if valid != bits { ad_fail_decode("wav: bits per sample for fmt_ext IEEE sub-type must equal bits per coded sample") }
+            if bits == 32 {
+                codec = AD_PCM_F32LE
+            } else if bits == 64 {
+                codec = AD_PCM_F64LE
+            } else {
+                rt_free_block(guid)
+                ad_fail_decode("wav: bits per sample for fmt_ext IEEE sub-type must be 32 or 64 bits")
+            }
+        } else if ad_guid_is(s, guid, 6, 0) {
+            codec = AD_PCM_ALAW
+        } else if ad_guid_is(s, guid, 4, 0) {
+            codec = AD_PCM_MULAW
+        } else {
+            rt_free_block(guid)
+            ad_fail_unsup("wav: unsupported fmt_ext sub-type")
+        }
+        rt_free_block(guid)
+        channels = ad_popcount(mask)
+    } else if format == 6 || format == 7 {
+        if len != 18 {
+            if format == 6 {
+                ad_fail_decode("wav: malformed fmt_alaw chunk")
+            } else {
+                ad_fail_decode("wav: malformed fmt_mulaw chunk")
+            }
+        }
+        let extra = sr_u16(s)
+        if extra > 0 { sr_skip(s, extra) }
+        codec = if format == 6 { AD_PCM_ALAW } else { AD_PCM_MULAW }
+        channels = ad_channels_for_count(n_channels)
+    } else {
+        ad_fail_unsup("wav: unsupported wave format")
+    }
+    ad_st(d, D_CODEC, codec)
+    ad_st(d, D_CH, channels)
+    ad_st(d, D_RATE, rate)
+    ad_st(d, D_TBN, 1)
+    ad_st(d, D_TBD, rate)
+    ad_st(d, D_BITS, coded)
+    // packet_info
+    if codec == AD_ADPCM_MS {
+        let fpb = (((block_align - 7 * n_channels) * 8) / (4 * n_channels)) + 2
+        if fpb == 0 { ad_fail_decode("riff: frames per block is 0") }
+        ad_st(w, W_BLOCK, block_align)
+        ad_st(w, W_FPB, fpb)
+        ad_st(w, W_MAXBLK, (if fpb > 1152 { fpb } else { 1152 }) / fpb)
+    } else if codec == AD_ADPCM_IMA {
+        let fpb = (((block_align - 4 * n_channels) * 8) / (4 * n_channels)) + 1
+        if fpb == 0 { ad_fail_decode("riff: frames per block is 0") }
+        ad_st(w, W_BLOCK, block_align)
+        ad_st(w, W_FPB, fpb)
+        ad_st(w, W_MAXBLK, (if fpb > 1152 { fpb } else { 1152 }) / fpb)
+    } else {
+        ad_st(w, W_BLOCK, block_align)
+        ad_st(w, W_FPB, 1)
+        ad_st(w, W_MAXBLK, 1152)
+    }
+}
+
+// Abre un WAV: lee hasta el trozo «data». La posición queda al inicio de los datos.
+fn wav_open(s: int, d: int) {
+    let w = rt_alloc_zero(8 * W_SLOTS)
+    ad_st(d, D_FMT, w)
+    ad_st(d, D_KIND, 1)
+    ad_st(d, D_NFRAMES, -1)
+    let marker = sr_be32(s)
+    if marker != 1380533830 { ad_fail_unsup("wav: missing riff stream marker") }
+    let riff_len = sr_u32(s)
+    let form = sr_be32(s)
+    if form != 1463899717 { ad_fail_unsup("wav: riff form is not wave") }
+    let mut consumed = 0
+    loop {
+        if (consumed & 1) == 1 {
+            sr_u8(s)
+            consumed += 1
+        }
+        if consumed + 8 > riff_len { ad_fail_unsup("wav: missing data chunk") }
+        let tag = sr_be32(s)
+        let len = sr_u32(s)
+        consumed += 8
+        if riff_len - consumed < len {
+            if !(riff_len == len && len == 4294967295) {
+                ad_fail_decode("riff: chunk length exceeds parent (list) chunk length")
+            }
+        }
+        consumed = consumed + len
+        if consumed > 4294967295 { consumed = 4294967295 }
+        if tag == 1718449184 {
+            wav_parse_fmt(s, d, w, len)
+        } else if tag == 1717658484 {
+            if len != 4 { ad_fail_decode("wav: malformed fact chunk") }
+            ad_st(d, D_NFRAMES, sr_u32(s))
+        } else if tag == 1279873876 {
+            if len < 4 { ad_fail_decode("wav: malformed list chunk") }
+            sr_be32(s)
+            let inner = len - 4
+            // ChunksReader::finish: se ignora lo que queda y, si es impar, se lee un byte de relleno.
+            sr_skip(s, inner)
+            if (inner & 1) == 1 { sr_u8(s) }
+        } else if tag == 1684108385 {
+            let start = sr_pos(s)
+            ad_st(w, W_DSTART, start)
+            ad_st(w, W_DEND, start + len)
+            if ad_ld(w, W_BLOCK) != 0 {
+                ad_st(d, D_NFRAMES, len / ad_ld(w, W_BLOCK) * ad_ld(w, W_FPB))
+            }
+            ad_st(d, D_FPB, ad_ld(w, W_FPB))
+            return
+        } else {
+            sr_skip(s, len)
+        }
+    }
+}
+
+// ------------------------------------------------------------ tablas ADPCM / G.711
+fn ad_alaw(a0: int) -> int {
+    let a = a0 ^ 85
+    let mut t = (a & 15) * 16
+    let seg = (a & 112) / 16
+    if seg == 0 {
+        t += 8
+    } else if seg == 1 {
+        t += 264
+    } else {
+        t = std::raw::shl(t + 264, seg - 1)
+    }
+    if (a & 128) == 128 { return t }
+    0 - t
+}
+
+fn ad_mulaw(m0: int) -> int {
+    let mu = 255 - m0
+    let mut t = (mu & 15) * 8 + 132
+    t = std::raw::shl(t, (mu & 112) / 16)
+    if (mu & 128) == 128 { return 132 - t }
+    t - 132
+}
+
+// Tabla de 256 f32 (bits de f64) para a-law o µ-law.
+fn ad_xlaw_table(codec: int) -> int {
+    let t = rt_alloc(256 * 8)
+    let scale = std::raw::fdiv(std::raw::ffromint(1), std::raw::ffromint(32768))
+    let mut i = 0
+    while i < 256 {
+        let v = if codec == AD_PCM_ALAW { ad_alaw(i) } else { ad_mulaw(i) }
+        std::raw::store(t + 8 * i, vec_f32(std::raw::fmul(std::raw::ffromint(v), scale)))
+        i += 1
+    }
+    t
+}
+
+fn ad_ima_tables() -> int {
+    // 89 pasos + 16 índices.
+    let t = rt_alloc((89 + 16) * 8)
+    let steps = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767]
+    let idx = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8]
+    let mut i = 0
+    while i < 89 {
+        std::raw::store(t + 8 * i, steps[i])
+        i += 1
+    }
+    i = 0
+    while i < 16 {
+        std::raw::store(t + 8 * (89 + i), idx[i])
+        i += 1
+    }
+    t
+}
+
+fn ad_ms_tables() -> int {
+    // 16 adaptaciones + 7 coeff1 + 7 coeff2.
+    let t = rt_alloc((16 + 14) * 8)
+    let adapt = [230, 230, 230, 230, 307, 409, 512, 614, 768, 614, 512, 409, 307, 230, 230, 230]
+    let c1 = [256, 512, 0, 192, 240, 460, 392]
+    let c2 = [0, -256, 0, 64, 0, -208, -232]
+    let mut i = 0
+    while i < 16 {
+        std::raw::store(t + 8 * i, adapt[i])
+        i += 1
+    }
+    i = 0
+    while i < 7 {
+        std::raw::store(t + 8 * (16 + i), c1[i])
+        std::raw::store(t + 8 * (23 + i), c2[i])
+        i += 1
+    }
+    t
+}
+
+fn ad_clamp_i16(v: int) -> int {
+    if v > 32767 { return 32767 }
+    if v < -32768 { return -32768 }
+    v
+}
+
+// Prepara el decodificador del códec. Devuelve 1 si lo soporta, 0 si no.
+fn wav_codec_new(d: int) -> int {
+    let w = ad_ld(d, D_FMT)
+    let codec = ad_ld(d, D_CODEC)
+    if codec == AD_PCM_ALAW || codec == AD_PCM_MULAW {
+        ad_st(w, W_TABLE, ad_xlaw_table(codec))
+        return 1
+    }
+    if codec == AD_ADPCM_IMA {
+        if ad_ld(d, D_CH) > 2 { return 0 }
+        ad_st(w, W_ADPCM, ad_ima_tables())
+        return 1
+    }
+    if codec == AD_ADPCM_MS {
+        if ad_ld(d, D_CH) > 2 { return 0 }
+        ad_st(w, W_ADPCM, ad_ms_tables())
+        return 1
+    }
+    1
+}
+
+// ------------------------------------------------------------ decodificación de un paquete
+fn ad_ld16(p: int) -> int { std::raw::load8(p) + 256 * std::raw::load8(p + 1) }
+fn ad_ld24(p: int) -> int { std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2) }
+fn ad_ld32(p: int) -> int { ad_ld24(p) + 16777216 * std::raw::load8(p + 3) }
+fn ad_ldbe16(p: int) -> int { 256 * std::raw::load8(p) + std::raw::load8(p + 1) }
+fn ad_ldbe24(p: int) -> int { 65536 * std::raw::load8(p) + 256 * std::raw::load8(p + 1) + std::raw::load8(p + 2) }
+fn ad_ldbe32(p: int) -> int { 16777216 * std::raw::load8(p) + ad_ldbe24(p + 1) }
+
+fn ad_pow2f(k: int) -> int {
+    // 2^-k como f64
+    std::raw::fdiv(std::raw::ffromint(1), std::raw::ffromint(std::raw::shl(1, k)))
+}
+
+// PCM entero con signo: ancho w bytes, little o big endian.
+fn ad_pcm_signed(p: int, n: int, w: int, big: bool, bits: int, ob: int) {
+    let scale = ad_pow2f(bits - 1)
+    let mut i = 0
+    ob_reserve(ob, n)
+    while i < n {
+        let q = p + i * w
+        let raw = if w == 1 { std::raw::load8(q) } else if w == 2 { if big { ad_ldbe16(q) } else { ad_ld16(q) } } else if w == 3 { if big { ad_ldbe24(q) } else { ad_ld24(q) } } else { if big { ad_ldbe32(q) } else { ad_ld32(q) } }
+        let v = ad_sext(raw, bits)
+        let x = std::raw::fmul(std::raw::ffromint(v), scale)
+        ob_push(ob, if bits > 24 { vec_f32(x) } else { x })
+        i += 1
+    }
+}
+
+// PCM entero sin signo: v/2^(b-1) - 1.
+fn ad_pcm_unsigned(p: int, n: int, w: int, big: bool, bits: int, ob: int) {
+    let scale = ad_pow2f(bits - 1)
+    let one = std::raw::ffromint(1)
+    let mut i = 0
+    ob_reserve(ob, n)
+    while i < n {
+        let q = p + i * w
+        let raw = if w == 1 { std::raw::load8(q) } else if w == 2 { if big { ad_ldbe16(q) } else { ad_ld16(q) } } else if w == 3 { if big { ad_ldbe24(q) } else { ad_ld24(q) } } else { if big { ad_ldbe32(q) } else { ad_ld32(q) } }
+        let x = std::raw::fmul(std::raw::ffromint(raw), scale)
+        if bits > 24 {
+            ob_push(ob, vec_f32(std::raw::fsub(vec_f32(x), one)))
+        } else {
+            ob_push(ob, std::raw::fsub(x, one))
+        }
+        i += 1
+    }
+}
+
+fn ad_pcm_float(p: int, n: int, w: int, big: bool, ob: int) {
+    let mut i = 0
+    ob_reserve(ob, n)
+    while i < n {
+        let q = p + i * w
+        if w == 4 {
+            let raw = if big { ad_ldbe32(q) } else { ad_ld32(q) }
+            ob_push(ob, ad_f32bits_to_f64(raw))
+        } else {
+            let lo = if big { ad_ldbe32(q + 4) } else { ad_ld32(q) }
+            let hi = if big { ad_ldbe32(q) } else { ad_ld32(q + 4) }
+            ob_push(ob, vec_f32(std::raw::shl(hi, 32) | lo))
+        }
+        i += 1
+    }
+}
+
+// Convierte los 32 bits de un f32 al f64 equivalente (exacto, con NaN/inf/subnormales).
+fn ad_f32bits_to_f64(b: int) -> int {
+    let sign = std::raw::shr(b, 31) & 1
+    let exp = std::raw::shr(b, 23) & 255
+    let man = b & 8388607
+    let sbit = std::raw::shl(sign, 63)
+    if exp == 255 {
+        return sbit | std::raw::shl(2047, 52) | std::raw::shl(man, 29)
+    }
+    if exp == 0 {
+        if man == 0 { return sbit }
+        // subnormal f32: man * 2^-149
+        let v = std::raw::fmul(std::raw::ffromint(man), ad_pow2f(149))
+        return sbit | v
+    }
+    sbit | std::raw::shl(exp - 127 + 1023, 52) | std::raw::shl(man, 29)
+}
+
+fn ad_pcm_xlaw(p: int, n: int, table: int, ob: int) {
+    let mut i = 0
+    ob_reserve(ob, n)
+    while i < n {
+        ob_push(ob, std::raw::load(table + 8 * std::raw::load8(p + i)))
+        i += 1
+    }
+}
+
+// Decodifica nfr fotogramas PCM desde p.
+fn ad_pcm_packet(d: int, p: int, nfr: int, ob: int) {
+    let codec = ad_ld(d, D_CODEC)
+    let n = nfr * ad_ld(d, D_CH)
+    let w = ad_ld(d, D_FMT)
+    if codec == AD_PCM_S16LE {
+        ad_pcm_signed(p, n, 2, false, 16, ob)
+    } else if codec == AD_PCM_S16BE {
+        ad_pcm_signed(p, n, 2, true, 16, ob)
+    } else if codec == AD_PCM_S24LE {
+        ad_pcm_signed(p, n, 3, false, 24, ob)
+    } else if codec == AD_PCM_S24BE {
+        ad_pcm_signed(p, n, 3, true, 24, ob)
+    } else if codec == AD_PCM_S32LE {
+        ad_pcm_signed(p, n, 4, false, 32, ob)
+    } else if codec == AD_PCM_S32BE {
+        ad_pcm_signed(p, n, 4, true, 32, ob)
+    } else if codec == AD_PCM_S8 {
+        ad_pcm_signed(p, n, 1, false, 8, ob)
+    } else if codec == AD_PCM_U8 {
+        ad_pcm_unsigned(p, n, 1, false, 8, ob)
+    } else if codec == AD_PCM_U16LE {
+        ad_pcm_unsigned(p, n, 2, false, 16, ob)
+    } else if codec == AD_PCM_U16BE {
+        ad_pcm_unsigned(p, n, 2, true, 16, ob)
+    } else if codec == AD_PCM_U24LE {
+        ad_pcm_unsigned(p, n, 3, false, 24, ob)
+    } else if codec == AD_PCM_U24BE {
+        ad_pcm_unsigned(p, n, 3, true, 24, ob)
+    } else if codec == AD_PCM_U32LE {
+        ad_pcm_unsigned(p, n, 4, false, 32, ob)
+    } else if codec == AD_PCM_U32BE {
+        ad_pcm_unsigned(p, n, 4, true, 32, ob)
+    } else if codec == AD_PCM_F32LE {
+        ad_pcm_float(p, n, 4, false, ob)
+    } else if codec == AD_PCM_F32BE {
+        ad_pcm_float(p, n, 4, true, ob)
+    } else if codec == AD_PCM_F64LE {
+        ad_pcm_float(p, n, 8, false, ob)
+    } else if codec == AD_PCM_F64BE {
+        ad_pcm_float(p, n, 8, true, ob)
+    } else {
+        ad_pcm_xlaw(p, n, ad_ld(ad_ld(d, D_FMT), W_TABLE), ob)
+    }
+}
+
+// Tamaño en bytes de una muestra PCM.
+fn ad_pcm_width(codec: int) -> int {
+    if codec == AD_PCM_S8 || codec == AD_PCM_U8 || codec == AD_PCM_ALAW || codec == AD_PCM_MULAW { return 1 }
+    if codec == AD_PCM_S16LE || codec == AD_PCM_S16BE || codec == AD_PCM_U16LE || codec == AD_PCM_U16BE { return 2 }
+    if codec == AD_PCM_S24LE || codec == AD_PCM_S24BE || codec == AD_PCM_U24LE || codec == AD_PCM_U24BE { return 3 }
+    if codec == AD_PCM_F64LE || codec == AD_PCM_F64BE { return 8 }
+    4
+}
+
+// f32 de una muestra i32 (ya desplazada a 32 bits): v / 2^31.
+fn ad_s32_to_f32(v: int) -> int {
+    vec_f32(std::raw::fmul(std::raw::ffromint(v), ad_pow2f(31)))
+}
+
+// ---- IMA ADPCM de WAV: un bloque por canal (mono) o dos canales entrelazados.
+// Estado de un canal en memoria: pr (predictor), si (índice de paso).
+fn ad_ima_expand(t: int, st: int, nibble: int) -> int {
+    let si = std::raw::load(st + 8)
+    let pr = std::raw::load(st)
+    let step = std::raw::load(t + 8 * si)
+    let delta = nibble & 7
+    let diff = std::raw::sar((2 * delta + 1) * step, 3)
+    let np = ad_clamp_i16(if (nibble & 8) != 0 { pr - diff } else { pr + diff })
+    let mut ns = si + std::raw::load(t + 8 * (89 + nibble))
+    if ns < 0 { ns = 0 }
+    if ns > 88 { ns = 88 }
+    std::raw::store(st, np)
+    std::raw::store(st + 8, ns)
+    np
+}
+
+fn ad_ima_preamble(p: int, st: int) {
+    let pr = ad_sext(ad_ld16(p), 16)
+    let si = std::raw::load8(p + 2)
+    if si > 88 { ad_fail_skip("adpcm (ima): invalid step index") }
+    std::raw::store(st, pr)
+    std::raw::store(st + 8, si)
+}
+
+fn ad_ima_decode(d: int, p: int, nblocks: int, ob: int) {
+    let w = ad_ld(d, D_FMT)
+    let t = ad_ld(w, W_ADPCM)
+    let fpb = ad_ld(w, W_FPB)
+    let ch = ad_ld(d, D_CH)
+    let bs = ad_ld(w, W_BLOCK)
+    let st = rt_alloc(32)
+    let blk = rt_alloc(8 * fpb * 2)
+    let mut b = 0
+    while b < nblocks {
+        let q = p + b * bs
+        if ch == 1 {
+            ad_ima_preamble(q, st)
+            std::raw::store(blk, std::raw::load(st))
+            let nbytes = (fpb - 1) / 2
+            let mut k = 0
+            while k < nbytes {
+                let byte = std::raw::load8(q + 4 + k)
+                std::raw::store(blk + 8 * (1 + 2 * k), ad_ima_expand(t, st, byte & 15))
+                std::raw::store(blk + 8 * (2 + 2 * k), ad_ima_expand(t, st, std::raw::shr(byte, 4)))
+                k += 1
+            }
+            let mut i = 0
+            while i < fpb {
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(blk + 8 * i), 16)))
+                i += 1
+            }
+        } else {
+            ad_ima_preamble(q, st)
+            ad_ima_preamble(q + 4, st + 16)
+            std::raw::store(blk, std::raw::load(st))
+            std::raw::store(blk + 8 * fpb, std::raw::load(st + 16))
+            let nbytes = fpb - 1
+            let mut k = 0
+            while k < nbytes {
+                let chn = (k / 4) & 1
+                let off = (k / 8) * 8
+                let bi = k % 4
+                let byte = std::raw::load8(q + 8 + k)
+                let sp = st + 16 * chn
+                std::raw::store(blk + 8 * (fpb * chn + 1 + off + bi * 2), ad_ima_expand(t, sp, byte & 15))
+                std::raw::store(blk + 8 * (fpb * chn + 2 + off + bi * 2), ad_ima_expand(t, sp, std::raw::shr(byte, 4)))
+                k += 1
+            }
+            let mut i = 0
+            while i < fpb {
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(blk + 8 * i), 16)))
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(blk + 8 * (fpb + i)), 16)))
+                i += 1
+            }
+        }
+        b += 1
+    }
+    rt_free_block(st)
+    rt_free_block(blk)
+}
+
+// ---- Microsoft ADPCM. Estado por canal: coeff1, coeff2, delta, sample1, sample2.
+fn ad_ms_expand(t: int, st: int, nibble: int) -> int {
+    let c1 = std::raw::load(st)
+    let c2 = std::raw::load(st + 8)
+    let mut delta = std::raw::load(st + 16)
+    let s1 = std::raw::load(st + 24)
+    let s2 = std::raw::load(st + 32)
+    let sn = if nibble >= 8 { nibble - 16 } else { nibble }
+    let pred = (s1 * c1 + s2 * c2) / 256 + sn * delta
+    let ns = ad_clamp_i16(pred)
+    delta = (std::raw::load(t + 8 * nibble) * delta) / 256
+    if delta < 16 { delta = 16 }
+    std::raw::store(st + 32, s1)
+    std::raw::store(st + 24, ns)
+    std::raw::store(st + 16, delta)
+    ns
+}
+
+fn ad_ms_setup(t: int, st: int, pred: int, delta: int, s1: int, s2: int) {
+    if pred > 6 { ad_fail_unsup("adpcm: block predictor exceeds range") }
+    std::raw::store(st, std::raw::load(t + 8 * (16 + pred)))
+    std::raw::store(st + 8, std::raw::load(t + 8 * (23 + pred)))
+    std::raw::store(st + 16, delta)
+    std::raw::store(st + 24, s1)
+    std::raw::store(st + 32, s2)
+}
+
+fn ad_ms_decode(d: int, p: int, nblocks: int, ob: int) {
+    let w = ad_ld(d, D_FMT)
+    let t = ad_ld(w, W_ADPCM)
+    let fpb = ad_ld(w, W_FPB)
+    let ch = ad_ld(d, D_CH)
+    let bs = ad_ld(w, W_BLOCK)
+    let st = rt_alloc(96)
+    let mut b = 0
+    while b < nblocks {
+        let q = p + b * bs
+        if ch == 1 {
+            ad_ms_setup(t, st, std::raw::load8(q), ad_sext(ad_ld16(q + 1), 16), ad_sext(ad_ld16(q + 3), 16), ad_sext(ad_ld16(q + 5), 16))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 32), 16)))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 24), 16)))
+            let mut k = 1
+            while k < fpb / 2 {
+                let byte = std::raw::load8(q + 6 + k)
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(ad_ms_expand(t, st, std::raw::shr(byte, 4)), 16)))
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(ad_ms_expand(t, st, byte & 15), 16)))
+                k += 1
+            }
+        } else {
+            let lp = std::raw::load8(q)
+            let rp = std::raw::load8(q + 1)
+            ad_ms_setup(t, st, lp, ad_sext(ad_ld16(q + 2), 16), ad_sext(ad_ld16(q + 6), 16), ad_sext(ad_ld16(q + 10), 16))
+            ad_ms_setup(t, st + 48, rp, ad_sext(ad_ld16(q + 4), 16), ad_sext(ad_ld16(q + 8), 16), ad_sext(ad_ld16(q + 12), 16))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 32), 16)))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 48 + 32), 16)))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 24), 16)))
+            ob_push(ob, ad_s32_to_f32(std::raw::shl(std::raw::load(st + 48 + 24), 16)))
+            let mut f = 2
+            while f < fpb {
+                let byte = std::raw::load8(q + 12 + f)
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(ad_ms_expand(t, st, std::raw::shr(byte, 4)), 16)))
+                ob_push(ob, ad_s32_to_f32(std::raw::shl(ad_ms_expand(t, st + 48, byte & 15), 16)))
+                f += 1
+            }
+        }
+        b += 1
+    }
+    rt_free_block(st)
+}
+
+// Siguiente paquete del WAV: devuelve 1 si produjo muestras, 0 si se saltó, -1 al terminar.
+fn wav_step(d: int, ob: int) -> int {
+    let s = ad_ld(d, D_SRC)
+    let w = ad_ld(d, D_FMT)
+    let pos = sr_pos(s)
+    let bs = ad_ld(w, W_BLOCK)
+    if bs == 0 { ad_fail_decode("riff: block size is 0") }
+    let dend = ad_ld(w, W_DEND)
+    let left = if pos < dend { (dend - pos) / bs } else { 0 }
+    if left == 0 { ad_fail_eof() }
+    let maxb = ad_ld(w, W_MAXBLK)
+    let nblocks = if left < maxb { left } else { maxb }
+    let fpb = ad_ld(w, W_FPB)
+    let nfr = nblocks * fpb
+    let plen = nblocks * bs
+    if plen > ad_ld(w, W_PKTCAP) {
+        if ad_ld(w, W_PKT) != 0 { rt_free_block(ad_ld(w, W_PKT)) }
+        ad_st(w, W_PKT, rt_alloc(plen + 16))
+        ad_st(w, W_PKTCAP, plen)
+    }
+    let p = ad_ld(w, W_PKT)
+    sr_read(s, p, plen)
+    let codec = ad_ld(d, D_CODEC)
+    if codec == AD_ADPCM_IMA {
+        ad_ima_decode(d, p, nblocks, ob)
+    } else if codec == AD_ADPCM_MS {
+        ad_ms_decode(d, p, nblocks, ob)
+    } else {
+        ad_pcm_packet(d, p, nfr, ob)
+    }
+    1
+}
+
+// ============================================================ FLAC / Ogg / MKV (se añaden más abajo)
+// ============================================================ FLAC
+// Estado F del contenedor FLAC (ranuras de 8 bytes).
+const F_RATE: int = 0
+const F_BPS: int = 1
+const F_NCH: int = 2
+const F_BMIN: int = 3
+const F_BMAX: int = 4
+const F_FBMAX: int = 5     // frame_byte_len_max (0 = sin dato)
+const F_CRC8: int = 6
+const F_CRC16: int = 7
+const F_BUF: int = 8       // búfer de exploración (bytes del archivo desde `a`)
+const F_BUFCAP: int = 9
+const F_PLANES: int = 10   // muestras por canal (enteros de 8 bytes)
+const F_HDR: int = 11      // cabecera analizada (8 ranuras)
+const F_NFRAG: int = 12
+const F_FRAG: int = 13     // 4 inicios de fragmento pendientes (13..16)
+const F_FLEN: int = 17     // fin del último fragmento procesado
+const F_LASTKIND: int = 18 // -1 sin cabecera previa; 0 por trama; 1 por muestra
+const F_LASTSEQ: int = 19
+const F_AVGN: int = 20
+const F_AVG: int = 21      // 4 tamaños (21..24)
+const F_FIRST: int = 25    // desplazamiento de la primera trama
+const F_SEEKN: int = 26
+const F_SEEKT: int = 27    // tabla de búsqueda: 3 ranuras por entrada (muestra, desplazamiento, n)
+const F_PKT: int = 28
+const F_PKTCAP: int = 29
+const F_BR: int = 30       // lector de bits (3 ranuras: búfer, bits totales, posición)
+const F_PLCAP: int = 33    // capacidad de cada plano (muestras)
+const F_SLOTS: int = 40
+
+// Cabecera analizada (F_HDR): 0 tipo (0 trama, 1 muestra), 1 secuencia, 2 muestras, 3 canales (código),
+// 4 bits por muestra (0 = del StreamInfo), 5 frecuencia (-1 = del StreamInfo), 6 longitud.
+const FH_KIND: int = 0
+const FH_SEQ: int = 1
+const FH_N: int = 2
+const FH_CH: int = 3
+const FH_BPS: int = 4
+const FH_RATE: int = 5
+const FH_LEN: int = 6
+
+fn flac_crc8_table() -> int {
+    let t = rt_alloc(256 * 8)
+    let mut i = 0
+    while i < 256 {
+        let mut c = i
+        let mut k = 0
+        while k < 8 {
+            if (c & 128) != 0 {
+                c = (std::raw::shl(c, 1) ^ 7) & 255
+            } else {
+                c = std::raw::shl(c, 1) & 255
+            }
+            k += 1
+        }
+        std::raw::store(t + 8 * i, c)
+        i += 1
+    }
+    t
+}
+
+fn flac_crc16_table() -> int {
+    let t = rt_alloc(256 * 8)
+    let mut i = 0
+    while i < 256 {
+        let mut c = std::raw::shl(i, 8)
+        let mut k = 0
+        while k < 8 {
+            if (c & 32768) != 0 {
+                c = (std::raw::shl(c, 1) ^ 32773) & 65535
+            } else {
+                c = std::raw::shl(c, 1) & 65535
+            }
+            k += 1
+        }
+        std::raw::store(t + 8 * i, c)
+        i += 1
+    }
+    t
+}
+
+fn flac_crc8(f: int, p: int, n: int) -> int {
+    let t = ad_ld(f, F_CRC8)
+    let mut c = 0
+    let mut i = 0
+    while i < n {
+        c = std::raw::load(t + 8 * (c ^ std::raw::load8(p + i)))
+        i += 1
+    }
+    c
+}
+
+fn flac_crc16(f: int, p: int, n: int) -> int {
+    let t = ad_ld(f, F_CRC16)
+    let mut c = 0
+    let mut i = 0
+    while i < n {
+        c = (std::raw::shl(c, 8) & 65535) ^ std::raw::load(t + 8 * (std::raw::shr(c, 8) ^ std::raw::load8(p + i)))
+        i += 1
+    }
+    c
+}
+
+fn flac_lz8(mask: int) -> int {
+    if mask == 31 { return 3 }
+    if mask == 15 { return 4 }
+    if mask == 7 { return 5 }
+    if mask == 3 { return 6 }
+    if mask == 1 { return 7 }
+    8
+}
+
+// Analiza una cabecera de trama en p (n bytes disponibles). Devuelve su longitud o -1 si no es válida.
+fn flac_hdr(f: int, p: int, n: int, out: int) -> int {
+    if n < 6 { return -1 }
+    let sync = ad_ldbe16(p)
+    let variable = sync & 1
+    let desc = ad_ldbe16(p + 2)
+    let bse = std::raw::shr(desc, 12) & 15
+    let sre = std::raw::shr(desc, 8) & 15
+    let che = std::raw::shr(desc, 4) & 15
+    let bpe = std::raw::shr(desc, 1) & 7
+    if (desc & 1) == 1 { return -1 }
+    let mut q = 4
+    let b0 = std::raw::load8(p + q)
+    q += 1
+    let mut val = 0
+    if b0 <= 127 {
+        val = b0
+    } else {
+        let mut mask = -1
+        if b0 >= 192 && b0 <= 223 {
+            mask = 31
+        } else if b0 >= 224 && b0 <= 239 {
+            mask = 15
+        } else if b0 >= 240 && b0 <= 247 {
+            mask = 7
+        } else if b0 >= 248 && b0 <= 251 {
+            mask = 3
+        } else if b0 == 252 || b0 == 253 {
+            mask = 1
+        } else if b0 == 254 {
+            mask = 0
+        }
+        if mask < 0 { return -1 }
+        val = b0 & mask
+        let cont = flac_lz8(mask) - 2
+        let mut i = 0
+        while i < cont {
+            if q >= n { return -1 }
+            val = std::raw::shl(val, 6) | (std::raw::load8(p + q) & 63)
+            q += 1
+            i += 1
+        }
+    }
+    if variable == 0 {
+        if val > 2147483647 { return -1 }
+    } else {
+        if val > 68719476735 { return -1 }
+    }
+    let mut bs = 0
+    if bse == 1 {
+        bs = 192
+    } else if bse >= 2 && bse <= 5 {
+        bs = 576 * std::raw::shl(1, bse - 2)
+    } else if bse == 6 {
+        if q + 1 > n { return -1 }
+        bs = std::raw::load8(p + q) + 1
+        q += 1
+    } else if bse == 7 {
+        if q + 2 > n { return -1 }
+        let v = ad_ldbe16(p + q)
+        q += 2
+        if v == 65535 { return -1 }
+        bs = v + 1
+    } else if bse >= 8 {
+        bs = 256 * std::raw::shl(1, bse - 8)
+    } else {
+        return -1
+    }
+    let mut rate = -1
+    if sre == 0 {
+        rate = -1
+    } else if sre == 1 {
+        rate = 88200
+    } else if sre == 2 {
+        rate = 176400
+    } else if sre == 3 {
+        rate = 192000
+    } else if sre == 4 {
+        rate = 8000
+    } else if sre == 5 {
+        rate = 16000
+    } else if sre == 6 {
+        rate = 22050
+    } else if sre == 7 {
+        rate = 24000
+    } else if sre == 8 {
+        rate = 32000
+    } else if sre == 9 {
+        rate = 44100
+    } else if sre == 10 {
+        rate = 48000
+    } else if sre == 11 {
+        rate = 96000
+    } else if sre == 12 {
+        if q + 1 > n { return -1 }
+        rate = std::raw::load8(p + q) * 1000
+        q += 1
+    } else if sre == 13 {
+        if q + 2 > n { return -1 }
+        rate = ad_ldbe16(p + q)
+        q += 2
+    } else if sre == 14 {
+        if q + 2 > n { return -1 }
+        rate = ad_ldbe16(p + q) * 10
+        q += 2
+    } else {
+        return -1
+    }
+    if rate != -1 && (rate < 1 || rate > 655350) { return -1 }
+    let mut bps = 0
+    if bpe == 0 {
+        bps = 0
+    } else if bpe == 1 {
+        bps = 8
+    } else if bpe == 2 {
+        bps = 12
+    } else if bpe == 4 {
+        bps = 16
+    } else if bpe == 5 {
+        bps = 20
+    } else if bpe == 6 {
+        bps = 24
+    } else {
+        return -1
+    }
+    if che > 10 { return -1 }
+    if q + 1 > n { return -1 }
+    if flac_crc8(f, p, q) != std::raw::load8(p + q) { return -1 }
+    ad_st(out, FH_KIND, variable)
+    ad_st(out, FH_SEQ, val)
+    ad_st(out, FH_N, bs)
+    ad_st(out, FH_CH, che)
+    ad_st(out, FH_BPS, bps)
+    ad_st(out, FH_RATE, rate)
+    ad_st(out, FH_LEN, q + 1)
+    q + 1
+}
+
+fn flac_hdr_channels(che: int) -> int {
+    if che <= 7 { return che + 1 }
+    2
+}
+
+// strict_frame_header_check de symphonia (con la última cabecera aceptada).
+fn flac_strict(f: int, h: int) -> bool {
+    let rate = ad_ld(h, FH_RATE)
+    if rate != -1 && rate != ad_ld(f, F_RATE) { return false }
+    let bps = ad_ld(h, FH_BPS)
+    if bps != 0 && bps != ad_ld(f, F_BPS) { return false }
+    let fixed = ad_ld(f, F_BMIN) == ad_ld(f, F_BMAX)
+    if ad_ld(h, FH_N) > ad_ld(f, F_BMAX) { return false }
+    let last = if ad_ld(f, F_LASTKIND) < 0 { 0 } else { ad_ld(f, F_LASTSEQ) }
+    let seq = ad_ld(h, FH_SEQ)
+    if ad_ld(h, FH_KIND) == 1 {
+        if !(!fixed && (seq > last || seq == 0)) { return false }
+    } else {
+        if !(fixed && (seq > last || seq == 0)) { return false }
+    }
+    if flac_hdr_channels(ad_ld(h, FH_CH)) != ad_ld(f, F_NCH) { return false }
+    true
+}
+
+// is_likely_frame_header sobre n bytes (n ≥ 6).
+fn flac_likely(p: int, n: int) -> bool {
+    if n < 6 { return false }
+    if std::raw::load8(p) != 255 { return false }
+    if (std::raw::load8(p + 1) & 252) != 248 { return false }
+    let b2 = std::raw::load8(p + 2)
+    if (b2 & 240) == 0 { return false }
+    if (b2 & 15) == 15 { return false }
+    let b3 = std::raw::load8(p + 3)
+    if std::raw::shr(b3 & 240, 4) >= 11 { return false }
+    if (b3 & 14) == 6 || (b3 & 14) == 14 { return false }
+    if (b3 & 1) == 1 { return false }
+    true
+}
+
+fn flac_buf_reserve(f: int, need: int) {
+    if need <= ad_ld(f, F_BUFCAP) { return }
+    let mut cap = ad_ld(f, F_BUFCAP) * 2
+    if cap < need { cap = need }
+    let np = rt_alloc(cap)
+    rt_copy(np, ad_ld(f, F_BUF), ad_ld(f, F_BUFCAP))
+    rt_free_block(ad_ld(f, F_BUF))
+    ad_st(f, F_BUF, np)
+    ad_st(f, F_BUFCAP, cap)
+}
+
+fn flac_pread(d: int, dst: int, n: int, pos: int) -> int {
+    let s = ad_ld(d, D_SRC)
+    let r = std::raw::syscall(17, ad_ld(s, SR_FD), dst, n, pos, 0, 0)
+    if r < 0 { return 0 }
+    r
+}
+
+// Siguiente cabecera candidata a partir de la posición absoluta a (explora desde a + 1). Devuelve su
+// posición absoluta, el fin del archivo si no hay más, o -1 si se perdió la sincronización.
+// Deja en F_BUF los bytes desde a. EOF sin datos: error de fin de flujo.
+fn flac_find_next(d: int, a: int) -> int {
+    let f = ad_ld(d, D_FMT)
+    let mut avg = 0
+    if ad_ld(f, F_AVGN) >= 4 {
+        avg = (ad_ld(f, F_AVG) + ad_ld(f, F_AVG + 1) + ad_ld(f, F_AVG + 2) + ad_ld(f, F_AVG + 3)) / 4
+    } else if ad_ld(f, F_AVGN) > 0 {
+        let mut sum = 0
+        let mut i = 0
+        while i < ad_ld(f, F_AVGN) {
+            sum += ad_ld(f, F_AVG + i)
+            i += 1
+        }
+        avg = sum / ad_ld(f, F_AVGN)
+    }
+    let mut init = avg
+    if init < 1024 { init = 1024 }
+    if init > 32768 { init = 32768 }
+    init += 16
+    flac_buf_reserve(f, init + 2048)
+    let mut end = flac_pread(d, ad_ld(f, F_BUF), init, a)
+    if end <= 0 { ad_fail_eof() }
+    let mut pos = 1
+    let h = ad_ld(f, F_HDR)
+    loop {
+        // Explora [pos, end) buscando 0xff y (b & 0xfc) == 0xf8.
+        let buf = ad_ld(f, F_BUF)
+        while pos + 1 < end {
+            if std::raw::load8(buf + pos) == 255 && (std::raw::load8(buf + pos + 1) & 252) == 248 {
+                if flac_likely(buf + pos, end - pos) {
+                    if flac_hdr(f, buf + pos, end - pos, h) > 0 {
+                        if flac_strict(f, h) { return a + pos }
+                    }
+                }
+            }
+            pos += 1
+        }
+        if end >= 16777216 + 16 { return -1 }
+        pos = if end > 16 { end - 16 } else { 0 }
+        if pos < 1 { pos = 1 }
+        flac_buf_reserve(f, end + 8192)
+        let more = flac_pread(d, ad_ld(f, F_BUF) + end, 8192, a + end)
+        if more <= 0 { return a + end }
+        end += more
+    }
+    -1
+}
+
+// Lee los bytes del archivo [from, to) en F_PKT; devuelve el puntero.
+fn flac_load_range(d: int, from: int, to: int) -> int {
+    let f = ad_ld(d, D_FMT)
+    let n = to - from
+    if n > ad_ld(f, F_PKTCAP) {
+        if ad_ld(f, F_PKT) != 0 { rt_free_block(ad_ld(f, F_PKT)) }
+        ad_st(f, F_PKT, rt_alloc(n + 64))
+        ad_st(f, F_PKTCAP, n)
+    }
+    let p = ad_ld(f, F_PKT)
+    let mut got = 0
+    while got < n {
+        let r = flac_pread(d, p + got, n - got, from + got)
+        if r <= 0 { ad_fail_eof() }
+        got += r
+    }
+    p
+}
+
+// ------------------------------------------------------------ lector de bits (MSB primero)
+fn br_init(br: int, buf: int, nbytes: int) {
+    std::raw::store(br, buf)
+    std::raw::store(br + 8, nbytes * 8)
+    std::raw::store(br + 16, 0)
+}
+
+fn br_bits(br: int, n: int) -> int {
+    if n == 0 { return 0 }
+    let pos = std::raw::load(br + 16)
+    if pos + n > std::raw::load(br + 8) { std::raw::fail("Iend of bitstream") }
+    let buf = std::raw::load(br)
+    let byte = std::raw::shr(pos, 3)
+    let off = pos & 7
+    let nbytes = std::raw::shr(off + n + 7, 3)
+    let mut acc = 0
+    let mut i = 0
+    while i < nbytes {
+        acc = std::raw::shl(acc, 8) | std::raw::load8(buf + byte + i)
+        i += 1
+    }
+    std::raw::store(br + 16, pos + n)
+    std::raw::shr(acc, nbytes * 8 - off - n) & (std::raw::shl(1, n) - 1)
+}
+
+fn br_unary(br: int) -> int {
+    let mut pos = std::raw::load(br + 16)
+    let end = std::raw::load(br + 8)
+    let buf = std::raw::load(br)
+    let mut q = 0
+    loop {
+        if pos >= end { std::raw::fail("Iend of bitstream") }
+        let byte = std::raw::load8(buf + std::raw::shr(pos, 3))
+        let bit = std::raw::shr(byte, 7 - (pos & 7)) & 1
+        pos += 1
+        if bit == 1 { break }
+        q += 1
+    }
+    std::raw::store(br + 16, pos)
+    q
+}
+
+fn br_signed(br: int, n: int) -> int {
+    if n == 0 { return 0 }
+    ad_sext(br_bits(br, n), n)
+}
+
+// ------------------------------------------------------------ subtramas
+fn flac_verbatim(br: int, bps: int, buf: int, n: int) {
+    let mut i = 0
+    while i < n {
+        std::raw::store(buf + 8 * i, br_signed(br, bps))
+        i += 1
+    }
+}
+
+fn flac_rice_partition(br: int, width: int, buf: int, n: int) {
+    let param = br_bits(br, width)
+    let mut i = 0
+    if param < std::raw::shl(1, width) - 1 {
+        while i < n {
+            let q = br_unary(br)
+            let r = br_bits(br, param)
+            let word = (std::raw::shl(q, param) | r) & 4294967295
+            let half = std::raw::shr(word, 1)
+            let v = if (word & 1) == 1 { 0 - half - 1 } else { half }
+            std::raw::store(buf + 8 * i, v)
+            i += 1
+        }
+    } else {
+        let bits = br_bits(br, 5)
+        while i < n {
+            std::raw::store(buf + 8 * i, br_signed(br, bits))
+            i += 1
+        }
+    }
+}
+
+fn flac_residual(br: int, prelude: int, buf: int, n: int) {
+    let method = br_bits(br, 2)
+    if method > 1 { ad_fail_skip("flac: residual method set to reserved value") }
+    let width = if method == 0 { 4 } else { 5 }
+    let order = br_bits(br, 4)
+    let nparts = std::raw::shl(1, order)
+    let psamples = std::raw::shr(n, order)
+    if prelude > psamples { ad_fail_skip("flac: residual partition too small for given predictor order") }
+    if nparts * psamples != n { ad_fail_skip("flac: block size is not same as encoded residual") }
+    flac_rice_partition(br, width, buf + 8 * prelude, psamples - prelude)
+    let mut k = 1
+    while k < nparts {
+        flac_rice_partition(br, width, buf + 8 * (k * psamples), psamples)
+        k += 1
+    }
+}
+
+fn flac_fixed_predict(order: int, buf: int, n: int) {
+    let mut i = order
+    while i < n {
+        let a1 = std::raw::load(buf + 8 * (i - 1))
+        let mut pred = 0
+        if order == 1 {
+            pred = a1
+        } else if order == 2 {
+            pred = 2 * a1 - std::raw::load(buf + 8 * (i - 2))
+        } else if order == 3 {
+            pred = 3 * a1 - 3 * std::raw::load(buf + 8 * (i - 2)) + std::raw::load(buf + 8 * (i - 3))
+        } else if order == 4 {
+            pred = 4 * a1 - 6 * std::raw::load(buf + 8 * (i - 2)) + 4 * std::raw::load(buf + 8 * (i - 3)) - std::raw::load(buf + 8 * (i - 4))
+        }
+        std::raw::store(buf + 8 * i, ad_wrap32(std::raw::load(buf + 8 * i) + pred))
+        i += 1
+    }
+}
+
+fn flac_lpc(br: int, bps: int, order: int, buf: int, n: int) {
+    flac_verbatim(br, bps, buf, order)
+    let precision = br_bits(br, 4) + 1
+    if precision > 15 { ad_fail_skip("flac: qlp precision set to reserved value") }
+    let shift = br_signed(br, 5)
+    if shift < 0 { ad_fail_unsup("flac: lpc shifts less than 0 are not supported") }
+    let coef = rt_alloc(8 * 32)
+    let mut k = 0
+    while k < order {
+        std::raw::store(coef + 8 * k, br_signed(br, precision))
+        k += 1
+    }
+    flac_residual(br, order, buf, n)
+    let mut i = order
+    while i < n {
+        let mut sum = 0
+        let mut j = 0
+        while j < order {
+            sum = std::raw::wadd(sum, std::raw::wmul(std::raw::load(coef + 8 * j), std::raw::load(buf + 8 * (i - 1 - j))))
+            j += 1
+        }
+        std::raw::store(buf + 8 * i, ad_wrap32(std::raw::load(buf + 8 * i) + std::raw::sar(sum, shift)))
+        i += 1
+    }
+    rt_free_block(coef)
+}
+
+fn flac_subframe(br: int, frame_bps: int, buf: int, n: int) {
+    if br_bits(br, 1) == 1 { ad_fail_skip("flac: subframe padding is not 0") }
+    let t = br_bits(br, 6)
+    let mut kind = 0     // 0 constante, 1 verbatim, 2 fijo, 3 lineal
+    let mut order = 0
+    if t == 0 {
+        kind = 0
+    } else if t == 1 {
+        kind = 1
+    } else if t >= 8 && t <= 15 {
+        order = t & 7
+        if order > 4 { ad_fail_skip("flac: fixed predictor orders of greater than 4 are invalid") }
+        kind = 2
+    } else if t >= 32 && t <= 63 {
+        order = (t & 31) + 1
+        kind = 3
+    } else {
+        ad_fail_skip("flac: subframe type set to reserved value")
+    }
+    let mut dropped = 0
+    if br_bits(br, 1) == 1 { dropped = br_unary(br) + 1 }
+    let bps = frame_bps - dropped
+    if bps < 1 || bps > 32 { ad_fail_skip("flac: invalid wasted bits") }
+    if order > n { ad_fail_skip("flac: predictor order exceeds block size") }
+    if kind == 0 {
+        let c = br_signed(br, bps)
+        let mut i = 0
+        while i < n {
+            std::raw::store(buf + 8 * i, c)
+            i += 1
+        }
+    } else if kind == 1 {
+        flac_verbatim(br, bps, buf, n)
+    } else if kind == 2 {
+        flac_verbatim(br, bps, buf, order)
+        flac_residual(br, order, buf, n)
+        flac_fixed_predict(order, buf, n)
+    } else {
+        flac_lpc(br, bps, order, buf, n)
+    }
+    if dropped > 0 {
+        let mut i = 0
+        while i < n {
+            std::raw::store(buf + 8 * i, ad_wrap32(std::raw::shl(std::raw::load(buf + 8 * i), dropped)))
+            i += 1
+        }
+    }
+}
+
+// Decodifica un paquete (una trama completa con su pie CRC) y añade las muestras a ob.
+fn flac_decode_packet(d: int, p: int, len: int, ob: int) {
+    let f = ad_ld(d, D_FMT)
+    let h = ad_ld(f, F_HDR)
+    let hl = flac_hdr(f, p, len, h)
+    if hl < 0 { ad_fail_skip("flac: invalid frame header") }
+    let n = ad_ld(h, FH_N)
+    let che = ad_ld(h, FH_CH)
+    let mut bps = ad_ld(h, FH_BPS)
+    if bps == 0 { bps = ad_ld(f, F_BPS) }
+    let nch = ad_ld(f, F_NCH)
+    let planes = ad_ld(f, F_PLANES)
+    let stride = ad_ld(f, F_PLCAP) * 8
+    let br = ad_ld(f, F_BR)
+    br_init(br, p + hl, len - hl)
+    if che <= 7 {
+        let mut c = 0
+        while c < che + 1 {
+            flac_subframe(br, bps, planes + c * stride, n)
+            c += 1
+        }
+    } else if che == 8 {
+        flac_subframe(br, bps, planes, n)
+        flac_subframe(br, bps + 1, planes + stride, n)
+        let mut i = 0
+        while i < n {
+            let l = std::raw::load(planes + 8 * i)
+            let s = std::raw::load(planes + stride + 8 * i)
+            std::raw::store(planes + stride + 8 * i, ad_wrap32(l - s))
+            i += 1
+        }
+    } else if che == 9 {
+        flac_subframe(br, bps + 1, planes, n)
+        flac_subframe(br, bps, planes + stride, n)
+        let mut i = 0
+        while i < n {
+            let s = std::raw::load(planes + 8 * i)
+            let r = std::raw::load(planes + stride + 8 * i)
+            std::raw::store(planes + 8 * i, ad_wrap32(s + r))
+            i += 1
+        }
+    } else {
+        flac_subframe(br, bps, planes, n)
+        flac_subframe(br, bps + 1, planes + stride, n)
+        let mut i = 0
+        while i < n {
+            let m = std::raw::load(planes + 8 * i)
+            let s = std::raw::load(planes + stride + 8 * i)
+            let mid = ad_wrap32(std::raw::shl(m, 1)) | (s & 1)
+            std::raw::store(planes + 8 * i, std::raw::sar(ad_wrap32(mid + s), 1))
+            std::raw::store(planes + stride + 8 * i, std::raw::sar(ad_wrap32(mid - s), 1))
+            i += 1
+        }
+    }
+    let shift = if bps < 32 { 32 - bps } else { 0 }
+    ob_reserve(ob, n * nch)
+    let scale = ad_pow2f(31)
+    let mut i = 0
+    while i < n {
+        let mut c = 0
+        while c < nch {
+            let v = std::raw::load(planes + c * stride + 8 * i)
+            let w = if shift > 0 { ad_wrap32(std::raw::shl(v, shift)) } else { v }
+            ob_push(ob, vec_f32(std::raw::fmul(std::raw::ffromint(w), scale)))
+            c += 1
+        }
+        i += 1
+    }
+}
+
+// Siguiente paquete: aplica la lógica de fragmentos de PacketParser. Devuelve 1 si produjo muestras.
+fn flac_step(d: int, ob: int) -> int {
+    let f = ad_ld(d, D_FMT)
+    let s = ad_ld(d, D_SRC)
+    loop {
+        let a = sr_pos(s)
+        let b = flac_find_next(d, a)
+        if b < 0 {
+            // Sincronización perdida: busca la siguiente cabecera estricta desde a + 1 (resync).
+            flac_resync(d, a + 1)
+        } else {
+            let flen = b - a
+            sr_seek(s, b)
+            let buf = ad_ld(f, F_BUF)
+            let mut start = -1
+            let mut plen = 0
+            let mut pp = 0
+            let footer = ad_ldbe16(buf + flen - 2)
+            if flen >= 2 && flac_crc16(f, buf, flen - 2) == footer {
+                start = a
+                pp = buf
+                plen = flen
+            } else {
+                // Combina con fragmentos anteriores (el más antiguo primero).
+                let mut i = 0
+                let nfr = ad_ld(f, F_NFRAG)
+                while i < nfr && start < 0 {
+                    let st = ad_ld(f, F_FRAG + i)
+                    let range = flac_load_range(d, st, b)
+                    if b - st >= 2 && flac_crc16(f, range, b - st - 2) == ad_ldbe16(range + b - st - 2) {
+                        start = st
+                        pp = range
+                        plen = b - st
+                    }
+                    i += 1
+                }
+            }
+            if start < 0 {
+                // push_fragment: poda y añade.
+                let mut maxsize = ad_ld(f, F_FBMAX)
+                if maxsize == 0 { maxsize = 16777216 }
+                let mut avg = 0
+                if ad_ld(f, F_AVGN) >= 4 {
+                    avg = (ad_ld(f, F_AVG) + ad_ld(f, F_AVG + 1) + ad_ld(f, F_AVG + 2) + ad_ld(f, F_AVG + 3)) / 4
+                } else if ad_ld(f, F_AVGN) > 0 {
+                    let mut sum = 0
+                    let mut j = 0
+                    while j < ad_ld(f, F_AVGN) {
+                        sum += ad_ld(f, F_AVG + j)
+                        j += 1
+                    }
+                    avg = sum / ad_ld(f, F_AVGN)
+                }
+                let nfr = ad_ld(f, F_NFRAG)
+                if nfr > 0 {
+                    let total = b - ad_ld(f, F_FRAG)
+                    let mut prune = false
+                    if total > maxsize {
+                        prune = true
+                    } else if total > 4 * avg {
+                        prune = true
+                    } else if nfr >= 4 {
+                        prune = true
+                    }
+                    if prune {
+                        let mut j = 1
+                        while j < nfr {
+                            ad_st(f, F_FRAG + j - 1, ad_ld(f, F_FRAG + j))
+                            j += 1
+                        }
+                        ad_st(f, F_NFRAG, nfr - 1)
+                    }
+                }
+                ad_st(f, F_FRAG + ad_ld(f, F_NFRAG), a)
+                ad_st(f, F_NFRAG, ad_ld(f, F_NFRAG) + 1)
+            } else {
+                ad_st(f, F_NFRAG, 0)
+                // last_header y media móvil de tamaños.
+                let h = ad_ld(f, F_HDR)
+                let hl = flac_hdr(f, pp, plen, h)
+                if hl > 0 {
+                    ad_st(f, F_LASTKIND, ad_ld(h, FH_KIND))
+                    ad_st(f, F_LASTSEQ, ad_ld(h, FH_SEQ))
+                }
+                let cnt = ad_ld(f, F_AVGN)
+                ad_st(f, F_AVG + cnt % 4, plen)
+                ad_st(f, F_AVGN, cnt + 1)
+                flac_decode_packet(d, pp, plen, ob)
+                return 1
+            }
+        }
+    }
+    0
+}
+
+// parser.resync: busca la primera cabecera estricta (sin cabecera previa) a partir de pos.
+fn flac_resync(d: int, pos0: int) {
+    let f = ad_ld(d, D_FMT)
+    let s = ad_ld(d, D_SRC)
+    let h = ad_ld(f, F_HDR)
+    let hb = rt_alloc(32)
+    let mut pos = pos0
+    let init = sr_pos(s)
+    let saved = ad_ld(f, F_LASTKIND)
+    ad_st(f, F_LASTKIND, -1)
+    loop {
+        // sync_frame: avanza hasta 0xfff8..0xfffb
+        sr_seek(s, pos)
+        let mut sync = 0
+        while (sync & 65532) != 65528 {
+            sync = (std::raw::shl(sync, 8) | sr_u8(s)) & 65535
+        }
+        let fpos = sr_pos(s) - 2
+        // Se lee la cabecera con hasta 16 bytes (los que queden).
+        let mut n = 0
+        sr_seek(s, fpos)
+        while n < 16 {
+            let c = sr_byte_or_eof(s)
+            if c < 0 { break }
+            std::raw::store8(hb + n, c)
+            n += 1
+        }
+        let hl = flac_hdr(f, hb, n, h)
+        if hl > 0 && flac_strict(f, h) {
+            sr_seek(s, fpos)
+            if init != fpos {
+                ad_st(f, F_NFRAG, 0)
+                ad_st(f, F_AVGN, 0)
+                ad_st(f, F_LASTKIND, -1)
+            }
+            if init == fpos { ad_st(f, F_LASTKIND, saved) }
+            rt_free_block(hb)
+            return
+        }
+        pos = fpos + 1
+    }
+}
+
+fn flac_open(s: int, d: int) {
+    let f = rt_alloc_zero(8 * F_SLOTS)
+    ad_st(d, D_FMT, f)
+    ad_st(d, D_KIND, 2)
+    ad_st(f, F_CRC8, flac_crc8_table())
+    ad_st(f, F_CRC16, flac_crc16_table())
+    ad_st(f, F_LASTKIND, -1)
+    ad_st(f, F_HDR, rt_alloc_zero(8 * 8))
+    ad_st(f, F_BR, rt_alloc_zero(32))
+    ad_st(f, F_BUFCAP, 65536)
+    ad_st(f, F_BUF, rt_alloc(65536))
+    ad_st(d, D_NFRAMES, -1)
+    let marker = sr_be32(s)
+    if marker != 1716281667 { ad_fail_unsup("flac: missing flac stream marker") }
+    let mut have_info = false
+    let mut have_seek = false
+    loop {
+        let hdr = sr_u8(s)
+        let is_last = (hdr & 128) != 0
+        let btype = hdr & 127
+        let blen = sr_be24(s)
+        let bstart = sr_pos(s)
+        if btype == 0 {
+            if have_info { ad_fail_decode("flac: found more than one stream info block") }
+            if blen != 34 { ad_fail_decode("flac: invalid stream info block size") }
+            let bmin = sr_be16(s)
+            let bmax = sr_be16(s)
+            if bmin < 16 || bmax < 16 { ad_fail_decode("flac: minimum block length is 16 samples") }
+            if bmax < bmin { ad_fail_decode("flac: maximum block length is less than the minimum block length") }
+            let fmin = sr_be24(s)
+            let fmax = sr_be24(s)
+            if fmin > 0 && fmax > 0 && fmax < fmin { ad_fail_decode("flac: maximum frame length is less than the minimum frame length") }
+            let w1 = sr_be32(s)
+            let w2 = sr_be32(s)
+            // 20 bits de frecuencia, 3 de canales, 5 de bits, 36 de muestras (64 bits en total).
+            let both = std::raw::shl(w1, 32) | w2
+            let rate = std::raw::shr(both, 44) & 1048575
+            if rate < 1 || rate > 655350 { ad_fail_decode("flac: stream sample rate out of bounds") }
+            let nch = (std::raw::shr(both, 41) & 7) + 1
+            let bps = (std::raw::shr(both, 36) & 31) + 1
+            if bps < 4 || bps > 32 { ad_fail_decode("flac: stream bits per sample are out of bounds") }
+            let nsamp = both & 68719476735
+            sr_skip(s, 16)
+            if bstart + 34 > sr_size(s) { ad_fail_eof() }
+            ad_st(f, F_RATE, rate)
+            ad_st(f, F_BPS, bps)
+            ad_st(f, F_NCH, nch)
+            ad_st(f, F_BMIN, bmin)
+            ad_st(f, F_BMAX, bmax)
+            ad_st(f, F_FBMAX, fmax)
+            ad_st(d, D_RATE, rate)
+            ad_st(d, D_CH, nch)
+            ad_st(d, D_TBN, 1)
+            ad_st(d, D_TBD, rate)
+            ad_st(d, D_CODEC, AD_FLAC)
+            if nsamp != 0 { ad_st(d, D_NFRAMES, nsamp) }
+            ad_st(f, F_PLCAP, bmax)
+            ad_st(f, F_PLANES, rt_alloc(8 * bmax * nch))
+            have_info = true
+        } else if btype == 3 {
+            if have_seek { ad_fail_decode("flac: found more than one seek table block") }
+            let count = blen / 18
+            let t = rt_alloc(8 * 3 * (count + 1))
+            let mut k = 0
+            let mut kept = 0
+            while k < count {
+                let smp = sr_be64(s)
+                if smp != -1 {
+                    let off = sr_be64(s)
+                    let nn = sr_be16(s)
+                    std::raw::store(t + 8 * 3 * kept, smp)
+                    std::raw::store(t + 8 * (3 * kept + 1), off)
+                    std::raw::store(t + 8 * (3 * kept + 2), nn)
+                    kept += 1
+                } else {
+                    sr_skip(s, 10)
+                }
+                k += 1
+            }
+            ad_st(f, F_SEEKN, kept)
+            ad_st(f, F_SEEKT, t)
+            have_seek = true
+        }
+        // Se salta lo que quede del bloque (y todo bloque cuyo contenido no hace falta).
+        sr_seek(s, bstart + blen)
+        if is_last { break }
+    }
+    if !have_info { ad_fail_decode("flac: no stream info block") }
+    flac_resync(d, sr_pos(s))
+    ad_st(f, F_FIRST, sr_pos(s))
+}
+
+fn flac_codec_new(d: int) -> int { 1 }
+fn mkv_open(s: int, d: int) { ad_fail_unsup("mkv: todavía no implementado") }
+fn mkv_step(d: int, ob: int) -> int { ad_fail_eof() 
+    0 }
+fn mkv_codec_new(d: int) -> int { 0 }
+
+// ============================================================ apertura y llenado (FileDecoder)
+fn ad_class(e: string) -> int {
+    // Primer carácter del mensaje de error: clase del error de symphonia.
+    std::raw::load8(std::raw::bits(e) + 16)
+}
+
+fn ad_tail(e: string) -> string {
+    rt_substr_bytes(e, 1, rt_slen(e))
+}
+
+fn ob_set_len(ob: int, n: int) { std::raw::store(ob + 8, n) }
+
+// Abre un archivo. Falla con el Display de DecodeError (sin prefijo de clase).
+fn ad_open(path: string) -> int {
+    let cp = rt_cstr(path)
+    let fd = std::raw::syscall(2, cp, 524288, 0, 0, 0, 0)
+    rt_free_block(cp)
+    if fd < 0 {
+        if fd == -2 {
+            std::raw::fail(rt_concat("audio file not found: ", path))
+        }
+        std::raw::fail(rt_concat("audio I/O error: ", rt_os_error(0 - fd)))
+    }
+    let s = sr_new(fd)
+    let d = rt_alloc_zero(8 * D_SLOTS)
+    ad_st(d, D_SRC, s)
+    ad_st(d, D_NFRAMES, -1)
+    let r = std::try::catch(|| ad_open_source(d, s, path))
+    match r {
+        Result::Ok(_) => d,
+        Result::Err(e) => {
+            ad_close(d)
+            std::raw::fail(e)
+            0
+        },
+    }
+}
+
+fn ad_open_source(d: int, s: int, path: string) {
+    let r = std::try::catch(|| ad_probe_and_open(d, s))
+    match r {
+        Result::Ok(_) => {},
+        Result::Err(e) => {
+            std::raw::fail(rt_concat(rt_concat(rt_concat("unsupported or corrupt audio file: ", path), ": "), ad_tail(e)))
+        },
+    }
+    let ok = ad_make_codec(d)
+    if ok == 0 {
+        std::raw::fail(rt_concat("unsupported or corrupt audio file: no decodable audio track: ", path))
+    }
+    // Duración: n_frames con la base de tiempo (solo si ambos existen).
+    let nf = ad_ld(d, D_NFRAMES)
+    let mut dur = std::raw::ffromint(0)
+    if nf >= 0 && ad_ld(d, D_TBD) != 0 {
+        dur = ad_calc_time(nf, ad_ld(d, D_TBN), ad_ld(d, D_TBD))
+    }
+    ad_st(d, D_DUR, dur)
+}
+
+fn ad_probe_and_open(d: int, s: int) {
+    let bloom = ad_bloom_new()
+    let mut kind = 0
+    loop {
+        let r = std::try::catch(|| ad_probe_next(s, bloom))
+        match r {
+            Result::Ok(k) => { kind = k },
+            Result::Err(e) => {
+                rt_free_block(bloom)
+                std::raw::fail(e)
+            },
+        }
+        if kind == 5 {
+            ad_read_id3v2(s)
+        } else {
+            break
+        }
+    }
+    rt_free_block(bloom)
+    if kind == 1 {
+        wav_open(s, d)
+    } else if kind == 2 {
+        flac_open(s, d)
+    } else if kind == 3 {
+        ogg_open(s, d)
+    } else {
+        mkv_open(s, d)
+    }
+}
+
+fn ad_make_codec(d: int) -> int {
+    let k = ad_ld(d, D_KIND)
+    if k == 1 { return wav_codec_new(d) }
+    if k == 2 { return flac_codec_new(d) }
+    if k == 3 { return ogg_codec_new(d) }
+    mkv_codec_new(d)
+}
+
+fn ad_close(d: int) {
+    if ad_ld(d, D_KIND) == 3 { og_close(d) }
+    let s = ad_ld(d, D_SRC)
+    if s != 0 { sr_close(s) }
+    rt_free_block(d)
+}
+
+fn ad_step(d: int, ob: int) -> int {
+    let k = ad_ld(d, D_KIND)
+    if k == 1 { return wav_step(d, ob) }
+    if k == 2 { return flac_step(d, ob) }
+    if k == 3 { return ogg_step(d, ob) }
+    mkv_step(d, ob)
+}
+
+fn ad_rate(d: int) -> int { ad_ld(d, D_RATE) }
+fn ad_channels(d: int) -> int { ad_ld(d, D_CH) }
+fn ad_finished(d: int) -> bool { ad_ld(d, D_FINISHED) != 0 }
+fn ad_codec_str(d: int) -> string { ad_codec_name(ad_ld(d, D_CODEC)) }
+
+fn ad_position_secs(d: int) -> int {
+    let rate = ad_ld(d, D_RATE)
+    if rate == 0 { return std::raw::ffromint(0) }
+    std::raw::fdiv(std::raw::ffromint(ad_ld(d, D_DECODED)), std::raw::ffromint(rate))
+}
+
+// FileDecoder::fill: añade como mucho ~max_frames fotogramas a ob. Las clases de error siguen la
+// tabla de arriba: I = fin, S = se salta el paquete, el resto se propaga como DecodeError::Decode.
+fn ad_fill(d: int, ob: int, max_frames: int) {
+    if ad_ld(d, D_FINISHED) != 0 || max_frames == 0 { return }
+    let mut iter = 0
+    while iter < 4096 {
+        let mark = ob_len(ob)
+        let r = std::try::catch(|| ad_step(d, ob))
+        let mut stop = false
+        match r {
+            Result::Ok(_) => {
+                let ch = if ad_ld(d, D_CH) < 1 { 1 } else { ad_ld(d, D_CH) }
+                ad_st(d, D_DECODED, ad_ld(d, D_DECODED) + (ob_len(ob) - mark) / ch)
+            },
+            Result::Err(e) => {
+                ob_set_len(ob, mark)
+                let c = ad_class(e)
+                if c == 73 {
+                    ad_st(d, D_FINISHED, 1)
+                    stop = true
+                } else if c == 83 {
+                    // paquete corrupto: se salta
+                } else {
+                    std::raw::fail(rt_concat("decode error: ", ad_tail(e)))
+                }
+            },
+        }
+        if stop { return }
+        let ch2 = if ad_ld(d, D_CH) < 1 { 1 } else { ad_ld(d, D_CH) }
+        if ob_len(ob) / ch2 >= max_frames { return }
+        iter += 1
+    }
+}

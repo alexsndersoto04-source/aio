@@ -1,0 +1,818 @@
+// std::sqlite en Titan, parte 15: DDL (CREATE/DROP/ALTER). Prefijo `sk`.
+
+fn sk_master_rows(pg: SqPg) -> array {
+    let mut out = []
+    for r in sqt_t_scan(pg, 1) {
+        out = std::array::push(out, [r[0], sq_rec_dec(r[1], -1)])
+    }
+    return out
+}
+
+fn sk_master_add(pg: SqPg, ty: string, name: string, tbl: string, root: int, sql: Sv) -> SqPg {
+    let rid = sw_max_rowid(pg, 1) + 1
+    return sqt_t_put(pg, 1, rid, sq_rec_enc([Sv::SText(ty), Sv::SText(name), Sv::SText(tbl), Sv::SInt(root), sql]))
+}
+
+fn sk_bump(pg: SqPg) -> SqPg {
+    let a = sqp_read(pg, 1)
+    let v = a[40] * 16777216 + a[41] * 65536 + a[42] * 256 + a[43] + 1
+    let mut b = a
+    b = std::array::set(b, 40, (v / 16777216) % 256)
+    b = std::array::set(b, 41, (v / 65536) % 256)
+    b = std::array::set(b, 42, (v / 256) % 256)
+    b = std::array::set(b, 43, v % 256)
+    return sqp_write(pg, 1, b)
+}
+
+fn sk_free_tree(pg: SqPg, no: int) -> SqPg {
+    let pc = sqt_pc_read(pg, no)
+    let mut q = pg
+    for c in pc.cells {
+        if pc.kind == 5 || pc.kind == 2 {
+            let ch = c[0] * 16777216 + c[1] * 65536 + c[2] * 256 + c[3]
+            q = sk_free_tree(q, ch)
+        }
+        q = sqt_free_cell(q, pc.kind, c)
+    }
+    if pc.kind == 5 || pc.kind == 2 {
+        q = sk_free_tree(q, pc.right)
+    }
+    return sqp_free(q, no)
+}
+
+fn sk_reload(cx: Cx, pg: SqPg) -> (Cx, string) {
+    let (sch, err) = sh_load(pg)
+    if err != "" {
+        return (cx, err)
+    }
+    return (Cx { sch: sch, pg: pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }, "")
+}
+
+fn sk_pos_err(msg: string, toks: array, ntok: int) -> string {
+    let pp = toks[ntok].p
+    return msg + sr_sep() + "{pp}"
+}
+
+// Comprueba si el nombre ya existe. Devuelve (mensaje, lleva posición).
+fn sk_name_taken(cx: Cx, name: string, newkind: string) -> (string, bool) {
+    if sh_find_tab(cx.sch, name) != nil {
+        if newkind == "index" {
+            return ("there is already a table named " + name, false)
+        }
+        return ("table " + name + " already exists", true)
+    }
+    if sh_find_view(cx.sch, name) != nil {
+        if newkind == "index" {
+            return ("there is already a table named " + name, false)
+        }
+        return ("view " + name + " already exists", true)
+    }
+    if sh_find_idx(cx.sch, name) != nil {
+        if newkind == "index" {
+            return ("index " + name + " already exists", false)
+        }
+        return ("there is already an index named " + name, false)
+    }
+    return ("", false)
+}
+
+fn sk_decl_type(aff: string) -> string {
+    if aff == "INTEGER" {
+        return "INT"
+    }
+    if aff == "TEXT" {
+        return "TEXT"
+    }
+    if aff == "REAL" {
+        return "REAL"
+    }
+    if aff == "NUMERIC" {
+        return "NUM"
+    }
+    return ""
+}
+
+fn sk_quote_id(n: string) -> string {
+    let cs = std::text::chars(n)
+    let mut simple = len(cs) > 0
+    let mut i = 0
+    for c in cs {
+        let k = std::text::char_code(c)
+        let alpha = (k >= 65 && k <= 90) || (k >= 97 && k <= 122) || k == 95 || k >= 128
+        let digit = k >= 48 && k <= 57
+        if !(alpha || (digit && i > 0)) {
+            simple = false
+        }
+        i += 1
+    }
+    if simple {
+        return n
+    }
+    return "\"" + std::text::replace(n, "\"", "\"\"") + "\""
+}
+
+// Crea una tabla (CREATE TABLE ... (...) o AS SELECT). Devuelve (cx, error).
+fn sk_create_table(cx: Cx, ct: CT, sql: string, toks: array, end: int) -> (Cx, string) {
+    let (taken, tpos) = sk_name_taken(cx, ct.name, "table")
+    if taken != "" {
+        if ct.ifne {
+            return (cx, "")
+        }
+        if tpos {
+            return (cx, sk_pos_err(taken, toks, ct.ntok))
+        }
+        return (cx, taken)
+    }
+    if std::text::starts_with(sh_key(ct.name), "sqlite_") {
+        return (cx, "object name reserved for internal use: " + ct.name)
+    }
+    let mut pg = cx.pg
+    let mut text = ""
+    let mut ctx = ct
+    let mut rows = []
+    if ct.sel != nil {
+        let (names, arows, err) = sy_select(cx, ct.sel, [], [], -1)
+        if err != "" {
+            return (cx, err)
+        }
+        rows = arows
+        // tipos declarados a partir de las afinidades de las expresiones
+        let mut affs = []
+        let sel = ct.sel
+        let (n2, ar, e2) = sy_core(cx, sel.cores[0], [], [], [], -2)
+        if e2 == "" && len(ar) == 1 && len(ar[0]) == len(names) {
+            for a in ar[0] {
+                affs = std::array::push(affs, sk_decl_type(sc_to_text(a)))
+            }
+        } else {
+            for n in names {
+                affs = std::array::push(affs, "")
+            }
+        }
+        let mut parts = []
+        let mut cols = []
+        let mut i = 0
+        for n in names {
+            let mut p = sk_quote_id(n)
+            if affs[i] != "" {
+                p = p + " " + affs[i]
+            }
+            parts = std::array::push(parts, p)
+            cols = std::array::push(cols, ColDef { name: n, ty: affs[i], pk: false, pkdesc: false, autoinc: false, notnull: false, unique: false, dflt: nil, checks: [], coll: "", fk: nil, gen: nil, genstored: false, pkconf: "", nnconf: "", ukconf: "" })
+            i += 1
+        }
+        text = "CREATE TABLE " + sk_quote_id(ct.name) + "(" + std::collections::join(parts, ",") + ")"
+        ctx = CT { name: ct.name, ifne: ct.ifne, temp: ct.temp, cols: cols, cons: [], norowid: false, strict: false, sel: nil, ntok: ct.ntok }
+    } else {
+        text = ss_master_text(sql, toks, ct.ntok, end, "TABLE")
+    }
+    // columnas duplicadas y claves primarias
+    let mut seen = std::map::new()
+    let mut npk = 0
+    for cd in ctx.cols {
+        let k = sh_key(cd.name)
+        if std::map::contains(seen, k) {
+            return (cx, "duplicate column name: " + cd.name)
+        }
+        seen = std::map::insert(seen, k, 1)
+        if cd.pk {
+            npk += 1
+        }
+    }
+    for tc in ctx.cons {
+        if tc.kind == "PRIMARY" {
+            npk += 1
+        }
+    }
+    if npk > 1 {
+        return (cx, "table \"" + ct.name + "\" has more than one primary key")
+    }
+    if len(ctx.cols) == 0 {
+        return (cx, "must have at least one non-generated column")
+    }
+    let (tab0, terr) = sh_tab_from_ct(ctx, 0, "")
+    if terr != "" {
+        return (cx, terr)
+    }
+    let (pg1, root) = sqt_new_root(pg, 13)
+    pg = sk_master_add(pg1, "table", ct.name, ct.name, root, Sv::SText(text))
+    let mut i = 0
+    for u in tab0.uniqs {
+        let (pg2, ir) = sqt_new_root(pg, 10)
+        i += 1
+        pg = sk_master_add(pg2, "index", "sqlite_autoindex_" + ct.name + "_{i}", ct.name, ir, Sv::SNull)
+    }
+    if tab0.autoinc && sh_find_tab(cx.sch, "sqlite_sequence") == nil {
+        let (pg3, sr) = sqt_new_root(pg, 13)
+        pg = sk_master_add(pg3, "table", "sqlite_sequence", "sqlite_sequence", sr, Sv::SText("CREATE TABLE sqlite_sequence(name,seq)"))
+    }
+    pg = sk_bump(pg)
+    let (cx2, rerr) = sk_reload(cx, pg)
+    if rerr != "" {
+        return (cx, rerr)
+    }
+    if ct.sel != nil {
+        // filas iniciales
+        let tab = sh_find_tab(cx2.sch, ct.name)
+        let (prep, perr) = sw_prepare(cx2, tab, tab.name)
+        if perr != "" {
+            return (cx, perr)
+        }
+        let mut c = cx2
+        for r in rows {
+            let (c3, st, rid, full, e3) = sw_insert_row(c, tab, prep, r, Sv::SNull, "", [], [], [])
+            if e3 != "" {
+                return (cx, e3)
+            }
+            c = c3
+        }
+        return (c, "")
+    }
+    return (cx2, "")
+}
+
+// CREATE INDEX. Devuelve (cx, error).
+fn sk_create_index(cx: Cx, ci: CI, sql: string, toks: array, end: int) -> (Cx, string) {
+    let (taken, tpos) = sk_name_taken(cx, ci.name, "index")
+    if taken != "" {
+        if ci.ifne {
+            return (cx, "")
+        }
+        return (cx, taken)
+    }
+    let tab = sh_find_tab(cx.sch, ci.tbl)
+    if tab == nil {
+        if sh_find_view(cx.sch, ci.tbl) != nil {
+            return (cx, "views may not be indexed")
+        }
+        return (cx, "no such table: main." + ci.tbl)
+    }
+    if std::text::starts_with(sh_key(ci.tbl), "sqlite_") {
+        return (cx, "table " + ci.tbl + " may not be indexed")
+    }
+    // las columnas deben resolverse
+    let scope = sw_scope(tab, tab.name)
+    let rc = sw_rc(cx)
+    for c in ci.cols {
+        let (e, r1) = sr_ex(c[0], [scope], rc)
+        if r1.err != "" {
+            return (cx, r1.err)
+        }
+    }
+    if ci.wh != nil {
+        let (e, r2) = sr_ex(ci.wh, [scope], rc)
+        if r2.err != "" {
+            return (cx, r2.err)
+        }
+    }
+    let mut kind = "INDEX"
+    if ci.unique {
+        kind = "UNIQUE INDEX"
+    }
+    let text = ss_master_text(sql, toks, ci.ntok, end, kind)
+    let (pg1, root) = sqt_new_root(cx.pg, 10)
+    let pg = sk_bump(sk_master_add(pg1, "index", ci.name, tab.name, root, Sv::SText(text)))
+    let (cx2, rerr) = sk_reload(cx, pg)
+    if rerr != "" {
+        return (cx, rerr)
+    }
+    let tab2 = sh_find_tab(cx2.sch, tab.name)
+    let (prep, perr) = sw_prepare(cx2, tab2, tab2.name)
+    if perr != "" {
+        return (cx, perr)
+    }
+    let mut info: any = nil
+    for inf in prep[0] {
+        if sh_key(inf[0].name) == sh_key(ci.name) {
+            info = inf
+        }
+    }
+    let mut p = cx2.pg
+    let colls = sw_icolls(info)
+    let descs = sw_idescs(info)
+    for r in sh_scan(cx2, tab2) {
+        if sw_in_index(cx2, info, r) {
+            let k0 = sw_ikey(cx2, info, r)
+            let key = std::array::push(k0, r[len(tab2.cols)])
+            if ci.unique {
+                let mut hasnull = false
+                for v in k0 {
+                    if sx_isnull(v) {
+                        hasnull = true
+                    }
+                }
+                if !hasnull {
+                    let st = sqi_seek(p, root, k0, len(k0), info[3], info[2])
+                    if len(st) > 0 {
+                        let iv = sqi_cu_vals(p, st)
+                        if sqi_cmp(iv, k0, len(k0), info[3], info[2]) == 0 {
+                            let mut names = []
+                            for c in ci.cols {
+                                match c[0] {
+                                    Ex::ECol(q) => {
+                                        names = std::array::push(names, q.1)
+                                    },
+                                    _ => {},
+                                }
+                            }
+                            if len(names) == len(ci.cols) {
+                                return (cx, "UNIQUE constraint failed: " + sw_desc_names(tab2, names))
+                            }
+                            return (cx, "UNIQUE constraint failed: index '" + ci.name + "'")
+                        }
+                    }
+                }
+            }
+            p = sqi_put(p, root, key, colls, descs)
+        }
+    }
+    return (sw_cx(cx2, p, cx2.lastid, cx2.changes), "")
+}
+
+fn sk_create_view(cx: Cx, cv: CV, sql: string, toks: array, end: int) -> (Cx, string) {
+    let (taken, tpos) = sk_name_taken(cx, cv.name, "view")
+    if taken != "" {
+        if cv.ifne {
+            return (cx, "")
+        }
+        if tpos {
+            return (cx, sk_pos_err(taken, toks, cv.ntok))
+        }
+        return (cx, taken)
+    }
+    let text = ss_master_text(sql, toks, cv.ntok, end, "VIEW")
+    let pg = sk_bump(sk_master_add(cx.pg, "view", cv.name, cv.name, 0, Sv::SText(text)))
+    return sk_reload(cx, pg)
+}
+
+fn sk_create_trigger(cx: Cx, tr: CTr, sql: string, toks: array, end: int) -> (Cx, string) {
+    for t in cx.sch.trgs {
+        if sh_key(t.name) == sh_key(tr.name) {
+            if tr.ifne {
+                return (cx, "")
+            }
+            return (cx, sk_pos_err("trigger " + tr.name + " already exists", toks, tr.ntok))
+        }
+    }
+    let tab = sh_find_tab(cx.sch, tr.tbl)
+    if tab == nil && sh_find_view(cx.sch, tr.tbl) == nil {
+        return (cx, "no such table: main." + tr.tbl)
+    }
+    let text = ss_master_text(sql, toks, tr.ntok, end, "TRIGGER")
+    let pg = sk_bump(sk_master_add(cx.pg, "trigger", tr.name, tr.tbl, 0, Sv::SText(text)))
+    return sk_reload(cx, pg)
+}
+
+// DROP. v = [clase, nombre, if exists]
+fn sk_drop(cx: Cx, kind: string, name: string, ifex: bool) -> (Cx, string) {
+    let key = sh_key(name)
+    let rows = sk_master_rows(cx.pg)
+    let mut pg = cx.pg
+    if kind == "table" {
+        let tab = sh_find_tab(cx.sch, name)
+        if tab == nil {
+            if ifex {
+                return (cx, "")
+            }
+            return (cx, "no such table: " + name)
+        }
+        if std::text::starts_with(key, "sqlite_") {
+            return (cx, "table " + tab.name + " may not be dropped")
+        }
+        for r in rows {
+            let ty = sc_to_text(r[1][0])
+            let nm = sc_to_text(r[1][1])
+            let tb = sc_to_text(r[1][2])
+            if sh_key(tb) == key && (ty == "table" || ty == "index" || ty == "trigger") {
+                if ty != "trigger" {
+                    pg = sk_free_tree(pg, sc_to_int(r[1][3]))
+                }
+                pg = sqt_t_del(pg, 1, r[0])
+            }
+        }
+        if tab.autoinc {
+            let st = sh_find_tab(cx.sch, "sqlite_sequence")
+            if st != nil {
+                for r in sqt_t_scan(pg, st.root) {
+                    let v = sq_rec_dec(r[1], -1)
+                    if sh_key(sc_to_text(v[0])) == key {
+                        pg = sqt_t_del(pg, st.root, r[0])
+                    }
+                }
+            }
+        }
+    } else if kind == "index" {
+        let ix = sh_find_idx(cx.sch, name)
+        if ix == nil {
+            if ifex {
+                return (cx, "")
+            }
+            return (cx, "no such index: " + name)
+        }
+        if ix.auto {
+            return (cx, "index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped")
+        }
+        for r in rows {
+            if sc_to_text(r[1][0]) == "index" && sh_key(sc_to_text(r[1][1])) == key {
+                pg = sk_free_tree(pg, sc_to_int(r[1][3]))
+                pg = sqt_t_del(pg, 1, r[0])
+            }
+        }
+    } else if kind == "view" {
+        if sh_find_view(cx.sch, name) == nil {
+            if ifex {
+                return (cx, "")
+            }
+            return (cx, "no such view: " + name)
+        }
+        for r in rows {
+            if sc_to_text(r[1][0]) == "view" && sh_key(sc_to_text(r[1][1])) == key {
+                pg = sqt_t_del(pg, 1, r[0])
+            }
+        }
+    } else {
+        let mut found = false
+        for t in cx.sch.trgs {
+            if sh_key(t.name) == key {
+                found = true
+            }
+        }
+        if !found {
+            if ifex {
+                return (cx, "")
+            }
+            return (cx, "no such trigger: " + name)
+        }
+        for r in rows {
+            if sc_to_text(r[1][0]) == "trigger" && sh_key(sc_to_text(r[1][1])) == key {
+                pg = sqt_t_del(pg, 1, r[0])
+            }
+        }
+    }
+    pg = sk_bump(pg)
+    return sk_reload(cx, pg)
+}
+
+// ------------------------------------------------------------ ALTER
+
+fn sk_tok_raw(sql: string, toks: array, i: int) -> string {
+    return sq_trim_ws(std::text::substring(sql, toks[i].p, toks[i + 1].p))
+}
+
+// Sustituye los tokens indicados por texto nuevo.
+fn sk_rewrite(sql: string, toks: array, idxs: array, repl: string) -> string {
+    let cs = sql_chars(sql)
+    let mut out = []
+    let mut pos = 0
+    for i in idxs {
+        let a = toks[i].p
+        let raw = sk_tok_raw(sql, toks, i)
+        let b = a + len(std::text::chars(raw))
+        out = std::array::push(out, std::collections::join(std::array::slice(cs, pos, a), ""))
+        out = std::array::push(out, repl)
+        pos = b
+    }
+    out = std::array::push(out, std::collections::join(std::array::slice(cs, pos, len(cs)), ""))
+    return std::collections::join(out, "")
+}
+
+fn sk_is_name_tok(t: any, name: string) -> bool {
+    return (t.k == "id" || t.k == "qid") && sh_key(t.s) == sh_key(name)
+}
+
+fn sk_master_set(pg: SqPg, rid: int, vals: array) -> SqPg {
+    return sqt_t_put(pg, 1, rid, sq_rec_enc(vals))
+}
+
+// Renombrado de tabla.
+fn sk_rename_table(cx: Cx, tab: TabI, nn: string) -> (Cx, string) {
+    if sh_find_tab(cx.sch, nn) != nil || sh_find_idx(cx.sch, nn) != nil || sh_find_view(cx.sch, nn) != nil {
+        return (cx, "there is already another table or index with this name: " + nn)
+    }
+    let okey = sh_key(tab.name)
+    let q = "\"" + std::text::replace(nn, "\"", "\"\"") + "\""
+    let mut pg = cx.pg
+    for r in sk_master_rows(cx.pg) {
+        let v = r[1]
+        let ty = sc_to_text(v[0])
+        let nm = sc_to_text(v[1])
+        let tb = sc_to_text(v[2])
+        let sql = sc_to_text(v[4])
+        let (toks, lerr) = sql_lex(sql)
+        let mut newsql = sql
+        let mut newname = nm
+        let mut newtbl = tb
+        let mut changed = false
+        if ty == "table" && sh_key(nm) == okey {
+            newname = nn
+            newtbl = nn
+            newsql = sk_rewrite(sql, toks, [2], q)
+            changed = true
+        } else if ty == "index" && sh_key(tb) == okey {
+            newtbl = nn
+            if sx_isnull(v[4]) {
+                let n = sy_last_int(nm)
+                newname = "sqlite_autoindex_" + nn + "_{n}"
+            } else {
+                let mut i = 0
+                let mut at = -1
+                while i < len(toks) - 1 {
+                    if at < 0 && toks[i].k == "id" && toks[i].u == "ON" {
+                        at = i + 1
+                    }
+                    i += 1
+                }
+                if at >= 0 {
+                    newsql = sk_rewrite(sql, toks, [at], q)
+                }
+            }
+            changed = true
+        } else if ty == "trigger" && sh_key(tb) == okey {
+            newtbl = nn
+            let mut i = 0
+            let mut at = -1
+            while i < len(toks) - 1 {
+                if at < 0 && toks[i].k == "id" && toks[i].u == "ON" {
+                    at = i + 1
+                }
+                i += 1
+            }
+            if at >= 0 {
+                newsql = sk_rewrite(sql, toks, [at], q)
+            }
+            changed = true
+        }
+        // referencias en otras tablas, vistas y cuerpos de triggers
+        if !sx_isnull(v[4]) && (ty == "table" || ty == "view" || ty == "trigger") {
+            let mut idxs = []
+            let mut i = 1
+            while i < len(toks) - 1 {
+                let p = toks[i - 1]
+                if sk_is_name_tok(toks[i], tab.name) && p.k == "id" && (p.u == "REFERENCES" || p.u == "FROM" || p.u == "JOIN" || p.u == "INTO" || p.u == "UPDATE") {
+                    let isself = ty == "table" && sh_key(nm) == okey
+                    if !isself || p.u == "REFERENCES" {
+                        idxs = std::array::push(idxs, i)
+                    }
+                }
+                i += 1
+            }
+            if len(idxs) > 0 {
+                let t2 = sql_lex(newsql)
+                if newsql == sql {
+                    newsql = sk_rewrite(sql, toks, idxs, q)
+                } else {
+                    let (toks2, e2) = sql_lex(newsql)
+                    let mut idxs2 = []
+                    let mut j = 1
+                    while j < len(toks2) - 1 {
+                        let p2 = toks2[j - 1]
+                        if sk_is_name_tok(toks2[j], tab.name) && p2.k == "id" && (p2.u == "REFERENCES") {
+                            idxs2 = std::array::push(idxs2, j)
+                        }
+                        j += 1
+                    }
+                    newsql = sk_rewrite(newsql, toks2, idxs2, q)
+                }
+                changed = true
+            }
+        }
+        if changed {
+            let mut sv = Sv::SNull
+            if !sx_isnull(v[4]) {
+                sv = Sv::SText(newsql)
+            }
+            pg = sk_master_set(pg, r[0], [Sv::SText(ty), Sv::SText(newname), Sv::SText(newtbl), v[3], sv])
+        }
+    }
+    if tab.autoinc {
+        let st = sh_find_tab(cx.sch, "sqlite_sequence")
+        if st != nil {
+            for r in sqt_t_scan(pg, st.root) {
+                let v = sq_rec_dec(r[1], -1)
+                if sh_key(sc_to_text(v[0])) == okey {
+                    pg = sqt_t_put(pg, st.root, r[0], sq_rec_enc([Sv::SText(nn), v[1]]))
+                }
+            }
+        }
+    }
+    pg = sk_bump(pg)
+    return sk_reload(cx, pg)
+}
+
+fn sk_rename_column(cx: Cx, tab: TabI, a: string, b: string) -> (Cx, string) {
+    let ci = sh_col_index(tab, a)
+    if ci < 0 {
+        return (cx, "no such column: \"" + a + "\"")
+    }
+    if sh_col_index(tab, b) >= 0 {
+        return (cx, "duplicate column name: " + b)
+    }
+    let tkey = sh_key(tab.name)
+    let q = sk_quote_id(b)
+    let mut pg = cx.pg
+    for r in sk_master_rows(cx.pg) {
+        let v = r[1]
+        let ty = sc_to_text(v[0])
+        let tb = sc_to_text(v[2])
+        if !sx_isnull(v[4]) {
+            let sql = sc_to_text(v[4])
+            let (toks, lerr) = sql_lex(sql)
+            let mut idxs = []
+            if ty == "table" && sh_key(tb) == tkey {
+                let mut i = 3
+                while i < len(toks) - 1 {
+                    if sk_is_name_tok(toks[i], a) && !(toks[i - 1].k == "op" && toks[i - 1].s == ".") {
+                        idxs = std::array::push(idxs, i)
+                    }
+                    i += 1
+                }
+            } else if ty == "index" && sh_key(tb) == tkey {
+                let mut i = 3
+                while i < len(toks) - 1 {
+                    if sk_is_name_tok(toks[i], a) {
+                        idxs = std::array::push(idxs, i)
+                    }
+                    i += 1
+                }
+            } else if ty == "table" {
+                // claves foráneas de otras tablas que apuntan a esta columna: REFERENCES tabla(cols)
+                let mut i = 1
+                while i < len(toks) - 3 {
+                    if toks[i - 1].k == "id" && toks[i - 1].u == "REFERENCES" && sk_is_name_tok(toks[i], tab.name) && toks[i + 1].k == "op" && toks[i + 1].s == "(" {
+                        let mut j = i + 2
+                        while j < len(toks) - 1 && !(toks[j].k == "op" && toks[j].s == ")") {
+                            if sk_is_name_tok(toks[j], a) {
+                                idxs = std::array::push(idxs, j)
+                            }
+                            j += 1
+                        }
+                    }
+                    i += 1
+                }
+            }
+            if len(idxs) > 0 {
+                let ns = sk_rewrite(sql, toks, idxs, q)
+                pg = sk_master_set(pg, r[0], [v[0], v[1], v[2], v[3], Sv::SText(ns)])
+            }
+        }
+    }
+    pg = sk_bump(pg)
+    return sk_reload(cx, pg)
+}
+
+fn sk_add_column(cx: Cx, tab: TabI, cd: ColDef, text: string) -> (Cx, string) {
+    if sh_col_index(tab, cd.name) >= 0 {
+        return (cx, "duplicate column name: " + cd.name)
+    }
+    if cd.pk {
+        return (cx, "Cannot add a PRIMARY KEY column")
+    }
+    if cd.unique {
+        return (cx, "Cannot add a UNIQUE column")
+    }
+    if cd.gen != nil {
+        return (cx, "generated columns are not supported")
+    }
+    let mut dnull = cd.dflt == nil
+    if cd.dflt != nil {
+        match cd.dflt {
+            Ex::ELit(v) => {
+                if sx_isnull(v) {
+                    dnull = true
+                }
+            },
+            Ex::EFn(p) => {
+                return (cx, "Cannot add a column with non-constant default")
+            },
+            _ => {},
+        }
+    }
+    if cd.notnull && dnull && len(sqt_cu_first(cx.pg, tab.root)) > 0 {
+        return (cx, "Cannot add a NOT NULL column with default value NULL")
+    }
+    let mut pg = cx.pg
+    for r in sk_master_rows(cx.pg) {
+        let v = r[1]
+        if sc_to_text(v[0]) == "table" && sh_key(sc_to_text(v[1])) == sh_key(tab.name) {
+            let sql = sc_to_text(v[4])
+            let cs = sql_chars(sql)
+            let mut n = len(cs)
+            while n > 0 && cs[n - 1] != ")" {
+                n -= 1
+            }
+            let ns = std::collections::join(std::array::slice(cs, 0, n - 1), "") + ", " + text + ")"
+            pg = sk_master_set(pg, r[0], [v[0], v[1], v[2], v[3], Sv::SText(ns)])
+        }
+    }
+    pg = sk_bump(pg)
+    return sk_reload(cx, pg)
+}
+
+fn sk_drop_column(cx: Cx, tab: TabI, name: string) -> (Cx, string) {
+    let ci = sh_col_index(tab, name)
+    if ci < 0 {
+        return (cx, "no such column: \"" + name + "\"")
+    }
+    if len(tab.cols) == 1 {
+        return (cx, "cannot drop column \"" + name + "\": no other columns exist")
+    }
+    for p in tab.pk {
+        if p == ci {
+            return (cx, "cannot drop PRIMARY KEY column: \"" + name + "\"")
+        }
+    }
+    for u in tab.uniqs {
+        for c in u[0] {
+            if c == ci {
+                return (cx, "cannot drop UNIQUE column: \"" + name + "\"")
+            }
+        }
+    }
+    for ix in sh_tab_indexes(cx.sch, tab) {
+        if !ix.auto {
+            let ic = sy_idx_cols(cx.sch, tab, ix)
+            let mut hit = len(ic) == 0
+            for c in ic {
+                if c[0] == ci {
+                    hit = true
+                }
+            }
+            if hit {
+                return (cx, "error in index " + ix.name + " after drop column: no such column: " + name)
+            }
+        }
+    }
+    // reescribir el texto de la tabla: quitar la definición de la columna
+    let mut pg = cx.pg
+    for r in sk_master_rows(cx.pg) {
+        let v = r[1]
+        if sc_to_text(v[0]) == "table" && sh_key(sc_to_text(v[1])) == sh_key(tab.name) {
+            let sql = sc_to_text(v[4])
+            let (toks, lerr) = sql_lex(sql)
+            // ámbito de la lista de columnas: tokens entre el primer "(" y su ")"
+            let mut i = 0
+            while !(toks[i].k == "op" && toks[i].s == "(") {
+                i += 1
+            }
+            let mut depth = 0
+            let mut start = i + 1
+            let mut spans = []
+            let mut j = i
+            while j < len(toks) - 1 {
+                let t = toks[j]
+                if t.k == "op" && t.s == "(" {
+                    depth += 1
+                }
+                if t.k == "op" && t.s == ")" {
+                    depth -= 1
+                    if depth == 0 {
+                        spans = std::array::push(spans, [start, j, true])
+                        break
+                    }
+                }
+                if t.k == "op" && t.s == "," && depth == 1 {
+                    spans = std::array::push(spans, [start, j, false])
+                    start = j + 1
+                }
+                j += 1
+            }
+            let k = sh_key(name)
+            let mut out = sql
+            let n = len(spans)
+            let mut si = 0
+            for sp in spans {
+                if sk_is_name_tok(toks[sp[0]], name) && toks[sp[0]].k != "op" && si < n {
+                    // texto a eliminar: desde el inicio del span (y su coma anterior si es el último)
+                    let cs = sql_chars(sql)
+                    let mut a = toks[sp[0]].p
+                    let mut b = toks[sp[1] + 1].p
+                    if sp[2] {
+                        a = toks[sp[0] - 1].p
+                        b = toks[sp[1]].p
+                    }
+                    out = std::collections::join(std::array::slice(cs, 0, a), "") + std::collections::join(std::array::slice(cs, b, len(cs)), "")
+                    break
+                }
+                si += 1
+            }
+            pg = sk_master_set(pg, r[0], [v[0], v[1], v[2], v[3], Sv::SText(out)])
+        }
+    }
+    // reescribir las filas
+    let nc = len(tab.cols)
+    for r in sqt_t_scan(pg, tab.root) {
+        let vals = sq_rec_dec(r[1], -1)
+        let mut nv = []
+        let mut i = 0
+        while i < len(vals) {
+            if i != ci {
+                nv = std::array::push(nv, vals[i])
+            }
+            i += 1
+        }
+        pg = sqt_t_put(pg, tab.root, r[0], sq_rec_enc(nv))
+    }
+    pg = sk_bump(pg)
+    return sk_reload(cx, pg)
+}
+

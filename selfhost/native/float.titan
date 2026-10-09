@@ -624,6 +624,38 @@ fn fl_weed(num: int, nd: int, k: int, remainder: int, threshold: int, plus1v: in
 // format_shortest) de un float finito y positivo: (dígitos, k), con valor
 // 0.d1d2... * 10^k. Devuelve (los dígitos como un Int, cuántos son, k).
 fn fl_shortest(bits: int) -> (int, int, int) {
+    fl_shortest_mode(bits, false)
+}
+
+// Como fl_shortest, pero con el desempate de zmij/ryu (serde_json y serde_yaml):
+// cuando el valor cae justo a mitad entre dos candidatos del mismo largo, gana el
+// último dígito par (1936443305115367.25 -> ...367.2; Display de Rust da ...367.3).
+// Solo puede haber empate exacto si el valor tiene entre 1 y 26 bits fraccionarios
+// una vez quitados los ceros finales de la mantisa; en ese caso se salta Grisu y se
+// usa Dragon, que decide de forma exacta.
+fn fl_shortest_even(bits: int) -> (int, int, int) {
+    let field = (bits / 4503599627370496) % 2048
+    let frac = bits % 4503599627370496
+    let mut mant = frac + 4503599627370496
+    let mut exp = field - 1075
+    if field == 0 {
+        mant = frac
+        exp = -1074
+    }
+    if mant == 0 {
+        return fl_shortest_mode(bits, false)
+    }
+    while mant % 2 == 0 {
+        mant = mant / 2
+        exp += 1
+    }
+    if exp < 0 && exp >= -26 {
+        return fl_shortest_mode(bits, true)
+    }
+    fl_shortest_mode(bits, false)
+}
+
+fn fl_shortest_mode(bits: int, even: bool) -> (int, int, int) {
     let field = (bits / 4503599627370496) % 2048
     let frac = bits % 4503599627370496
     let mut mant = 0
@@ -648,10 +680,12 @@ fn fl_shortest(bits: int) -> (int, int, int) {
         mant = mant * 2
         exp -= 1
     }
-    let fast = fl_grisu(mant, minus, plus, exp)
-    if fast != nil {
-        let (fnum, fnd, fk) = fast
-        return (fnum, fnd, fk)
+    if !even {
+        let fast = fl_grisu(mant, minus, plus, exp)
+        if fast != nil {
+            let (fnum, fnd, fk) = fast
+            return (fnum, fnd, fk)
+        }
     }
     let mut r = bn_small(mant)
     let mut mm = bn_small(minus)
@@ -723,7 +757,12 @@ fn fl_shortest(bits: int) -> (int, int, int) {
     }
     // Redondear hacia arriba el último dígito si hace falta (igual que Rust:
     // si solo vale subir, o si valen las dos y 2r >= s).
-    if up && (!down || bn_cmp(bn_shl(r, 1), s) >= 0) {
+    let mut half = bn_cmp(bn_shl(r, 1), s)
+    if even && half == 0 && digits[len(digits) - 1] % 2 == 0 {
+        // Empate exacto y el último dígito ya es par: se queda.
+        half = -1
+    }
+    if up && (!down || half >= 0) {
         let mut j = len(digits) - 1
         loop {
             if j < 0 {

@@ -1,0 +1,16 @@
+fn main() {
+    let start = std::wasm::heap_used()
+    let cp = std::wasm::heap_checkpoint()
+    let a = [1, 2, 3, 4]
+    let b = std::array::push(a, 5)
+    let scope = std::wasm::heap_scope_begin()
+    let c = std::array::concat(b, b)
+    std::wasm::heap_scope_end(scope)
+    std::wasm::heap_restore(cp)
+    std::wasm::heap_set_limit(1000000)
+    let used = std::wasm::heap_used() - start
+    let n = std::wasm::heap_allocations() + std::wasm::heap_allocated_bytes() + std::wasm::heap_restores() + std::wasm::heap_reclaimed_bytes()
+    let cap = std::wasm::heap_capacity() + std::wasm::heap_limit() + std::wasm::heap_peak_used()
+    std::wasm::heap_reset_counters()
+    used + n + cap + len(c)
+}

@@ -1,0 +1,54 @@
+fn rec(i: int) -> array {
+    sq_rec_enc([Sv::SInt(i), Sv::SText("fila numero {i}")])
+}
+
+fn total(p: SqPg, root: int) -> int {
+    let rows = sqt_t_scan(p, root)
+    let mut t = 0
+    for r in rows {
+        t += r[0] * 31 + len(r[1])
+    }
+    t * 1000 + len(rows)
+}
+
+fn main() {
+    let (p0, e0) = sqp_open(sqio_mem())
+    let mut p = sqp_begin(p0)
+    let (p1, root) = sqt_new_root(p, 13)
+    p = p1
+    let mut i = 1
+    while i <= 500 {
+        p = sqt_t_put(p, root, i, rec(i))
+        i += 1
+    }
+    p = sqp_commit(p, 0)
+    let base = total(p, root)
+    print("base", base, p.npages)
+    let io1 = p.io
+    // fase 1: se cae tras escribir el diario
+    let mut q = sqp_begin(p)
+    i = 1
+    while i <= 500 {
+        q = sqt_t_del(q, root, i)
+        i += 2
+    }
+    q = sqt_t_put(q, root, 9999, rec(9999))
+    let c1 = sqp_commit(q, 1)
+    let (r1, e1) = sqp_open(c1.io)
+    print("fase1", total(r1, root) == base, e1, r1.npages)
+    // fase 2: se cae tras escribir las páginas
+    let c2 = sqp_commit(q, 2)
+    let (r2, e2) = sqp_open(c2.io)
+    print("fase2", total(r2, root) == base, e2, r2.npages, std::bytes::length(r2.io.img) == std::bytes::length(io1.img))
+    // completo
+    let c3 = sqp_commit(q, 0)
+    let (r3, e3) = sqp_open(c3.io)
+    print("fase3", total(r3, root) == total(c3, root), total(r3, root) != base)
+    std::fs::write_bytes("/tmp/sq_r2.db", r2.io.img)
+    std::fs::write_bytes("/tmp/sq_r3.db", r3.io.img)
+    // rollback
+    let mut z = sqp_begin(r3)
+    z = sqt_t_put(z, root, 77777, rec(77777))
+    let zr = sqp_rollback(z)
+    print("rollback", total(zr, root) == total(r3, root))
+}

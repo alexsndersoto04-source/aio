@@ -1,0 +1,523 @@
+// std::net TCP (tcp_listen, tcp_local_addr, tcp_accept, tcp_connect, tcp_read,
+// tcp_write, tcp_set_timeout, tcp_close) sobre sockets TCP reales (llamadas
+// al sistema de Linux), con la semántica de las instrucciones Tcp* de la VM
+// (crates/titan_vm/src/lib.rs).
+//
+// - Direcciones como ToSocketAddrs de Rust para &str: primero SocketAddr
+//   numérico ("127.0.0.1:80", "[::1]:80"); si no, se parte por el último ':'
+//   ("invalid socket address", "invalid port value") y el nombre pasa por
+//   getaddrinfo de glibc (std_net_gai.titan), como `std::net::http_get`.
+// - bind: socket + SO_REUSEADDR + bind + listen(128), probando cada dirección
+//   y devolviendo el último error; connect: igual con nt_connect_one.
+// - Los handles son objetos de etiqueta 16 (TcpListener) y 17 (TcpStream), con
+//   un contador de ids común desde 1 (la VM usa el mismo contador para otros
+//   sockets) y un cupo de 1024 handles de red vivos
+//   ("runtime network handle limit exceeded (1024)"). Como en la VM, soltar el
+//   valor no cierra nada: solo tcp_close.
+// - Esperas (accept/read/write): poll(2) y después la llamada. Con tareas
+//   (std_task.titan) la espera es cooperativa: mientras una tarea espera un
+//   descriptor las demás siguen y, si todas esperan, se duerme en un solo
+//   poll. `tcp_set_timeout` da el plazo de lectura/escritura: al vencer, el
+//   mismo error que SO_RCVTIMEO ("Resource temporarily unavailable (os error 11)").
+//   connect y la resolución de nombres son bloqueantes (paran a las demás tareas).
+//
+// Estado (globals + 3560 → bloque T): +0 siguiente id, +8 handles vivos, +16 cupo,
+//   +64 + 40*i entradas {+0 id (0 libre), +8 clase (1 listener, 2 stream, 3 flujo TLS, 4 configuración TLS),
+//   +16 fd, +24 plazo en ms (0 ninguno), +32 estado TLS / configuración (clases 3 y 4)}
+// Prefijo tcp_
+
+const TCP_SLOT: int = 3560
+const TCP_MAX_HANDLES: int = 1024
+const TCP_TABLE: int = 64
+const TCP_ENTRY: int = 40
+const TCP_MAX_READ: int = 16777216
+
+fn tcp_st() -> int {
+    let g = std::raw::globals() + TCP_SLOT
+    let mut s = std::raw::load(g)
+    if s == 0 {
+        s = rt_alloc_zero(TCP_TABLE + TCP_ENTRY * TCP_MAX_HANDLES)
+        std::raw::store(s, 1)
+        std::raw::store(s + 16, TCP_MAX_HANDLES)
+        std::raw::store(g, s)
+    }
+    s
+}
+
+// Modo «blando» de tcp_resolve (cabecera +32): devuelve 0 en vez de lanzar el error de resolución.
+fn tcp_soft() -> bool {
+    std::raw::load(tcp_st() + 32) != 0
+}
+
+// Cupo de handles de red (ResourceQuota::reserve): falla antes de hacer nada.
+fn tcp_reserve() {
+    let st = tcp_st()
+    if std::raw::load(st + 8) >= std::raw::load(st + 16) {
+        rt_fatal(rt_concat(rt_concat("runtime network handle limit exceeded (", rt_int_to_str(std::raw::load(st + 16))), ")"))
+    }
+}
+
+// Registra un descriptor y devuelve su id.
+fn tcp_register(kind: int, fd: int) -> int {
+    let st = tcp_st()
+    let mut i = 0
+    while std::raw::load(st + TCP_TABLE + TCP_ENTRY * i) != 0 {
+        i += 1
+    }
+    let e = st + TCP_TABLE + TCP_ENTRY * i
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    std::raw::store(e, id)
+    std::raw::store(e + 8, kind)
+    std::raw::store(e + 16, fd)
+    std::raw::store(e + 24, 0)
+    std::raw::store(e + 32, 0)
+    std::raw::store(st + 8, std::raw::load(st + 8) + 1)
+    id
+}
+
+// Entrada con ese id (de cualquier clase), o 0.
+fn tcp_entry(id: int) -> int {
+    let st = tcp_st()
+    let mut i = 0
+    while i < TCP_MAX_HANDLES {
+        let e = st + TCP_TABLE + TCP_ENTRY * i
+        if std::raw::load(e) == id {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+fn tcp_release(e: int) {
+    let st = tcp_st()
+    std::raw::store(e, 0)
+    std::raw::store(st + 8, std::raw::load(st + 8) - 1)
+}
+
+fn tcp_type_error(message: string) {
+    rt_fatal(rt_concat("type error: ", message))
+}
+
+fn tcp_expect_str(v: any, message: string) {
+    if std::raw::tag(v) != 5 {
+        tcp_type_error(message)
+    }
+}
+
+fn tcp_handle_id(v: any) -> int {
+    std::raw::load(std::raw::bits(v) + 8)
+}
+
+// Entrada de un listener/stream válido; si no hay handle de esa clase, el error de la VM.
+fn tcp_stream_entry(v: any, what: string) -> int {
+    if std::raw::tag(v) != 17 {
+        tcp_type_error(rt_concat(what, " requires a stream"))
+    }
+    let id = tcp_handle_id(v)
+    let e = tcp_entry(id)
+    if e == 0 || std::raw::load(e + 8) != 2 {
+        tcp_type_error(rt_concat("unknown TCP stream ", rt_int_to_str(id)))
+    }
+    e
+}
+
+fn tcp_listener_entry(v: any, what: string) -> int {
+    if std::raw::tag(v) != 16 {
+        tcp_type_error(rt_concat(what, " requires a listener"))
+    }
+    let e = tcp_entry(tcp_handle_id(v))
+    if e == 0 || std::raw::load(e + 8) != 1 {
+        tcp_type_error("unknown TCP listener")
+    }
+    e
+}
+
+// Espera hasta que `fd` esté listo para `events` (1 leer, 4 escribir) o pasen
+// `ms` (-1 = sin plazo). 1 listo, 0 plazo vencido. Sin tareas, un poll; con
+// tareas, cede el turno a las demás.
+fn tcp_wait(fd: int, events: int, ms: int) -> int {
+    let s = std::raw::load(std::raw::globals() + TK_SLOT)
+    if s == 0 {
+        let mut wait = ms
+        if wait > 2147483647 {
+            wait = 2147483647
+        }
+        if sv_poll(fd, events, wait) == 0 {
+            return 0
+        }
+        return 1
+    }
+    let mut deadline = -1
+    if ms >= 0 {
+        deadline = tk_now() + ms
+    }
+    loop {
+        if sv_poll(fd, events, 0) != 0 {
+            std::raw::store(s + 24, 0)
+            return 1
+        }
+        if deadline >= 0 && tk_now() >= deadline {
+            std::raw::store(s + 24, 0)
+            return 0
+        }
+        let cur = std::raw::load(s)
+        std::raw::store(cur + 120, fd + 1)
+        std::raw::store(cur + 128, events)
+        tk_idle(s, deadline)
+    }
+    0
+}
+
+// ------------------------------------------------------------ direcciones
+
+// Puerto como u16::from_str: dígitos (con un '+' inicial opcional), <= 65535.
+fn tcp_port(p: int, n: int) -> int {
+    if n > 1 && std::raw::load8(p) == 43 {
+        return sv_parse_port(p + 1, n - 1)
+    }
+    sv_parse_port(p, n)
+}
+
+fn tcp_last_colon(p: int, n: int) -> int {
+    let mut i = n - 1
+    while i >= 0 {
+        if std::raw::load8(p + i) == 58 {
+            return i
+        }
+        i -= 1
+    }
+    -1
+}
+
+// Direcciones de "host:puerto": bloque {+0 cuántas, +8 + 40*i: {longitud, sockaddr de 32 bytes}}.
+fn tcp_resolve(f: string, addr: any) -> int {
+    let p = rt_bdata(addr)
+    let n = rt_slen(addr)
+    let sa0 = rt_alloc_zero(32)
+    let len0 = sv_sockaddr(p, n, sa0)
+    if len0 > 0 {
+        let blk = rt_alloc_zero(48)
+        std::raw::store(blk, 1)
+        std::raw::store(blk + 8, len0)
+        rt_copy(blk + 16, sa0, 32)
+        rt_free_block(sa0)
+        return blk
+    }
+    rt_free_block(sa0)
+    let colon = tcp_last_colon(p, n)
+    if colon < 0 {
+        if tcp_soft() {
+            return 0
+        }
+        rt_native_fail(f, "invalid socket address")
+    }
+    let port = tcp_port(p + colon + 1, n - colon - 1)
+    if port < 0 {
+        if tcp_soft() {
+            return 0
+        }
+        rt_native_fail(f, "invalid port value")
+    }
+    let hp = p
+    let hn = colon
+    let a = rt_alloc_zero(16)
+    if nt_rust_v4(hp, hn, a) {
+        let blk = rt_alloc_zero(48)
+        std::raw::store(blk, 1)
+        std::raw::store(blk + 8, 16)
+        nt_sin(blk + 16, port, a)
+        rt_free_block(a)
+        return blk
+    }
+    if nt_rust_v6(hp, hn, a) {
+        let blk = rt_alloc_zero(48)
+        std::raw::store(blk, 1)
+        std::raw::store(blk + 8, 28)
+        nt_sin6(blk + 16, port, a, 0, 0)
+        rt_free_block(a)
+        return blk
+    }
+    rt_free_block(a)
+    let mut i = 0
+    while i < hn {
+        if std::raw::load8(hp + i) == 0 {
+            if tcp_soft() {
+                return 0
+            }
+            rt_native_fail(f, "file name contained an unexpected NUL byte")
+        }
+        i += 1
+    }
+    let name = nt_cdup(hp, hn)
+    let res = gi_getaddrinfo(name)
+    rt_free_block(name)
+    let code = std::raw::load(res)
+    if code != 0 {
+        let msg = nt_gai_message(code, std::raw::load(res + 8))
+        rt_free_block(res)
+        if tcp_soft() {
+            // el modo blando deja el texto en la cabecera +40 (lo lee std_mysql.titan)
+            std::raw::store(tcp_st() + 40, std::raw::keep(msg))
+            return 0
+        }
+        rt_native_fail(f, msg)
+    }
+    let count = std::raw::load(res + 16)
+    let mut cap = count
+    if cap == 0 {
+        cap = 1
+    }
+    let blk = rt_alloc_zero(8 + 40 * cap)
+    std::raw::store(blk, count)
+    let mut k = 0
+    while k < count {
+        let e = res + 24 + 40 * k
+        let s = e + 8
+        let d = blk + 8 + 40 * k
+        std::raw::store(d, std::raw::load(e))
+        if std::raw::load8(s) == 2 {
+            nt_sin(d + 8, port, s + 4)
+        } else {
+            nt_sin6(d + 8, port, s + 8, sa_u32(s + 4) & 4294967295, std::raw::load(s + 24) & 4294967295)
+        }
+        k += 1
+    }
+    rt_free_block(res)
+    blk
+}
+
+// ------------------------------------------------------------ operaciones
+
+fn rt_tcp_listen(addr: any) -> any {
+    let f = "std::net::tcp_listen"
+    tcp_expect_str(addr, "tcp_listen requires an address string")
+    tcp_reserve()
+    let blk = tcp_resolve(f, addr)
+    let count = std::raw::load(blk)
+    let mut fd = -1
+    let mut last = 0
+    let mut k = 0
+    while k < count && fd < 0 {
+        let e = blk + 8 + 40 * k
+        let len = std::raw::load(e)
+        let sa = e + 8
+        let s = std::raw::syscall(41, std::raw::load8(sa), 524289, 0, 0, 0, 0)
+        if s < 0 {
+            last = s
+        } else {
+            let one = rt_alloc_zero(8)
+            std::raw::store(one, 1)
+            std::raw::syscall(54, s, 1, 2, one, 4, 0)
+            rt_free_block(one)
+            let b = std::raw::syscall(49, s, sa, len, 0, 0, 0)
+            if b < 0 {
+                last = b
+                std::raw::syscall(3, s, 0, 0, 0, 0, 0)
+            } else {
+                let l = std::raw::syscall(50, s, 128, 0, 0, 0, 0)
+                if l < 0 {
+                    last = l
+                    std::raw::syscall(3, s, 0, 0, 0, 0, 0)
+                } else {
+                    fd = s
+                }
+            }
+        }
+        k += 1
+    }
+    rt_free_block(blk)
+    if fd < 0 {
+        if count == 0 {
+            rt_native_fail(f, "could not resolve to any addresses")
+        }
+        rt_native_fail(f, rt_os_error(0 - last))
+    }
+    tk_handle(16, tcp_register(1, fd), 0)
+}
+
+fn rt_tcp_local_addr(l: any) -> any {
+    let f = "std::net::tcp_local_addr"
+    let e = tcp_listener_entry(l, "tcp_local_addr")
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    std::raw::store(lenp, 32)
+    let r = std::raw::syscall(51, std::raw::load(e + 16), sa, lenp, 0, 0, 0)
+    if r < 0 {
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        rt_native_fail(f, rt_os_error(0 - r))
+    }
+    let out = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    rt_free_block(lenp)
+    out
+}
+
+fn rt_tcp_accept(l: any) -> any {
+    let f = "std::net::tcp_accept"
+    let e = tcp_listener_entry(l, "tcp_accept")
+    tcp_reserve()
+    let lfd = std::raw::load(e + 16)
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    let mut cfd = -1
+    loop {
+        tcp_wait(lfd, 1, -1)
+        std::raw::store(lenp, 32)
+        let r = std::raw::syscall(288, lfd, sa, lenp, 524288, 0, 0)
+        if r >= 0 {
+            cfd = r
+            break
+        }
+        if r == -4 || r == -11 {
+            continue
+        }
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        rt_native_fail(f, rt_os_error(0 - r))
+    }
+    let peer = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    rt_free_block(lenp)
+    let stream = tk_handle(17, tcp_register(2, cfd), 0)
+    let pair = (stream, peer)
+    pair
+}
+
+// Resuelve "host:puerto" y conecta a la primera dirección que responda; devuelve el fd
+// (los errores se notifican con el nombre de función f, como network_error de la VM).
+fn tcp_connect_fd(f: string, addr: any) -> int {
+    tcp_connect_fd_p(f, addr, "")
+}
+
+fn tcp_connect_fd_p(f: string, addr: any, prefix: string) -> int {
+    let blk = tcp_resolve(f, addr)
+    let count = std::raw::load(blk)
+    let mut fd = -1
+    let mut last = 0
+    let mut k = 0
+    while k < count && fd < 0 {
+        let e = blk + 8 + 40 * k
+        let r = nt_connect_one(e + 8, std::raw::load(e))
+        if r >= 0 {
+            fd = r
+        } else {
+            last = r
+        }
+        k += 1
+    }
+    rt_free_block(blk)
+    if fd < 0 {
+        if count == 0 {
+            rt_native_fail(f, rt_concat(prefix, "could not resolve to any addresses"))
+        }
+        rt_native_fail(f, rt_concat(prefix, rt_os_error(0 - last)))
+    }
+    fd
+}
+
+fn rt_tcp_connect(addr: any) -> any {
+    let f = "std::net::tcp_connect"
+    tcp_expect_str(addr, "tcp_connect requires an address string")
+    tcp_reserve()
+    let fd = tcp_connect_fd(f, addr)
+    tk_handle(17, tcp_register(2, fd), 0)
+}
+
+fn tcp_timeout_ms(e: int) -> int {
+    let t = std::raw::load(e + 24)
+    if t == 0 {
+        return -1
+    }
+    t
+}
+
+fn rt_tcp_read(s: any, maximum: any) -> any {
+    let f = "std::net::tcp_read"
+    if std::raw::tag(maximum) != 1 {
+        tcp_type_error("tcp_read maximum must be int")
+    }
+    let mut max = std::raw::bits(maximum)
+    if max < 0 {
+        tcp_type_error("tcp_read maximum must be nonnegative")
+    }
+    if max > TCP_MAX_READ {
+        max = TCP_MAX_READ
+    }
+    let e = tcp_stream_entry(s, "tcp_read")
+    // Con maximum 0 Rust también llama a recv: espera a que haya datos (o fin)
+    // y devuelve 0 bytes sin consumir nada.
+    let fd = std::raw::load(e + 16)
+    let buf = rt_alloc(max + 1)
+    loop {
+        if tcp_wait(fd, 1, tcp_timeout_ms(e)) == 0 {
+            rt_free_block(buf)
+            rt_native_fail(f, rt_os_error(11))
+        }
+        let r = std::raw::syscall(0, fd, buf, max, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            rt_free_block(buf)
+            rt_native_fail(f, rt_os_error(0 - r))
+        }
+        let out = rt_bytes_from(buf, r)
+        rt_free_block(buf)
+        return out
+    }
+    nil
+}
+
+fn rt_tcp_write(s: any, data: any) -> any {
+    let f = "std::net::tcp_write"
+    let t = std::raw::tag(data)
+    if t != 5 && t != 6 {
+        tcp_type_error("tcp_write requires bytes or string")
+    }
+    let e = tcp_stream_entry(s, "tcp_write")
+    let fd = std::raw::load(e + 16)
+    let p = rt_bdata(data)
+    let n = rt_slen(data)
+    let mut done = 0
+    while done < n {
+        if tcp_wait(fd, 4, tcp_timeout_ms(e)) == 0 {
+            rt_native_fail(f, rt_os_error(11))
+        }
+        let w = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            rt_native_fail(f, rt_os_error(0 - w))
+        }
+        done += w
+    }
+    n
+}
+
+fn rt_tcp_set_timeout(s: any, ms: any) -> any {
+    let wait = tk_timeout(ms)
+    let e = tcp_stream_entry(s, "tcp_set_timeout")
+    if wait == 0 {
+        rt_native_fail("std::net::tcp_set_timeout", "cannot set a 0 duration timeout")
+    }
+    std::raw::store(e + 24, wait)
+    nil
+}
+
+fn rt_tcp_close(v: any) -> any {
+    let t = std::raw::tag(v)
+    if t != 16 && t != 17 {
+        tcp_type_error("tcp_close requires a stream or listener")
+    }
+    let e = tcp_entry(tcp_handle_id(v))
+    if e == 0 || std::raw::load(e + 8) != t - 15 {
+        return false
+    }
+    std::raw::syscall(3, std::raw::load(e + 16), 0, 0, 0, 0, 0)
+    tcp_release(e)
+    true
+}

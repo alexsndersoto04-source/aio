@@ -1,0 +1,2493 @@
+// std::postgres nativo: cliente del protocolo PostgreSQL v3 (consulta extendida, autenticación
+// cleartext/md5/SCRAM-SHA-256, SSLRequest + TLS de std_tls.titan) con la semántica de
+// crates/titan_postgres (que usa el crate `postgres`): siempre sentencias preparadas con
+// parámetros tipados, filas como mapas, transacciones, migraciones y pool.
+// Prefijo pq_ (las funciones rt_pg_* son las instrucciones Postgres* y Db*).
+//
+// Conexión (PQ_SIZE bytes): PQ_FD socket, PQ_TLS estado TLS (0 si va en claro), PQ_IN búfer de
+// entrada (tb_ de std_tls), PQ_TX transacción abierta, PQ_PID/PQ_SECRET clave de cancelación,
+// PQ_CLOSED, PQ_ID id del handle, PQ_POOL pool al que vuelve al soltarla (0 si es directa),
+// PQ_BODY/PQ_BLEN cuerpo del último mensaje, PQ_ADDR "host:port" propio, PQ_QUIET modo sin errores.
+// Pool: PL_URL (string propio), PL_MAX, PL_TLS, PL_TOTAL, PL_CLOSED, PL_NIDLE y PL_IDLE (64 conexiones).
+// Registro de handles: tabla de 256 entradas de 24 bytes {id, clase 4 conexión / 5 pool, puntero}
+// colgada de tcp_st()+24; los ids salen del mismo contador que los sockets, como en la VM.
+
+const PQ_FD: int = 0
+const PQ_TLS: int = 8
+const PQ_IN: int = 16
+const PQ_TX: int = 24
+const PQ_PID: int = 32
+const PQ_SECRET: int = 40
+const PQ_CLOSED: int = 48
+const PQ_ID: int = 56
+const PQ_POOL: int = 64
+const PQ_BODY: int = 72
+const PQ_BLEN: int = 80
+const PQ_ADDR: int = 88
+const PQ_QUIET: int = 96
+const PQ_UNIX: int = 104
+const PQ_PORT: int = 112
+const PQ_SIZE: int = 128
+
+const PL_URL: int = 0
+const PL_MAX: int = 8
+const PL_TLS: int = 16
+const PL_TOTAL: int = 24
+const PL_CLOSED: int = 32
+const PL_NIDLE: int = 40
+const PL_IDLE: int = 48
+const PL_SIZE: int = 576
+
+const PQ_MAX_HANDLES: int = 256
+
+fn pq_gs(p: int, off: int) -> int {
+    std::raw::load(p + off)
+}
+
+fn pq_ss(p: int, off: int, v: int) {
+    std::raw::store(p + off, v)
+}
+
+fn pq_str(p: int, n: int) -> any {
+    let sp = rt_str_alloc(n)
+    rt_copy(sp + 16, p, n)
+    rt_sval(sp)
+}
+
+// Copia propia (nunca se libera) de un string, devuelta como puntero al objeto.
+fn pq_own(s: any) -> int {
+    let n = rt_slen(s)
+    let sp = rt_str_alloc(n)
+    rt_copy(sp + 16, rt_bdata(s), n)
+    sp
+}
+
+fn pq_be16(p: int) -> int {
+    std::raw::shl(std::raw::load8(p), 8) | std::raw::load8(p + 1)
+}
+
+fn pq_be32(p: int) -> int {
+    std::raw::shl(std::raw::load8(p), 24) | std::raw::shl(std::raw::load8(p + 1), 16) | std::raw::shl(std::raw::load8(p + 2), 8) | std::raw::load8(p + 3)
+}
+
+fn pq_be64(p: int) -> int {
+    std::raw::shl(pq_be32(p), 32) | pq_be32(p + 4)
+}
+
+fn pq_type_error(message: any) {
+    rt_fatal(rt_concat("type error: ", message))
+}
+
+fn pq_fail(message: any) {
+    rt_native_fail("std::postgres", message)
+}
+
+// ------------------------------------------------------------ MD5 (autenticación md5)
+
+fn pq_md5_k() -> array {
+    [
+        3614090360,
+        3905402710,
+        606105819,
+        3250441966,
+        4118548399,
+        1200080426,
+        2821735955,
+        4249261313,
+        1770035416,
+        2336552879,
+        4294925233,
+        2304563134,
+        1804603682,
+        4254626195,
+        2792965006,
+        1236535329,
+        4129170786,
+        3225465664,
+        643717713,
+        3921069994,
+        3593408605,
+        38016083,
+        3634488961,
+        3889429448,
+        568446438,
+        3275163606,
+        4107603335,
+        1163531501,
+        2850285829,
+        4243563512,
+        1735328473,
+        2368359562,
+        4294588738,
+        2272392833,
+        1839030562,
+        4259657740,
+        2763975236,
+        1272893353,
+        4139469664,
+        3200236656,
+        681279174,
+        3936430074,
+        3572445317,
+        76029189,
+        3654602809,
+        3873151461,
+        530742520,
+        3299628645,
+        4096336452,
+        1126891415,
+        2878612391,
+        4237533241,
+        1700485571,
+        2399980690,
+        4293915773,
+        2240044497,
+        1873313359,
+        4264355552,
+        2734768916,
+        1309151649,
+        4149444226,
+        3174756917,
+        718787259,
+        3951481745
+    ]
+}
+
+fn pq_md5_s() -> array {
+    [
+        7,
+        12,
+        17,
+        22,
+        7,
+        12,
+        17,
+        22,
+        7,
+        12,
+        17,
+        22,
+        7,
+        12,
+        17,
+        22,
+        5,
+        9,
+        14,
+        20,
+        5,
+        9,
+        14,
+        20,
+        5,
+        9,
+        14,
+        20,
+        5,
+        9,
+        14,
+        20,
+        4,
+        11,
+        16,
+        23,
+        4,
+        11,
+        16,
+        23,
+        4,
+        11,
+        16,
+        23,
+        4,
+        11,
+        16,
+        23,
+        6,
+        10,
+        15,
+        21,
+        6,
+        10,
+        15,
+        21,
+        6,
+        10,
+        15,
+        21,
+        6,
+        10,
+        15,
+        21
+    ]
+}
+
+// MD5 de n bytes en src; los 16 bytes del resumen quedan en out.
+fn pq_md5(src: int, n: int, out: int) {
+    let kt = hs_table(pq_md5_k())
+    let st = hs_table(pq_md5_s())
+    let total = ((n + 8) / 64 + 1) * 64
+    let buf = rt_alloc_zero(total + 8)
+    rt_copy(buf, src, n)
+    std::raw::store8(buf + n, 128)
+    let bits = n * 8
+    let mut i = 0
+    while i < 8 {
+        std::raw::store8(buf + total - 8 + i, std::raw::shr(bits, 8 * i) & 255)
+        i += 1
+    }
+    let m = 4294967295
+    let mut a0 = 1732584193
+    let mut b0 = 4023233417
+    let mut c0 = 2562383102
+    let mut d0 = 271733878
+    let mut off = 0
+    while off < total {
+        let mut a = a0
+        let mut b = b0
+        let mut c = c0
+        let mut d = d0
+        let mut r = 0
+        while r < 64 {
+            let mut f = 0
+            let mut g = 0
+            if r < 16 {
+                f = (b & c) | ((b ^ m) & d)
+                g = r
+            } else if r < 32 {
+                f = (d & b) | ((d ^ m) & c)
+                g = (5 * r + 1) % 16
+            } else if r < 48 {
+                f = b ^ c ^ d
+                g = (3 * r + 5) % 16
+            } else {
+                f = c ^ ((d ^ m) | b)
+                g = (7 * r) % 16
+            }
+            f = f & m
+            let w = std::raw::load8(buf + off + 4 * g) | std::raw::shl(std::raw::load8(buf + off + 4 * g + 1), 8) | std::raw::shl(std::raw::load8(buf + off + 4 * g + 2), 16) | std::raw::shl(std::raw::load8(buf + off + 4 * g + 3), 24)
+            f = (f + a + std::raw::load(kt + 8 * r) + w) & m
+            a = d
+            d = c
+            c = b
+            let sh = std::raw::load(st + 8 * r)
+            b = (b + (((f * std::raw::shl(1, sh)) & m) | std::raw::shr(f, 32 - sh))) & m
+            r += 1
+        }
+        a0 = (a0 + a) & m
+        b0 = (b0 + b) & m
+        c0 = (c0 + c) & m
+        d0 = (d0 + d) & m
+        off += 64
+    }
+    let mut j = 0
+    while j < 4 {
+        let v = a0
+        let mut w = 0
+        if j == 1 {
+            w = b0
+        } else if j == 2 {
+            w = c0
+        } else if j == 3 {
+            w = d0
+        }
+        let mut x = v
+        if j > 0 {
+            x = w
+        }
+        let mut q = 0
+        while q < 4 {
+            std::raw::store8(out + 4 * j + q, std::raw::shr(x, 8 * q) & 255)
+            q += 1
+        }
+        j += 1
+    }
+    rt_free_block(buf)
+    rt_free_block(kt)
+    rt_free_block(st)
+}
+
+fn pq_hex(p: int, n: int) -> any {
+    let sp = rt_str_alloc(2 * n)
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        let hi = std::raw::shr(b, 4)
+        let lo = b & 15
+        let mut c1 = 48 + hi
+        if hi > 9 {
+            c1 = 87 + hi
+        }
+        let mut c2 = 48 + lo
+        if lo > 9 {
+            c2 = 87 + lo
+        }
+        std::raw::store8(sp + 16 + 2 * i, c1)
+        std::raw::store8(sp + 16 + 2 * i + 1, c2)
+        i += 1
+    }
+    rt_sval(sp)
+}
+
+// ------------------------------------------------------------ E/S de la conexión
+
+fn pq_io_fail(c: int, text: any) {
+    pq_ss(c, PQ_CLOSED, 1)
+    if pq_gs(c, PQ_QUIET) != 0 {
+        return
+    }
+    pq_fail(text)
+}
+
+fn pq_send(c: int, p: int, n: int) {
+    if pq_gs(c, PQ_CLOSED) != 0 {
+        pq_io_fail(c, "connection closed")
+        return
+    }
+    let tls = pq_gs(c, PQ_TLS)
+    if tls != 0 {
+        tl_write_all(tls, 23, p, n)
+        return
+    }
+    let fd = pq_gs(c, PQ_FD)
+    let mut done = 0
+    while done < n {
+        if tcp_wait(fd, 4, -1) == 0 {
+            continue
+        }
+        let w = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            pq_io_fail(c, "error communicating with the server")
+            return
+        }
+        done += w
+    }
+}
+
+// Deja en el búfer de entrada al menos n bytes; false si el servidor cerró o hubo error en modo quieto.
+fn pq_fill(c: int, n: int) -> bool {
+    let inb = pq_gs(c, PQ_IN)
+    let tls = pq_gs(c, PQ_TLS)
+    let fd = pq_gs(c, PQ_FD)
+    let tmp = rt_alloc(16400)
+    while std::raw::load(inb + 8) < n {
+        if pq_gs(c, PQ_CLOSED) != 0 {
+            rt_free_block(tmp)
+            pq_io_fail(c, "connection closed")
+            return false
+        }
+        let mut r = 0
+        if tls != 0 {
+            r = tl_read_app(tls, tmp, 16384)
+        } else {
+            if tcp_wait(fd, 1, -1) == 0 {
+                continue
+            }
+            r = std::raw::syscall(0, fd, tmp, 16384, 0, 0, 0)
+            if r == -4 {
+                continue
+            }
+            if r < 0 {
+                rt_free_block(tmp)
+                pq_io_fail(c, "error communicating with the server")
+                return false
+            }
+        }
+        if r == 0 {
+            rt_free_block(tmp)
+            pq_io_fail(c, "connection closed")
+            return false
+        }
+        tb_bytes(inb, tmp, r)
+    }
+    rt_free_block(tmp)
+    true
+}
+
+// Siguiente mensaje del servidor (se saltan avisos, ParameterStatus y notificaciones): devuelve su
+// tipo; el cuerpo queda en PQ_BODY/PQ_BLEN hasta la siguiente llamada. -1 si falló en modo quieto.
+fn pq_recv(c: int) -> int {
+    loop {
+        if !pq_fill(c, 5) {
+            return -1
+        }
+        let inb = pq_gs(c, PQ_IN)
+        let d = std::raw::load(inb)
+        let t = std::raw::load8(d)
+        let len = pq_be32(d + 1)
+        if len < 4 || len > 1073741824 {
+            pq_io_fail(c, "error communicating with the server")
+            return -1
+        }
+        if !pq_fill(c, 1 + len) {
+            return -1
+        }
+        let d2 = std::raw::load(inb)
+        let old = pq_gs(c, PQ_BODY)
+        if old != 0 {
+            rt_free_block(old)
+        }
+        let body = rt_alloc(len + 8)
+        rt_copy(body, d2 + 5, len - 4)
+        pq_ss(c, PQ_BODY, body)
+        pq_ss(c, PQ_BLEN, len - 4)
+        tb_drop(inb, 1 + len)
+        if t != 78 && t != 83 && t != 65 {
+            return t
+        }
+    }
+    -1
+}
+
+// ------------------------------------------------------------ constructor de mensajes
+
+fn pq_begin(typ: int) -> int {
+    let b = tb_new(256)
+    if typ != 0 {
+        tb_u8(b, typ)
+    }
+    b
+}
+
+fn pq_u32(b: int, v: int) {
+    tb_u8(b, std::raw::shr(v, 24))
+    tb_u8(b, std::raw::shr(v, 16))
+    tb_u8(b, std::raw::shr(v, 8))
+    tb_u8(b, v)
+}
+
+fn pq_cstr(b: int, s: any) {
+    tb_bytes(b, rt_bdata(s), rt_slen(s))
+    tb_u8(b, 0)
+}
+
+// Abre un mensaje con tipo (1 byte) y reserva su longitud; devuelve la posición de la longitud.
+fn pq_open(b: int, typ: int) -> int {
+    tb_u8(b, typ)
+    let pos = std::raw::load(b + 8)
+    pq_u32(b, 0)
+    pos
+}
+
+fn pq_close(b: int, pos: int) {
+    let v = std::raw::load(b + 8) - pos
+    let d = std::raw::load(b) + pos
+    std::raw::store8(d, std::raw::shr(v, 24) & 255)
+    std::raw::store8(d + 1, std::raw::shr(v, 16) & 255)
+    std::raw::store8(d + 2, std::raw::shr(v, 8) & 255)
+    std::raw::store8(d + 3, v & 255)
+}
+
+fn pq_flush(c: int, b: int) {
+    pq_send(c, std::raw::load(b), std::raw::load(b + 8))
+    tb_free(b)
+}
+
+// ------------------------------------------------------------ errores del servidor
+
+// ErrorResponse (cuerpo en PQ_BODY) como db_detail de titan_postgres.
+fn pq_error_text(c: int) -> any {
+    let p = pq_gs(c, PQ_BODY)
+    let n = pq_gs(c, PQ_BLEN)
+    let mut msg = ""
+    let mut code = ""
+    let mut detail = ""
+    let mut hint = ""
+    let mut hasd = false
+    let mut hash = false
+    let mut pos = ""
+    let mut ipos = ""
+    let mut iq = ""
+    let mut i = 0
+    while i < n {
+        let f = std::raw::load8(p + i)
+        if f == 0 {
+            break
+        }
+        i += 1
+        let mut j = i
+        while j < n && std::raw::load8(p + j) != 0 {
+            j += 1
+        }
+        let v = pq_str(p + i, j - i)
+        if f == 77 {
+            msg = v
+        } else if f == 67 {
+            code = v
+        } else if f == 68 {
+            detail = v
+            hasd = true
+        } else if f == 72 {
+            hint = v
+            hash = true
+        } else if f == 80 {
+            pos = v
+        } else if f == 112 {
+            ipos = v
+        } else if f == 113 {
+            iq = v
+        }
+        i = j + 1
+    }
+    let mut text = rt_concat(rt_concat(rt_concat(msg, " ["), code), "]")
+    if hasd {
+        text = rt_concat(rt_concat(text, " | detalle: "), detail)
+    }
+    if hash {
+        text = rt_concat(rt_concat(text, " | pista: "), hint)
+    }
+    if rt_slen(pos) > 0 {
+        text = rt_concat(rt_concat(rt_concat(text, " | posición Original("), pos), ")")
+    } else if rt_slen(ipos) > 0 {
+        text = rt_concat(rt_concat(rt_concat(text, " | posición Internal { position: "), ipos), ", query: ")
+        text = rt_concat(rt_concat(text, rt_debug_str(rt_bdata(iq), rt_slen(iq))), " }")
+    }
+    text
+}
+
+// ------------------------------------------------------------ autenticación
+
+fn pq_hmac(key: int, kl: int, data: int, dl: int) -> int {
+    hs_hmac_raw(1, 64, key, kl, data, dl)
+}
+
+fn pq_password_msg(c: int, s: any) {
+    let b = pq_begin(0)
+    let pos = pq_open(b, 112)
+    pq_cstr(b, s)
+    pq_close(b, pos)
+    pq_flush(c, b)
+}
+
+// PBKDF2-HMAC-SHA256 de un bloque (32 bytes); devuelve el puntero.
+fn pq_pbkdf2(pw: any, salt: any, iters: int) -> int {
+    let sl = rt_slen(salt)
+    let buf = rt_alloc(sl + 8)
+    rt_copy(buf, rt_bdata(salt), sl)
+    std::raw::store8(buf + sl, 0)
+    std::raw::store8(buf + sl + 1, 0)
+    std::raw::store8(buf + sl + 2, 0)
+    std::raw::store8(buf + sl + 3, 1)
+    let mut u = pq_hmac(rt_bdata(pw), rt_slen(pw), buf, sl + 4)
+    rt_free_block(buf)
+    let acc = rt_alloc(40)
+    rt_copy(acc, u, 32)
+    let mut i = 1
+    while i < iters {
+        let nu = pq_hmac(rt_bdata(pw), rt_slen(pw), u, 32)
+        rt_free_block(u)
+        u = nu
+        let mut k = 0
+        while k < 32 {
+            std::raw::store8(acc + k, std::raw::load8(acc + k) ^ std::raw::load8(u + k))
+            k += 1
+        }
+        i += 1
+    }
+    rt_free_block(u)
+    acc
+}
+
+fn pq_scram_field(s: any, key: int) -> any {
+    // Valor del atributo `key=` de una lista separada por comas.
+    let p = rt_bdata(s)
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        let mut j = i
+        while j < n && std::raw::load8(p + j) != 44 {
+            j += 1
+        }
+        if j - i >= 2 && std::raw::load8(p + i) == key && std::raw::load8(p + i + 1) == 61 {
+            return pq_str(p + i + 2, j - i - 2)
+        }
+        i = j + 1
+    }
+    ""
+}
+
+fn pq_auth_error(c: int, text: any) -> any {
+    pq_ss(c, PQ_CLOSED, 1)
+    std::raw::syscall(3, pq_gs(c, PQ_FD), 0, 0, 0, 0, 0)
+    text
+}
+
+// SCRAM-SHA-256 (RFC 5802/7677) sin vinculación de canal. "" si todo fue bien.
+fn pq_scram(c: int, password: any, hasp: bool) -> any {
+    if !hasp {
+        return "invalid configuration"
+    }
+    let rnd = cr_random(18)
+    let cnonce = std__encoding__base64_encode(rnd)
+    let first_bare = rt_concat("n=,r=", cnonce)
+    let first = rt_concat("n,,", first_bare)
+    let b = pq_begin(0)
+    let pos = pq_open(b, 112)
+    pq_cstr(b, "SCRAM-SHA-256")
+    pq_u32(b, rt_slen(first))
+    tb_bytes(b, rt_bdata(first), rt_slen(first))
+    pq_close(b, pos)
+    pq_flush(c, b)
+    let t = pq_recv(c)
+    if t == 69 {
+        return pq_error_text(c)
+    }
+    if t != 82 || pq_be32(pq_gs(c, PQ_BODY)) != 11 {
+        return "authentication error"
+    }
+    let sfirst = pq_str(pq_gs(c, PQ_BODY) + 4, pq_gs(c, PQ_BLEN) - 4)
+    let rnonce = pq_scram_field(sfirst, 114)
+    let salt64 = pq_scram_field(sfirst, 115)
+    let it = pq_scram_field(sfirst, 105)
+    if rt_slen(rnonce) < rt_slen(cnonce) || rt_slen(salt64) == 0 || rt_slen(it) == 0 {
+        return "authentication error"
+    }
+    let mut iters = 0
+    let mut ii = 0
+    while ii < rt_slen(it) {
+        iters = iters * 10 + (std::raw::load8(rt_bdata(it) + ii) - 48)
+        ii += 1
+    }
+    let salt = std__encoding__base64_decode(salt64)
+    let salted = pq_pbkdf2(password, salt, iters)
+    let ckey = pq_hmac(salted, 32, rt_bdata("Client Key"), 10)
+    let stored = hs_sha256(ckey, 32)
+    let without = rt_concat("c=biws,r=", rnonce)
+    let amsg = rt_concat(rt_concat(rt_concat(rt_concat(first_bare, ","), sfirst), ","), without)
+    let csig = pq_hmac(stored, 32, rt_bdata(amsg), rt_slen(amsg))
+    let proof = rt_alloc(40)
+    let mut k = 0
+    while k < 32 {
+        std::raw::store8(proof + k, std::raw::load8(ckey + k) ^ std::raw::load8(csig + k))
+        k += 1
+    }
+    let proof64 = std__encoding__base64_encode(rt_bytes_from(proof, 32))
+    let final = rt_concat(rt_concat(without, ",p="), proof64)
+    let skey = pq_hmac(salted, 32, rt_bdata("Server Key"), 10)
+    let ssig = pq_hmac(skey, 32, rt_bdata(amsg), rt_slen(amsg))
+    let expect = rt_concat("v=", std__encoding__base64_encode(rt_bytes_from(ssig, 32)))
+    rt_free_block(salted)
+    rt_free_block(ckey)
+    rt_free_block(stored)
+    rt_free_block(csig)
+    rt_free_block(proof)
+    rt_free_block(skey)
+    rt_free_block(ssig)
+    let b2 = pq_begin(0)
+    let pos2 = pq_open(b2, 112)
+    tb_bytes(b2, rt_bdata(final), rt_slen(final))
+    pq_close(b2, pos2)
+    pq_flush(c, b2)
+    let t2 = pq_recv(c)
+    if t2 == 69 {
+        return pq_error_text(c)
+    }
+    if t2 != 82 || pq_be32(pq_gs(c, PQ_BODY)) != 12 {
+        return "authentication error"
+    }
+    let sfinal = pq_str(pq_gs(c, PQ_BODY) + 4, pq_gs(c, PQ_BLEN) - 4)
+    if !rt_str_eq(sfinal, expect) {
+        return "authentication error"
+    }
+    ""
+}
+
+// ------------------------------------------------------------ configuración (URL o clave=valor)
+
+fn pq_hexval(b: int) -> int {
+    if b >= 48 && b <= 57 {
+        return b - 48
+    }
+    if b >= 97 && b <= 102 {
+        return b - 87
+    }
+    if b >= 65 && b <= 70 {
+        return b - 55
+    }
+    -1
+}
+
+fn pq_pct(p: int, n: int) -> any {
+    let sp = rt_str_alloc(n)
+    let mut o = 0
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        if b == 37 && i + 2 < n + 0 && pq_hexval(std::raw::load8(p + i + 1)) >= 0 && pq_hexval(std::raw::load8(p + i + 2)) >= 0 {
+            std::raw::store8(sp + 16 + o, pq_hexval(std::raw::load8(p + i + 1)) * 16 + pq_hexval(std::raw::load8(p + i + 2)))
+            i += 3
+        } else if b == 43 {
+            std::raw::store8(sp + 16 + o, 43)
+            i += 1
+        } else {
+            std::raw::store8(sp + 16 + o, b)
+            i += 1
+        }
+        o += 1
+    }
+    std::raw::store(sp + 8, o)
+    rt_sval(sp)
+}
+
+fn pq_find(p: int, from: int, to: int, ch: int) -> int {
+    let mut i = from
+    while i < to {
+        if std::raw::load8(p + i) == ch {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Guarda una pareja clave=valor en la configuración (mapa).
+fn pq_cfg_set(cfg: any, key: any, value: any) -> any {
+    std__map__insert(cfg, key, value)
+}
+
+fn pq_parse_url(url: any) -> any {
+    let p = rt_bdata(url)
+    let n = rt_slen(url)
+    let mut cfg = std::map::new()
+    let mut i = 0
+    if n >= 13 && rt_bytes_at(url, 0, "postgresql://") {
+        i = 13
+    } else {
+        i = 11
+    }
+    let q = pq_find(p, i, n, 63)
+    let mut end = n
+    if q >= 0 {
+        end = q
+    }
+    let slash = pq_find(p, i, end, 47)
+    let mut aend = end
+    if slash >= 0 {
+        aend = slash
+        let dbn = pq_pct(p + slash + 1, end - slash - 1)
+        if rt_slen(dbn) > 0 {
+            cfg = pq_cfg_set(cfg, "dbname", dbn)
+        }
+    }
+    // userinfo: hasta la última arroba.
+    let mut at = -1
+    let mut k = i
+    while k < aend {
+        if std::raw::load8(p + k) == 64 {
+            at = k
+        }
+        k += 1
+    }
+    let mut hs = i
+    if at >= 0 {
+        let colon = pq_find(p, i, at, 58)
+        if colon >= 0 {
+            cfg = pq_cfg_set(cfg, "user", pq_pct(p + i, colon - i))
+            cfg = pq_cfg_set(cfg, "password", pq_pct(p + colon + 1, at - colon - 1))
+        } else if at > i {
+            cfg = pq_cfg_set(cfg, "user", pq_pct(p + i, at - i))
+        }
+        hs = at + 1
+    }
+    // host[:port] (primer host; IPv6 entre corchetes)
+    let comma = pq_find(p, hs, aend, 44)
+    let mut he = aend
+    if comma >= 0 {
+        he = comma
+    }
+    if he > hs {
+        if std::raw::load8(p + hs) == 91 {
+            let rb = pq_find(p, hs, he, 93)
+            if rb >= 0 {
+                cfg = pq_cfg_set(cfg, "host", pq_pct(p + hs + 1, rb - hs - 1))
+                if rb + 1 < he && std::raw::load8(p + rb + 1) == 58 {
+                    cfg = pq_cfg_set(cfg, "port", pq_pct(p + rb + 2, he - rb - 2))
+                }
+            }
+        } else {
+            let pc = pq_find(p, hs, he, 58)
+            if pc >= 0 {
+                if pc > hs {
+                    cfg = pq_cfg_set(cfg, "host", pq_pct(p + hs, pc - hs))
+                }
+                cfg = pq_cfg_set(cfg, "port", pq_pct(p + pc + 1, he - pc - 1))
+            } else {
+                cfg = pq_cfg_set(cfg, "host", pq_pct(p + hs, he - hs))
+            }
+        }
+    }
+    if q >= 0 {
+        let mut s = q + 1
+        while s <= n {
+            let amp = pq_find(p, s, n, 38)
+            let mut e = n
+            if amp >= 0 {
+                e = amp
+            }
+            if e > s {
+                let eq = pq_find(p, s, e, 61)
+                if eq >= 0 {
+                    cfg = pq_cfg_set(cfg, pq_pct(p + s, eq - s), pq_pct(p + eq + 1, e - eq - 1))
+                }
+            }
+            s = e + 1
+        }
+    }
+    cfg
+}
+
+// "clave=valor clave='valor con espacios'"
+fn pq_parse_kv(text: any) -> any {
+    let p = rt_bdata(text)
+    let n = rt_slen(text)
+    let mut cfg = std::map::new()
+    let mut i = 0
+    while i < n {
+        while i < n && rt_is_space(std::raw::load8(p + i)) {
+            i += 1
+        }
+        if i >= n {
+            break
+        }
+        let ks = i
+        while i < n && std::raw::load8(p + i) != 61 && !rt_is_space(std::raw::load8(p + i)) {
+            i += 1
+        }
+        let key = pq_str(p + ks, i - ks)
+        while i < n && rt_is_space(std::raw::load8(p + i)) {
+            i += 1
+        }
+        if i >= n || std::raw::load8(p + i) != 61 {
+            return "invalid connection string"
+        }
+        i += 1
+        while i < n && rt_is_space(std::raw::load8(p + i)) {
+            i += 1
+        }
+        if i >= n {
+            return "invalid connection string"
+        }
+        let vb = rt_alloc(n + 8)
+        let mut vo = 0
+        if i < n && std::raw::load8(p + i) == 39 {
+            i += 1
+            while i < n && std::raw::load8(p + i) != 39 {
+                if std::raw::load8(p + i) == 92 && i + 1 < n {
+                    i += 1
+                }
+                std::raw::store8(vb + vo, std::raw::load8(p + i))
+                vo += 1
+                i += 1
+            }
+            i += 1
+        } else {
+            while i < n && !rt_is_space(std::raw::load8(p + i)) {
+                if std::raw::load8(p + i) == 92 && i + 1 < n {
+                    i += 1
+                }
+                std::raw::store8(vb + vo, std::raw::load8(p + i))
+                vo += 1
+                i += 1
+            }
+        }
+        cfg = pq_cfg_set(cfg, key, pq_str(vb, vo))
+        rt_free_block(vb)
+    }
+    cfg
+}
+
+fn pq_cfg_get(cfg: any, key: any) -> any {
+    std__map__get(cfg, key)
+}
+
+// ------------------------------------------------------------ conexión
+
+fn pq_conn_new() -> int {
+    let c = rt_alloc_zero(PQ_SIZE)
+    pq_ss(c, PQ_IN, tb_new(4096))
+    pq_ss(c, PQ_FD, -1)
+    c
+}
+
+// Libera los recursos del socket (modo quieto): Terminate y close.
+fn pq_shutdown(c: int) {
+    if pq_gs(c, PQ_CLOSED) == 0 {
+        pq_ss(c, PQ_QUIET, 1)
+        let b = pq_begin(88)
+        pq_u32(b, 4)
+        pq_flush(c, b)
+        pq_ss(c, PQ_CLOSED, 1)
+    }
+    let fd = pq_gs(c, PQ_FD)
+    if fd >= 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        pq_ss(c, PQ_FD, -1)
+    }
+    let tls = pq_gs(c, PQ_TLS)
+    if tls != 0 {
+        tl_state_free(tls)
+        pq_ss(c, PQ_TLS, 0)
+    }
+    let inb = pq_gs(c, PQ_IN)
+    if inb != 0 {
+        tb_free(inb)
+        pq_ss(c, PQ_IN, 0)
+    }
+    let body = pq_gs(c, PQ_BODY)
+    if body != 0 {
+        rt_free_block(body)
+        pq_ss(c, PQ_BODY, 0)
+    }
+}
+
+// Usuario del proceso (getuid + /etc/passwd), el valor por defecto de `user`.
+fn pq_os_user() -> any {
+    let uid = std::raw::syscall(102, 0, 0, 0, 0, 0, 0)
+    let fd = rt_open("/etc/passwd", 524288, 0)
+    if fd < 0 {
+        return rt_int_to_str(uid)
+    }
+    let cap = 65536
+    let buf = rt_alloc(cap + 8)
+    let n = std::raw::syscall(0, fd, buf, cap, 0, 0, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let mut out = rt_int_to_str(uid)
+    let mut i = 0
+    while n > 0 && i < n {
+        let mut e = i
+        while e < n && std::raw::load8(buf + e) != 10 {
+            e += 1
+        }
+        let c1 = pq_find(buf, i, e, 58)
+        if c1 > i {
+            let c2 = pq_find(buf, c1 + 1, e, 58)
+            if c2 >= 0 {
+                let c3 = pq_find(buf, c2 + 1, e, 58)
+                if c3 >= 0 {
+                    let mut v = 0
+                    let mut q = c2 + 1
+                    while q < c3 {
+                        v = v * 10 + (std::raw::load8(buf + q) - 48)
+                        q += 1
+                    }
+                    if v == uid {
+                        out = pq_str(buf + i, c1 - i)
+                        break
+                    }
+                }
+            }
+        }
+        i = e + 1
+    }
+    rt_free_block(buf)
+    out
+}
+
+fn pq_num_ok(v: any, max: int) -> bool {
+    let n = rt_slen(v)
+    if n == 0 {
+        return false
+    }
+    let p = rt_bdata(v)
+    let mut x = 0
+    let mut i = 0
+    while i < n {
+        let d = std::raw::load8(p + i)
+        if d < 48 || d > 57 {
+            return false
+        }
+        x = x * 10 + (d - 48)
+        if x > max {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn pq_in(v: any, a: any, b: any, c: any) -> bool {
+    rt_str_eq(v, a) || rt_str_eq(v, b) || rt_str_eq(v, c)
+}
+
+// Claves y valores que admite tokio_postgres::Config; "" si es válida.
+fn pq_cfg_check(cfg: any) -> any {
+    let keys = std__map__keys(cfg)
+    let n = rt_seq_len(keys)
+    let mut i = 0
+    while i < n {
+        let k = rt_seq_get(keys, i)
+        let v = std__map__get(cfg, k)
+        let mut ok = true
+        if rt_str_eq(k, "user") || rt_str_eq(k, "dbname") || rt_str_eq(k, "host") {
+            ok = rt_slen(v) > 0
+        } else if rt_str_eq(k, "password") || rt_str_eq(k, "options") || rt_str_eq(k, "application_name") || rt_str_eq(k, "hostaddr") {
+            ok = true
+        } else if rt_str_eq(k, "sslmode") {
+            ok = pq_in(v, "disable", "prefer", "require")
+        } else if rt_str_eq(k, "port") {
+            // lista separada por comas: cada elemento vacío o un u16
+            let p = rt_bdata(v)
+            let l = rt_slen(v)
+            let mut s = 0
+            while s <= l && ok {
+                let mut e = s
+                while e < l && std::raw::load8(p + e) != 44 {
+                    e += 1
+                }
+                if e > s {
+                    ok = pq_num_ok(pq_str(p + s, e - s), 65535)
+                }
+                s = e + 1
+            }
+        } else if rt_str_eq(k, "connect_timeout") || rt_str_eq(k, "tcp_user_timeout") || rt_str_eq(k, "keepalives") || rt_str_eq(k, "keepalives_idle") || rt_str_eq(k, "keepalives_interval") || rt_str_eq(k, "keepalives_retries") {
+            ok = pq_num_ok(v, 9223372036854775807 / 10)
+        } else if rt_str_eq(k, "target_session_attrs") {
+            ok = pq_in(v, "any", "read-write", "read-only")
+        } else if rt_str_eq(k, "channel_binding") {
+            ok = pq_in(v, "disable", "prefer", "require")
+        } else if rt_str_eq(k, "load_balance_hosts") {
+            ok = pq_in(v, "disable", "random", "disable")
+        } else {
+            ok = false
+        }
+        if !ok {
+            return "invalid connection string"
+        }
+        i += 1
+    }
+    ""
+}
+
+// Abre el socket: ruta Unix (host que empieza por '/') o host:puerto. fd, o un errno negativo (-1 si no resuelve).
+fn pq_open_socket(host: any, port: any, isunix: bool) -> int {
+    if isunix {
+        let path = rt_concat(rt_concat(rt_concat(host, "/.s.PGSQL."), port), "")
+        let pl = rt_slen(path)
+        if pl > 107 {
+            return -36
+        }
+        let sa = rt_alloc_zero(128)
+        std::raw::store8(sa, 1)
+        rt_copy(sa + 2, rt_bdata(path), pl)
+        let fd = nt_connect_one(sa, 2 + pl + 1)
+        rt_free_block(sa)
+        return fd
+    }
+    let mut ah = host
+    if pq_find(rt_bdata(host), 0, rt_slen(host), 58) >= 0 {
+        ah = rt_concat(rt_concat("[", host), "]")
+    }
+    let addr = rt_concat(rt_concat(ah, ":"), port)
+    let st = tcp_st()
+    std::raw::store(st + 32, 1)
+    let blk = tcp_resolve("std::postgres", addr)
+    std::raw::store(st + 32, 0)
+    if blk == 0 {
+        return -1
+    }
+    let count = std::raw::load(blk)
+    let mut fd = -1
+    let mut k = 0
+    while k < count && fd < 0 {
+        let e = blk + 8 + 40 * k
+        let r = nt_connect_one(e + 8, std::raw::load(e))
+        if r >= 0 {
+            fd = r
+        } else {
+            fd = -1
+        }
+        k += 1
+    }
+    rt_free_block(blk)
+    fd
+}
+
+fn pq_item(list: any, index: int) -> any {
+    let p = rt_bdata(list)
+    let l = rt_slen(list)
+    let mut s = 0
+    let mut k = 0
+    while s <= l {
+        let mut e = s
+        while e < l && std::raw::load8(p + e) != 44 {
+            e += 1
+        }
+        if k == index {
+            return pq_str(p + s, e - s)
+        }
+        k += 1
+        s = e + 1
+    }
+    ""
+}
+
+fn pq_count(list: any) -> int {
+    let p = rt_bdata(list)
+    let l = rt_slen(list)
+    let mut n = 1
+    let mut i = 0
+    while i < l {
+        if std::raw::load8(p + i) == 44 {
+            n += 1
+        }
+        i += 1
+    }
+    n
+}
+
+// Conecta (usetls: con SSLRequest). Devuelve (0, puntero, "") o (1, 0, error). Los mensajes de
+// error son los Display de tokio_postgres (sin la causa), como los da la VM.
+fn pq_connect(url: any, usetls: bool) -> (int, int, any) {
+    let mut cfg = std::map::new()
+    let isurl = rt_bytes_at(url, 0, "postgresql://") || rt_bytes_at(url, 0, "postgres://")
+    if isurl {
+        cfg = pq_parse_url(url)
+    } else {
+        cfg = pq_parse_kv(url)
+        if std::raw::tag(cfg) == 5 {
+            return (1, 0, cfg)
+        }
+    }
+    let bad = pq_cfg_check(cfg)
+    if rt_slen(bad) > 0 {
+        return (1, 0, bad)
+    }
+    let host = pq_cfg_get(cfg, "host")
+    let hostaddr = pq_cfg_get(cfg, "hostaddr")
+    let hashost = std::raw::tag(host) == 5
+    let hasaddr = std::raw::tag(hostaddr) == 5 && rt_slen(hostaddr) > 0
+    if !hashost && !hasaddr {
+        return (1, 0, "invalid configuration")
+    }
+    let mut hosts = ""
+    if hashost {
+        hosts = host
+    } else {
+        hosts = hostaddr
+    }
+    let nh = pq_count(hosts)
+    let mut ports = "5432"
+    let pv = pq_cfg_get(cfg, "port")
+    if std::raw::tag(pv) == 5 && rt_slen(pv) > 0 {
+        ports = pv
+    }
+    let np = pq_count(ports)
+    if np != 1 && np != nh {
+        return (1, 0, "invalid configuration")
+    }
+    let mode = pq_cfg_get(cfg, "sslmode")
+    let mut sslmode = 1
+    if std::raw::tag(mode) == 5 {
+        if rt_str_eq(mode, "disable") {
+            sslmode = 0
+        } else if rt_str_eq(mode, "require") {
+            sslmode = 2
+        }
+    }
+    let mut user = pq_cfg_get(cfg, "user")
+    if std::raw::tag(user) != 5 {
+        user = pq_os_user()
+    }
+    let mut last = "error connecting to server"
+    let mut h = 0
+    while h < nh {
+        let name = pq_item(hosts, h)
+        let mut port = ports
+        if np > 1 {
+            port = pq_item(ports, h)
+        }
+        if rt_slen(port) == 0 {
+            port = "5432"
+        }
+        if rt_str_eq(port, "0") {
+            return (1, 0, "invalid configuration")
+        }
+        let mut dial = name
+        if hasaddr && hashost {
+            dial = pq_item(hostaddr, h)
+        }
+        let isunix = rt_slen(dial) > 0 && std::raw::load8(rt_bdata(dial)) == 47
+        let (st, c, err) = pq_connect_host(cfg, name, dial, port, isunix, usetls, sslmode, user)
+        if st == 0 {
+            return (0, c, "")
+        }
+        last = err
+        h += 1
+    }
+    return (1, 0, last)
+}
+
+fn pq_connect_host(cfg: any, name: any, dial: any, port: any, isunix: bool, usetls: bool, sslmode: int, user: any) -> (int, int, any) {
+    if !usetls && sslmode == 2 && !isunix {
+        return (1, 0, "error performing TLS handshake")
+    }
+    tcp_reserve()
+    let fd = pq_open_socket(dial, port, isunix)
+    if fd < 0 {
+        return (1, 0, "error connecting to server")
+    }
+    if !isunix {
+        let one = rt_alloc(8)
+        std::raw::store(one, 1)
+        std::raw::syscall(54, fd, 6, 1, one, 4, 0)
+        rt_free_block(one)
+    }
+    let c = pq_conn_new()
+    pq_ss(c, PQ_FD, fd)
+    pq_ss(c, PQ_ADDR, pq_own(dial))
+    pq_ss(c, PQ_PORT, pq_own(port))
+    if isunix {
+        pq_ss(c, PQ_UNIX, 1)
+    }
+    if usetls && sslmode != 0 && !isunix {
+        let b = pq_begin(0)
+        pq_u32(b, 8)
+        pq_u32(b, 80877103)
+        pq_flush(c, b)
+        pq_fill(c, 1)
+        let inb = pq_gs(c, PQ_IN)
+        let r = std::raw::load8(std::raw::load(inb))
+        tb_drop(inb, 1)
+        if r == 83 {
+            let s = tl_state_new(fd, 1, 0, 1)
+            tl_ss(s, TS_FNAME, pq_own("std::postgres"))
+            tl_ss(s, TS_FIXMSG, pq_own("error performing TLS handshake"))
+            tl_ss(s, TS_LENIENT, 1)
+            tl_client_handshake(s, rt_bdata(name), rt_slen(name))
+            tl_ss(s, TS_FIXMSG, pq_own("error communicating with the server"))
+            pq_ss(c, PQ_TLS, s)
+        } else if r == 78 {
+            if sslmode == 2 {
+                pq_shutdown(c)
+                return (1, 0, "error performing TLS handshake")
+            }
+        } else {
+            pq_shutdown(c)
+            return (1, 0, "error communicating with the server")
+        }
+    }
+    // StartupMessage
+    let b = pq_begin(0)
+    let pos = std::raw::load(b + 8)
+    pq_u32(b, 0)
+    pq_u32(b, 196608)
+    pq_cstr(b, "user")
+    pq_cstr(b, user)
+    let dbn = pq_cfg_get(cfg, "dbname")
+    if std::raw::tag(dbn) == 5 {
+        pq_cstr(b, "database")
+        pq_cstr(b, dbn)
+    }
+    let opt = pq_cfg_get(cfg, "options")
+    if std::raw::tag(opt) == 5 {
+        pq_cstr(b, "options")
+        pq_cstr(b, opt)
+    }
+    pq_cstr(b, "client_encoding")
+    pq_cstr(b, "UTF8")
+    pq_cstr(b, "timezone")
+    pq_cstr(b, "GMT")
+    let app = pq_cfg_get(cfg, "application_name")
+    if std::raw::tag(app) == 5 {
+        pq_cstr(b, "application_name")
+        pq_cstr(b, app)
+    }
+    tb_u8(b, 0)
+    pq_close(b, pos)
+    pq_flush(c, b)
+    let password = pq_cfg_get(cfg, "password")
+    let hasp = std::raw::tag(password) == 5
+    loop {
+        let t = pq_recv(c)
+        if t == 69 {
+            let text = pq_error_text(c)
+            pq_shutdown(c)
+            return (1, 0, text)
+        }
+        if t == 82 {
+            let code = pq_be32(pq_gs(c, PQ_BODY))
+            if code == 0 {
+                continue
+            }
+            if code == 3 || code == 5 {
+                if !hasp {
+                    pq_shutdown(c)
+                    return (1, 0, "invalid configuration")
+                }
+                if code == 3 {
+                    pq_password_msg(c, password)
+                } else {
+                    let salt = rt_alloc(8)
+                    rt_copy(salt, pq_gs(c, PQ_BODY) + 4, 4)
+                    let h1 = rt_alloc(24)
+                    let cat = rt_concat(password, user)
+                    pq_md5(rt_bdata(cat), rt_slen(cat), h1)
+                    let hex1 = pq_hex(h1, 16)
+                    let buf = rt_alloc(48)
+                    rt_copy(buf, rt_bdata(hex1), 32)
+                    rt_copy(buf + 32, salt, 4)
+                    let h2 = rt_alloc(24)
+                    pq_md5(buf, 36, h2)
+                    let reply = rt_concat("md5", pq_hex(h2, 16))
+                    rt_free_block(salt)
+                    rt_free_block(h1)
+                    rt_free_block(buf)
+                    rt_free_block(h2)
+                    pq_password_msg(c, reply)
+                }
+            } else if code == 10 {
+                let text = pq_scram(c, password, hasp)
+                if rt_slen(text) > 0 {
+                    pq_shutdown(c)
+                    return (1, 0, text)
+                }
+            } else {
+                pq_shutdown(c)
+                return (1, 0, "authentication error")
+            }
+        } else if t == 75 {
+            pq_ss(c, PQ_PID, pq_be32(pq_gs(c, PQ_BODY)))
+            pq_ss(c, PQ_SECRET, pq_be32(pq_gs(c, PQ_BODY) + 4))
+        } else if t == 90 {
+            break
+        } else if t < 0 {
+            return (1, 0, "connection closed")
+        }
+    }
+    return (0, c, "")
+}
+
+// ------------------------------------------------------------ consultas
+
+// Consulta simple (protocolo 'Q'): (0, "") o (1, error). Sirve para BEGIN/COMMIT/lotes SQL.
+fn pq_simple(c: int, sql: any) -> (int, any) {
+    let b = pq_begin(0)
+    let pos = pq_open(b, 81)
+    pq_cstr(b, sql)
+    pq_close(b, pos)
+    pq_flush(c, b)
+    let mut err = ""
+    let mut failed = 0
+    loop {
+        let t = pq_recv(c)
+        if t < 0 {
+            return (1, "connection closed")
+        }
+        if t == 69 && failed == 0 {
+            err = pq_error_text(c)
+            failed = 1
+        }
+        if t == 90 {
+            break
+        }
+    }
+    return (failed, err)
+}
+
+// Primera columna de la primera fila de una consulta simple, como texto ("" si no hay).
+fn pq_simple_text(c: int, sql: any) -> any {
+    let b = pq_begin(0)
+    let pos = pq_open(b, 81)
+    pq_cstr(b, sql)
+    pq_close(b, pos)
+    pq_flush(c, b)
+    let mut out = ""
+    let mut got = false
+    loop {
+        let t = pq_recv(c)
+        if t < 0 || t == 90 {
+            break
+        }
+        if t == 68 && !got {
+            let p = pq_gs(c, PQ_BODY)
+            let l = pq_be32(p + 2)
+            if l >= 0 {
+                out = pq_str(p + 6, l)
+            }
+            got = true
+        }
+    }
+    out
+}
+
+fn pq_type_name(c: int, oid: int) -> any {
+    pq_simple_text(c, rt_concat("SELECT typname FROM pg_type WHERE oid = ", rt_int_to_str(oid)))
+}
+
+fn pq_text_oid(oid: int) -> bool {
+    oid == 25 || oid == 1042 || oid == 1043 || oid == 19 || oid == 705
+}
+
+// 0 correcto, 1 parámetro no admitido, 2 flotante no finito (como vm_json).
+fn pq_json_ok(v: any) -> int {
+    let t = std::raw::tag(v)
+    if t == 0 || t == 3 || t == 1 || t == 5 {
+        return 0
+    }
+    if t == 2 {
+        if rt_is_finite(std::raw::bits(v)) {
+            return 0
+        }
+        return 2
+    }
+    if t == 7 || t == 8 {
+        let n = rt_seq_len(v)
+        let mut i = 0
+        while i < n {
+            let r = pq_json_ok(rt_seq_get(v, i))
+            if r != 0 {
+                return r
+            }
+            i += 1
+        }
+        return 0
+    }
+    if t == 9 {
+        let n = std::raw::load(std::raw::bits(v) + 8)
+        let mut i = 0
+        while i < n {
+            let r = pq_json_ok(rt_map_value_at(v, i))
+            if r != 0 {
+                return r
+            }
+            i += 1
+        }
+        return 0
+    }
+    1
+}
+
+// Valida los parámetros antes de tocar la red (postgres_params de la VM).
+fn pq_check_params(params: any) {
+    let t = std::raw::tag(params)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(params)
+    let mut i = 0
+    while i < n {
+        let v = rt_seq_get(params, i)
+        let tv = std::raw::tag(v)
+        if tv != 0 && tv != 3 && tv != 1 && tv != 5 && tv != 6 {
+            let r = pq_json_ok(v)
+            if r == 1 {
+                pq_type_error("unsupported PostgreSQL parameter")
+            }
+            if r == 2 {
+                pq_type_error("JSON float must be finite")
+            }
+        }
+        i += 1
+    }
+}
+
+fn pq_wrong_type(i: int) -> any {
+    rt_concat("error serializing parameter ", rt_int_to_str(i))
+}
+
+// Conversión de un float32 (bits) al float64 equivalente (bits).
+fn pq_f32_bits(b: int) -> int {
+    let sign = std::raw::shr(b, 31) & 1
+    let exp = std::raw::shr(b, 23) & 255
+    let man = b & 8388607
+    let mut dexp = 0
+    let mut dman = 0
+    if exp == 255 {
+        dexp = 2047
+        dman = std::raw::shl(man, 29)
+    } else if exp == 0 {
+        if man != 0 {
+            let mut e = -126
+            let mut m = man
+            while (m & 8388608) == 0 {
+                m = std::raw::shl(m, 1)
+                e -= 1
+            }
+            dexp = e + 1023
+            dman = std::raw::shl(m & 8388607, 29)
+        }
+    } else {
+        dexp = exp - 127 + 1023
+        dman = std::raw::shl(man, 29)
+    }
+    std::raw::shl(sign, 63) | std::raw::shl(dexp, 52) | dman
+}
+
+// Valor de una columna (formato binario) o nil. oid ya validado como admitido.
+fn pq_decode(oid: int, p: int, n: int) -> any {
+    if oid == 16 {
+        return std::raw::load8(p) != 0
+    }
+    if oid == 21 {
+        let v = pq_be16(p)
+        if v >= 32768 {
+            return v - 65536
+        }
+        return v
+    }
+    if oid == 23 {
+        let v = pq_be32(p)
+        if v >= 2147483648 {
+            return v - 4294967296
+        }
+        return v
+    }
+    if oid == 20 {
+        return pq_be64(p)
+    }
+    if oid == 700 {
+        return rt_float(pq_f32_bits(pq_be32(p)))
+    }
+    if oid == 701 {
+        return rt_float(pq_be64(p))
+    }
+    if oid == 17 {
+        return rt_bytes_from(p, n)
+    }
+    if oid == 114 {
+        return std__json__parse(pq_str(p, n))
+    }
+    if oid == 3802 {
+        return std__json__parse(pq_str(p + 1, n - 1))
+    }
+    pq_str(p, n)
+}
+
+fn pq_supported(oid: int) -> bool {
+    oid == 16 || oid == 21 || oid == 23 || oid == 20 || oid == 700 || oid == 701 || oid == 17 || oid == 114 || oid == 3802 || pq_text_oid(oid) && oid != 705
+}
+
+// Ejecuta una sentencia preparada con parámetros. mode 0: filas afectadas; mode 1: array de mapas.
+// Devuelve (0, valor) o (1, texto del error).
+fn pq_run(c: int, sql: any, params: any, mode: int) -> (int, any) {
+    let np = rt_seq_len(params)
+    // Parse + Describe + Sync
+    let b = pq_begin(0)
+    let p1 = pq_open(b, 80)
+    pq_cstr(b, "")
+    pq_cstr(b, sql)
+    tb_u16(b, 0)
+    pq_close(b, p1)
+    let p2 = pq_open(b, 68)
+    tb_u8(b, 83)
+    pq_cstr(b, "")
+    pq_close(b, p2)
+    let p3 = pq_open(b, 83)
+    pq_close(b, p3)
+    pq_flush(c, b)
+    let mut err = ""
+    let mut failed = 0
+    let mut want = 0
+    let mut oids = 0
+    let mut rd = 0
+    let mut rdl = 0
+    loop {
+        let t = pq_recv(c)
+        if t < 0 {
+            return (1, "connection closed")
+        }
+        if t == 69 && failed == 0 {
+            err = pq_error_text(c)
+            failed = 1
+        } else if t == 116 {
+            let body = pq_gs(c, PQ_BODY)
+            want = pq_be16(body)
+            oids = rt_alloc(8 * want + 8)
+            let mut k = 0
+            while k < want {
+                std::raw::store(oids + 8 * k, pq_be32(body + 2 + 4 * k))
+                k += 1
+            }
+        } else if t == 84 {
+            rdl = pq_gs(c, PQ_BLEN)
+            rd = rt_alloc(rdl + 8)
+            rt_copy(rd, pq_gs(c, PQ_BODY), rdl)
+        } else if t == 90 {
+            break
+        }
+    }
+    if failed != 0 {
+        if oids != 0 {
+            rt_free_block(oids)
+        }
+        if rd != 0 {
+            rt_free_block(rd)
+        }
+        return (1, err)
+    }
+    let r = pq_run_bound(c, params, mode, np, oids, want, rd, rdl)
+    rt_free_block(oids)
+    if rd != 0 {
+        rt_free_block(rd)
+    }
+    r
+}
+
+// Bind + Execute + Sync de la sentencia ya descrita.
+fn pq_run_bound(c: int, params: any, mode: int, np: int, oids: int, want: int, rd: int, rdl: int) -> (int, any) {
+    if np != want {
+        return (1, rt_concat(rt_concat(rt_concat("expected ", rt_int_to_str(want)), " parameters but got "), rt_int_to_str(np)))
+    }
+    let b = pq_begin(0)
+    let p1 = pq_open(b, 66)
+    pq_cstr(b, "")
+    pq_cstr(b, "")
+    tb_u16(b, 1)
+    tb_u16(b, 1)
+    tb_u16(b, np)
+    let mut i = 0
+    while i < np {
+        let v = rt_seq_get(params, i)
+        let t = std::raw::tag(v)
+        let oid = std::raw::load(oids + 8 * i)
+        if t == 0 {
+            if !pq_text_oid(oid) {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            pq_u32(b, 4294967295)
+        } else if t == 3 {
+            if oid != 16 {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            pq_u32(b, 1)
+            if std::raw::bits(v) != 0 {
+                tb_u8(b, 1)
+            } else {
+                tb_u8(b, 0)
+            }
+        } else if t == 1 {
+            if oid != 20 {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            let x = std::raw::bits(v)
+            pq_u32(b, 8)
+            pq_u32(b, std::raw::shr(x, 32))
+            pq_u32(b, x & 4294967295)
+        } else if t == 2 && rt_is_finite(std::raw::bits(v)) {
+            if oid != 701 {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            let x = std::raw::bits(v)
+            pq_u32(b, 8)
+            pq_u32(b, std::raw::shr(x, 32))
+            pq_u32(b, x & 4294967295)
+        } else if t == 5 {
+            if !pq_text_oid(oid) {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            pq_u32(b, rt_slen(v))
+            tb_bytes(b, rt_bdata(v), rt_slen(v))
+        } else if t == 6 {
+            if oid != 17 {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            pq_u32(b, rt_slen(v))
+            tb_bytes(b, rt_bdata(v), rt_slen(v))
+        } else {
+            if oid != 114 && oid != 3802 {
+                tb_free(b)
+                return (1, pq_wrong_type(i))
+            }
+            let text = std__json__stringify(v)
+            let mut extra = 0
+            if oid == 3802 {
+                extra = 1
+            }
+            pq_u32(b, rt_slen(text) + extra)
+            if oid == 3802 {
+                tb_u8(b, 1)
+            }
+            tb_bytes(b, rt_bdata(text), rt_slen(text))
+        }
+        i += 1
+    }
+    tb_u16(b, 1)
+    tb_u16(b, 1)
+    pq_close(b, p1)
+    let p2 = pq_open(b, 69)
+    pq_cstr(b, "")
+    pq_u32(b, 0)
+    pq_close(b, p2)
+    let p3 = pq_open(b, 83)
+    pq_close(b, p3)
+    pq_flush(c, b)
+    // columnas
+    let mut ncols = 0
+    let mut coid = 0
+    let mut names = []
+    if rd != 0 {
+        ncols = pq_be16(rd)
+        coid = rt_alloc(8 * ncols + 8)
+        let mut off = 2
+        let mut k = 0
+        while k < ncols {
+            let mut e = off
+            while std::raw::load8(rd + e) != 0 {
+                e += 1
+            }
+            names = std::array::push(names, pq_str(rd + off, e - off))
+            off = e + 1
+            std::raw::store(coid + 8 * k, pq_be32(rd + off + 6))
+            off += 18
+            k += 1
+        }
+    }
+    let mut rows = []
+    let mut affected = 0
+    let mut err = ""
+    let mut failed = 0
+    let mut badoid = 0
+    loop {
+        let t = pq_recv(c)
+        if t < 0 {
+            if coid != 0 {
+                rt_free_block(coid)
+            }
+            return (1, "connection closed")
+        }
+        if t == 69 && failed == 0 {
+            err = pq_error_text(c)
+            failed = 1
+        } else if t == 67 {
+            let body = pq_gs(c, PQ_BODY)
+            let bl = pq_gs(c, PQ_BLEN)
+            // La etiqueta termina en el número de filas (último token).
+            let mut e = bl - 1
+            while e > 0 && std::raw::load8(body + e - 1) != 32 {
+                e -= 1
+            }
+            let mut v = 0
+            let mut ok = e < bl - 1
+            let mut q = e
+            while q < bl - 1 {
+                let d = std::raw::load8(body + q)
+                if d < 48 || d > 57 {
+                    ok = false
+                    break
+                }
+                v = v * 10 + (d - 48)
+                q += 1
+            }
+            if ok {
+                affected = v
+            }
+        } else if t == 68 && mode == 1 && failed == 0 && badoid == 0 {
+            let body = pq_gs(c, PQ_BODY)
+            let nc = pq_be16(body)
+            let mut off = 2
+            let mut row = std::map::new()
+            let mut k = 0
+            while k < nc && k < ncols {
+                let l = pq_be32(body + off)
+                let oid = std::raw::load(coid + 8 * k)
+                if !pq_supported(oid) {
+                    badoid = oid
+                    break
+                }
+                let mut val = nil
+                if l != 4294967295 {
+                    val = pq_decode(oid, body + off + 4, l)
+                    off += 4 + l
+                } else {
+                    off += 4
+                }
+                row = std__map__insert(row, rt_seq_get(names, k), val)
+                k += 1
+            }
+            if badoid == 0 {
+                rows = std::array::push(rows, row)
+            }
+        } else if t == 90 {
+            break
+        }
+    }
+    if coid != 0 {
+        rt_free_block(coid)
+    }
+    if failed != 0 {
+        return (1, err)
+    }
+    if badoid != 0 {
+        return (1, rt_concat(rt_concat("unsupported PostgreSQL column type '", pq_type_name(c, badoid)), "'"))
+    }
+    if mode == 0 {
+        return (0, affected)
+    }
+    return (0, rows)
+}
+
+// ------------------------------------------------------------ transacciones, migraciones, ping
+
+fn pq_tx_begin(c: int) -> (int, any) {
+    if pq_gs(c, PQ_TX) != 0 {
+        return (1, "transaction already active")
+    }
+    let (st, err) = pq_simple(c, "BEGIN")
+    if st == 0 {
+        pq_ss(c, PQ_TX, 1)
+    }
+    return (st, err)
+}
+
+fn pq_tx_end(c: int, commit: bool) -> (int, any) {
+    if pq_gs(c, PQ_TX) == 0 {
+        return (1, "no active transaction")
+    }
+    let mut sql = "ROLLBACK"
+    if commit {
+        sql = "COMMIT"
+    }
+    let (st, err) = pq_simple(c, sql)
+    if st == 0 {
+        pq_ss(c, PQ_TX, 0)
+    }
+    return (st, err)
+}
+
+fn pq_checksum(sql: any) -> any {
+    let mut h = -3750763034362895579
+    let n = rt_slen(sql)
+    let p = rt_bdata(sql)
+    let mut i = 0
+    while i < n {
+        h = std::raw::wmul(h ^ std::raw::load8(p + i), 1099511628211)
+        i += 1
+    }
+    let buf = rt_alloc(16)
+    let mut k = 0
+    while k < 8 {
+        std::raw::store8(buf + k, std::raw::shr(h, 56 - 8 * k) & 255)
+        k += 1
+    }
+    let out = rt_concat("fnv1a64:", pq_hex(buf, 8))
+    rt_free_block(buf)
+    out
+}
+
+fn pq_migrate_locked(c: int, migs: any) -> (int, any) {
+    let (st0, e0) = pq_simple(c, "CREATE TABLE IF NOT EXISTS _titan_migrations(version BIGINT PRIMARY KEY,name TEXT NOT NULL,checksum TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+    if st0 != 0 {
+        return (1, e0)
+    }
+    let (st1, applied) = pq_run(c, "SELECT version,name,checksum FROM _titan_migrations ORDER BY version", [], 1)
+    if st1 != 0 {
+        return (1, applied)
+    }
+    let n = rt_seq_len(migs)
+    let na = rt_seq_len(applied)
+    let mut i = 0
+    while i < n {
+        let m = rt_seq_get(migs, i)
+        let v = std__map__get(m, "version")
+        let mut j = 0
+        while j < na {
+            let a = rt_seq_get(applied, j)
+            if std::raw::bits(std__map__get(a, "version")) == std::raw::bits(v) {
+                if !rt_str_eq(std__map__get(a, "name"), std__map__get(m, "name")) || !rt_str_eq(std__map__get(a, "checksum"), pq_checksum(std__map__get(m, "sql"))) {
+                    return (1, rt_concat(rt_concat("previously applied migration ", rt_int_to_str(std::raw::bits(v))), " has changed"))
+                }
+            }
+            j += 1
+        }
+        i += 1
+    }
+    let (sb, eb) = pq_tx_begin(c)
+    if sb != 0 {
+        return (1, eb)
+    }
+    let mut count = 0
+    let mut fail = ""
+    let mut failed = 0
+    i = 0
+    while i < n && failed == 0 {
+        let m = rt_seq_get(migs, i)
+        let v = std::raw::bits(std__map__get(m, "version"))
+        let name = std__map__get(m, "name")
+        let sql = std__map__get(m, "sql")
+        let mut done = false
+        let mut j = 0
+        while j < na {
+            if std::raw::bits(std__map__get(rt_seq_get(applied, j), "version")) == v {
+                done = true
+            }
+            j += 1
+        }
+        if !done {
+            let (se, ee) = pq_simple(c, sql)
+            if se != 0 {
+                fail = rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("migration ", rt_int_to_str(v)), " ("), name), ") failed: "), ee)
+                failed = 1
+            } else {
+                let (si, ei) = pq_run(c, "INSERT INTO _titan_migrations(version,name,checksum) VALUES ($1,$2,$3)", [v, name, pq_checksum(sql)], 0)
+                if si != 0 {
+                    fail = ei
+                    failed = 1
+                } else {
+                    count += 1
+                }
+            }
+        }
+        i += 1
+    }
+    if failed != 0 {
+        pq_tx_end(c, false)
+        return (1, fail)
+    }
+    let (sc, ec) = pq_tx_end(c, true)
+    if sc != 0 {
+        return (1, ec)
+    }
+    return (0, count)
+}
+
+fn pq_ping(c: int) -> bool {
+    pq_ss(c, PQ_QUIET, 1)
+    let (st, rows) = pq_run(c, "SELECT 1", [], 1)
+    pq_ss(c, PQ_QUIET, 0)
+    if st != 0 || rt_seq_len(rows) != 1 {
+        return false
+    }
+    std::raw::bits(std__map__get(rt_seq_get(rows, 0), "?column?")) == 1
+}
+
+// ------------------------------------------------------------ registro de handles
+
+fn pq_tab() -> int {
+    let st = tcp_st()
+    let mut t = std::raw::load(st + 24)
+    if t == 0 {
+        t = rt_alloc_zero(16 + 24 * PQ_MAX_HANDLES)
+        std::raw::store(st + 24, t)
+    }
+    t
+}
+
+fn pq_reserve() {
+    let t = pq_tab()
+    if std::raw::load(t) >= PQ_MAX_HANDLES {
+        rt_fatal("runtime database handle limit exceeded (256)")
+    }
+}
+
+// Registra una conexión (4) o un pool (5); devuelve el id.
+fn pq_register(kind: int, ptr: int) -> int {
+    let t = pq_tab()
+    let mut i = 0
+    while std::raw::load(t + 16 + 24 * i) != 0 {
+        i += 1
+    }
+    let st = tcp_st()
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    let e = t + 16 + 24 * i
+    std::raw::store(e, id)
+    std::raw::store(e + 8, kind)
+    std::raw::store(e + 16, ptr)
+    std::raw::store(t, std::raw::load(t) + 1)
+    id
+}
+
+fn pq_entry(id: int, kind: int) -> int {
+    let t = pq_tab()
+    let mut i = 0
+    while i < PQ_MAX_HANDLES {
+        let e = t + 16 + 24 * i
+        if std::raw::load(e) == id && std::raw::load(e + 8) == kind {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+fn pq_unregister(e: int) {
+    let t = pq_tab()
+    std::raw::store(e, 0)
+    std::raw::store(t, std::raw::load(t) - 1)
+}
+
+fn pq_conn_of(v: any) -> int {
+    if std::raw::tag(v) != 26 {
+        pq_type_error("operation requires PostgreSQL connection")
+    }
+    let id = tcp_handle_id(v)
+    let e = pq_entry(id, 4)
+    if e == 0 {
+        pq_type_error(rt_concat("unknown PostgreSQL connection ", rt_int_to_str(id)))
+    }
+    std::raw::load(e + 16)
+}
+
+fn pq_pool_of(v: any) -> int {
+    if std::raw::tag(v) != 27 {
+        pq_type_error("operation requires PostgreSQL pool")
+    }
+    let id = tcp_handle_id(v)
+    let e = pq_entry(id, 5)
+    if e == 0 {
+        pq_type_error(rt_concat("unknown PostgreSQL pool ", rt_int_to_str(id)))
+    }
+    std::raw::load(e + 16)
+}
+
+// ------------------------------------------------------------ pool
+
+// 0 conexión, 1 error, 2 plazo agotado. (conexión, error)
+fn pq_pool_acquire(pl: int, ms: int) -> (int, int, any) {
+    let deadline = tk_now() + ms
+    loop {
+        if std::raw::load(pl + PL_CLOSED) != 0 {
+            return (1, 0, "PostgreSQL pool is closed")
+        }
+        let n = std::raw::load(pl + PL_NIDLE)
+        if n > 0 {
+            let c = std::raw::load(pl + PL_IDLE + 8 * (n - 1))
+            std::raw::store(pl + PL_NIDLE, n - 1)
+            return (0, c, "")
+        }
+        if std::raw::load(pl + PL_TOTAL) < std::raw::load(pl + PL_MAX) {
+            let url = std::raw::value(5, std::raw::load(pl + PL_URL))
+            let (st, c, err) = pq_connect(url, std::raw::load(pl + PL_TLS) != 0)
+            if st != 0 {
+                return (1, 0, err)
+            }
+            if std::raw::load(pl + PL_CLOSED) != 0 || std::raw::load(pl + PL_TOTAL) >= std::raw::load(pl + PL_MAX) {
+                pq_shutdown(c)
+                rt_free_block(c)
+            } else {
+                std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) + 1)
+                pq_ss(c, PQ_POOL, pl)
+                return (0, c, "")
+            }
+        } else {
+            let remaining = deadline - tk_now()
+            if remaining <= 0 {
+                return (2, 0, "")
+            }
+            let mut step = remaining
+            if step > 2 {
+                step = 2
+            }
+            tk_sleep(step)
+        }
+    }
+    return (2, 0, "")
+}
+
+// Devuelve una conexión de pool al soltar su handle.
+fn pq_pool_release(c: int) {
+    let pl = pq_gs(c, PQ_POOL)
+    if std::raw::load(pl + PL_CLOSED) != 0 || pq_gs(c, PQ_CLOSED) != 0 {
+        std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) - 1)
+        pq_shutdown(c)
+        rt_free_block(c)
+        return
+    }
+    let n = std::raw::load(pl + PL_NIDLE)
+    std::raw::store(pl + PL_IDLE + 8 * n, c)
+    std::raw::store(pl + PL_NIDLE, n + 1)
+}
+
+// ------------------------------------------------------------ instrucciones Postgres*
+
+fn pq_connect_op(url: any, usetls: bool) -> any {
+    if std::raw::tag(url) != 5 {
+        pq_type_error("PostgreSQL URL must be string")
+    }
+    pq_reserve()
+    let (st, c, err) = pq_connect(url, usetls)
+    if st != 0 {
+        pq_fail(err)
+    }
+    let id = pq_register(4, c)
+    pq_ss(c, PQ_ID, id)
+    tk_handle(26, id, c)
+}
+
+fn rt_pg_connect(url: any) -> any {
+    pq_connect_op(url, false)
+}
+
+fn rt_pg_connect_tls(url: any) -> any {
+    pq_connect_op(url, true)
+}
+
+fn pq_sql_arg(sql: any) {
+    if std::raw::tag(sql) != 5 {
+        pq_type_error("SQL must be string")
+    }
+}
+
+fn pq_exec_op(db: any, sql: any, params: any, mode: int) -> any {
+    pq_check_params(params)
+    pq_sql_arg(sql)
+    let c = pq_conn_of(db)
+    let (st, v) = pq_run(c, sql, params, mode)
+    if st != 0 {
+        pq_fail(v)
+    }
+    v
+}
+
+fn rt_pg_execute(db: any, sql: any, params: any) -> any {
+    pq_exec_op(db, sql, params, 0)
+}
+
+fn rt_pg_query(db: any, sql: any, params: any) -> any {
+    pq_exec_op(db, sql, params, 1)
+}
+
+fn rt_pg_begin(db: any) -> any {
+    let c = pq_conn_of(db)
+    let (st, err) = pq_tx_begin(c)
+    if st != 0 {
+        pq_fail(err)
+    }
+    nil
+}
+
+fn rt_pg_commit(db: any) -> any {
+    let c = pq_conn_of(db)
+    let (st, err) = pq_tx_end(c, true)
+    if st != 0 {
+        pq_fail(err)
+    }
+    nil
+}
+
+fn rt_pg_rollback(db: any) -> any {
+    let c = pq_conn_of(db)
+    let (st, err) = pq_tx_end(c, false)
+    if st != 0 {
+        pq_fail(err)
+    }
+    nil
+}
+
+fn rt_pg_migrate(db: any, migs: any) -> any {
+    let t = std::raw::tag(migs)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(migs)
+    let mut i = 0
+    while i < n {
+        let m = rt_seq_get(migs, i)
+        if std::raw::tag(m) != 9 {
+            pq_type_error("migration must be map")
+        }
+        if std::raw::tag(std__map__get(m, "version")) != 1 {
+            pq_type_error("migration.version must be int")
+        }
+        if std::raw::tag(std__map__get(m, "name")) != 5 {
+            pq_type_error("migration.name must be string")
+        }
+        if std::raw::tag(std__map__get(m, "sql")) != 5 {
+            pq_type_error("migration.sql must be string")
+        }
+        i += 1
+    }
+    let c = pq_conn_of(db)
+    let mut prev = 0
+    i = 0
+    while i < n {
+        let v = std::raw::bits(std__map__get(rt_seq_get(migs, i), "version"))
+        if v <= prev {
+            pq_fail("migration versions must be positive, unique, and increasing")
+        }
+        prev = v
+        i += 1
+    }
+    let lock = 362959000654
+    let (sl, el) = pq_run(c, "SELECT pg_advisory_lock($1)", [lock], 0)
+    if sl != 0 {
+        pq_fail(el)
+    }
+    let (sm, vm) = pq_migrate_locked(c, migs)
+    let (su, eu) = pq_run(c, "SELECT pg_advisory_unlock($1)", [lock], 0)
+    if sm != 0 {
+        pq_fail(vm)
+    }
+    if su != 0 {
+        pq_fail(eu)
+    }
+    vm
+}
+
+fn rt_pg_cancel(db: any) -> any {
+    let c = pq_conn_of(db)
+    let mut unix = false
+    if pq_gs(c, PQ_UNIX) != 0 {
+        unix = true
+    }
+    let fd = pq_open_socket(rt_sref(pq_gs(c, PQ_ADDR)), rt_sref(pq_gs(c, PQ_PORT)), unix)
+    if fd < 0 {
+        pq_fail("error connecting to server")
+    }
+    let b = pq_begin(0)
+    pq_u32(b, 16)
+    pq_u32(b, 80877102)
+    pq_u32(b, pq_gs(c, PQ_PID))
+    pq_u32(b, pq_gs(c, PQ_SECRET))
+    let p = std::raw::load(b)
+    let mut done = 0
+    while done < 16 {
+        let w = std::raw::syscall(44, fd, p + done, 16 - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            break
+        }
+        done += w
+    }
+    tb_free(b)
+    // El servidor cierra la conexión al terminar: se espera ese cierre.
+    let tmp = rt_alloc(16)
+    while tcp_wait(fd, 1, 5000) != 0 {
+        let r = std::raw::syscall(0, fd, tmp, 8, 0, 0, 0)
+        if r != -4 {
+            break
+        }
+    }
+    rt_free_block(tmp)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    nil
+}
+
+fn rt_pg_close(db: any) -> any {
+    if std::raw::tag(db) != 26 {
+        pq_type_error("close requires PostgreSQL connection")
+    }
+    let id = tcp_handle_id(db)
+    let e = pq_entry(id, 4)
+    if e == 0 {
+        return false
+    }
+    let c = std::raw::load(e + 16)
+    pq_unregister(e)
+    if pq_gs(c, PQ_POOL) != 0 {
+        pq_pool_release(c)
+    } else {
+        if pq_gs(c, PQ_TX) != 0 && pq_gs(c, PQ_CLOSED) == 0 {
+            pq_ss(c, PQ_QUIET, 1)
+            pq_simple(c, "ROLLBACK")
+        }
+        pq_shutdown(c)
+        rt_free_block(c)
+    }
+    true
+}
+
+fn rt_pg_ping(db: any) -> any {
+    let c = pq_conn_of(db)
+    pq_ping(c)
+}
+
+fn rt_pg_pool_new(url: any, maximum: any, usetls: any) -> any {
+    if std::raw::tag(usetls) != 3 {
+        pq_type_error("PostgreSQL pool tls must be bool")
+    }
+    if std::raw::tag(maximum) != 1 {
+        pq_type_error("PostgreSQL pool maximum must be int")
+    }
+    let mx = std::raw::bits(maximum)
+    if mx < 0 {
+        pq_type_error("PostgreSQL pool maximum must be positive")
+    }
+    if mx == 0 || mx > 67108864 {
+        pq_type_error("PostgreSQL pool maximum must be between 1 and 64 MiB")
+    }
+    if mx > 64 {
+        rt_fatal("runtime database pool size limit exceeded (64)")
+    }
+    if std::raw::tag(url) != 5 {
+        pq_type_error("PostgreSQL pool URL must be string")
+    }
+    pq_reserve()
+    let pl = rt_alloc_zero(PL_SIZE)
+    std::raw::store(pl + PL_URL, pq_own(url))
+    std::raw::store(pl + PL_MAX, mx)
+    if std::raw::bits(usetls) != 0 {
+        std::raw::store(pl + PL_TLS, 1)
+    }
+    let id = pq_register(5, pl)
+    tk_handle(27, id, pl)
+}
+
+fn rt_pg_pool_acquire(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pl = pq_pool_of(pool)
+    pq_reserve()
+    let (st, c, err) = pq_pool_acquire(pl, ms)
+    if st == 2 {
+        return ht_none()
+    }
+    if st != 0 {
+        pq_fail(err)
+    }
+    let id = pq_register(4, c)
+    pq_ss(c, PQ_ID, id)
+    ht_some(tk_handle(26, id, c))
+}
+
+fn rt_pg_pool_stats(pool: any) -> any {
+    let pl = pq_pool_of(pool)
+    let idle = std::raw::load(pl + PL_NIDLE)
+    let total = std::raw::load(pl + PL_TOTAL)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "maximum", std::raw::load(pl + PL_MAX))
+    m = std::map::insert(m, "total", total)
+    m = std::map::insert(m, "idle", idle)
+    m = std::map::insert(m, "checked_out", total - idle)
+    m = std::map::insert(m, "closed", std::raw::load(pl + PL_CLOSED) != 0)
+    m = std::map::insert(m, "tls", std::raw::load(pl + PL_TLS) != 0)
+    m
+}
+
+fn rt_pg_pool_health(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pl = pq_pool_of(pool)
+    let (st, c, err) = pq_pool_acquire(pl, ms)
+    if st != 0 {
+        return false
+    }
+    let ok = pq_ping(c)
+    pq_pool_release(c)
+    ok
+}
+
+fn rt_pg_pool_close(pool: any) -> any {
+    if std::raw::tag(pool) != 27 {
+        pq_type_error("pool_close requires PostgreSQL pool")
+    }
+    let id = tcp_handle_id(pool)
+    let e = pq_entry(id, 5)
+    if e == 0 {
+        pq_type_error("unknown PostgreSQL pool")
+    }
+    let pl = std::raw::load(e + 16)
+    pq_unregister(e)
+    std::raw::store(pl + PL_CLOSED, 1)
+    let n = std::raw::load(pl + PL_NIDLE)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load(pl + PL_IDLE + 8 * i)
+        pq_shutdown(c)
+        rt_free_block(c)
+        i += 1
+    }
+    std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) - n)
+    std::raw::store(pl + PL_NIDLE, 0)
+    nil
+}
+
+// ------------------------------------------------------------ instrucciones Db* (genéricas)
+// Reparten por la etiqueta del handle: 26 PostgreSQL y 28 MySQL (std_mysql.titan); cualquier otro
+// valor da el error de la VM. SQLite todavía no existe en el runtime nativo.
+
+fn pq_db_check(db: any, what: string) {
+    let t = std::raw::tag(db)
+    if t != 24 && t != 26 && t != 28 {
+        pq_type_error(rt_concat(rt_concat("std::db ", what), " requires database connection"))
+    }
+}
+
+fn rt_db_execute(db: any, sql: any, params: any) -> any {
+    pq_sql_arg(sql)
+    pq_db_check(db, "operation")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_execute(db, sql, params)
+    }
+    if std::raw::tag(db) == 28 {
+        return my_db_exec(db, sql, params, 0)
+    }
+    rt_pg_execute(db, sql, params)
+}
+
+fn rt_db_query(db: any, sql: any, params: any) -> any {
+    pq_sql_arg(sql)
+    pq_db_check(db, "operation")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_query(db, sql, params)
+    }
+    if std::raw::tag(db) == 28 {
+        return my_db_exec(db, sql, params, 1)
+    }
+    rt_pg_query(db, sql, params)
+}
+
+fn rt_db_begin(db: any) -> any {
+    pq_db_check(db, "transaction")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_begin(db)
+    }
+    if std::raw::tag(db) == 28 {
+        return rt_my_begin(db)
+    }
+    rt_pg_begin(db)
+}
+
+fn rt_db_commit(db: any) -> any {
+    pq_db_check(db, "transaction")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_commit(db)
+    }
+    if std::raw::tag(db) == 28 {
+        return rt_my_commit(db)
+    }
+    rt_pg_commit(db)
+}
+
+fn rt_db_rollback(db: any) -> any {
+    pq_db_check(db, "transaction")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_rollback(db)
+    }
+    if std::raw::tag(db) == 28 {
+        return rt_my_rollback(db)
+    }
+    rt_pg_rollback(db)
+}
+
+fn rt_db_migrate(db: any, migs: any) -> any {
+    pq_db_check(db, "migrate")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_migrate(db, migs)
+    }
+    if std::raw::tag(db) == 28 {
+        return my_db_migrate(db, migs)
+    }
+    rt_pg_migrate(db, migs)
+}
+
+fn rt_db_close(db: any) -> any {
+    pq_db_check(db, "close")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_close(db)
+    }
+    if std::raw::tag(db) == 28 {
+        return rt_my_close(db)
+    }
+    rt_pg_close(db)
+}
+
+fn rt_db_ping(db: any) -> any {
+    pq_db_check(db, "ping")
+    if std::raw::tag(db) == 24 {
+        return rt_sq_ping(db)
+    }
+    if std::raw::tag(db) == 28 {
+        return rt_my_ping(db)
+    }
+    rt_pg_ping(db)
+}

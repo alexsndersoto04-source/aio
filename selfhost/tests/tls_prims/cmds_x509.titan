@@ -1,0 +1,30 @@
+// 20 host now cert... -> código de xc_verify_server (1 byte)
+fn tst_cmd(cmd: int, t: int) -> any {
+    if cmd == 20 {
+        let out = rt_alloc_zero(16)
+        let count = std::raw::load(t) - 3
+        let chain = rt_alloc_zero(8 + 8 * count)
+        std::raw::store(chain, count)
+        let mut i = 0
+        while i < count {
+            let c = xc_parse(tst_ap(t, 3 + i), tst_al(t, 3 + i))
+            if c == 0 {
+                std::raw::store8(out, 100 + i)
+                return tst_ret(out, 1)
+            }
+            std::raw::store(chain + 8 + 8 * i, c)
+            i += 1
+        }
+        let mut now = 0
+        let np = tst_ap(t, 2)
+        i = 0
+        while i < 8 {
+            now = now * 256 + std::raw::load8(np + i)
+            i += 1
+        }
+        let code = xc_verify_server(chain, tst_ap(t, 1), tst_al(t, 1), now)
+        std::raw::store8(out, code)
+        return tst_ret(out, 1)
+    }
+    tst_ret(tst_ap(t, 0), 0)
+}

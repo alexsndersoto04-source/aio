@@ -1,0 +1,69 @@
+fn main() {
+    let cx = Cx { sch: Sch { tabs: std::map::new(), idxs: std::map::new(), views: std::map::new(), trgs: [] }, pg: SqPg { io: sqio_mem(), psize: 4096, npages: 1, n0: 0, dirty: std::map::new(), intxn: false }, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 1700000000123, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let db = std::sqlite::memory()
+    let times = ["'2023-02-30'", "'2023-02-28 13:45:10.5'", "'2024-02-29T23:59:59'", "'2023-06-15 12:00'", "'12:34'", "'12:34:56.789'", "'now'", "'0000-01-01'", "'9999-12-31 23:59:59'", "'2023-1-5'", "'abc'", "'2023-06-15 25:00'", "'2023-06-15 12:00:00+05:30'", "'2023-06-15 12:00:00Z'", "2460000.5", "0", "5373484.4", "'2460000'", "1700000000", "1700000000.75", "-1", "NULL", "x'00'", "'-0100-01-01'", "'2023-12-31 24:00:00'", "' 2023-05-05 '", "'2023-05-05  10:10'", "'2023-05-05T10:10:10.123456'"]
+    let mods = ["", ", '+1 day'", ", '-1 month'", ", '+1 month'", ", '+13 months'", ", '-25 months'", ", '+1 year'", ", '-3 years'", ", '+36 hours'", ", '-90 minutes'", ", '+30 seconds'", ", '+1.5 days'", ", '+0.5 month'", ", 'start of month'", ", 'start of year'", ", 'start of day'", ", 'weekday 0'", ", 'weekday 3'", ", 'weekday 6'", ", 'unixepoch'", ", 'auto'", ", 'julianday'", ", 'localtime'", ", 'utc'", ", 'subsec'", ", '+01:30'", ", '-00:15:30.250'", ", 'start of month', '+1 month', '-1 day'", ", 'bogus'", ", '1 day'", ", '+1 days'", ", '+1 DAYS'", ", '+1 weeks'", ", 'ceiling'", ", 'floor'"]
+    let fns = ["date", "time", "datetime", "julianday", "unixepoch"]
+    let mut qs = []
+    for t in times {
+        for m in mods {
+            for f in fns {
+                qs = std::array::push(qs, "select " + f + "(" + t + m + ") as r")
+            }
+        }
+    }
+    let fm = ["%Y-%m-%d %H:%M:%S", "%d %e %f %F", "%G %g %V %j %J", "%k %l %I %p %P %R %T", "%s %u %w %U %W", "%%", "%Q", "%", "%a"]
+    for t in times {
+        for f in fm {
+            qs = std::array::push(qs, "select strftime('" + f + "', " + t + ") as r")
+            qs = std::array::push(qs, "select strftime('" + f + "', " + t + ", '+3 months', 'weekday 2') as r")
+        }
+    }
+    qs = std::array::push(qs, "select date() = date('now') as r")
+    qs = std::array::push(qs, "select datetime('now') as r")
+    qs = std::array::push(qs, "select strftime('%s','now') as r")
+    qs = std::array::push(qs, "select current_date as r")
+    qs = std::array::push(qs, "select current_time as r")
+    qs = std::array::push(qs, "select current_timestamp as r")
+    qs = std::array::push(qs, "select timediff('2023-03-15 10:00:00', '2022-01-10 08:30:15.250') as r")
+    qs = std::array::push(qs, "select timediff('2022-01-10', '2023-03-15') as r")
+    let mut bad = 0
+    let mut n = 0
+    for q in qs {
+        let (all, err) = ss_parse_all(q)
+        let st = all[0][0]
+        let e = st.v.cores[0].cols[0].e
+        let v = sx_ev(cx, e, [])
+        let mut mine = "ERR"
+        match v {
+            Sv::SErr(m) => {
+                mine = "ERR " + m
+            },
+            _ => {
+                let av = sv_any(v)
+                mine = "{av}"
+            },
+        }
+        let r = std::try::catch(|| { std::sqlite::query(db, q, []) })
+        let mut theirs = ""
+        match r {
+            Result::Ok(rs) => {
+                let row = rs[0]
+                let rv = std::map::get(row, "r")
+                theirs = "{rv}"
+            },
+            Result::Err(m) => {
+                theirs = "ERR " + m
+            },
+        }
+        let skip = std::text::contains(q, "2023-02-30") || std::text::contains(q, "'now'") || std::text::contains(q, "date()") || std::text::contains(q, "current_")
+        if mine != theirs && !skip {
+            bad += 1
+            if bad < 40 {
+                print("DIFF", q, "mine=", mine, "oracle=", theirs)
+            }
+        }
+        n += 1
+    }
+    print("total", n, "bad", bad)
+}

@@ -1,0 +1,4 @@
+fn main() {
+let (a, b) = channel(70000)
+print(1)
+}

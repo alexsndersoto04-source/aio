@@ -1,0 +1,8 @@
+fn main() {
+    let mut i = 0
+    while i < 300 {
+        print("linea", i)
+        i += 1
+    }
+    std::io::write_stdout(std::encoding::utf8_encode("sin salto"))
+}

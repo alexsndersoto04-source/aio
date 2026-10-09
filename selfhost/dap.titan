@@ -1,0 +1,263 @@
+// `titan dap` antes de lanzar el programa: servidor DAP por stdin/stdout que atiende
+// initialize, launch (compila el programa), setBreakpoints y configurationDone. En
+// configurationDone compila el ejecutable de depuración y se reemplaza por él (execve): el
+// ejecutable sigue atendiendo el protocolo con el programa en marcha (native/std_dap.titan).
+// Replica `titan_dap` (crates/titan_dap/src/lib.rs). Prefijo `dp_`.
+import lsp
+import loader
+import codegen
+import frontend
+import artifact
+import native::dap_core
+
+struct DpSess {
+    g: any,
+    bps: array,
+}
+
+// Una línea de stdin (con su salto); vacío = fin del flujo.
+fn dp_line() -> Result {
+    match ls_read_line() {
+        Result::Ok(bytes) => {
+            return Result::Ok(bytes)
+        },
+        Result::Err(e) => {
+            let mut text = e
+            if std::text::starts_with(text, "LSP I/O error: ") {
+                text = "DAP I/O error: " + std::text::substring(text, 15, std::text::length(text))
+            }
+            return Result::Err(text)
+        },
+    }
+}
+
+fn dp_decode(bytes: any) -> any {
+    let r = std::try::catch(|| { std::encoding::utf8_decode(bytes) })
+    match r {
+        Result::Ok(t) => {
+            return t
+        },
+        Result::Err(e) => {
+            return nil
+        },
+    }
+}
+
+// Ok([]) = fin limpio del flujo; Ok([valor JSON]); Err(mensaje de DapError).
+fn dp_read_message() -> Result {
+    let mut length = -1
+    loop {
+        let bytes = dp_line()?
+        if std::bytes::length(bytes) == 0 {
+            return Result::Ok([])
+        }
+        let text = dp_decode(bytes)
+        if text == nil {
+            return Result::Err("DAP I/O error: stream did not contain valid UTF-8")
+        }
+        if text == "\r\n" || text == "\n" {
+            break
+        }
+        let n = dc_header_length(text)
+        if n == -2 {
+            return Result::Err("invalid DAP frame: invalid Content-Length")
+        }
+        if n >= 0 {
+            length = n
+        }
+    }
+    if length < 0 {
+        return Result::Err("invalid DAP frame: missing Content-Length")
+    }
+    if length > 16777216 {
+        return Result::Err("invalid DAP frame: message exceeds 16 MiB")
+    }
+    let mut body = std::encoding::utf8_encode("")
+    while std::bytes::length(body) < length {
+        let want = length - std::bytes::length(body)
+        let r = std::try::catch(|| { std::io::read_stdin(want) })
+        let mut chunk: any = nil
+        match r {
+            Result::Ok(v) => {
+                chunk = v
+            },
+            Result::Err(e) => {
+                return Result::Err("DAP I/O error: " + ls_clean(e))
+            },
+        }
+        if std::bytes::length(chunk) == 0 {
+            return Result::Err("DAP I/O error: failed to fill whole buffer")
+        }
+        body = std::bytes::concat(body, chunk)
+    }
+    let text = dp_decode(body)
+    if text == nil {
+        return Result::Err("invalid DAP JSON: invalid UTF-8 in message body")
+    }
+    let parsed = std::try::catch(|| { std::json::parse(text) })
+    match parsed {
+        Result::Ok(v) => {
+            return Result::Ok([v])
+        },
+        Result::Err(e) => {
+            return Result::Err("invalid DAP JSON: " + ls_clean(e))
+        },
+    }
+}
+
+fn dp_write(bytes: any) {
+    let r = std::try::catch(|| { std::io::write_stdout(bytes) })
+    match r {
+        Result::Ok(v) => {},
+        Result::Err(e) => {
+            std::process::exit(1)
+        },
+    }
+}
+
+fn dp_send_response(seq: int, request_seq: int, command: string, ok: bool, body: any, message: any) {
+    dp_write(dc_response(seq, request_seq, command, ok, body, message))
+}
+
+fn dp_send_event(seq: int, event: string, body: any) {
+    dp_write(dc_event(seq, event, body))
+}
+
+// Texto de un error de E/S sin el prefijo de la nativa.
+fn dp_io(e: any) -> string {
+    ls_clean(e)
+}
+
+// El programa del DAP: `.tbc` (artefacto) o fuente/proyecto. Ok(G sin optimizar) / Err(mensaje).
+fn dp_load_program(program: string) -> Result {
+    if std::text::ends_with(program, ".tbc") && std::path::file_name(program) != ".tbc" {
+        let read = std::try::catch(|| { std::fs::read_bytes(program) })
+        match read {
+            Result::Ok(bytes) => {
+                return ac_decode(bytes)
+            },
+            Result::Err(e) => {
+                return Result::Err(dp_io(e))
+            },
+        }
+    }
+    let entry = ld_default_entry(program)
+    let project = ld_load_project(entry)?
+    let diags = check_program(project.items)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_line(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    cg_compile_program(cg_new(cg_native_names()), project.items)
+}
+
+fn dp_verified(g: any, source: string, line: int) -> bool {
+    if g == nil {
+        return false
+    }
+    for f in g.funcs {
+        if f.file != nil && f.file == source {
+            for l in f.locs {
+                if l != nil && l.line == line {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}
+
+// setBreakpoints: (Result::Ok(cuerpo) / Err(mensaje), sesión). Como Rust, una petición con un
+// punto inválido deja aplicados los cambios hechos hasta ahí.
+fn dp_set_breakpoints(args: any, sess: DpSess) -> (Result, DpSess) {
+    let source = lj_str(lj_get(lj_get(args, "source"), "path"))
+    if source == nil {
+        return (Result::Err("source.path is required"), sess)
+    }
+    let canon = std::try::catch(|| { std::path::canonical(source) })
+    let mut path = ""
+    match canon {
+        Result::Ok(c) => {
+            path = c
+        },
+        Result::Err(e) => {
+            return (Result::Err(dp_io(e)), sess)
+        },
+    }
+    let mut bps = []
+    for b in sess.bps {
+        if b[0] != path {
+            bps = std::array::push(bps, b)
+        }
+    }
+    let mut results = []
+    let wanted = lj_get(args, "breakpoints")
+    if lj_kind(wanted) == "a" {
+        for requested in wanted {
+            let line = lj_get(requested, "line")
+            if line == nil || lj_kind(line) != "i" || line < 0 {
+                return (Result::Err("breakpoint.line is required"), DpSess { g: sess.g, bps: bps })
+            }
+            let verified = dp_verified(sess.g, path, line)
+            if verified {
+                bps = std::array::push(bps, [path, line])
+            }
+            results = std::array::push(results, dc_breakpoint(line, path, verified))
+        }
+    }
+    return (Result::Ok(dc_set(dc_obj(), "breakpoints", results)), DpSess { g: sess.g, bps: bps })
+}
+
+// Atiende una petición antes de lanzar el programa: (Ok(cuerpo) / Err(mensaje), sesión).
+// `configurationDone` y `launch` los completa quien llama (necesitan compilar y lanzar).
+fn dp_handle(command: string, args: any, sess: DpSess) -> (Result, DpSess) {
+    if command == "initialize" {
+        return (Result::Ok(dc_capabilities()), sess)
+    }
+    if command == "launch" {
+        let program = lj_str(lj_get(args, "program"))
+        if program == nil {
+            return (Result::Err("launch.program is required"), sess)
+        }
+        if std::json::stringify(lj_get(args, "sandbox")) == "true" {
+            return (Result::Err("sandbox only applies to the VM; native executables are not sandboxed"), sess)
+        }
+        match dp_load_program(program) {
+            Result::Ok(g) => {
+                return (Result::Ok(dc_obj()), DpSess { g: g, bps: sess.bps })
+            },
+            Result::Err(message) => {
+                return (Result::Err(message), sess)
+            },
+        }
+    }
+    if command == "setBreakpoints" {
+        return dp_set_breakpoints(args, sess)
+    }
+    if command == "threads" {
+        return (Result::Ok(dc_threads()), sess)
+    }
+    if command == "stackTrace" {
+        return (Result::Ok(dc_stack_trace(nil)), sess)
+    }
+    if command == "scopes" {
+        return (Result::Ok(dc_scopes()), sess)
+    }
+    if command == "variables" {
+        let reference = lj_get(args, "variablesReference")
+        if reference == nil || lj_kind(reference) != "i" {
+            return (Result::Err("variablesReference is required"), sess)
+        }
+        return (Result::Ok(dc_variables([])), sess)
+    }
+    if command == "continue" || command == "next" || command == "stepIn" || command == "stepOut" || command == "pause" {
+        return (Result::Err("debuggee is not running"), sess)
+    }
+    if command == "terminate" || command == "disconnect" {
+        return (Result::Ok(dc_obj()), sess)
+    }
+    return (Result::Err("unsupported DAP command '" + command + "'"), sess)
+}

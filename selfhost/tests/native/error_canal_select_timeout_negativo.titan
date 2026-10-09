@@ -1,0 +1,4 @@
+fn main() {
+let (a, b) = channel(1)
+print(select([b], 0 - 1))
+}

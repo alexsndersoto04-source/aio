@@ -1,0 +1,178 @@
+fn norm(m: string) -> string {
+    return std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+}
+
+fn run2(db: any, cx: Cx, sql: string) -> (Cx, int) {
+    let (all, err) = ss_parse_all(sql)
+    let mut isq = false
+    if err == "" {
+        let k = all[0][0].k
+        isq = k == "select" || k == "pragma"
+        if k == "insert" {
+            isq = len(all[0][0].v.ret) > 0
+        }
+        if k == "update" {
+            isq = len(all[0][0].v.ret) > 0
+        }
+        if k == "delete" {
+            isq = len(all[0][0].v.ret) > 0
+        }
+    } else {
+        isq = true
+    }
+    let mut cx2 = cx
+    let mut mine = ""
+    if err != "" {
+        mine = "ERR " + sy_fmt_err(sql, err)
+    } else {
+        let (c, names, rows, e2) = sg_exec(cx, all[0], sql)
+        if e2 != "" {
+            let kk = all[0][0].k
+            if kk == "insert" || kk == "update" || kk == "delete" {
+                cx2 = sw_cx(cx, cx.pg, cx.lastid, 0)
+            }
+            mine = "ERR " + sy_fmt_err(sql, st_clean_err(e2))
+        } else {
+            cx2 = c
+            if isq {
+                mine = rows_str(names, rows)
+            } else {
+                let nch = c.changes
+                mine = "{nch}"
+            }
+        }
+    }
+    let mut theirs = ""
+    if isq {
+        let r = std::try::catch(|| { std::sqlite::query(db, sql, []) })
+        match r {
+            Result::Ok(rs) => {
+                theirs = "{rs}"
+            },
+            Result::Err(m) => {
+                theirs = "ERR " + norm(m)
+            },
+        }
+    } else {
+        let r = std::try::catch(|| { std::sqlite::execute(db, sql, []) })
+        match r {
+            Result::Ok(n) => {
+                theirs = "{n}"
+            },
+            Result::Err(m) => {
+                theirs = "ERR " + norm(m)
+            },
+        }
+    }
+    if mine != theirs {
+        print("DIFF", sql)
+        print("  mine  =", mine)
+        print("  oracle=", theirs)
+        return (cx2, 1)
+    }
+    let mut bad = check(db, cx2, "select type, name, tbl_name, sql from sqlite_master order by rowid")
+    let tl = std::sqlite::query(db, "select name from sqlite_master where type = 'table' order by name", [])
+    for t in tl {
+        let nm = std::map::get(t, "name")
+        bad += check(db, cx2, "select rowid, * from " + nm + " order by rowid")
+    }
+    return (cx2, bad)
+}
+
+fn main() {
+    let db = std::sqlite::memory()
+    let (p0, perr) = sqp_open(sqio_mem())
+    let p = sqp_begin(p0)
+    let (sch, serr) = sh_load(p)
+    if serr != "" {
+        print("SCHEMA ERR", serr)
+        return
+    }
+    let mut cx = Cx { sch: sch, pg: p, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 0, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let stmts = [
+        "create table p(id integer primary key, name text unique, v real default 1.5, w text default 'x' not null)",
+        "create table c(a, b, pid references p(id) on delete cascade, foreign key (a, b) references p(name, v) on update set null)",
+        "create index ci on c(a desc, b)",
+        "create unique index cu on c(pid) where pid > 0",
+        "pragma table_info(p)", "pragma table_xinfo(p)", "pragma index_list(p)", "pragma index_list(c)", "pragma index_info(ci)", "pragma index_xinfo(ci)",
+        "pragma foreign_key_list(c)", "pragma database_list", "pragma foreign_keys", "pragma user_version = 5", "pragma user_version",
+        "pragma synchronous", "pragma busy_timeout", "pragma page_size", "pragma encoding", "pragma integrity_check", "pragma quick_check",
+        "pragma schema_version", "pragma application_id", "pragma cache_size", "pragma freelist_count", "pragma recursive_triggers", "pragma temp_store",
+        "pragma locking_mode", "pragma auto_vacuum", "pragma nosuch", "pragma table_info(nosuch)", "pragma journal_mode",
+        "insert into p(id, name) values (1, 'a'), (2, 'b'), (3, 'c')",
+        "insert into c values ('a', 1.5, 1)",
+        "insert into c values ('zz', 1.5, 1)",
+        "insert into c values (null, null, 99)",
+        "insert into c values (null, null, 2)",
+        "pragma foreign_key_check",
+        "delete from p where id = 1",
+        "delete from p where id = 3",
+        "update p set id = 20 where id = 2",
+        "pragma foreign_keys = off",
+        "pragma foreign_keys",
+        "insert into c values (null, null, 77)",
+        "pragma foreign_key_check",
+        "pragma foreign_key_check(c)",
+        "pragma foreign_keys = on",
+        "select * from sqlite_master",
+        "alter table p rename to pp",
+        "alter table pp add column z int default 3",
+        "alter table pp rename column v to vv",
+        "alter table pp drop column vv",
+        "select * from pp",
+        "create table t2 as select id, name, 1+1 as k from pp",
+        "create table t3(a, b)",
+        "create view vw as select * from t3",
+        "create trigger trg after insert on t3 begin select 1; end",
+        "create table t4(id integer primary key autoincrement)",
+        "drop table nosuch", "drop view nosuch", "drop trigger nosuch", "create table if not exists t3(x)",
+        "create index ci on t3(a)", "create view t3 as select 1", "create table ci(x)",
+        "create trigger trg after insert on t3 begin select 1; end", "create trigger trg2 after insert on nosuch begin select 1; end",
+        "alter table t3 rename to t4", "alter table t3 drop column a", "alter table t3 add column p primary key", "alter table t3 add column n int not null",
+        "alter table pp drop column id", "drop index sqlite_autoindex_pp_1", "drop table sqlite_master", "create table sqlite_x(a)",
+        "create table e(a, a)", "create table e2(a primary key, b primary key)", "create table e3(a unique, b, unique(b, a))",
+        "create index nx on nosuch(x)", "create index nx2 on t3(nosuch)",
+        "create table log(msg)",
+        "create table acct(id integer primary key, bal int not null check (bal >= 0))",
+        "create trigger tr1 after insert on acct begin insert into log values ('ins ' || new.id || ' ' || new.bal); end",
+        "create trigger tr2 after update on acct begin insert into log values ('upd ' || old.bal || '->' || new.bal); end",
+        "create trigger tr3 before delete on acct begin insert into log values ('del ' || old.id); end",
+        "create trigger tr4 before insert on acct when new.bal > 1000 begin select raise(abort, 'too rich'); end",
+        "create trigger tr5 before insert on acct when new.bal = 13 begin select raise(ignore); end",
+        "insert into acct values (1, 100), (2, 200)",
+        "insert into acct values (3, 5000)",
+        "insert into acct values (4, 13), (5, 7)",
+        "update acct set bal = bal + 1",
+        "delete from acct where id = 1",
+        "select * from log",
+        "update acct set bal = -1 where id = 2",
+        "create table chain(id integer primary key, parent references chain(id) on delete cascade)",
+        "insert into chain values (1, null), (2, 1), (3, 2), (4, 3), (5, 1)",
+        "insert into chain values (6, 99)",
+        "delete from chain where id = 2",
+        "select * from chain",
+        "create table kids(pid references acct(id) on delete set null on update cascade, tag)",
+        "insert into kids values (2, 'x'), (5, 'y')",
+        "update acct set id = 50 where id = 5",
+        "delete from acct where id = 2",
+        "drop table kids",
+        "drop trigger tr1",
+        "drop index ci",
+        "drop view vw",
+        "drop table c",
+        "drop table if exists nosuch",
+        "select name, tbl_name from sqlite_master"
+    ]
+    let mut bad = 0
+    for q in stmts {
+        print("->", q)
+        let (c2, b) = run2(db, cx, q)
+        cx = c2
+        bad += b
+        if bad > 0 {
+            print("stopped at", q)
+            break
+        }
+    }
+    print("total", len(stmts), "bad", bad)
+}

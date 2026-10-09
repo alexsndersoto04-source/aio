@@ -1,0 +1,509 @@
+// std::sqlite nativo: instrucciones Sqlite* (rt_sq_*) sobre el motor SQL escrito en Titan
+// (std_sqlite_*.titan). Registro de conexiones y pools en el bloque rtm_state():
+//   +56  mapa "c<id>" -> conexión, "p<id>" -> pool, "q<id>" -> id del pool al que vuelve la conexión
+// Los ids salen del contador de handles compartido con TCP/Postgres/MySQL (tcp_st()) y cada
+// conexión o pool ocupa una entrada de la tabla común de handles de base de datos (clases 8 y 9).
+// Los errores se lanzan siempre después de devolver el registro a su sitio.
+
+fn rq_slot() -> int { rtm_state() + 56 }
+
+fn rq_take() -> any {
+    let bits = std::raw::load(rq_slot())
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::store(rq_slot(), 0)
+    std::raw::adopt(9, bits)
+}
+
+fn rq_put(m: any) {
+    std::raw::store(rq_slot(), std::raw::keep(m))
+}
+
+fn rq_fail(msg: string) {
+    rt_native_fail("std::sqlite", msg)
+}
+
+fn rq_id_of(v: any, tag: int, what: string) -> int {
+    if std::raw::tag(v) != tag {
+        pq_type_error(what)
+    }
+    tcp_handle_id(v)
+}
+
+fn rq_val(v: Sv) -> any {
+    match v {
+        Sv::SNull => {
+            return nil
+        },
+        Sv::SInt(i) => {
+            return i
+        },
+        Sv::SReal(f) => {
+            return f
+        },
+        Sv::SText(s) => {
+            return s
+        },
+        Sv::SBlob(b) => {
+            return b
+        },
+        _ => {
+            return nil
+        },
+    }
+}
+
+fn rq_rows(names: array, rows: array) -> any {
+    let mut out = []
+    for r in rows {
+        let mut m = std::map::new()
+        let mut i = 0
+        for n in names {
+            m = std::map::insert(m, n, rq_val(r[i]))
+            i += 1
+        }
+        out = std::array::push(out, m)
+    }
+    out
+}
+
+fn rq_params(params: any) -> array {
+    let t = std::raw::tag(params)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(params)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let x = rt_seq_get(params, i)
+        let tv = std::raw::tag(x)
+        if tv == 0 {
+            out = std::array::push(out, Sv::SNull)
+        } else if tv == 1 {
+            out = std::array::push(out, Sv::SInt(x))
+        } else if tv == 2 && rt_is_finite(std::raw::bits(x)) {
+            out = std::array::push(out, Sv::SReal(x))
+        } else if tv == 5 {
+            out = std::array::push(out, Sv::SText(x))
+        } else if tv == 6 {
+            out = std::array::push(out, Sv::SBlob(x))
+        } else {
+            pq_type_error("SQLite parameters must be nil, int, finite float, string, or bytes")
+        }
+        i += 1
+    }
+    out
+}
+
+// Registra una conexión nueva; devuelve el handle.
+fn rq_register(conn: Conn) -> any {
+    let id = pq_register(8, 0)
+    let reg = rq_take()
+    rq_put(std::map::insert(reg, "c" + "{id}", conn))
+    tk_handle(24, id, 0)
+}
+
+fn rt_sq_open(path: any) -> any {
+    if std::raw::tag(path) != 5 {
+        pq_type_error("SQLite path must be string")
+    }
+    pq_reserve()
+    let fd = sqf_open(path)
+    if fd < 0 {
+        rq_fail("SQLite error: unable to open database file: " + path)
+    }
+    let (conn, err) = cn_make(SqIo { kind: 1, img: nil, jnl: nil, fd: fd, path: path }, path)
+    if err != "" {
+        sqf_close(fd)
+        rq_fail("SQLite error: " + err)
+    }
+    rq_register(conn)
+}
+
+fn rt_sq_memory() -> any {
+    pq_reserve()
+    let (conn, err) = cn_make(sqio_mem(), "")
+    if err != "" {
+        rq_fail("SQLite error: " + err)
+    }
+    rq_register(conn)
+}
+
+// Ejecuta una operación sobre la conexión id: f(conn) -> (conn, resultado, error).
+fn rq_exec(db: any, sql: any, params: any, mode: int) -> any {
+    let id = rq_id_of(db, 24, "operation requires SQLite connection")
+    if std::raw::tag(sql) != 5 {
+        pq_type_error("SQL must be string")
+    }
+    let sv = rq_params(params)
+    let key = "c" + "{id}"
+    let mut reg = rq_take()
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite connection " + "{id}")
+    }
+    let ent = std::map::get(reg, key)
+    reg = std::map::remove(reg, key)
+    let (c2, names, rows, err) = cn_exec(ent, sql, sv, mode)
+    reg = std::map::insert(reg, key, c2)
+    rq_put(reg)
+    if err != "" {
+        rq_fail("SQLite error: " + err)
+    }
+    if mode == 0 {
+        return c2.cx.changes
+    }
+    rq_rows(names, rows)
+}
+
+fn rt_sq_execute(db: any, sql: any, params: any) -> any {
+    rq_exec(db, sql, params, 0)
+}
+
+fn rt_sq_query(db: any, sql: any, params: any) -> any {
+    rq_exec(db, sql, params, 1)
+}
+
+// 0 = begin, 1 = commit, 2 = rollback
+fn rq_txn(db: any, op: int) -> any {
+    let id = rq_id_of(db, 24, "operation requires SQLite connection")
+    let key = "c" + "{id}"
+    let mut reg = rq_take()
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite connection " + "{id}")
+    }
+    let ent = std::map::get(reg, key)
+    reg = std::map::remove(reg, key)
+    let mut c2 = ent
+    let mut err = ""
+    if op == 0 {
+        let (a, b) = cn_api_begin(ent)
+        c2 = a
+        err = b
+    } else if op == 1 {
+        let (a, b) = cn_api_end(ent, "COMMIT")
+        c2 = a
+        err = b
+    } else {
+        let (a, b) = cn_api_end(ent, "ROLLBACK")
+        c2 = a
+        err = b
+    }
+    reg = std::map::insert(reg, key, c2)
+    rq_put(reg)
+    if err != "" {
+        rq_fail(err)
+    }
+    nil
+}
+
+fn rt_sq_begin(db: any) -> any {
+    rq_txn(db, 0)
+}
+
+fn rt_sq_commit(db: any) -> any {
+    rq_txn(db, 1)
+}
+
+fn rt_sq_rollback(db: any) -> any {
+    rq_txn(db, 2)
+}
+
+fn rq_migrations(v: any) -> array {
+    let t = std::raw::tag(v)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(v)
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        let m = rt_seq_get(v, i)
+        if std::raw::tag(m) != 9 {
+            pq_type_error("migration must be map")
+        }
+        let ver = std::map::get(m, "version")
+        if std::raw::tag(ver) != 1 {
+            pq_type_error("migration.version must be int")
+        }
+        let name = std::map::get(m, "name")
+        if std::raw::tag(name) != 5 {
+            pq_type_error("migration.name must be string")
+        }
+        let sql = std::map::get(m, "sql")
+        if std::raw::tag(sql) != 5 {
+            pq_type_error("migration.sql must be string")
+        }
+        out = std::array::push(out, [ver, name, sql])
+        i += 1
+    }
+    out
+}
+
+fn rt_sq_migrate(db: any, migs: any) -> any {
+    let ms = rq_migrations(migs)
+    let id = rq_id_of(db, 24, "operation requires SQLite connection")
+    let key = "c" + "{id}"
+    let mut reg = rq_take()
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite connection " + "{id}")
+    }
+    let ent = std::map::get(reg, key)
+    reg = std::map::remove(reg, key)
+    let (c2, count, err) = cn_migrate(ent, ms)
+    reg = std::map::insert(reg, key, c2)
+    rq_put(reg)
+    if err != "" {
+        rq_fail(err)
+    }
+    count
+}
+
+fn rt_sq_last_id(db: any) -> any {
+    let id = rq_id_of(db, 24, "operation requires SQLite connection")
+    let reg = rq_take()
+    let key = "c" + "{id}"
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite connection " + "{id}")
+    }
+    let ent = std::map::get(reg, key)
+    let v = ent.cx.lastid
+    rq_put(reg)
+    v
+}
+
+fn rt_sq_ping(db: any) -> any {
+    let id = rq_id_of(db, 24, "operation requires SQLite connection")
+    let key = "c" + "{id}"
+    let mut reg = rq_take()
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite connection " + "{id}")
+    }
+    let ent = std::map::get(reg, key)
+    reg = std::map::remove(reg, key)
+    let (c2, ok) = cn_ping(ent)
+    reg = std::map::insert(reg, key, c2)
+    rq_put(reg)
+    ok
+}
+
+// Devuelve una conexión al pool (o la cierra si el pool ya se cerró).
+fn rq_pool_return(reg0: any, pid: int, conn: Conn) -> any {
+    let mut reg = reg0
+    let pk = "p" + "{pid}"
+    if !std::map::contains(reg, pk) {
+        sqf_close_conn(conn)
+        return reg
+    }
+    let pl = std::map::get(reg, pk)
+    reg = std::map::remove(reg, pk)
+    let c2 = cn_close(conn)
+    let mut idle = pl[3]
+    let mut total = pl[2]
+    if pl[4] {
+        total = total - 1
+        sqf_close_conn(c2)
+    } else {
+        idle = std::array::push(idle, c2)
+    }
+    reg = std::map::insert(reg, pk, [pl[0], pl[1], total, idle, pl[4]])
+    return reg
+}
+
+fn sqf_close_conn(c: Conn) {
+    if c.path != "" {
+        sqf_close(c.cx.pg.io.fd)
+    }
+}
+
+fn rt_sq_close(db: any) -> any {
+    if std::raw::tag(db) != 24 {
+        pq_type_error("close requires SQLite connection")
+    }
+    let id = tcp_handle_id(db)
+    let e = pq_entry(id, 8)
+    if e == 0 {
+        return false
+    }
+    pq_unregister(e)
+    let key = "c" + "{id}"
+    let qk = "q" + "{id}"
+    let mut reg = rq_take()
+    if !std::map::contains(reg, key) {
+        rq_put(reg)
+        return false
+    }
+    let ent = std::map::get(reg, key)
+    reg = std::map::remove(reg, key)
+    if std::map::contains(reg, qk) {
+        let pid = std::map::get(reg, qk)
+        reg = std::map::remove(reg, qk)
+        reg = rq_pool_return(reg, pid, ent)
+    } else {
+        let c2 = cn_close(ent)
+        sqf_close_conn(c2)
+    }
+    rq_put(reg)
+    true
+}
+
+fn rt_sq_pool_new(path: any, maximum: any) -> any {
+    if std::raw::tag(path) != 5 {
+        pq_type_error("SQLite pool path must be string")
+    }
+    let n = rtm_positive(maximum, "SQLite pool maximum")
+    if n > 64 {
+        rt_fatal("runtime database pool size limit exceeded (64)")
+    }
+    pq_reserve()
+    let id = pq_register(9, 0)
+    let reg = rq_take()
+    rq_put(std::map::insert(reg, "p" + "{id}", [path, n, 0, [], false]))
+    tk_handle(25, id, 0)
+}
+
+// Saca una conexión del pool: (estado, conexión, error). Estado 0 ok, 1 error, 2 tiempo agotado.
+fn rq_pool_acquire(pid: int, ms: int) -> (int, any, string) {
+    let deadline = tk_now() + ms
+    let pk = "p" + "{pid}"
+    loop {
+        let mut reg = rq_take()
+        if !std::map::contains(reg, pk) {
+            rq_put(reg)
+            return (1, nil, "SQLite pool is closed")
+        }
+        let pl = std::map::get(reg, pk)
+        if pl[4] {
+            rq_put(reg)
+            return (1, nil, "SQLite pool is closed")
+        }
+        if len(pl[3]) > 0 {
+            let idle = pl[3]
+            let c = idle[len(idle) - 1]
+            reg = std::map::insert(std::map::remove(reg, pk), pk, [pl[0], pl[1], pl[2], std::array::slice(idle, 0, len(idle) - 1), false])
+            rq_put(reg)
+            return (0, c, "")
+        }
+        if pl[2] < pl[1] {
+            reg = std::map::insert(std::map::remove(reg, pk), pk, [pl[0], pl[1], pl[2] + 1, pl[3], false])
+            rq_put(reg)
+            let path = pl[0]
+            let fd = sqf_open(path)
+            if fd < 0 {
+                let r2 = rq_take()
+                let p2 = std::map::get(r2, pk)
+                rq_put(std::map::insert(std::map::remove(r2, pk), pk, [p2[0], p2[1], p2[2] - 1, p2[3], p2[4]]))
+                return (1, nil, "SQLite error: unable to open database file")
+            }
+            let (conn, err) = cn_make(SqIo { kind: 1, img: nil, jnl: nil, fd: fd, path: path }, path)
+            if err != "" {
+                sqf_close(fd)
+                let r2 = rq_take()
+                let p2 = std::map::get(r2, pk)
+                rq_put(std::map::insert(std::map::remove(r2, pk), pk, [p2[0], p2[1], p2[2] - 1, p2[3], p2[4]]))
+                return (1, nil, "SQLite error: " + err)
+            }
+            return (0, conn, "")
+        }
+        rq_put(reg)
+        let remaining = deadline - tk_now()
+        if remaining <= 0 {
+            return (2, nil, "")
+        }
+        let mut step = remaining
+        if step > 2 {
+            step = 2
+        }
+        tk_sleep(step)
+    }
+    return (2, nil, "")
+}
+
+fn rt_sq_pool_acquire(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pid = rq_id_of(pool, 25, "operation requires SQLite pool")
+    let pe = pq_entry(pid, 9)
+    if pe == 0 {
+        pq_type_error("unknown SQLite pool " + "{pid}")
+    }
+    pq_reserve()
+    let (st, conn, err) = rq_pool_acquire(pid, ms)
+    if st == 2 {
+        return ht_none()
+    }
+    if st != 0 {
+        rq_fail(err)
+    }
+    let id = pq_register(8, 0)
+    let mut reg = rq_take()
+    reg = std::map::insert(reg, "c" + "{id}", conn)
+    reg = std::map::insert(reg, "q" + "{id}", pid)
+    rq_put(reg)
+    ht_some(tk_handle(24, id, 0))
+}
+
+fn rt_sq_pool_stats(pool: any) -> any {
+    let pid = rq_id_of(pool, 25, "operation requires SQLite pool")
+    let reg = rq_take()
+    let pk = "p" + "{pid}"
+    if pq_entry(pid, 9) == 0 || !std::map::contains(reg, pk) {
+        rq_put(reg)
+        pq_type_error("unknown SQLite pool " + "{pid}")
+    }
+    let pl = std::map::get(reg, pk)
+    rq_put(reg)
+    let idle = len(pl[3])
+    let mut m = std::map::new()
+    m = std::map::insert(m, "maximum", pl[1])
+    m = std::map::insert(m, "total", pl[2])
+    m = std::map::insert(m, "idle", idle)
+    m = std::map::insert(m, "checked_out", pl[2] - idle)
+    m = std::map::insert(m, "closed", pl[4])
+    m
+}
+
+fn rt_sq_pool_health(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pid = rq_id_of(pool, 25, "operation requires SQLite pool")
+    let pe = pq_entry(pid, 9)
+    if pe == 0 {
+        pq_type_error("unknown SQLite pool " + "{pid}")
+    }
+    let (st, conn, err) = rq_pool_acquire(pid, ms)
+    if st != 0 {
+        return false
+    }
+    let (c2, ok) = cn_ping(conn)
+    let mut reg = rq_take()
+    reg = rq_pool_return(reg, pid, c2)
+    rq_put(reg)
+    ok
+}
+
+fn rt_sq_pool_close(pool: any) -> any {
+    if std::raw::tag(pool) != 25 {
+        pq_type_error("pool_close requires SQLite pool")
+    }
+    let pid = tcp_handle_id(pool)
+    let pe = pq_entry(pid, 9)
+    if pe == 0 {
+        pq_type_error("unknown SQLite pool " + "{pid}")
+    }
+    pq_unregister(pe)
+    let pk = "p" + "{pid}"
+    let mut reg = rq_take()
+    let pl = std::map::get(reg, pk)
+    for c in pl[3] {
+        sqf_close_conn(c)
+    }
+    let total = pl[2] - len(pl[3])
+    reg = std::map::insert(std::map::remove(reg, pk), pk, [pl[0], pl[1], total, [], true])
+    rq_put(reg)
+    nil
+}

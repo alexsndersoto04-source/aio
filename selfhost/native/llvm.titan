@@ -543,6 +543,12 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
     } else if name == "std::raw::set_sysreg" {
         b1 = lv_e(b1, "  call void @lv_set_sysreg(i64 " + a0 + ", i64 " + a1 + ")")
         b1 = lv_put(b1, res, "0", "0")
+    } else if name == "std::raw::fiber_switch" {
+        // Las tareas (spawn/join/canales) solo existen en el backend propio
+        // x86-64: aquí Spawn no se compila, nunca hay otra pila y esta
+        // instrucción no se alcanza. Si se alcanzase, trampa (no un valor falso).
+        b1 = lv_e(b1, "  call void @llvm.trap()")
+        b1 = lv_put(b1, res, "0", "0")
     } else if name == "std::raw::hvc" {
         // Llamada al firmware (PSCI): x0, x1 -> x0. Solo ARM64.
         if ctx.target == "aarch64" {

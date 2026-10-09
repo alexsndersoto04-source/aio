@@ -1,0 +1,64 @@
+// Gancho de pruebas de las primitivas de TLS (solo para el banco `harness.sh`; NO forma parte del runtime).
+// `std::hash::blake3_bytes(bytes)` se sustituye, en una copia del runtime, por `tst_hook`:
+// la entrada es texto "ORDEN hex hex ..." y la salida son los bytes ASCII del resultado en hexadecimal.
+
+fn tst_hexval(c: int) -> int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    0
+}
+
+// Tabla de argumentos: +0 cuántos; +8+16*i {ptr, largo} (binarios decodificados de hex).
+fn tst_args(p: int, n: int) -> int {
+    let tab = rt_alloc_zero(8 + 16 * 16)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        while i < n && std::raw::load8(p + i) == 32 {
+            i += 1
+        }
+        if i < n {
+            let s = i
+            while i < n && std::raw::load8(p + i) != 32 {
+                i += 1
+            }
+            let len = (i - s) / 2
+            let buf = rt_alloc_zero(len + 16)
+            let mut k = 0
+            while k < len {
+                std::raw::store8(buf + k, tst_hexval(std::raw::load8(p + s + 2 * k)) * 16 + tst_hexval(std::raw::load8(p + s + 2 * k + 1)))
+                k += 1
+            }
+            std::raw::store(tab + 8 + 16 * count, buf)
+            std::raw::store(tab + 16 + 16 * count, len)
+            count += 1
+        }
+    }
+    std::raw::store(tab, count)
+    tab
+}
+
+fn tst_ap(t: int, i: int) -> int { std::raw::load(t + 8 + 16 * i) }
+fn tst_al(t: int, i: int) -> int { std::raw::load(t + 16 + 16 * i) }
+
+fn tst_ret(p: int, n: int) -> any {
+    let h = rt_alloc(2 * n + 8)
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(p + i)
+        std::raw::store8(h + 2 * i, rt_hex_digit(x / 16))
+        std::raw::store8(h + 2 * i + 1, rt_hex_digit(x & 15))
+        i += 1
+    }
+    let b = rt_bytes_from(h, 2 * n)
+    rt_free_block(h)
+    b
+}
+
+fn tst_hook(v: any) -> any {
+    rt_expect_bytes(v, "hook")
+    let t = tst_args(rt_bdata(v), rt_slen(v))
+    let cmd = std::raw::load8(tst_ap(t, 0))
+    tst_cmd(cmd, t)
+}

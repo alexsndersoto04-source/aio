@@ -1,0 +1,116 @@
+// puerto: 53302
+// servidor: --unix /tmp/mysql_cmp_53302.sock
+// std::mysql: URLs, opciones, autenticación (native, caching_sha2, clear, old) y transporte (TCP/socket
+// Unix). La VM de Rust y el nativo deben imprimir lo mismo.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn probar(nombre: string, url: string) {
+    let r = std::try::catch(|| {
+        let db = std::mysql::connect(url)
+        let v = std::mysql::query(db, "SELECT 1 AS uno", [])
+        std::mysql::close(db)
+        v
+    })
+    mostrar(nombre, r)
+}
+
+fn transporte(nombre: string, url: string) {
+    let r = std::try::catch(|| {
+        let db = std::mysql::connect(url)
+        let v = std::mysql::query(db, "SELECT @@transport AS t", [])
+        std::mysql::close(db)
+        v
+    })
+    mostrar(nombre, r)
+}
+
+fn main() {
+    let base = "127.0.0.1:53302"
+    probar("esquema", "http://x/db")
+    probar("vacia", "")
+    probar("sin_host", "mysql://")
+    probar("sin_host_db", "mysql:///db")
+    probar("no_url", "not a url")
+    probar("puerto_grande", "mysql://u:p@h:99999/db")
+    probar("cannot_be_base", "mysql:app")
+    probar("rechazada", "mysql://127.0.0.1:1/db")
+    probar("no_resuelve", "mysql://nohost.invalid:3306/db")
+    probar("ipv6_rechazada", "mysql://u@[::1]:1/db")
+    probar("localhost_rechazada", "mysql://localhost:1")
+    probar("param_desconocido", "mysql://app:secret@127.0.0.1:53302/test?foo=1")
+    probar("puerto_malo", "mysql://app:secret@127.0.0.1:53302/test?port=x")
+    probar("compress_malo", "mysql://app:secret@127.0.0.1:53302/test?compress=huh")
+    probar("pool_rango", "mysql://app:secret@127.0.0.1:53302/test?pool_min=5&pool_max=2")
+    probar("pool_max_cero", "mysql://app:secret@127.0.0.1:53302/test?pool_max=0")
+    probar("pool_ok", "mysql://app:secret@127.0.0.1:53302/test?pool_min=1&pool_max=3&reset_connection=false&check_health=true")
+    probar("bool_malo", "mysql://app:secret@127.0.0.1:53302/test?prefer_socket=si")
+    probar("socket_inexistente", "mysql://u:p@127.0.0.1:53302/test?socket=/nonexistent.sock")
+    probar("socket_largo", "mysql://u:p@127.0.0.1:53302/test?socket=/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock")
+    probar("host_param", "mysql://app:secret@nada/test?host=127.0.0.1&port=53302")
+    probar("usuario_param", "mysql://127.0.0.1:53302/test?user=app&password=secret")
+    probar("db_param", "mysql://app:secret@127.0.0.1:53302?db_name=test")
+    probar("clave_codificada", "mysql://app:s%65cret@127.0.0.1:53302/test")
+    probar("usuario_codificado", "mysql://a%70p:secret@127.0.0.1:53302/te%73t")
+    probar("host_mayusculas", "mysql://app:secret@LOCALHOST:53302/test")
+    probar("host_ipv4_hex", "mysql://app:secret@0x7f.1:53302/test")
+    probar("sin_ruta", "mysql://app:secret@127.0.0.1:53302")
+    probar("ruta_barra", "mysql://app:secret@127.0.0.1:53302/")
+    probar("fragmento", "mysql://app:secret@127.0.0.1:53302/test#x")
+    probar("clave_mala", "mysql://app:wrong@127.0.0.1:53302/test")
+    probar("sin_clave_con_clave", "mysql://app@127.0.0.1:53302/test")
+    probar("usuario_inexistente", "mysql://nouser:x@127.0.0.1:53302/test")
+    probar("vacio_sin_clave", "mysql://vacio@127.0.0.1:53302/test")
+    probar("vacio_con_clave", "mysql://vacio:algo@127.0.0.1:53302/test")
+    probar("sin_usuario", "mysql://127.0.0.1:53302/test")
+    probar("clear_desactivado", "mysql://clear:clave@127.0.0.1:53302/test")
+    probar("clear_activado", "mysql://clear:clave@127.0.0.1:53302/test?enable_cleartext_plugin=true")
+    probar("clear_mala", "mysql://clear:otra@127.0.0.1:53302/test?enable_cleartext_plugin=true")
+    probar("sha2_primera", "mysql://sha2:sha2pw@127.0.0.1:53302/test?prefer_socket=false")
+    probar("sha2_segunda", "mysql://sha2:sha2pw@127.0.0.1:53302/test?prefer_socket=false")
+    probar("sha2_mala", "mysql://sha2:otra@127.0.0.1:53302/test?prefer_socket=false")
+    probar("sha2_vacia_pide", "mysql://sha2v@127.0.0.1:53302/test?prefer_socket=false")
+    probar("sha2_vacia_con_clave", "mysql://sha2v:x@127.0.0.1:53302/test?prefer_socket=false")
+    probar("sha2_por_socket", "mysql://sha2:sha2pw@127.0.0.1:53302/test")
+    probar("old_desactivado", "mysql://old:oldpw@127.0.0.1:53302/test")
+    probar("old_activado", "mysql://old:oldpw@127.0.0.1:53302/test?secure_auth=false")
+    probar("old_mala", "mysql://old:otra@127.0.0.1:53302/test?secure_auth=false")
+    transporte("transporte_mejorado", "mysql://app:secret@127.0.0.1:53302/test")
+    transporte("transporte_localhost", "mysql://app:secret@localhost:53302/test")
+    transporte("transporte_tcp", "mysql://app:secret@127.0.0.1:53302/test?prefer_socket=false")
+    transporte("transporte_socket", "mysql://app:secret@127.0.0.1:1/test?socket=/tmp/mysql_cmp_53302.sock")
+    transporte("opciones_tcp", "mysql://app:secret@127.0.0.1:53302/test?prefer_socket=false&tcp_keepalive_time_ms=5000&tcp_keepalive_probe_interval_secs=2&tcp_keepalive_probe_count=3&tcp_user_timeout_ms=10000&tcp_connect_timeout_ms=2000&compress=fast&stmt_cache_size=4")
+    probar("keepalive_cero", "mysql://app:secret@127.0.0.1:53302/test?prefer_socket=false&tcp_keepalive_time_ms=0")
+    probar("max_paquete_cero", "mysql://app:secret@127.0.0.1:53302/test?max_allowed_packet=0")
+    probar("max_paquete_malo", "mysql://app:secret@127.0.0.1:53302/test?max_allowed_packet=x")
+    // paquetes grandes y límites
+    let pequeno = std::mysql::connect("mysql://app:secret@127.0.0.1:53302/test?max_allowed_packet=2048")
+    mostrar("paquete_ok", std::mysql::query(pequeno, "SELECT 1 AS a", []))
+    let mut grande = ""
+    let mut i = 0
+    while i < 3000 {
+        grande = grande + "0123456789"
+        i += 1
+    }
+    mostrar("paquete_grande", std::try::catch(|| { std::mysql::query(pequeno, "SELECT ? AS a", [grande]) }))
+    mostrar("sigue_tras_limite", std::mysql::query(pequeno, "SELECT 2 AS a", []))
+    std::mysql::close(pequeno)
+    // caché de sentencias desactivada o diminuta
+    let sin_cache = std::mysql::connect("mysql://app:secret@127.0.0.1:53302/test?stmt_cache_size=0")
+    let mut k = 0
+    while k < 5 {
+        mostrar("sin_cache", std::mysql::query(sin_cache, "SELECT ? AS a", [k]))
+        k += 1
+    }
+    std::mysql::close(sin_cache)
+    let poca = std::mysql::connect("mysql://app:secret@127.0.0.1:53302/test?stmt_cache_size=2")
+    k = 0
+    while k < 6 {
+        mostrar("poca_cache", std::mysql::query(poca, "SELECT ? + 0 AS a, 'x' AS q", [k]))
+        mostrar("poca_cache_b", std::mysql::query(poca, "SELECT ? + 1 AS b", [k]))
+        mostrar("poca_cache_c", std::mysql::query(poca, "SELECT ? + 2 AS c, 'x' AS q2", [k]))
+        k += 1
+    }
+    std::mysql::close(poca)
+}

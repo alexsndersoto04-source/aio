@@ -1,0 +1,39 @@
+struct Point {
+    x: int,
+    y: int,
+}
+
+struct Rect {
+    origin: Point,
+    w: int,
+    h: int,
+}
+
+enum Shape {
+    Dot,
+    Circle(int),
+    Box(Rect),
+}
+
+fn box_area(r: Rect) -> int {
+    r.w * r.h
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Shape::Dot => 0,
+        Shape::Circle(r) => 3 * r * r,
+        Shape::Box(r) => box_area(r),
+    }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 }
+    let r = Rect { origin: p, w: 5, h: 6 }
+    let shapes = [Shape::Dot, Shape::Circle(2), Shape::Box(r)]
+    let mut total = 0
+    for s in shapes {
+        total += area(s)
+    }
+    total + box_area(r)
+}

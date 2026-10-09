@@ -1,0 +1,1450 @@
+// std::sqlite en Titan, parte 7: analizador de sentencias (DML, DDL, transacciones, PRAGMA).
+// Prefijo `ss`. Misma convención de errores que std_sqlite_pe.titan.
+
+struct Ins {
+    with: array,
+    rec: bool,
+    verb: string,
+    conf: string,
+    tbl: string,
+    alias: string,
+    cols: array,
+    sel: any,
+    defaults: bool,
+    ups: array,
+    ret: array,
+}
+
+struct Ups {
+    target: array,
+    twh: any,
+    nothing: bool,
+    sets: array,
+    wh: any,
+}
+
+struct Upd {
+    with: array,
+    rec: bool,
+    conf: string,
+    tbl: string,
+    alias: string,
+    sets: array,
+    from: array,
+    wh: any,
+    ret: array,
+    order: array,
+    limit: any,
+    offset: any,
+}
+
+struct Del {
+    with: array,
+    rec: bool,
+    tbl: string,
+    alias: string,
+    wh: any,
+    ret: array,
+    order: array,
+    limit: any,
+    offset: any,
+}
+
+struct FkDef {
+    tbl: string,
+    from: array,
+    cols: array,
+    ondel: string,
+    onupd: string,
+    defer: bool,
+}
+
+struct ColDef {
+    name: string,
+    ty: string,
+    pk: bool,
+    pkdesc: bool,
+    autoinc: bool,
+    notnull: bool,
+    unique: bool,
+    dflt: any,
+    checks: array,
+    coll: string,
+    fk: any,
+    gen: any,
+    genstored: bool,
+    pkconf: string,
+    nnconf: string,
+    ukconf: string,
+}
+
+struct TCon {
+    kind: string,
+    cols: array,
+    ex: any,
+    fk: any,
+    name: string,
+    conf: string,
+}
+
+struct CT {
+    name: string,
+    ifne: bool,
+    temp: bool,
+    cols: array,
+    cons: array,
+    norowid: bool,
+    strict: bool,
+    sel: any,
+    ntok: int,
+}
+
+struct CI {
+    name: string,
+    tbl: string,
+    unique: bool,
+    ifne: bool,
+    cols: array,
+    wh: any,
+    ntok: int,
+}
+
+struct CV {
+    name: string,
+    ifne: bool,
+    temp: bool,
+    cols: array,
+    sel: any,
+    ntok: int,
+}
+
+struct CTr {
+    name: string,
+    ifne: bool,
+    temp: bool,
+    timing: string,
+    ev: string,
+    ucols: array,
+    tbl: string,
+    wh: any,
+    body: array,
+    ntok: int,
+}
+
+// Sentencia: k = clase.
+struct Stm {
+    k: string,
+    v: any,
+}
+
+fn ss_conf(t: array, i: int) -> (string, int) {
+    if sp_kw(t, i, "ON") && sp_kw(t, i + 1, "CONFLICT") {
+        let w = t[i + 2].u
+        if w == "ROLLBACK" || w == "ABORT" || w == "FAIL" || w == "IGNORE" || w == "REPLACE" {
+            return (w, i + 3)
+        }
+        return ("", sp_err(i + 2))
+    }
+    return ("", i)
+}
+
+fn ss_name_list(t: array, i: int) -> (any, int) {
+    if !sp_op(t, i, "(") {
+        return (nil, sp_err(i))
+    }
+    let mut names = []
+    let mut k = i + 1
+    while true {
+        let (nm0, j) = sp_name(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        let mut nm = nm0
+        names = std::array::push(names, nm)
+        k = j
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        break
+    }
+    if !sp_op(t, k, ")") {
+        return (nil, sp_err(k))
+    }
+    return (names, k + 1)
+}
+
+fn ss_returning(t: array, i: int) -> (any, int) {
+    if sp_kw(t, i, "RETURNING") {
+        return sp_select_cols(t, i + 1)
+    }
+    return ([], i)
+}
+
+// ------------------------------------------------------------ INSERT / UPDATE / DELETE
+
+fn ss_insert(t: array, i: int, with: array, rec: bool) -> (any, int) {
+    let mut k = i
+    let mut verb = "INSERT"
+    let mut conf = ""
+    if sp_kw(t, k, "REPLACE") {
+        verb = "REPLACE"
+        conf = "REPLACE"
+        k += 1
+    } else {
+        k += 1
+        if sp_kw(t, k, "OR") {
+            conf = t[k + 1].u
+            if conf != "ROLLBACK" && conf != "ABORT" && conf != "FAIL" && conf != "IGNORE" && conf != "REPLACE" {
+                return (nil, sp_err(k + 1))
+            }
+            k += 2
+        }
+    }
+    if !sp_kw(t, k, "INTO") {
+        return (nil, sp_err(k))
+    }
+    let (tbl0, j) = sp_name(t, k + 1)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut tbl = tbl0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        k = j2
+        tbl = n2
+    }
+    let mut alias = ""
+    if sp_kw(t, k, "AS") {
+        let (a, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        alias = a
+        k = j2
+    }
+    let mut cols = []
+    if sp_op(t, k, "(") {
+        let (cn, j2) = ss_name_list(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        cols = cn
+        k = j2
+    }
+    let mut sel = nil
+    let mut defaults = false
+    if sp_kw(t, k, "DEFAULT") && sp_kw(t, k + 1, "VALUES") {
+        defaults = true
+        k += 2
+    } else {
+        let (s, j2) = sp_select(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        sel = s
+        k = j2
+    }
+    let mut ups = []
+    while sp_kw(t, k, "ON") && sp_kw(t, k + 1, "CONFLICT") {
+        let mut target = []
+        let mut twh = nil
+        let mut m = k + 2
+        if sp_op(t, m, "(") {
+            let (items, j2) = sp_order_list(t, m + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_op(t, j2, ")") {
+                return (nil, sp_err(j2))
+            }
+            target = items
+            m = j2 + 1
+            if sp_kw(t, m, "WHERE") {
+                let (e, j3) = sp_expr(t, m + 1)
+                if j3 < 0 {
+                    return (nil, j3)
+                }
+                twh = e
+                m = j3
+            }
+        }
+        if !sp_kw(t, m, "DO") {
+            return (nil, sp_err(m))
+        }
+        m += 1
+        if sp_kw(t, m, "NOTHING") {
+            ups = std::array::push(ups, Ups { target: target, twh: twh, nothing: true, sets: [], wh: nil })
+            k = m + 1
+            continue
+        }
+        if !sp_kw(t, m, "UPDATE") || !sp_kw(t, m + 1, "SET") {
+            return (nil, sp_err(m))
+        }
+        let (sets, j2) = ss_sets(t, m + 2)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        m = j2
+        let mut wh = nil
+        if sp_kw(t, m, "WHERE") {
+            let (e, j3) = sp_expr(t, m + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            wh = e
+            m = j3
+        }
+        ups = std::array::push(ups, Ups { target: target, twh: twh, nothing: false, sets: sets, wh: wh })
+        k = m
+    }
+    let (ret, j3) = ss_returning(t, k)
+    if j3 < 0 {
+        return (nil, j3)
+    }
+    return (Stm { k: "insert", v: Ins { with: with, rec: rec, verb: verb, conf: conf, tbl: tbl, alias: alias, cols: cols, sel: sel, defaults: defaults, ups: ups, ret: ret } }, j3)
+}
+
+// a = e, (a, b) = e, ... Devuelve array de [nombres, expresión].
+fn ss_sets(t: array, i: int) -> (any, int) {
+    let mut sets = []
+    let mut k = i
+    while true {
+        let mut names = []
+        if sp_op(t, k, "(") {
+            let (cn, j) = ss_name_list(t, k)
+            if j < 0 {
+                return (nil, j)
+            }
+            names = cn
+            k = j
+        } else {
+            let (nm0, j) = sp_name(t, k)
+            if j < 0 {
+                return (nil, j)
+            }
+            let mut nm = nm0
+            names = [nm]
+            k = j
+        }
+        if !sp_op(t, k, "=") {
+            return (nil, sp_err(k))
+        }
+        let (e, j2) = sp_expr(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        sets = std::array::push(sets, [names, e])
+        k = j2
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        break
+    }
+    return (sets, k)
+}
+
+fn ss_tail(t: array, i: int) -> (any, any, any, int) {
+    // ORDER BY / LIMIT de UPDATE y DELETE: SQLite los acepta solo con una opción de compilación
+    // que no está activa, así que son un error de sintaxis.
+    if sp_kw(t, i, "ORDER") || sp_kw(t, i, "LIMIT") {
+        return ([], nil, nil, sp_err(i))
+    }
+    let mut k = i
+    let mut order = []
+    let mut limit = nil
+    let mut offset = nil
+    if sp_kw(t, k, "ORDER") && sp_kw(t, k + 1, "BY") {
+        let (items, j) = sp_order_list(t, k + 2)
+        if j < 0 {
+            return (nil, nil, nil, j)
+        }
+        order = items
+        k = j
+    }
+    if sp_kw(t, k, "LIMIT") {
+        let (e, j) = sp_expr(t, k + 1)
+        if j < 0 {
+            return (nil, nil, nil, j)
+        }
+        limit = e
+        k = j
+        if sp_kw(t, k, "OFFSET") {
+            let (e2, j2) = sp_expr(t, k + 1)
+            if j2 < 0 {
+                return (nil, nil, nil, j2)
+            }
+            offset = e2
+            k = j2
+        }
+    }
+    return (order, limit, offset, k)
+}
+
+fn ss_update(t: array, i: int, with: array, rec: bool) -> (any, int) {
+    let mut k = i + 1
+    let mut conf = ""
+    if sp_kw(t, k, "OR") {
+        conf = t[k + 1].u
+        k += 2
+    }
+    let (tbl0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut tbl = tbl0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        k = j2
+        tbl = n2
+    }
+    let (alias, j1) = sp_alias(t, k)
+    if j1 < 0 {
+        return (nil, j1)
+    }
+    k = j1
+    if !sp_kw(t, k, "SET") {
+        return (nil, sp_err(k))
+    }
+    let (sets, j2) = ss_sets(t, k + 1)
+    if j2 < 0 {
+        return (nil, j2)
+    }
+    k = j2
+    let mut from = []
+    if sp_kw(t, k, "FROM") {
+        let (srcs, j3) = sp_from_list(t, k + 1)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        from = srcs
+        k = j3
+    }
+    let mut wh = nil
+    if sp_kw(t, k, "WHERE") {
+        let (e, j3) = sp_expr(t, k + 1)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        wh = e
+        k = j3
+    }
+    let (ret, j4) = ss_returning(t, k)
+    if j4 < 0 {
+        return (nil, j4)
+    }
+    let (order, limit, offset, j5) = ss_tail(t, j4)
+    if j5 < 0 {
+        return (nil, j5)
+    }
+    return (Stm { k: "update", v: Upd { with: with, rec: rec, conf: conf, tbl: tbl, alias: alias, sets: sets, from: from, wh: wh, ret: ret, order: order, limit: limit, offset: offset } }, j5)
+}
+
+fn ss_delete(t: array, i: int, with: array, rec: bool) -> (any, int) {
+    let mut k = i + 1
+    if !sp_kw(t, k, "FROM") {
+        return (nil, sp_err(k))
+    }
+    let (tbl0, j) = sp_name(t, k + 1)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut tbl = tbl0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        k = j2
+        tbl = n2
+    }
+    let (alias, j1) = sp_alias(t, k)
+    if j1 < 0 {
+        return (nil, j1)
+    }
+    k = j1
+    let mut wh = nil
+    if sp_kw(t, k, "WHERE") {
+        let (e, j3) = sp_expr(t, k + 1)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        wh = e
+        k = j3
+    }
+    let (ret, j4) = ss_returning(t, k)
+    if j4 < 0 {
+        return (nil, j4)
+    }
+    let (order, limit, offset, j5) = ss_tail(t, j4)
+    if j5 < 0 {
+        return (nil, j5)
+    }
+    return (Stm { k: "delete", v: Del { with: with, rec: rec, tbl: tbl, alias: alias, wh: wh, ret: ret, order: order, limit: limit, offset: offset } }, j5)
+}
+
+// ------------------------------------------------------------ CREATE
+
+fn ss_fk_action(t: array, i: int) -> (string, string, bool, int) {
+    // acciones ON DELETE/UPDATE, MATCH, [NOT] DEFERRABLE
+    let mut k = i
+    let mut ondel = "NO ACTION"
+    let mut onupd = "NO ACTION"
+    let mut defer = false
+    while true {
+        if sp_kw(t, k, "ON") && (sp_kw(t, k + 1, "DELETE") || sp_kw(t, k + 1, "UPDATE")) {
+            let which = t[k + 1].u
+            let mut act = ""
+            let mut m = k + 2
+            if sp_kw(t, m, "SET") && (sp_kw(t, m + 1, "NULL") || sp_kw(t, m + 1, "DEFAULT")) {
+                act = "SET " + t[m + 1].u
+                m += 2
+            } else if sp_kw(t, m, "CASCADE") || sp_kw(t, m, "RESTRICT") {
+                act = t[m].u
+                m += 1
+            } else if sp_kw(t, m, "NO") && sp_kw(t, m + 1, "ACTION") {
+                act = "NO ACTION"
+                m += 2
+            } else {
+                return ("", "", false, sp_err(m))
+            }
+            if which == "DELETE" {
+                ondel = act
+            } else {
+                onupd = act
+            }
+            k = m
+            continue
+        }
+        if sp_kw(t, k, "MATCH") {
+            k += 2
+            continue
+        }
+        if sp_kw(t, k, "NOT") && sp_kw(t, k + 1, "DEFERRABLE") {
+            k += 2
+            if sp_kw(t, k, "INITIALLY") {
+                k += 2
+            }
+            continue
+        }
+        if sp_kw(t, k, "DEFERRABLE") {
+            k += 1
+            if sp_kw(t, k, "INITIALLY") {
+                if sp_kw(t, k + 1, "DEFERRED") {
+                    defer = true
+                }
+                k += 2
+            }
+            continue
+        }
+        break
+    }
+    return (ondel, onupd, defer, k)
+}
+
+fn ss_references(t: array, i: int, from: array) -> (any, int) {
+    // REFERENCES tabla [(cols)] acciones
+    let (tbl0, j) = sp_name(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut tbl = tbl0
+    let mut k = j
+    let mut cols = []
+    if sp_op(t, k, "(") {
+        let (cn, j2) = ss_name_list(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        cols = cn
+        k = j2
+    }
+    let (od, ou, df, j3) = ss_fk_action(t, k)
+    if j3 < 0 {
+        return (nil, j3)
+    }
+    return (FkDef { tbl: tbl, from: from, cols: cols, ondel: od, onupd: ou, defer: df }, j3)
+}
+
+fn ss_coldef(t: array, i: int) -> (any, int) {
+    let (nm0, j) = sp_name(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut nm = nm0
+    let mut k = j
+    // tipo
+    let mut parts = []
+    while (t[k].k == "id" || t[k].k == "qid") && !(t[k].k == "id" && (t[k].u == "CONSTRAINT" || t[k].u == "PRIMARY" || t[k].u == "NOT" || t[k].u == "NULL" || t[k].u == "UNIQUE" || t[k].u == "CHECK" || t[k].u == "DEFAULT" || t[k].u == "COLLATE" || t[k].u == "REFERENCES" || t[k].u == "GENERATED" || t[k].u == "AS")) {
+        parts = std::array::push(parts, t[k].s)
+        k += 1
+    }
+    let mut ty = std::collections::join(parts, " ")
+    if sp_op(t, k, "(") {
+        let mut txt = "("
+        k += 1
+        while !sp_op(t, k, ")") && t[k].k != "eof" {
+            txt = txt + t[k].s
+            k += 1
+        }
+        if t[k].k == "eof" {
+            return (nil, sp_err(k))
+        }
+        k += 1
+        ty = ty + txt + ")"
+    }
+    let mut pk = false
+    let mut pkdesc = false
+    let mut autoinc = false
+    let mut notnull = false
+    let mut unique = false
+    let mut dflt = nil
+    let mut checks = []
+    let mut coll = ""
+    let mut fk = nil
+    let mut gen = nil
+    let mut genstored = false
+    let mut pkconf = ""
+    let mut nnconf = ""
+    let mut ukconf = ""
+    while true {
+        if sp_kw(t, k, "CONSTRAINT") {
+            k += 2
+            continue
+        }
+        if sp_kw(t, k, "PRIMARY") && sp_kw(t, k + 1, "KEY") {
+            pk = true
+            k += 2
+            if sp_kw(t, k, "ASC") {
+                k += 1
+            } else if sp_kw(t, k, "DESC") {
+                pkdesc = true
+                k += 1
+            }
+            let (cf, j2) = ss_conf(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            pkconf = cf
+            k = j2
+            if sp_kw(t, k, "AUTOINCREMENT") {
+                autoinc = true
+                k += 1
+            }
+            continue
+        }
+        if sp_kw(t, k, "NOT") && sp_kw(t, k + 1, "NULL") {
+            notnull = true
+            k += 2
+            let (cf, j2) = ss_conf(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            nnconf = cf
+            k = j2
+            continue
+        }
+        if sp_kw(t, k, "NULL") {
+            k += 1
+            let (cf, j2) = ss_conf(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            k = j2
+            continue
+        }
+        if sp_kw(t, k, "UNIQUE") {
+            unique = true
+            k += 1
+            let (cf, j2) = ss_conf(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            ukconf = cf
+            k = j2
+            continue
+        }
+        if sp_kw(t, k, "CHECK") && sp_op(t, k + 1, "(") {
+            let (e, j2) = sp_expr(t, k + 2)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_op(t, j2, ")") {
+                return (nil, sp_err(j2))
+            }
+            let ctxt = sq_trim_ws(std::text::substring(t[len(t) - 1].u, t[k + 2].p, t[j2].p))
+            checks = std::array::push(checks, [e, ctxt])
+            k = j2 + 1
+            continue
+        }
+        if sp_kw(t, k, "DEFAULT") {
+            if sp_op(t, k + 1, "(") {
+                let (e, j2) = sp_expr(t, k + 2)
+                if j2 < 0 {
+                    return (nil, j2)
+                }
+                if !sp_op(t, j2, ")") {
+                    return (nil, sp_err(j2))
+                }
+                dflt = e
+                k = j2 + 1
+            } else {
+                let (e, j2) = sp_unary(t, k + 1)
+                if j2 < 0 {
+                    return (nil, j2)
+                }
+                dflt = e
+                k = j2
+            }
+            continue
+        }
+        if sp_kw(t, k, "COLLATE") {
+            let (cn, j2) = sp_name(t, k + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            coll = cn
+            k = j2
+            continue
+        }
+        if sp_kw(t, k, "REFERENCES") {
+            let (f, j2) = ss_references(t, k + 1, [nm])
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            fk = f
+            k = j2
+            continue
+        }
+        if sp_kw(t, k, "GENERATED") && sp_kw(t, k + 1, "ALWAYS") && sp_kw(t, k + 2, "AS") {
+            k += 3
+        } else if sp_kw(t, k, "AS") && sp_op(t, k + 1, "(") {
+            k += 1
+        } else {
+            break
+        }
+        // AS (expr) [STORED|VIRTUAL]
+        if !sp_op(t, k, "(") {
+            return (nil, sp_err(k))
+        }
+        let (e, j2) = sp_expr(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        if !sp_op(t, j2, ")") {
+            return (nil, sp_err(j2))
+        }
+        gen = e
+        k = j2 + 1
+        if sp_kw(t, k, "STORED") {
+            genstored = true
+            k += 1
+        } else if sp_kw(t, k, "VIRTUAL") {
+            k += 1
+        }
+    }
+    return (ColDef { name: nm, ty: ty, pk: pk, pkdesc: pkdesc, autoinc: autoinc, notnull: notnull, unique: unique, dflt: dflt, checks: checks, coll: coll, fk: fk, gen: gen, genstored: genstored, pkconf: pkconf, nnconf: nnconf, ukconf: ukconf }, k)
+}
+
+// (a [COLLATE c] [ASC|DESC], ...) -> array de [expresión, desc, collation]
+fn ss_index_cols(t: array, i: int) -> (any, int) {
+    if !sp_op(t, i, "(") {
+        return (nil, sp_err(i))
+    }
+    let mut cols = []
+    let mut k = i + 1
+    while true {
+        let (e, j) = sp_expr(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        let mut m = j
+        let mut coll = ""
+        let mut ex = e
+        match e {
+            Ex::ECollate(p) => {
+                ex = p.0
+                coll = p.1
+            },
+            _ => {},
+        }
+        let mut desc = false
+        if sp_kw(t, m, "ASC") {
+            m += 1
+        } else if sp_kw(t, m, "DESC") {
+            desc = true
+            m += 1
+        }
+        cols = std::array::push(cols, [ex, desc, coll])
+        k = m
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        break
+    }
+    if !sp_op(t, k, ")") {
+        return (nil, sp_err(k))
+    }
+    return (cols, k + 1)
+}
+
+fn ss_create_table(t: array, i: int, temp: bool) -> (any, int) {
+    let mut k = i
+    let mut ifne = false
+    if sp_kw(t, k, "IF") && sp_kw(t, k + 1, "NOT") && sp_kw(t, k + 2, "EXISTS") {
+        ifne = true
+        k += 3
+    }
+    let ntok = k
+    let (name0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut name = name0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        name = n2
+        k = j2
+    }
+    if sp_kw(t, k, "AS") {
+        let (s, j2) = sp_select(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        return (Stm { k: "createtable", v: CT { name: name, ifne: ifne, temp: temp, cols: [], cons: [], norowid: false, strict: false, sel: s, ntok: ntok } }, j2)
+    }
+    if !sp_op(t, k, "(") {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut cols = []
+    let mut cons = []
+    while true {
+        let mut isc = false
+        let mut m = k
+        let mut cname = ""
+        if sp_kw(t, m, "CONSTRAINT") {
+            cname = t[m + 1].s
+            m += 2
+        }
+        if sp_kw(t, m, "PRIMARY") && sp_kw(t, m + 1, "KEY") {
+            let (cl, j2) = ss_index_cols(t, m + 2)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            let (cf, j3) = ss_conf(t, j2)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            cons = std::array::push(cons, TCon { kind: "PRIMARY", cols: cl, ex: nil, fk: nil, name: cname, conf: cf })
+            k = j3
+            isc = true
+        } else if sp_kw(t, m, "UNIQUE") && sp_op(t, m + 1, "(") {
+            let (cl, j2) = ss_index_cols(t, m + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            let (cf, j3) = ss_conf(t, j2)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            cons = std::array::push(cons, TCon { kind: "UNIQUE", cols: cl, ex: nil, fk: nil, name: cname, conf: cf })
+            k = j3
+            isc = true
+        } else if sp_kw(t, m, "CHECK") && sp_op(t, m + 1, "(") {
+            let (e, j2) = sp_expr(t, m + 2)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_op(t, j2, ")") {
+                return (nil, sp_err(j2))
+            }
+            let ctxt2 = sq_trim_ws(std::text::substring(t[len(t) - 1].u, t[m + 2].p, t[j2].p))
+            cons = std::array::push(cons, TCon { kind: "CHECK", cols: [], ex: [e, ctxt2], fk: nil, name: cname, conf: "" })
+            k = j2 + 1
+            isc = true
+        } else if sp_kw(t, m, "FOREIGN") && sp_kw(t, m + 1, "KEY") {
+            let (fc, j2) = ss_name_list(t, m + 2)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_kw(t, j2, "REFERENCES") {
+                return (nil, sp_err(j2))
+            }
+            let (f, j3) = ss_references(t, j2 + 1, fc)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            cons = std::array::push(cons, TCon { kind: "FOREIGN", cols: [], ex: nil, fk: f, name: cname, conf: "" })
+            k = j3
+            isc = true
+        }
+        if !isc {
+            let (cd, j2) = ss_coldef(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            cols = std::array::push(cols, cd)
+            k = j2
+        }
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        break
+    }
+    if !sp_op(t, k, ")") {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut norowid = false
+    let mut strict = false
+    while true {
+        if sp_kw(t, k, "WITHOUT") && sp_kw(t, k + 1, "ROWID") {
+            norowid = true
+            k += 2
+        } else if sp_kw(t, k, "STRICT") {
+            strict = true
+            k += 1
+        } else {
+            break
+        }
+        if sp_op(t, k, ",") {
+            k += 1
+        }
+    }
+    return (Stm { k: "createtable", v: CT { name: name, ifne: ifne, temp: temp, cols: cols, cons: cons, norowid: norowid, strict: strict, sel: nil, ntok: ntok } }, k)
+}
+
+fn ss_create_index(t: array, i: int, unique: bool) -> (any, int) {
+    let mut k = i
+    let mut ifne = false
+    if sp_kw(t, k, "IF") && sp_kw(t, k + 1, "NOT") && sp_kw(t, k + 2, "EXISTS") {
+        ifne = true
+        k += 3
+    }
+    let ntok = k
+    let (name0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut name = name0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        name = n2
+        k = j2
+    }
+    if !sp_kw(t, k, "ON") {
+        return (nil, sp_err(k))
+    }
+    let (tbl, j2) = sp_name(t, k + 1)
+    if j2 < 0 {
+        return (nil, j2)
+    }
+    let (cols, j3) = ss_index_cols(t, j2)
+    if j3 < 0 {
+        return (nil, j3)
+    }
+    k = j3
+    let mut wh = nil
+    if sp_kw(t, k, "WHERE") {
+        let (e, j4) = sp_expr(t, k + 1)
+        if j4 < 0 {
+            return (nil, j4)
+        }
+        wh = e
+        k = j4
+    }
+    return (Stm { k: "createindex", v: CI { name: name, tbl: tbl, unique: unique, ifne: ifne, cols: cols, wh: wh, ntok: ntok } }, k)
+}
+
+fn ss_create_view(t: array, i: int, temp: bool) -> (any, int) {
+    let mut k = i
+    let mut ifne = false
+    if sp_kw(t, k, "IF") && sp_kw(t, k + 1, "NOT") && sp_kw(t, k + 2, "EXISTS") {
+        ifne = true
+        k += 3
+    }
+    let ntok = k
+    let (name0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut name = name0
+    k = j
+    let mut cols = []
+    if sp_op(t, k, "(") {
+        let (cn, j2) = ss_name_list(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        cols = cn
+        k = j2
+    }
+    if !sp_kw(t, k, "AS") {
+        return (nil, sp_err(k))
+    }
+    let (s, j3) = sp_select(t, k + 1)
+    if j3 < 0 {
+        return (nil, j3)
+    }
+    return (Stm { k: "createview", v: CV { name: name, ifne: ifne, temp: temp, cols: cols, sel: s, ntok: ntok } }, j3)
+}
+
+fn ss_create_trigger(t: array, i: int, temp: bool) -> (any, int) {
+    let mut k = i
+    let mut ifne = false
+    if sp_kw(t, k, "IF") && sp_kw(t, k + 1, "NOT") && sp_kw(t, k + 2, "EXISTS") {
+        ifne = true
+        k += 3
+    }
+    let ntok = k
+    let (name0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut name = name0
+    k = j
+    let mut timing = "BEFORE"
+    if sp_kw(t, k, "BEFORE") {
+        k += 1
+    } else if sp_kw(t, k, "AFTER") {
+        timing = "AFTER"
+        k += 1
+    } else if sp_kw(t, k, "INSTEAD") && sp_kw(t, k + 1, "OF") {
+        timing = "INSTEAD OF"
+        k += 2
+    }
+    let ev = t[k].u
+    if ev != "INSERT" && ev != "UPDATE" && ev != "DELETE" {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut ucols = []
+    if ev == "UPDATE" && sp_kw(t, k, "OF") {
+        k += 1
+        while true {
+            let (cn, j2) = sp_name(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            ucols = std::array::push(ucols, cn)
+            k = j2
+            if sp_op(t, k, ",") {
+                k += 1
+                continue
+            }
+            break
+        }
+    }
+    if !sp_kw(t, k, "ON") {
+        return (nil, sp_err(k))
+    }
+    let (tbl, j2) = sp_name(t, k + 1)
+    if j2 < 0 {
+        return (nil, j2)
+    }
+    k = j2
+    if sp_kw(t, k, "FOR") && sp_kw(t, k + 1, "EACH") && sp_kw(t, k + 2, "ROW") {
+        k += 3
+    }
+    let mut wh = nil
+    if sp_kw(t, k, "WHEN") {
+        let (e, j3) = sp_expr(t, k + 1)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        wh = e
+        k = j3
+    }
+    if !sp_kw(t, k, "BEGIN") {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut body = []
+    while !sp_kw(t, k, "END") {
+        if t[k].k == "eof" {
+            return (nil, sp_err(k))
+        }
+        let (st, j3) = ss_stmt(t, k)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        if st.k != "select" && st.k != "insert" && st.k != "update" && st.k != "delete" {
+            return (nil, sp_err(k))
+        }
+        body = std::array::push(body, st)
+        k = j3
+        if !sp_op(t, k, ";") {
+            return (nil, sp_err(k))
+        }
+        k += 1
+    }
+    return (Stm { k: "createtrigger", v: CTr { name: name, ifne: ifne, temp: temp, timing: timing, ev: ev, ucols: ucols, tbl: tbl, wh: wh, body: body, ntok: ntok } }, k + 1)
+}
+
+fn ss_create(t: array, i: int) -> (any, int) {
+    let mut k = i + 1
+    let mut temp = false
+    if sp_kw(t, k, "TEMP") || sp_kw(t, k, "TEMPORARY") {
+        temp = true
+        k += 1
+    }
+    if sp_kw(t, k, "TABLE") {
+        return ss_create_table(t, k + 1, temp)
+    }
+    if sp_kw(t, k, "UNIQUE") && sp_kw(t, k + 1, "INDEX") {
+        return ss_create_index(t, k + 2, true)
+    }
+    if sp_kw(t, k, "INDEX") {
+        return ss_create_index(t, k + 1, false)
+    }
+    if sp_kw(t, k, "VIEW") {
+        return ss_create_view(t, k + 1, temp)
+    }
+    if sp_kw(t, k, "TRIGGER") {
+        return ss_create_trigger(t, k + 1, temp)
+    }
+    if sp_kw(t, k, "VIRTUAL") {
+        return (nil, sp_err(k))
+    }
+    return (nil, sp_err(k))
+}
+
+// ------------------------------------------------------------ resto
+
+fn ss_drop(t: array, i: int) -> (any, int) {
+    let mut k = i + 1
+    let kind = t[k].u
+    if kind != "TABLE" && kind != "INDEX" && kind != "VIEW" && kind != "TRIGGER" {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut ifex = false
+    if sp_kw(t, k, "IF") && sp_kw(t, k + 1, "EXISTS") {
+        ifex = true
+        k += 2
+    }
+    let (nm0, j) = sp_name(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut nm = nm0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        nm = n2
+        k = j2
+    }
+    return (Stm { k: "drop", v: [kind, nm, ifex] }, k)
+}
+
+fn ss_alter(t: array, i: int) -> (any, int) {
+    let mut k = i + 1
+    if !sp_kw(t, k, "TABLE") {
+        return (nil, sp_err(k))
+    }
+    let (tbl0, j) = sp_name(t, k + 1)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut tbl = tbl0
+    k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        tbl = n2
+        k = j2
+    }
+    if sp_kw(t, k, "RENAME") {
+        k += 1
+        if sp_kw(t, k, "TO") {
+            let (nn, j2) = sp_name(t, k + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            return (Stm { k: "alter", v: [tbl, "rename", nn, "", nil] }, j2)
+        }
+        if sp_kw(t, k, "COLUMN") {
+            k += 1
+        }
+        let (a, j2) = sp_name(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        if !sp_kw(t, j2, "TO") {
+            return (nil, sp_err(j2))
+        }
+        let (b, j3) = sp_name(t, j2 + 1)
+        if j3 < 0 {
+            return (nil, j3)
+        }
+        return (Stm { k: "alter", v: [tbl, "renamecol", a, b, nil] }, j3)
+    }
+    if sp_kw(t, k, "ADD") {
+        k += 1
+        if sp_kw(t, k, "COLUMN") {
+            k += 1
+        }
+        let ntok = k
+        let (cd, j2) = ss_coldef(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        return (Stm { k: "alter", v: [tbl, "addcol", "{ntok}", "{j2}", cd] }, j2)
+    }
+    if sp_kw(t, k, "DROP") {
+        k += 1
+        if sp_kw(t, k, "COLUMN") {
+            k += 1
+        }
+        let (a, j2) = sp_name(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        return (Stm { k: "alter", v: [tbl, "dropcol", a, "", nil] }, j2)
+    }
+    return (nil, sp_err(k))
+}
+
+fn ss_pragma(t: array, i: int) -> (any, int) {
+    let (nm0, j) = sp_name(t, i + 1)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut nm = nm0
+    let mut k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        nm = n2
+        k = j2
+    }
+    let mut arg = ""
+    let mut has = false
+    if sp_op(t, k, "=") || sp_op(t, k, "(") {
+        let paren = sp_op(t, k, "(")
+        k += 1
+        let mut sign = ""
+        if sp_op(t, k, "-") || sp_op(t, k, "+") {
+            sign = t[k].s
+            k += 1
+        }
+        if t[k].k == "eof" || sp_op(t, k, ")") {
+            return (nil, sp_err(k))
+        }
+        arg = sign + t[k].s
+        has = true
+        k += 1
+        if paren {
+            if !sp_op(t, k, ")") {
+                return (nil, sp_err(k))
+            }
+            k += 1
+        }
+    }
+    return (Stm { k: "pragma", v: [sq_fold(nm), arg, has] }, k)
+}
+
+// Una sentencia (sin el `;` final). Devuelve (Stm, siguiente).
+fn ss_stmt(t: array, i: int) -> (any, int) {
+    let mut k = i
+    let mut with = []
+    let mut rec = false
+    if sp_kw(t, k, "WITH") {
+        let (ctes, r, j) = sp_with(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        with = ctes
+        rec = r
+        k = j
+        if sp_kw(t, k, "INSERT") || sp_kw(t, k, "REPLACE") {
+            return ss_insert(t, k, with, rec)
+        }
+        if sp_kw(t, k, "UPDATE") {
+            return ss_update(t, k, with, rec)
+        }
+        if sp_kw(t, k, "DELETE") {
+            return ss_delete(t, k, with, rec)
+        }
+        let (s, j2) = sp_select(t, i)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        return (Stm { k: "select", v: s }, j2)
+    }
+    if sp_kw(t, k, "SELECT") || sp_kw(t, k, "VALUES") {
+        let (s, j) = sp_select(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        return (Stm { k: "select", v: s }, j)
+    }
+    if sp_kw(t, k, "INSERT") || sp_kw(t, k, "REPLACE") {
+        return ss_insert(t, k, [], false)
+    }
+    if sp_kw(t, k, "UPDATE") {
+        return ss_update(t, k, [], false)
+    }
+    if sp_kw(t, k, "DELETE") {
+        return ss_delete(t, k, [], false)
+    }
+    if sp_kw(t, k, "CREATE") {
+        return ss_create(t, k)
+    }
+    if sp_kw(t, k, "DROP") {
+        return ss_drop(t, k)
+    }
+    if sp_kw(t, k, "ALTER") {
+        return ss_alter(t, k)
+    }
+    if sp_kw(t, k, "PRAGMA") {
+        return ss_pragma(t, k)
+    }
+    if sp_kw(t, k, "BEGIN") {
+        let mut m = k + 1
+        let mut mode = "DEFERRED"
+        if sp_kw(t, m, "DEFERRED") || sp_kw(t, m, "IMMEDIATE") || sp_kw(t, m, "EXCLUSIVE") {
+            mode = t[m].u
+            m += 1
+        }
+        if sp_kw(t, m, "TRANSACTION") {
+            m += 1
+        }
+        return (Stm { k: "begin", v: mode }, m)
+    }
+    if sp_kw(t, k, "COMMIT") || sp_kw(t, k, "END") {
+        let mut m = k + 1
+        if sp_kw(t, m, "TRANSACTION") {
+            m += 1
+        }
+        return (Stm { k: "commit", v: "" }, m)
+    }
+    if sp_kw(t, k, "ROLLBACK") {
+        let mut m = k + 1
+        if sp_kw(t, m, "TRANSACTION") {
+            m += 1
+        }
+        if sp_kw(t, m, "TO") {
+            m += 1
+            if sp_kw(t, m, "SAVEPOINT") {
+                m += 1
+            }
+            let (nm0, j) = sp_name(t, m)
+            if j < 0 {
+                return (nil, j)
+            }
+            let mut nm = nm0
+            return (Stm { k: "rollback", v: nm }, j)
+        }
+        return (Stm { k: "rollback", v: "" }, m)
+    }
+    if sp_kw(t, k, "SAVEPOINT") {
+        let (nm0, j) = sp_name(t, k + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        let mut nm = nm0
+        return (Stm { k: "savepoint", v: nm }, j)
+    }
+    if sp_kw(t, k, "RELEASE") {
+        let mut m = k + 1
+        if sp_kw(t, m, "SAVEPOINT") {
+            m += 1
+        }
+        let (nm0, j) = sp_name(t, m)
+        if j < 0 {
+            return (nil, j)
+        }
+        let mut nm = nm0
+        return (Stm { k: "release", v: nm }, j)
+    }
+    if sp_kw(t, k, "VACUUM") {
+        return (Stm { k: "vacuum", v: "" }, k + 1)
+    }
+    if sp_kw(t, k, "ANALYZE") || sp_kw(t, k, "REINDEX") {
+        let mut m = k + 1
+        if t[m].k == "id" || t[m].k == "qid" {
+            m += 1
+        }
+        return (Stm { k: "analyze", v: "" }, m)
+    }
+    return (nil, sp_err(k))
+}
+
+// Texto a guardar en sqlite_master: "CREATE <tipo> " + desde el nombre hasta el final.
+fn ss_master_text(sql: string, t: array, ntok: int, end: int, kind: string) -> string {
+    let cs = sql_chars(sql)
+    let a = t[ntok].p
+    let mut b = t[end].p
+    let mut body = std::collections::join(std::array::slice(cs, a, b), "")
+    // quitar blancos finales
+    let bc = std::text::chars(body)
+    let mut n = len(bc)
+    while n > 0 && std::text::is_whitespace(bc[n - 1]) {
+        n -= 1
+    }
+    body = std::collections::join(std::array::slice(bc, 0, n), "")
+    "CREATE " + kind + " " + body
+}
+
+// Analiza un texto con varias sentencias. Devuelve (array de [Stm, tokens, inicio, fin], error).
+fn ss_parse_all(sql: string) -> (array, string) {
+    let (toks, lerr) = sql_lex(sql)
+    if lerr != "" {
+        return ([], lerr)
+    }
+    let mut out = []
+    let mut k = 0
+    while true {
+        while sp_op(toks, k, ";") {
+            k += 1
+        }
+        if toks[k].k == "eof" {
+            break
+        }
+        let (st, j) = ss_stmt(toks, k)
+        if j < 0 {
+            let p = 0 - j - 1
+            if toks[p].k == "eof" {
+                return ([], "incomplete input")
+            }
+            let pp = toks[p].p
+            return ([], "near \"" + toks[p].s + "\": syntax error" + sx_chr(1) + "{pp}")
+        }
+        if !sp_op(toks, j, ";") && toks[j].k != "eof" {
+            let pj = toks[j].p
+            return ([], "near \"" + toks[j].s + "\": syntax error" + sx_chr(1) + "{pj}")
+        }
+        out = std::array::push(out, [st, toks, k, j])
+        k = j
+    }
+    return (out, "")
+}

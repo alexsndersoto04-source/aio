@@ -1,0 +1,36 @@
+// std::tls: servidor y cliente por loopback. El cliente solo confía en las raíces
+// públicas, así que rechaza el certificado autofirmado del servidor.
+const CERT: string = "-----BEGIN CERTIFICATE-----\nMIIBlDCCATugAwIBAgIUfXU9QyHtnxkq8d/9t9fQU+Xc4TowCgYIKoZIzj0EAwIw\nFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAwODExMDkxMVoYDzIxMjYwOTE0\nMTEwOTExWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAATHswsCo9d1nuuUJxK+j+SWT15DiBoE1sCSL+fF2YH1PAp1lRLzbu7r\nnWkCgEpDp9nkc+NPyQCzmyz0d3xey4Zfo2kwZzAdBgNVHQ4EFgQUT9hvHyNafZS7\nhRV34tUNDe0ahsgwHwYDVR0jBBgwFoAUT9hvHyNafZS7hRV34tUNDe0ahsgwDwYD\nVR0TAQH/BAUwAwEB/zAUBgNVHREEDTALgglsb2NhbGhvc3QwCgYIKoZIzj0EAwID\nRwAwRAIhAORsu7ihVP8PNkvFbabk8t9gTyn/W/gTvCLi7qaQvbvxAh9xub5+4HPL\nyhdhmU0yfbkTST0BB0E5M2W1GgepKgv4\n-----END CERTIFICATE-----\n"
+const CLAVE: string = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgTyJ8mDezuNlMuQ9R\nFaeCE6I/fIg6pT1nauE8cJJJL7mhRANCAATHswsCo9d1nuuUJxK+j+SWT15DiBoE\n1sCSL+fF2YH1PAp1lRLzbu7rnWkCgEpDp9nkc+NPyQCzmyz0d3xey4Zf\n-----END PRIVATE KEY-----\n"
+
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn main() {
+    let cert = "/tmp/titan_tls_test_cert.pem"
+    let clave = "/tmp/titan_tls_test_key.pem"
+    let vacio = "/tmp/titan_tls_test_empty.pem"
+    std::fs::write_text(cert, CERT)
+    std::fs::write_text(clave, CLAVE)
+    std::fs::write_text(vacio, "")
+    mostrar("sin_fichero", std::try::catch(|| { std::tls::server_config("/nonexistent/c.pem", clave) }))
+    mostrar("sin_certificados", std::try::catch(|| { std::tls::server_config(vacio, clave) }))
+    mostrar("sin_clave", std::try::catch(|| { std::tls::server_config(cert, vacio) }))
+    mostrar("clave_distinta", std::try::catch(|| { std::tls::server_config(cert, cert) }))
+    mostrar("nombre", std::try::catch(|| { std::tls::connect("127.0.0.1:1", "no es un nombre!") }))
+    mostrar("rechazado", std::try::catch(|| { std::tls::connect("127.0.0.1:1", "localhost") }))
+    let cfg = std::tls::server_config(cert, clave)
+    print(cfg)
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    let cliente = spawn || {
+        std::try::catch(|| { std::tls::connect(addr, "localhost") })
+    }
+    let servidor = std::try::catch(|| { std::tls::accept(l, cfg) })
+    mostrar("servidor", servidor)
+    mostrar("cliente", join(cliente))
+    std::fs::remove_file(cert)
+    std::fs::remove_file(clave)
+    std::fs::remove_file(vacio)
+}

@@ -730,6 +730,11 @@ fn std__time__sleep_ms(ms: any) -> any {
     if v < 0 {
         rt_native_fail("std::time::sleep_ms", "milliseconds must be nonnegative")
     }
+    // Con tareas en marcha, dormir cede el turno a las demás fibras.
+    if std::raw::load(std::raw::globals() + 3552) != 0 {
+        tk_sleep(v)
+        return nil
+    }
     let ts = rt_alloc(16)
     std::raw::store(ts, v / 1000)
     std::raw::store(ts + 8, (v % 1000) * 1000000)

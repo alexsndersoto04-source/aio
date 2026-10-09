@@ -1,0 +1,3079 @@
+// std::mysql nativo: cliente del protocolo MySQL (texto y sentencias preparadas binarias) con la
+// semántica de crates/titan_mysql (que usa el crate `mysql` 26.0.1 y mysql_common 0.35.5):
+// siempre sentencias preparadas con parámetros posicionales (los `:nombre` se reescriben a `?`
+// como hace el crate), filas como mapas, transacciones, migraciones y pool.
+// Prefijo my_ (las funciones rt_my_* son las instrucciones Mysql*; las Db* genéricas viven en
+// std_postgres.titan y reparten por la etiqueta del handle).
+//
+// Autenticación: mysql_native_password, caching_sha2_password (camino rápido, clave pública RSA con
+// OAEP-SHA1 sobre TCP, y contraseña en claro por socket Unix), mysql_clear_password (solo con
+// enable_cleartext_plugin=true), mysql_old_password (solo con secure_auth=false), cambio de plugin.
+// No hay TLS (el crate de la VM solo lo activa con una opción que `Opts::from_url` no admite) ni
+// compresión: `compress=...` se valida pero la conexión va sin comprimir (no cambia ningún resultado).
+//
+// Conexión (MY_SIZE bytes): MY_FD socket, MY_IN búfer de entrada (tb_ de std_tls), MY_SEQ número de
+// secuencia, MY_CLOSED, MY_TX transacción abierta, MY_ID id del handle, MY_POOL pool al que vuelve,
+// MY_AFF/MY_LID/MY_STATUS del último OK, MY_CAPS capacidades negociadas, MY_PLUGIN plugin de
+// autenticación (0 native, 1 caching_sha2, 2 clear, 3 old, 4 ed25519, 5 otro), MY_NONCE/MY_NLEN,
+// MY_SOCK (va por socket Unix), MY_MAXPKT, MY_PL/MY_PLEN último paquete leído, MY_HASRES (faltan
+// filas), MY_OPTS opciones, MY_CACHE caché de sentencias (LRU), MY_ERR texto del último error,
+// MY_COLS/MY_NCOLS columnas del conjunto actual, MY_VER versión del servidor.
+// Los errores no se lanzan donde ocurren: la función devuelve false con MY_ERR puesto y la operación
+// de arriba lo lanza (my_raise), de modo que drenar, ping y cerrar pueden tragárselos como el crate.
+// Registro de handles: el de std_postgres.titan (clase 6 conexión, 7 pool); el pool usa PL_*.
+
+const MY_FD: int = 0
+const MY_IN: int = 8
+const MY_SEQ: int = 16
+const MY_CLOSED: int = 24
+const MY_TX: int = 32
+const MY_ID: int = 40
+const MY_POOL: int = 48
+const MY_AFF: int = 56
+const MY_LID: int = 64
+const MY_STATUS: int = 72
+const MY_CAPS: int = 80
+const MY_PLUGIN: int = 88
+const MY_NONCE: int = 96
+const MY_NLEN: int = 104
+const MY_SOCK: int = 112
+const MY_MAXPKT: int = 120
+const MY_PL: int = 128
+const MY_PLEN: int = 136
+const MY_HASRES: int = 144
+const MY_OPTS: int = 152
+const MY_CACHE: int = 160
+const MY_ERR: int = 168
+const MY_COLS: int = 176
+const MY_NCOLS: int = 184
+const MY_VER: int = 192
+const MY_PNAME: int = 200
+const MY_EOF: int = 208
+const MY_SIZE: int = 256
+
+const OP_USER: int = 0
+const OP_PASS: int = 8
+const OP_HOST: int = 16
+const OP_PORT: int = 24
+const OP_SOCKET: int = 32
+const OP_DB: int = 40
+const OP_PREFER: int = 48
+const OP_CLEAR: int = 56
+const OP_SECURE: int = 64
+const OP_MAXPKT: int = 72
+const OP_STMTS: int = 80
+const OP_CTMO: int = 88
+const OP_KA: int = 96
+const OP_KAI: int = 104
+const OP_KAC: int = 112
+const OP_UTMO: int = 120
+const OP_LOOP: int = 128
+const OP_SIZE: int = 144
+
+const MY_MAX_PAYLOAD: int = 16777215
+const MY_DEFAULT_PKT: int = 4194304
+
+// ------------------------------------------------------------ utilidades
+
+fn my_fail(message: any) {
+    rt_native_fail("std::mysql", message)
+}
+
+fn my_le(p: int, n: int) -> int {
+    let mut v = 0
+    let mut i = n
+    while i > 0 {
+        i -= 1
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+    }
+    v
+}
+
+fn my_put(b: int, v: int, n: int) {
+    let mut i = 0
+    while i < n {
+        tb_u8(b, std::raw::shr(v, 8 * i) & 255)
+        i += 1
+    }
+}
+
+// Entero de longitud variable en [p, e): (valor, siguiente) o (-1, p) si falta.
+fn my_lenenc(p: int, e: int) -> (int, int) {
+    if p >= e {
+        return (-1, p)
+    }
+    let b = std::raw::load8(p)
+    if b < 251 {
+        return (b, p + 1)
+    }
+    if b == 252 {
+        if p + 3 > e {
+            return (-1, p)
+        }
+        return (my_le(p + 1, 2), p + 3)
+    }
+    if b == 253 {
+        if p + 4 > e {
+            return (-1, p)
+        }
+        return (my_le(p + 1, 3), p + 4)
+    }
+    if b == 254 {
+        if p + 9 > e {
+            return (-1, p)
+        }
+        return (my_le(p + 1, 8), p + 9)
+    }
+    return (-1, p)
+}
+
+fn my_put_lenenc(b: int, v: int) {
+    if v < 251 {
+        tb_u8(b, v)
+    } else if v < 65536 {
+        tb_u8(b, 252)
+        my_put(b, v, 2)
+    } else if v < 16777216 {
+        tb_u8(b, 253)
+        my_put(b, v, 3)
+    } else {
+        tb_u8(b, 254)
+        my_put(b, v, 8)
+    }
+}
+
+fn my_put_cstr(b: int, s: any) {
+    tb_bytes(b, rt_bdata(s), rt_slen(s))
+    tb_u8(b, 0)
+}
+
+fn my_put_lenstr(b: int, s: any) {
+    my_put_lenenc(b, rt_slen(s))
+    tb_bytes(b, rt_bdata(s), rt_slen(s))
+}
+
+// Entero con ceros a la izquierda hasta `width` cifras.
+fn my_pad(v: int, width: int) -> any {
+    let mut s = rt_int_to_str(v)
+    while rt_slen(s) < width {
+        s = rt_concat("0", s)
+    }
+    s
+}
+
+// u64 (en los 64 bits de `v`) como texto decimal.
+fn my_u64_str(v: int) -> any {
+    if v >= 0 {
+        return rt_int_to_str(v)
+    }
+    let q = std::raw::shr(v, 1) / 5
+    let r = std::raw::wsub(v, std::raw::wmul(q, 10))
+    rt_concat(rt_int_to_str(q), rt_int_to_str(r))
+}
+
+fn my_cstr_end(p: int, e: int) -> int {
+    let mut i = p
+    while i < e && std::raw::load8(i) != 0 {
+        i += 1
+    }
+    i
+}
+
+fn my_str_is(s: any, lit: string) -> bool {
+    rt_str_eq(s, lit)
+}
+
+// Entero sin signo como `str::parse::<uN>`: '+' inicial opcional, solo cifras, <= max. -1 si no vale.
+fn my_uint(s: any, max: int) -> int {
+    let p = rt_bdata(s)
+    let n = rt_slen(s)
+    let mut i = 0
+    if n > 0 && std::raw::load8(p) == 43 {
+        i = 1
+    }
+    if i >= n {
+        return -1
+    }
+    let mut v = 0
+    while i < n {
+        let d = std::raw::load8(p + i)
+        if d < 48 || d > 57 {
+            return -1
+        }
+        if v > (9223372036854775807 - (d - 48)) / 10 {
+            return -1
+        }
+        v = v * 10 + (d - 48)
+        if v > max {
+            return -1
+        }
+        i += 1
+    }
+    v
+}
+
+// 1 true, 0 false, -1 no vale (`str::parse::<bool>`).
+fn my_bool(s: any) -> int {
+    if rt_str_eq(s, "true") {
+        return 1
+    }
+    if rt_str_eq(s, "false") {
+        return 0
+    }
+    -1
+}
+
+// ------------------------------------------------------------ errores y E/S
+
+fn my_set_err(c: int, text: any) {
+    pq_ss(c, MY_ERR, pq_own(text))
+}
+
+fn my_err(c: int) -> any {
+    rt_sref(pq_gs(c, MY_ERR))
+}
+
+// Guarda un error de E/S (Display de mysql::Error::IoError). Devuelve false.
+fn my_ioe(c: int, desc: any) -> bool {
+    my_set_err(c, rt_concat(rt_concat("MySQL error: IoError { ", desc), " }"))
+    false
+}
+
+fn my_driver(c: int, desc: any) -> bool {
+    my_set_err(c, rt_concat(rt_concat("MySQL error: DriverError { ", desc), " }"))
+    false
+}
+
+fn my_codec(c: int, desc: any) -> bool {
+    my_set_err(c, rt_concat(rt_concat("MySQL error: CodecError { ", desc), " }"))
+    false
+}
+
+// Lanza el error guardado (ya con el texto final que da la VM).
+fn my_raise(c: int) {
+    my_fail(my_err(c))
+}
+
+// Error de lectura o escritura del códec: "CodecError { IO error: `...' }".
+fn my_codec_io(c: int, desc: any) -> bool {
+    my_set_err(c, rt_concat(rt_concat("MySQL error: CodecError { IO error: `", desc), "' }"))
+    false
+}
+
+fn my_send_all(c: int, p: int, n: int) -> bool {
+    let fd = pq_gs(c, MY_FD)
+    let mut done = 0
+    while done < n {
+        if tcp_wait(fd, 4, -1) == 0 {
+            continue
+        }
+        let w = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            return my_codec_io(c, rt_os_error(0 - w))
+        }
+        done += w
+    }
+    true
+}
+
+// Deja en el búfer de entrada al menos n bytes. Como MySyncFramed: tras leer un fin de archivo ya no
+// se vuelve a leer del socket.
+fn my_fill(c: int, n: int) -> bool {
+    let inb = pq_gs(c, MY_IN)
+    let fd = pq_gs(c, MY_FD)
+    let tmp = rt_alloc(16400)
+    while std::raw::load(inb + 8) < n {
+        if pq_gs(c, MY_EOF) != 0 {
+            rt_free_block(tmp)
+            if std::raw::load(inb + 8) == 0 {
+                return my_ioe(c, "server disconnected")
+            }
+            return my_codec_io(c, "bytes remaining on stream")
+        }
+        if tcp_wait(fd, 1, -1) == 0 {
+            continue
+        }
+        let r = std::raw::syscall(0, fd, tmp, 16384, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            rt_free_block(tmp)
+            return my_codec_io(c, rt_os_error(0 - r))
+        }
+        if r == 0 {
+            pq_ss(c, MY_EOF, 1)
+        } else {
+            tb_bytes(inb, tmp, r)
+        }
+    }
+    rt_free_block(tmp)
+    true
+}
+
+// Envía un paquete (lo parte en trozos de 16 MiB - 1 y numera la secuencia).
+fn my_send_packet(c: int, p: int, n: int) -> bool {
+    if n > pq_gs(c, MY_MAXPKT) {
+        return my_codec(c, "Packet is larger than max_allowed_packet")
+    }
+    let out = tb_new(n + 64)
+    let mut seq = pq_gs(c, MY_SEQ)
+    let mut off = 0
+    let extra = n % MY_MAX_PAYLOAD == 0
+    while off < n {
+        let mut len = n - off
+        if len > MY_MAX_PAYLOAD {
+            len = MY_MAX_PAYLOAD
+        }
+        my_put(out, len, 3)
+        tb_u8(out, seq)
+        tb_bytes(out, p + off, len)
+        seq = (seq + 1) & 255
+        off += len
+    }
+    if extra {
+        my_put(out, 0, 3)
+        tb_u8(out, seq)
+        seq = (seq + 1) & 255
+    }
+    pq_ss(c, MY_SEQ, seq)
+    let ok = my_send_all(c, std::raw::load(out), std::raw::load(out + 8))
+    tb_free(out)
+    ok
+}
+
+// Texto de un paquete de error (payload en MY_PL): "MySqlError { ERROR n (estado): mensaje }".
+fn my_parse_err(c: int) {
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    let mut code = 0
+    if n >= 3 {
+        code = my_le(p + 1, 2)
+    }
+    let mut state = ""
+    let mut m = 3
+    if (pq_gs(c, MY_CAPS) & 512) != 0 && n >= 9 && std::raw::load8(p + 3) == 35 {
+        state = rt_concat(rt_concat(" (", pq_str(p + 4, 5)), ")")
+        m = 9
+    }
+    let mut msg = ""
+    if n > m {
+        msg = dr_lossy(pq_str(p + m, n - m))
+    }
+    let text = rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("MySQL error: MySqlError { ERROR ", rt_int_to_str(code)), state), ": "), msg), " }")
+    my_set_err(c, text)
+    pq_ss(c, MY_AFF, 0)
+    pq_ss(c, MY_LID, 0)
+    pq_ss(c, MY_STATUS, 0)
+    pq_ss(c, MY_HASRES, 0)
+}
+
+// Lee el siguiente paquete completo (payload en MY_PL/MY_PLEN). Un paquete de error del servidor
+// deja el texto en MY_ERR y devuelve false (la conexión sigue viva).
+fn my_read(c: int) -> bool {
+    let old = pq_gs(c, MY_PL)
+    if old != 0 {
+        rt_free_block(old)
+        pq_ss(c, MY_PL, 0)
+        pq_ss(c, MY_PLEN, 0)
+    }
+    let acc = tb_new(256)
+    let maxp = pq_gs(c, MY_MAXPKT)
+    loop {
+        if !my_fill(c, 4) {
+            tb_free(acc)
+            return false
+        }
+        let inb = pq_gs(c, MY_IN)
+        let d = std::raw::load(inb)
+        let len = my_le(d, 3)
+        let seq = std::raw::load8(d + 3)
+        if len > 0 && std::raw::load(acc + 8) + len > maxp {
+            tb_free(acc)
+            return my_codec(c, "Packet is larger than max_allowed_packet")
+        }
+        if !my_fill(c, 4 + len) {
+            tb_free(acc)
+            return false
+        }
+        if seq != pq_gs(c, MY_SEQ) {
+            tb_free(acc)
+            return my_codec(c, "Packets out of sync")
+        }
+        pq_ss(c, MY_SEQ, (seq + 1) & 255)
+        let inb2 = pq_gs(c, MY_IN)
+        tb_bytes(acc, std::raw::load(inb2) + 4, len)
+        tb_drop(inb2, 4 + len)
+        if len < MY_MAX_PAYLOAD {
+            break
+        }
+    }
+    let n = std::raw::load(acc + 8)
+    pq_ss(c, MY_PL, std::raw::load(acc))
+    pq_ss(c, MY_PLEN, n)
+    rt_free_block(acc)
+    if n > 0 && std::raw::load8(pq_gs(c, MY_PL)) == 255 {
+        my_parse_err(c)
+        return false
+    }
+    true
+}
+
+// Envía un comando (byte de orden + datos) reiniciando la secuencia.
+fn my_command(c: int, cmd: int, data: int, n: int) -> bool {
+    let b = tb_new(n + 16)
+    tb_u8(b, cmd)
+    if n > 0 {
+        tb_bytes(b, data, n)
+    }
+    pq_ss(c, MY_SEQ, 0)
+    let ok = my_send_packet(c, std::raw::load(b), std::raw::load(b + 8))
+    tb_free(b)
+    ok
+}
+
+// OK (payload en MY_PL): filas afectadas, último id y estado.
+fn my_handle_ok(c: int) {
+    let p = pq_gs(c, MY_PL)
+    let e = p + pq_gs(c, MY_PLEN)
+    let (aff, q) = my_lenenc(p + 1, e)
+    let (lid, q2) = my_lenenc(q, e)
+    let mut a = aff
+    let mut l = lid
+    if a < 0 {
+        a = 0
+    }
+    if l < 0 {
+        l = 0
+    }
+    pq_ss(c, MY_AFF, a)
+    pq_ss(c, MY_LID, l)
+    if q2 + 2 <= e && lid >= 0 {
+        pq_ss(c, MY_STATUS, my_le(q2, 2))
+    }
+}
+
+// Paquete EOF clásico (0xfe, avisos, estado): como OldEofPacket, sin filas afectadas.
+fn my_handle_eof(c: int) {
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    pq_ss(c, MY_AFF, 0)
+    pq_ss(c, MY_LID, 0)
+    if n >= 5 {
+        pq_ss(c, MY_STATUS, my_le(p + 3, 2))
+    }
+}
+
+// ------------------------------------------------------------ contraseñas
+
+// SHA-1 (20 bytes) de n bytes en p, como puntero a un bloque nuevo.
+fn my_sha1(p: int, n: int) -> int {
+    let v = wk_sha1(p, n)
+    let out = rt_alloc(24)
+    rt_copy(out, rt_bdata(v), 20)
+    out
+}
+
+// SHA1(pass) XOR SHA1(nonce, SHA1(SHA1(pass))) (20 bytes).
+fn my_scramble_native(nonce: int, nlen: int, pass: any) -> int {
+    let h1 = my_sha1(rt_bdata(pass), rt_slen(pass))
+    let h2 = my_sha1(h1, 20)
+    let buf = rt_alloc(nlen + 24)
+    rt_copy(buf, nonce, nlen)
+    rt_copy(buf + nlen, h2, 20)
+    let h3 = my_sha1(buf, nlen + 20)
+    let mut i = 0
+    while i < 20 {
+        std::raw::store8(h1 + i, std::raw::load8(h1 + i) ^ std::raw::load8(h3 + i))
+        i += 1
+    }
+    rt_free_block(h2)
+    rt_free_block(h3)
+    rt_free_block(buf)
+    h1
+}
+
+// SHA256(pass) XOR SHA256(SHA256(SHA256(pass)), nonce) (32 bytes).
+fn my_scramble_sha2(nonce: int, nlen: int, pass: any) -> int {
+    let h1 = hs_sha256(rt_bdata(pass), rt_slen(pass))
+    let h2 = hs_sha256(h1, 32)
+    let buf = rt_alloc(nlen + 40)
+    rt_copy(buf, h2, 32)
+    rt_copy(buf + 32, nonce, nlen)
+    let h3 = hs_sha256(buf, 32 + nlen)
+    let mut i = 0
+    while i < 32 {
+        std::raw::store8(h1 + i, std::raw::load8(h1 + i) ^ std::raw::load8(h3 + i))
+        i += 1
+    }
+    rt_free_block(h2)
+    rt_free_block(h3)
+    rt_free_block(buf)
+    h1
+}
+
+// Hash de contraseña de mysql_old_password: (nr, nr2).
+fn my_hash323(p: int, n: int) -> (int, int) {
+    let mut nr = 1345345333
+    let mut add = 7
+    let mut nr2 = 305419889
+    let mut i = 0
+    while i < n {
+        let x = std::raw::load8(p + i)
+        if x != 32 && x != 9 {
+            let t = (nr & 63) + add
+            nr = (nr ^ ((std::raw::wmul(t, x) + std::raw::shl(nr, 8)) & 4294967295)) & 4294967295
+            nr2 = (nr2 + ((std::raw::shl(nr2, 8) ^ nr) & 4294967295)) & 4294967295
+            add = (add + x) & 4294967295
+        }
+        i += 1
+    }
+    return (nr & 2147483647, nr2 & 2147483647)
+}
+
+// floor(seed1 / max * 31) con aritmética de f64, como el crate.
+fn my_rnd31(seed1: int) -> int {
+    let x = std::raw::fdiv(std::raw::ffromint(seed1), std::raw::ffromint(1073741823))
+    let y = std::raw::fmul(x, std::raw::ffromint(31))
+    let t = rt_trunc(y)
+    let mut k = 0
+    while k < 31 {
+        if std::raw::ffromint(k) == t {
+            return k
+        }
+        k += 1
+    }
+    0
+}
+
+// scramble_323: 8 bytes para el desafío (primeros 8 bytes del nonce).
+fn my_scramble_323(nonce: int, pass: any) -> int {
+    let (p1, p2) = my_hash323(rt_bdata(pass), rt_slen(pass))
+    let (m1, m2) = my_hash323(nonce, 8)
+    let mx = 1073741823
+    let mut s1 = (p1 ^ m1) % mx
+    let mut s2 = (p2 ^ m2) % mx
+    let out = rt_alloc(16)
+    let mut i = 0
+    while i < 8 {
+        s1 = (s1 * 3 + s2) % mx
+        s2 = (s1 + s2 + 33) % mx
+        std::raw::store8(out + i, my_rnd31(s1) + 64)
+        i += 1
+    }
+    s1 = (s1 * 3 + s2) % mx
+    s2 = (s1 + s2 + 33) % mx
+    let extra = my_rnd31(s1)
+    i = 0
+    while i < 8 {
+        std::raw::store8(out + i, std::raw::load8(out + i) ^ extra)
+        i += 1
+    }
+    out
+}
+
+// MGF1 con SHA-1: `len` bytes derivados de seed (bloque nuevo).
+fn my_mgf1(seed: int, slen: int, len: int) -> int {
+    let out = rt_alloc(len + 24)
+    let buf = rt_alloc(slen + 8)
+    rt_copy(buf, seed, slen)
+    let mut done = 0
+    let mut counter = 0
+    while done < len {
+        std::raw::store8(buf + slen, std::raw::shr(counter, 24) & 255)
+        std::raw::store8(buf + slen + 1, std::raw::shr(counter, 16) & 255)
+        std::raw::store8(buf + slen + 2, std::raw::shr(counter, 8) & 255)
+        std::raw::store8(buf + slen + 3, counter & 255)
+        let h = my_sha1(buf, slen + 4)
+        let mut take = len - done
+        if take > 20 {
+            take = 20
+        }
+        rt_copy(out + done, h, take)
+        rt_free_block(h)
+        done += take
+        counter += 1
+    }
+    rt_free_block(buf)
+    out
+}
+
+// RSA-OAEP (SHA-1, etiqueta vacía) de msg con la clave pública en PEM. Devuelve (bloque, largo) o
+// (0, 0) si la clave no vale.
+fn my_rsa_encrypt(pem: any, msg: int, mlen: int) -> (int, int) {
+    let (err, der) = jr_rsa_der(pem)
+    if err != nil {
+        return (0, 0)
+    }
+    let p = rt_bdata(der)
+    let total = rt_slen(der)
+    let (tag, s0, len0, next0) = jr_der_tlv(p, 0, total)
+    if tag != 48 {
+        return (0, 0)
+    }
+    let e0 = s0 + len0
+    let (ns, nl, i1) = jr_positive(p, s0, e0)
+    if ns < 0 {
+        return (0, 0)
+    }
+    let (es, el, i2) = jr_positive(p, i1, e0)
+    if es < 0 {
+        return (0, 0)
+    }
+    let k = nl
+    if mlen > k - 42 {
+        return (0, 0)
+    }
+    // EM = maskedSeed || maskedDB
+    let em = rt_alloc(k + 24)
+    std::raw::store8(em, 0)
+    let seed = em + 1
+    let rnd = rt_alloc(24)
+    let mut got = 0
+    while got < 20 {
+        let r = std::raw::syscall(318, rnd + got, 20 - got, 0, 0, 0, 0)
+        if r > 0 {
+            got += r
+        }
+    }
+    rt_copy(seed, rnd, 20)
+    rt_free_block(rnd)
+    let db = em + 21
+    let dblen = k - 21
+    let empty = rt_alloc(8)
+    let ph = my_sha1(empty, 0)
+    rt_free_block(empty)
+    rt_copy(db, ph, 20)
+    rt_free_block(ph)
+    let mut i = 20
+    while i < dblen - mlen - 1 {
+        std::raw::store8(db + i, 0)
+        i += 1
+    }
+    std::raw::store8(db + dblen - mlen - 1, 1)
+    rt_copy(db + dblen - mlen, msg, mlen)
+    let dbmask = my_mgf1(seed, 20, dblen)
+    i = 0
+    while i < dblen {
+        std::raw::store8(db + i, std::raw::load8(db + i) ^ std::raw::load8(dbmask + i))
+        i += 1
+    }
+    rt_free_block(dbmask)
+    let seedmask = my_mgf1(db, dblen, 20)
+    i = 0
+    while i < 20 {
+        std::raw::store8(seed + i, std::raw::load8(seed + i) ^ std::raw::load8(seedmask + i))
+        i += 1
+    }
+    rt_free_block(seedmask)
+    // c = em^e mod n
+    let ln = jr_limbs_for(k)
+    let n = jr_from_be(p + ns, nl, ln)
+    let m = jr_from_be(em, k, ln)
+    let cn = jr_ctx(n)
+    let r = jr_modexp(cn, m, p + es, el)
+    let out = rt_alloc(k + 8)
+    jr_to_be(r, out, k)
+    rt_free_block(r)
+    jr_ctx_free(cn)
+    rt_free_block(m)
+    rt_free_block(n)
+    rt_free_block(em)
+    return (out, k)
+}
+
+// ------------------------------------------------------------ opciones de la URL
+
+fn my_url_err(text: any) -> any {
+    rt_concat("invalid MySQL URL: ", text)
+}
+
+// Opciones de la URL como Opts::from_url. (0, bloque, "") o (1, 0, mensaje completo).
+fn my_parse_url(url: any) -> (int, int, any) {
+    let u = ur_parse(url, 0)
+    if u < 0 {
+        return (1, 0, my_url_err(rt_concat(rt_concat("URL ParseError { ", ur_error_text(u)), " }")))
+    }
+    let scheme = ur_uslice(u, 0, ur_f(u, 1))
+    if !rt_str_eq(scheme, "mysql") {
+        ur_free(u)
+        return (1, 0, my_url_err(rt_concat(rt_concat("URL scheme `", scheme), "' is not supported")))
+    }
+    if ur_cannot_be_a_base(u) {
+        ur_free(u)
+        return (1, 0, my_url_err("Invalid or incomplete connection URL"))
+    }
+    let o = rt_alloc_zero(OP_SIZE)
+    pq_ss(o, OP_PORT, 3306)
+    pq_ss(o, OP_PREFER, 1)
+    pq_ss(o, OP_SECURE, 1)
+    pq_ss(o, OP_MAXPKT, -1)
+    pq_ss(o, OP_STMTS, 32)
+    pq_ss(o, OP_CTMO, -1)
+    pq_ss(o, OP_KA, -1)
+    pq_ss(o, OP_KAI, -1)
+    pq_ss(o, OP_KAC, -1)
+    pq_ss(o, OP_UTMO, -1)
+    // usuario y contraseña (percent-decode, UTF-8 con pérdida)
+    let ue = ur_f(u, 2)
+    let us = ur_f(u, 1) + 3
+    if ue > us {
+        pq_ss(o, OP_USER, pq_own(dr_lossy(ur_percent_decode(ur_uslice(u, us, ue)))))
+    }
+    if ur_f(u, 5) != 0 && ur_ubyte(u, ue) == 58 {
+        pq_ss(o, OP_PASS, pq_own(dr_lossy(ur_percent_decode(ur_uslice(u, ue + 1, ur_f(u, 3) - 1)))))
+    }
+    // host
+    if ur_f(u, 5) == 0 {
+        ur_free(u)
+        return (1, 0, my_url_err("Invalid or incomplete connection URL"))
+    }
+    let (hc, hk, hs) = ur_host_parse(ur_uslice(u, ur_f(u, 3), ur_f(u, 4)))
+    if hc < 0 {
+        ur_free(u)
+        return (1, 0, my_url_err("Invalid or incomplete connection URL"))
+    }
+    pq_ss(o, OP_HOST, pq_own(my_host_text(hs)))
+    pq_ss(o, OP_LOOP, my_is_loopback(hk, hs))
+    let port = ur_f(u, 6)
+    if port >= 0 {
+        pq_ss(o, OP_PORT, port)
+    }
+    // base de datos: primer segmento de la ruta
+    let ps = ur_f(u, 7)
+    let pe = ur_path_end(u)
+    if pe > ps && ur_ubyte(u, ps) == 47 {
+        let mut se = ps + 1
+        while se < pe && ur_ubyte(u, se) != 47 {
+            se += 1
+        }
+        if se > ps + 1 {
+            pq_ss(o, OP_DB, pq_own(dr_lossy(ur_percent_decode(ur_uslice(u, ps + 1, se)))))
+        }
+    }
+    // parámetros de la consulta
+    let q = ur_f(u, 8)
+    let mut qtext = ""
+    if q >= 0 {
+        qtext = ur_uslice(u, q + 1, ur_before_fragment(u))
+    }
+    ur_free(u)
+    let err = my_apply_params(o, qtext)
+    if rt_slen(err) > 0 {
+        return (1, 0, my_url_err(err))
+    }
+    return (0, o, "")
+}
+
+// El host sin corchetes (las IPv6 se conectan sin ellos).
+fn my_host_text(h: any) -> any {
+    let n = rt_slen(h)
+    if n >= 2 && std::raw::load8(rt_bdata(h)) == 91 {
+        return pq_str(rt_bdata(h) + 1, n - 2)
+    }
+    h
+}
+
+fn my_is_loopback(kind: int, h: any) -> int {
+    if kind == 1 {
+        if rt_str_eq(h, "localhost") {
+            return 1
+        }
+        return 0
+    }
+    if kind == 2 {
+        let p = rt_bdata(h)
+        if rt_slen(h) >= 4 && rt_bytes_at(h, 0, "127.") {
+            return 1
+        }
+        return 0
+    }
+    if rt_str_eq(my_host_text(h), "::1") {
+        return 1
+    }
+    0
+}
+
+fn my_bad_value(key: any, value: any) -> any {
+    rt_concat(rt_concat(rt_concat(rt_concat("Invalid value `", value), "' for URL parameter `"), key), "'")
+}
+
+// Aplica los pares clave=valor de la consulta (como OptsBuilder::from_hash_map). Devuelve el texto
+// del error o "".
+fn my_apply_params(o: int, qtext: any) -> any {
+    let m = std__url__parse_query(qtext)
+    let keys = std__map__keys(m)
+    let nk = rt_seq_len(keys)
+    let mut pmin = 10
+    let mut pmax = 100
+    let mut i = 0
+    while i < nk {
+        let key = rt_seq_get(keys, i)
+        let v = std__map__get(m, key)
+        let mut handled = true
+        if rt_str_eq(key, "pool_min") {
+            let x = my_uint(v, 9223372036854775807)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pmin = x
+        } else if rt_str_eq(key, "pool_max") {
+            let x = my_uint(v, 9223372036854775807)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pmax = x
+        } else if rt_str_eq(key, "user") {
+            pq_ss(o, OP_USER, pq_own(v))
+        } else if rt_str_eq(key, "password") {
+            pq_ss(o, OP_PASS, pq_own(v))
+        } else if rt_str_eq(key, "host") {
+            let (hc, hk, hs) = ur_host_parse(v)
+            if hc < 0 {
+                pq_ss(o, OP_HOST, pq_own(v))
+                pq_ss(o, OP_LOOP, my_is_loopback(1, v))
+            } else {
+                pq_ss(o, OP_HOST, pq_own(my_host_text(hs)))
+                pq_ss(o, OP_LOOP, my_is_loopback(hk, hs))
+            }
+        } else if rt_str_eq(key, "port") {
+            let x = my_uint(v, 65535)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_PORT, x)
+        } else if rt_str_eq(key, "socket") {
+            pq_ss(o, OP_SOCKET, pq_own(v))
+        } else if rt_str_eq(key, "db_name") {
+            pq_ss(o, OP_DB, pq_own(v))
+        } else if rt_str_eq(key, "prefer_socket") {
+            let x = my_bool(v)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_PREFER, x)
+        } else if rt_str_eq(key, "enable_cleartext_plugin") {
+            let x = my_bool(v)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_CLEAR, x)
+        } else if rt_str_eq(key, "secure_auth") {
+            let x = my_bool(v)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_SECURE, x)
+        } else if rt_str_eq(key, "tcp_keepalive_time_ms") {
+            let x = my_uint(v, 4294967295)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_KA, x)
+        } else if rt_str_eq(key, "tcp_keepalive_probe_interval_secs") {
+            let x = my_uint(v, 4294967295)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_KAI, x)
+        } else if rt_str_eq(key, "tcp_keepalive_probe_count") {
+            let x = my_uint(v, 4294967295)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_KAC, x)
+        } else if rt_str_eq(key, "tcp_user_timeout_ms") {
+            let x = my_uint(v, 4294967295)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_UTMO, x)
+        } else if rt_str_eq(key, "compress") {
+            let x = my_uint(v, 4294967295)
+            if x < 0 && !rt_str_eq(v, "fast") && !rt_str_eq(v, "best") && !rt_str_eq(v, "true") {
+                return my_bad_value(key, v)
+            }
+        } else if rt_str_eq(key, "tcp_connect_timeout_ms") {
+            let x = my_uint(v, 9223372036854775807)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_CTMO, x)
+        } else if rt_str_eq(key, "stmt_cache_size") {
+            let x = my_uint(v, 9223372036854775807)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_STMTS, x)
+        } else if rt_str_eq(key, "reset_connection") || rt_str_eq(key, "check_health") {
+            let x = my_bool(v)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+        } else if rt_str_eq(key, "max_allowed_packet") {
+            let x = my_uint(v, 9223372036854775807)
+            if x < 0 {
+                return my_bad_value(key, v)
+            }
+            pq_ss(o, OP_MAXPKT, x)
+        } else {
+            return rt_concat(rt_concat("Unknown URL parameter `", key), "'")
+        }
+        i += 1
+    }
+    if pmin > pmax || pmax == 0 {
+        return rt_concat(rt_concat(rt_concat(rt_concat("Invalid pool constraints: pool_min (", rt_int_to_str(pmin)), ") > pool_max ("), rt_int_to_str(pmax)), ")")
+    }
+    ""
+}
+
+// ------------------------------------------------------------ conexión de red
+
+fn my_conn_new(o: int) -> int {
+    let c = rt_alloc_zero(MY_SIZE)
+    pq_ss(c, MY_IN, tb_new(4096))
+    pq_ss(c, MY_FD, -1)
+    pq_ss(c, MY_MAXPKT, MY_DEFAULT_PKT)
+    pq_ss(c, MY_OPTS, o)
+    pq_ss(c, MY_CACHE, rt_alloc_zero(32))
+    c
+}
+
+// Conecta con un plazo (poll + SO_ERROR). Devuelve el descriptor o -errno.
+fn my_connect_timeout(sa: int, len: int, ms: int) -> int {
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let fd = std::raw::syscall(41, fam, 524289 | 2048, 0, 0, 0, 0)
+    if fd < 0 {
+        return fd
+    }
+    let r = std::raw::syscall(42, fd, sa, len, 0, 0, 0)
+    if r < 0 && r != -115 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        return r
+    }
+    if r < 0 {
+        if tcp_wait(fd, 4, ms) == 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            return -110
+        }
+        let buf = rt_alloc(16)
+        let lp = rt_alloc(16)
+        std::raw::store(buf, 0)
+        std::raw::store(lp, 4)
+        let g = std::raw::syscall(55, fd, 1, 4, buf, lp, 0)
+        let e = std::raw::load8(buf) + 256 * std::raw::load8(buf + 1)
+        rt_free_block(buf)
+        rt_free_block(lp)
+        if g < 0 || e != 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            if g < 0 {
+                return g
+            }
+            return 0 - e
+        }
+    }
+    // vuelve a modo bloqueante
+    std::raw::syscall(72, fd, 4, 0, 0, 0, 0)
+    fd
+}
+
+fn my_setopt(fd: int, level: int, name: int, value: int) -> int {
+    let b = rt_alloc(16)
+    std::raw::store(b, value)
+    let r = std::raw::syscall(54, fd, level, name, b, 4, 0)
+    rt_free_block(b)
+    r
+}
+
+// Abre el socket de la conexión (Stream::connect_socket / connect_tcp). false con MY_ERR si falla.
+fn my_open(c: int) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    let sock = pq_gs(o, OP_SOCKET)
+    if sock != 0 {
+        let path = rt_sref(sock)
+        let pl = rt_slen(path)
+        let desc = rt_concat(rt_concat(rt_concat("Could not connect to address `", path), "': "), "")
+        if pl > 107 {
+            return my_driver(c, rt_concat(desc, "path must be shorter than SUN_LEN"))
+        }
+        let sa = rt_alloc_zero(128)
+        std::raw::store8(sa, 1)
+        rt_copy(sa + 2, rt_bdata(path), pl)
+        let fd = nt_connect_one(sa, 2 + pl + 1)
+        rt_free_block(sa)
+        if fd < 0 {
+            return my_driver(c, rt_concat(desc, rt_os_error(0 - fd)))
+        }
+        pq_ss(c, MY_FD, fd)
+        pq_ss(c, MY_SOCK, 1)
+        return true
+    }
+    let host = rt_sref(pq_gs(o, OP_HOST))
+    let port = rt_int_to_str(pq_gs(o, OP_PORT))
+    let shown = rt_concat(rt_concat(host, ":"), port)
+    let desc = rt_concat(rt_concat(rt_concat("Could not connect to address `", shown), "': "), "")
+    let mut ah = host
+    if pq_find(rt_bdata(host), 0, rt_slen(host), 58) >= 0 {
+        ah = rt_concat(rt_concat("[", host), "]")
+    }
+    let addr = rt_concat(rt_concat(ah, ":"), port)
+    let st = tcp_st()
+    std::raw::store(st + 32, 1)
+    std::raw::store(st + 40, 0)
+    let blk = tcp_resolve("std::mysql", addr)
+    std::raw::store(st + 32, 0)
+    if blk == 0 {
+        let m = std::raw::load(st + 40)
+        let mut text = "failed to lookup address information"
+        if m != 0 {
+            text = std::raw::value(5, m)
+        }
+        return my_driver(c, rt_concat(desc, text))
+    }
+    let count = std::raw::load(blk)
+    if count == 0 {
+        rt_free_block(blk)
+        return my_driver(c, rt_concat(desc, "could not connect to any address"))
+    }
+    let e = blk + 8
+    let ctmo = pq_gs(o, OP_CTMO)
+    let mut r = 0
+    if ctmo >= 0 {
+        r = my_connect_timeout(e + 8, std::raw::load(e), ctmo)
+    } else {
+        r = nt_connect_one(e + 8, std::raw::load(e))
+    }
+    rt_free_block(blk)
+    if r < 0 {
+        if r == -110 && ctmo >= 0 {
+            return my_driver(c, "Could not connect: connection timeout")
+        }
+        return my_driver(c, rt_concat(desc, rt_os_error(0 - r)))
+    }
+    let fd = r
+    let mut bad = 0
+    if my_setopt(fd, 6, 1, 1) < 0 {
+        bad = 1
+    }
+    let ka = pq_gs(o, OP_KA)
+    if ka >= 0 {
+        if my_setopt(fd, 1, 9, 1) < 0 || my_setopt(fd, 6, 4, ka / 1000) < 0 {
+            bad = 1
+        }
+    }
+    if pq_gs(o, OP_KAI) >= 0 && my_setopt(fd, 6, 5, pq_gs(o, OP_KAI)) < 0 {
+        bad = 1
+    }
+    if pq_gs(o, OP_KAC) >= 0 && my_setopt(fd, 6, 6, pq_gs(o, OP_KAC)) < 0 {
+        bad = 1
+    }
+    if pq_gs(o, OP_UTMO) >= 0 && my_setopt(fd, 6, 18, pq_gs(o, OP_UTMO)) < 0 {
+        bad = 1
+    }
+    if bad != 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        return my_driver(c, rt_concat(desc, rt_os_error(22)))
+    }
+    pq_ss(c, MY_FD, fd)
+    true
+}
+
+// ------------------------------------------------------------ saludo y autenticación
+
+// Versión "a.b.c" al principio del texto (como VERSION_RE): a*1000000 + b*1000 + c, o -1.
+fn my_version(p: int, e: int) -> int {
+    let mut i = p
+    let mut parts = 0
+    let mut total = 0
+    let mut k = 0
+    while k < 3 {
+        let mut run = 0
+        let mut v = 0
+        while i + run < e && std::raw::load8(i + run) >= 48 && std::raw::load8(i + run) <= 57 {
+            run += 1
+        }
+        let mut take = run
+        if k < 2 {
+            if run < 1 || run > 2 {
+                return -1
+            }
+        } else {
+            if run < 1 {
+                return -1
+            }
+            if take > 3 {
+                take = 3
+            }
+        }
+        let mut j = 0
+        while j < take {
+            v = v * 10 + (std::raw::load8(i + j) - 48)
+            j += 1
+        }
+        if k == 0 {
+            total = v * 1000000
+        } else if k == 1 {
+            total = total + v * 1000
+        } else {
+            total = total + v
+        }
+        i += take
+        if k < 2 {
+            if i >= e || std::raw::load8(i) != 46 {
+                return -1
+            }
+            i += 1
+        }
+        k += 1
+    }
+    total
+}
+
+// Identificador del plugin por su nombre: 0 native, 1 caching_sha2, 2 clear, 3 old, 4 ed25519, 5 otro.
+fn my_plugin_id(name: any) -> int {
+    if rt_str_eq(name, "mysql_native_password") {
+        return 0
+    }
+    if rt_str_eq(name, "caching_sha2_password") {
+        return 1
+    }
+    if rt_str_eq(name, "mysql_clear_password") {
+        return 2
+    }
+    if rt_str_eq(name, "mysql_old_password") {
+        return 3
+    }
+    if rt_str_eq(name, "client_ed25519") {
+        return 4
+    }
+    5
+}
+
+fn my_unexpected(c: int) -> bool {
+    my_driver(c, "Unexpected packet")
+}
+
+// Datos de autenticación del plugin actual para la contraseña dada: (bloque, largo, extra) con
+// extra = 1 si lleva un 0 final (clear/old). (0, 0, 0) si no hay datos (contraseña vacía o plugin
+// desconocido).
+fn my_auth_data(c: int, plugin: int, pass: any, nonce: int, nlen: int) -> (int, int, int) {
+    if rt_slen(pass) == 0 {
+        return (0, 0, 0)
+    }
+    if plugin == 0 {
+        return (my_scramble_native(nonce, nlen, pass), 20, 0)
+    }
+    if plugin == 1 {
+        return (my_scramble_sha2(nonce, nlen, pass), 32, 0)
+    }
+    if plugin == 2 {
+        let b = rt_alloc(rt_slen(pass) + 8)
+        rt_copy(b, rt_bdata(pass), rt_slen(pass))
+        return (b, rt_slen(pass), 1)
+    }
+    if plugin == 3 {
+        let mut first = nlen
+        if first > 8 {
+            first = 8
+        }
+        let pad = rt_alloc_zero(16)
+        rt_copy(pad, nonce, first)
+        let r = my_scramble_323(pad, pass)
+        rt_free_block(pad)
+        return (r, 8, 1)
+    }
+    if plugin == 4 {
+        rt_fatal("Can't create response for `ed25519` authentication plugin — `mysql_common/client_ed25519` feature is disabled.")
+    }
+    return (0, 0, 0)
+}
+
+fn my_pass(o: int) -> any {
+    let ps = pq_gs(o, OP_PASS)
+    if ps == 0 {
+        return ""
+    }
+    rt_sref(ps)
+}
+
+// Cambio de plugin pedido por el servidor (payload actual en MY_PL).
+fn my_auth_switch(c: int) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    let e = p + n
+    let mut name = "mysql_old_password"
+    let mut ds = p
+    let mut de = p
+    let mut oldreq = true
+    if n > 1 {
+        oldreq = false
+        let ne = my_cstr_end(p + 1, e)
+        name = pq_str(p + 1, ne - (p + 1))
+        ds = ne + 1
+        if ds > e {
+            ds = e
+        }
+        de = e
+        if de > ds && std::raw::load8(de - 1) == 0 {
+            de -= 1
+        }
+    } else {
+        // OldAuthSwitchRequest: el desafío sigue siendo el anterior.
+        ds = pq_gs(c, MY_NONCE)
+        de = ds + pq_gs(c, MY_NLEN)
+    }
+    let plugin = my_plugin_id(name)
+    if plugin == 3 && pq_gs(o, OP_SECURE) != 0 {
+        return my_driver(c, "`old_mysql_password` plugin is insecure and disabled by default")
+    }
+    // nuevo desafío
+    let nlen = de - ds
+    let nb = rt_alloc(nlen + 8)
+    rt_copy(nb, ds, nlen)
+    let oldn = pq_gs(c, MY_NONCE)
+    if oldn != 0 {
+        rt_free_block(oldn)
+    }
+    pq_ss(c, MY_NONCE, nb)
+    pq_ss(c, MY_NLEN, nlen)
+    pq_ss(c, MY_PLUGIN, plugin)
+    pq_ss(c, MY_PNAME, pq_own(name))
+    if plugin == 2 && pq_gs(o, OP_CLEAR) == 0 {
+        return my_driver(c, "Unknown authentication protocol: `mysql_clear_password`")
+    }
+    let (data, dlen, extra) = my_auth_data(c, plugin, my_pass(o), nb, nlen)
+    if data == 0 {
+        if !my_send_packet(c, nb, 0) {
+            return false
+        }
+    } else {
+        let out = tb_new(dlen + 8)
+        tb_bytes(out, data, dlen)
+        if extra != 0 {
+            tb_u8(out, 0)
+        }
+        rt_free_block(data)
+        let ok = my_send_packet(c, std::raw::load(out), std::raw::load(out + 8))
+        tb_free(out)
+        if !ok {
+            return false
+        }
+    }
+    my_auth(c, true)
+}
+
+// Sigue la autenticación del plugin actual hasta el OK.
+fn my_auth(c: int, switched: bool) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    let plugin = pq_gs(c, MY_PLUGIN)
+    if plugin == 5 {
+        return my_driver(c, rt_concat(rt_concat("Unknown authentication protocol: `", rt_sref(pq_gs(c, MY_PNAME))), "`"))
+    }
+    if plugin == 2 && pq_gs(o, OP_CLEAR) == 0 {
+        return my_driver(c, "mysql_clear_password must be enabled on the client side")
+    }
+    if !my_read(c) {
+        return false
+    }
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    if n == 0 {
+        return my_unexpected(c)
+    }
+    let first = std::raw::load8(p)
+    if plugin == 1 {
+        if first == 0 {
+            return true
+        }
+        if first == 1 {
+            if n < 2 {
+                return my_unexpected(c)
+            }
+            let sub = std::raw::load8(p + 1)
+            if sub == 3 {
+                if !my_read(c) {
+                    return false
+                }
+                if pq_gs(c, MY_PLEN) == 0 || std::raw::load8(pq_gs(c, MY_PL)) != 0 {
+                    return my_unexpected(c)
+                }
+                my_handle_ok(c)
+                return true
+            }
+            if sub == 4 {
+                let pass = my_pass(o)
+                let pl = rt_slen(pass)
+                let msg = rt_alloc(pl + 8)
+                rt_copy(msg, rt_bdata(pass), pl)
+                std::raw::store8(msg + pl, 0)
+                if pq_gs(c, MY_SOCK) != 0 {
+                    if !my_send_packet(c, msg, pl + 1) {
+                        rt_free_block(msg)
+                        return false
+                    }
+                    rt_free_block(msg)
+                } else {
+                    let req = rt_alloc(8)
+                    std::raw::store8(req, 2)
+                    let sent = my_send_packet(c, req, 1)
+                    rt_free_block(req)
+                    if !sent {
+                        rt_free_block(msg)
+                        return false
+                    }
+                    if !my_read(c) {
+                        rt_free_block(msg)
+                        return false
+                    }
+                    let kp = pq_gs(c, MY_PL)
+                    let kn = pq_gs(c, MY_PLEN)
+                    let key = pq_str(kp + 1, kn - 1)
+                    let nonce = pq_gs(c, MY_NONCE)
+                    let nlen = pq_gs(c, MY_NLEN)
+                    let mut i = 0
+                    while i < pl + 1 {
+                        std::raw::store8(msg + i, std::raw::load8(msg + i) ^ std::raw::load8(nonce + i % nlen))
+                        i += 1
+                    }
+                    let (ct, ctn) = my_rsa_encrypt(key, msg, pl + 1)
+                    rt_free_block(msg)
+                    if ct == 0 {
+                        rt_fatal("invalid RSA public key sent by the server for caching_sha2_password")
+                    }
+                    let sent2 = my_send_packet(c, ct, ctn)
+                    rt_free_block(ct)
+                    if !sent2 {
+                        return false
+                    }
+                }
+                if !my_read(c) {
+                    return false
+                }
+                if pq_gs(c, MY_PLEN) == 0 || std::raw::load8(pq_gs(c, MY_PL)) != 0 {
+                    return my_unexpected(c)
+                }
+                my_handle_ok(c)
+                return true
+            }
+            return my_unexpected(c)
+        }
+        if first == 254 && !switched {
+            return my_auth_switch(c)
+        }
+        return my_unexpected(c)
+    }
+    if plugin == 4 {
+        if first == 0 {
+            return true
+        }
+        if first == 254 && !switched {
+            return my_auth_switch(c)
+        }
+        return my_unexpected(c)
+    }
+    // native, old y clear
+    if first == 0 {
+        my_handle_ok(c)
+        return true
+    }
+    if first == 254 && !switched {
+        return my_auth_switch(c)
+    }
+    my_unexpected(c)
+}
+
+// Escribe la respuesta al saludo.
+fn my_write_response(c: int, rcaps: int, charset: int) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    let plugin = pq_gs(c, MY_PLUGIN)
+    let (data, dlen, extra) = my_auth_data(c, plugin, my_pass(o), pq_gs(c, MY_NONCE), pq_gs(c, MY_NLEN))
+    let b = tb_new(256)
+    my_put(b, rcaps, 4)
+    let mut mp = MY_DEFAULT_PKT
+    if pq_gs(o, OP_MAXPKT) >= 0 {
+        mp = pq_gs(o, OP_MAXPKT) & 4294967295
+    }
+    my_put(b, mp, 4)
+    tb_u8(b, charset)
+    let mut z = 0
+    while z < 23 {
+        tb_u8(b, 0)
+        z += 1
+    }
+    let us = pq_gs(o, OP_USER)
+    if us != 0 {
+        my_put_cstr(b, rt_sref(us))
+    } else {
+        tb_u8(b, 0)
+    }
+    if (rcaps & 32768) != 0 {
+        tb_u8(b, dlen)
+        if data != 0 {
+            tb_bytes(b, data, dlen)
+        }
+    } else {
+        if data != 0 {
+            tb_bytes(b, data, dlen)
+        }
+        tb_u8(b, 0)
+    }
+    if data != 0 {
+        rt_free_block(data)
+    }
+    let ds = pq_gs(o, OP_DB)
+    if ds != 0 {
+        my_put_cstr(b, rt_sref(ds))
+    }
+    if plugin == 1 {
+        my_put_cstr(b, "caching_sha2_password")
+    } else {
+        my_put_cstr(b, "mysql_native_password")
+    }
+    // atributos de la conexión
+    let at = tb_new(128)
+    my_attr(at, "_client_name", "titan-mysql")
+    my_attr(at, "_client_version", "1.0")
+    my_attr(at, "_os", "linux")
+    my_attr(at, "_pid", rt_int_to_str(std::raw::syscall(39, 0, 0, 0, 0, 0, 0)))
+    my_attr(at, "program_name", "titan")
+    my_put_lenenc(b, std::raw::load(at + 8))
+    tb_bytes(b, std::raw::load(at), std::raw::load(at + 8))
+    tb_free(at)
+    let ok = my_send_packet(c, std::raw::load(b), std::raw::load(b + 8))
+    tb_free(b)
+    ok
+}
+
+fn my_attr(b: int, k: any, v: any) {
+    my_put_lenstr(b, k)
+    my_put_lenstr(b, v)
+}
+
+// Lee el saludo del servidor, negocia capacidades y se autentica.
+fn my_handshake(c: int) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    if !my_read(c) {
+        return false
+    }
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    let e = p + n
+    if n < 1 {
+        return my_ioe(c, "failed to fill whole buffer")
+    }
+    let ve = my_cstr_end(p + 1, e)
+    if ve >= e {
+        return my_ioe(c, "failed to fill whole buffer")
+    }
+    let q = ve + 1
+    if q + 31 > e {
+        return my_ioe(c, "failed to fill whole buffer")
+    }
+    let caps1 = my_le(q + 13, 2)
+    let caps2 = std::raw::shl(my_le(q + 18, 2), 16)
+    let alen = std::raw::load8(q + 20)
+    let mut r = q + 31
+    let s1 = q + 4
+    let mut s2 = 0
+    let mut s2len = 0
+    if (caps1 & 32768) != 0 {
+        let mut want = alen - 8
+        if alen >= 128 {
+            want = alen - 256 - 8
+        }
+        if want < 13 {
+            want = 13
+        }
+        if r + want > e {
+            return my_ioe(c, "failed to fill whole buffer")
+        }
+        s2 = r
+        s2len = want
+        r += want
+    }
+    let mut pname = ""
+    let mut haspname = false
+    if (caps2 & 524288) != 0 {
+        let mut pe = e
+        if pe > r && std::raw::load8(pe - 1) == 0 {
+            pe -= 1
+        }
+        pname = pq_str(r, pe - r)
+        haspname = true
+    }
+    if std::raw::load8(p) != 10 {
+        return my_driver(c, rt_concat("Unsupported protocol version ", rt_int_to_str(std::raw::load8(p))))
+    }
+    let scaps = caps1 | caps2
+    if (scaps & 512) == 0 {
+        return my_driver(c, "Server must set CLIENT_PROTOCOL_41 flag")
+    }
+    let mut cf = 512 | 32768 | 1 | 8192 | 128 | 65536 | 131072 | 262144 | 524288 | 1048576
+    let mut hasdb = false
+    let dbp = pq_gs(o, OP_DB)
+    if dbp != 0 {
+        hasdb = true
+        if rt_slen(rt_sref(dbp)) > 0 {
+            cf = cf | 8
+        }
+    }
+    let caps = scaps & cf
+    pq_ss(c, MY_CAPS, caps)
+    let ver = my_version(p + 1, ve)
+    pq_ss(c, MY_VER, ver)
+    // desafío: 8 bytes + el resto, recortado o rellenado a 20
+    let nonce = rt_alloc_zero(48)
+    rt_copy(nonce, s1, 8)
+    if s2len > 0 {
+        let mut take = s2len
+        if take > 12 {
+            take = 12
+        }
+        rt_copy(nonce + 8, s2, take)
+    }
+    pq_ss(c, MY_NONCE, nonce)
+    pq_ss(c, MY_NLEN, 20)
+    let mut plugin = 0
+    if haspname && rt_str_eq(pname, "caching_sha2_password") {
+        plugin = 1
+    }
+    pq_ss(c, MY_PLUGIN, plugin)
+    let mut rcaps = caps
+    if hasdb {
+        rcaps = rcaps | 8
+    } else {
+        rcaps = rcaps & (4294967295 ^ 8)
+    }
+    rcaps = rcaps | 524288 | 1048576
+    let mut charset = 33
+    if ver >= 5005003 {
+        charset = 45
+    }
+    if !my_write_response(c, rcaps, charset) {
+        return false
+    }
+    my_auth(c, false)
+}
+
+// ------------------------------------------------------------ resultados
+
+// Libera las columnas del conjunto anterior.
+fn my_free_cols(c: int) {
+    let cols = pq_gs(c, MY_COLS)
+    if cols != 0 {
+        rt_free_block(cols)
+        pq_ss(c, MY_COLS, 0)
+        pq_ss(c, MY_NCOLS, 0)
+    }
+}
+
+// Cabecera de un resultado: 0 error (MY_ERR), 1 OK sin filas, 2 conjunto con filas (columnas en
+// MY_COLS: 24 bytes cada una {nombre string propio, tipo, indicadores}).
+fn my_header(c: int) -> int {
+    my_free_cols(c)
+    pq_ss(c, MY_HASRES, 0)
+    if !my_read(c) {
+        return 0
+    }
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    if n == 0 {
+        my_unexpected(c)
+        return 0
+    }
+    let first = std::raw::load8(p)
+    if first == 0 {
+        my_handle_ok(c)
+        return 1
+    }
+    if first == 251 {
+        // LOCAL INFILE sin manejador: se envía un archivo vacío.
+        if !my_send_packet(c, p, 0) {
+            return 0
+        }
+        if !my_read(c) {
+            return 0
+        }
+        if pq_gs(c, MY_PLEN) == 0 || std::raw::load8(pq_gs(c, MY_PL)) != 0 {
+            my_unexpected(c)
+            return 0
+        }
+        my_handle_ok(c)
+        return 1
+    }
+    let (ncols, q) = my_lenenc(p, p + n)
+    if ncols < 0 {
+        my_unexpected(c)
+        return 0
+    }
+    let cols = rt_alloc_zero(24 * ncols + 24)
+    pq_ss(c, MY_COLS, cols)
+    pq_ss(c, MY_NCOLS, ncols)
+    let mut k = 0
+    while k < ncols {
+        if !my_read(c) {
+            return 0
+        }
+        if !my_column(c, cols + 24 * k) {
+            return 0
+        }
+        k += 1
+    }
+    // EOF tras las columnas
+    if !my_read(c) {
+        return 0
+    }
+    pq_ss(c, MY_HASRES, 0)
+    if ncols > 0 {
+        pq_ss(c, MY_HASRES, 1)
+    }
+    return 2
+}
+
+// Definición de una columna (payload actual): nombre, tipo e indicadores.
+fn my_column(c: int, slot: int) -> bool {
+    let p0 = pq_gs(c, MY_PL)
+    let e = p0 + pq_gs(c, MY_PLEN)
+    let mut p = p0
+    let mut k = 0
+    let mut name = ""
+    while k < 6 {
+        let (l, q) = my_lenenc(p, e)
+        if l < 0 || q + l > e {
+            return my_ioe(c, "failed to fill whole buffer")
+        }
+        if k == 4 {
+            name = dr_lossy(pq_str(q, l))
+        }
+        p = q + l
+        k += 1
+    }
+    let (fl, q2) = my_lenenc(p, e)
+    if fl < 0 || q2 + 10 > e {
+        return my_ioe(c, "failed to fill whole buffer")
+    }
+    pq_ss(slot, 0, pq_own(name))
+    pq_ss(slot, 8, std::raw::load8(q2 + 6))
+    pq_ss(slot, 16, my_le(q2 + 7, 2))
+    true
+}
+
+// Siguiente fila del conjunto actual: 1 hay fila (payload en MY_PL), 0 fin, -1 error.
+fn my_next_row(c: int) -> int {
+    if pq_gs(c, MY_HASRES) == 0 {
+        return 0
+    }
+    if !my_read(c) {
+        return -1
+    }
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    if n > 0 && std::raw::load8(p) == 254 && n < 8 {
+        pq_ss(c, MY_HASRES, 0)
+        my_handle_eof(c)
+        return 0
+    }
+    1
+}
+
+// Consume lo que quede del conjunto actual y todos los siguientes; los errores se tragan (como el
+// Drop de QueryResult).
+fn my_drain(c: int) {
+    loop {
+        while pq_gs(c, MY_HASRES) != 0 {
+            let r = my_next_row(c)
+            if r < 0 {
+                return
+            }
+        }
+        if (pq_gs(c, MY_STATUS) & 8) == 0 {
+            return
+        }
+        let h = my_header(c)
+        if h == 0 {
+            return
+        }
+    }
+}
+
+// Consulta de texto (COM_QUERY) cuyo resultado se descarta: el primer error se devuelve, los
+// posteriores se tragan. false con MY_ERR si falla.
+fn my_text_drop(c: int, sql: any) -> bool {
+    if !my_command(c, 3, rt_bdata(sql), rt_slen(sql)) {
+        return false
+    }
+    let h = my_header(c)
+    if h == 0 {
+        return false
+    }
+    my_drain(c)
+    true
+}
+
+// Primera columna de la primera fila de una consulta de texto: (0, nil) error con MY_ERR,
+// (1, nil) sin filas o NULL, (1, texto).
+fn my_text_first(c: int, sql: any) -> (int, any) {
+    if !my_command(c, 3, rt_bdata(sql), rt_slen(sql)) {
+        return (0, nil)
+    }
+    let h = my_header(c)
+    if h == 0 {
+        return (0, nil)
+    }
+    let mut out = nil
+    if h == 2 {
+        let r = my_next_row(c)
+        if r < 0 {
+            return (0, nil)
+        }
+        if r == 1 {
+            let p = pq_gs(c, MY_PL)
+            let e = p + pq_gs(c, MY_PLEN)
+            if p < e && std::raw::load8(p) != 251 {
+                let (l, q) = my_lenenc(p, e)
+                if l >= 0 && q + l <= e {
+                    out = pq_str(q, l)
+                }
+            }
+        }
+    }
+    my_drain(c)
+    return (1, out)
+}
+
+// ------------------------------------------------------------ valores binarios
+
+// Valor de una columna en una fila binaria: (valor, siguiente) o (nil, -1) si se acaba el paquete.
+fn my_bin_value(t: int, fl: int, p: int, e: int) -> (any, int) {
+    let unsigned = (fl & 32) != 0
+    if t == 1 {
+        if p + 1 > e {
+            return (nil, -1)
+        }
+        let v = std::raw::load8(p)
+        if !unsigned && v >= 128 {
+            return (v - 256, p + 1)
+        }
+        return (v, p + 1)
+    }
+    if t == 2 || t == 13 {
+        if p + 2 > e {
+            return (nil, -1)
+        }
+        let v = my_le(p, 2)
+        if !unsigned && v >= 32768 {
+            return (v - 65536, p + 2)
+        }
+        return (v, p + 2)
+    }
+    if t == 3 || t == 9 {
+        if p + 4 > e {
+            return (nil, -1)
+        }
+        let v = my_le(p, 4)
+        if !unsigned && v >= 2147483648 {
+            return (v - 4294967296, p + 4)
+        }
+        return (v, p + 4)
+    }
+    if t == 8 {
+        if p + 8 > e {
+            return (nil, -1)
+        }
+        let v = my_le(p, 8)
+        if unsigned && v < 0 {
+            return (my_u64_str(v), p + 8)
+        }
+        return (v, p + 8)
+    }
+    if t == 4 {
+        if p + 4 > e {
+            return (nil, -1)
+        }
+        return (rt_float(pq_f32_bits(my_le(p, 4))), p + 4)
+    }
+    if t == 5 {
+        if p + 8 > e {
+            return (nil, -1)
+        }
+        return (rt_float(my_le(p, 8)), p + 8)
+    }
+    if t == 7 || t == 10 || t == 12 {
+        if p + 1 > e {
+            return (nil, -1)
+        }
+        let len = std::raw::load8(p)
+        if p + 1 + len > e {
+            return (nil, -1)
+        }
+        let q = p + 1
+        let mut y = 0
+        let mut mo = 0
+        let mut d = 0
+        let mut h = 0
+        let mut mi = 0
+        let mut s = 0
+        let mut us = 0
+        if len >= 4 {
+            y = my_le(q, 2)
+            mo = std::raw::load8(q + 2)
+            d = std::raw::load8(q + 3)
+        }
+        if len >= 7 {
+            h = std::raw::load8(q + 4)
+            mi = std::raw::load8(q + 5)
+            s = std::raw::load8(q + 6)
+        }
+        if len == 11 {
+            us = my_le(q + 7, 4)
+        }
+        let mut text = rt_concat(rt_concat(rt_concat(rt_concat(my_pad(y, 4), "-"), my_pad(mo, 2)), "-"), my_pad(d, 2))
+        text = rt_concat(rt_concat(rt_concat(rt_concat(text, " "), my_pad(h, 2)), ":"), my_pad(mi, 2))
+        text = rt_concat(rt_concat(rt_concat(rt_concat(text, ":"), my_pad(s, 2)), "."), my_pad(us, 6))
+        return (text, p + 1 + len)
+    }
+    if t == 11 {
+        if p + 1 > e {
+            return (nil, -1)
+        }
+        let len = std::raw::load8(p)
+        if p + 1 + len > e {
+            return (nil, -1)
+        }
+        let q = p + 1
+        let mut neg = 0
+        let mut days = 0
+        let mut h = 0
+        let mut mi = 0
+        let mut s = 0
+        let mut us = 0
+        if len >= 8 {
+            neg = std::raw::load8(q)
+            days = my_le(q + 1, 4)
+            h = std::raw::load8(q + 5)
+            mi = std::raw::load8(q + 6)
+            s = std::raw::load8(q + 7)
+        }
+        if len == 12 {
+            us = my_le(q + 8, 4)
+        }
+        let mut text = ""
+        if neg == 1 {
+            text = "-"
+        }
+        text = rt_concat(rt_concat(rt_concat(text, rt_int_to_str(days)), " "), my_pad(h, 2))
+        text = rt_concat(rt_concat(rt_concat(rt_concat(text, ":"), my_pad(mi, 2)), ":"), my_pad(s, 2))
+        text = rt_concat(rt_concat(text, "."), my_pad(us, 6))
+        return (text, p + 1 + len)
+    }
+    if t == 6 {
+        return (nil, p)
+    }
+    if t == 0 || t == 15 || t == 16 || t == 242 || t == 245 || t == 246 || t == 247 || t == 248 || t == 249 || t == 250 || t == 251 || t == 252 || t == 253 || t == 254 || t == 255 {
+        let (l, q) = my_lenenc(p, e)
+        if l < 0 || q + l > e {
+            return (nil, -1)
+        }
+        if rt_valid_utf8(q, l) {
+            return (pq_str(q, l), q + l)
+        }
+        return (rt_bytes_from(q, l), q + l)
+    }
+    rt_fatal(rt_concat("not implemented: Unsupported column type ", rt_int_to_str(t)))
+    return (nil, -1)
+}
+
+// Fila binaria actual (payload en MY_PL) como mapa nombre -> valor, o nil si el paquete está truncado.
+fn my_bin_row(c: int) -> any {
+    let p = pq_gs(c, MY_PL)
+    let e = p + pq_gs(c, MY_PLEN)
+    let cols = pq_gs(c, MY_COLS)
+    let nc = pq_gs(c, MY_NCOLS)
+    let bm = p + 1
+    let mut q = bm + (nc + 9) / 8
+    if q > e {
+        return nil
+    }
+    let mut row = std::map::new()
+    let mut k = 0
+    while k < nc {
+        let slot = cols + 24 * k
+        let bit = k + 2
+        let isnull = std::raw::shr(std::raw::load8(bm + bit / 8), bit % 8) & 1
+        let mut val = nil
+        if isnull == 0 {
+            let (v, nq) = my_bin_value(pq_gs(slot, 8), pq_gs(slot, 16), q, e)
+            if nq < 0 {
+                return nil
+            }
+            val = v
+            q = nq
+        }
+        row = std__map__insert(row, rt_sref(pq_gs(slot, 0)), val)
+        k += 1
+    }
+    row
+}
+
+// ------------------------------------------------------------ sentencias preparadas
+
+// `:nombre` -> `?` fuera de comillas y comentarios (ParsedNamedParams). (0, SQL) o (1, "") si
+// mezcla parámetros posicionales y con nombre.
+fn my_named(sql: any) -> (int, any) {
+    let p = rt_bdata(sql)
+    let n = rt_slen(sql)
+    let marks = tb_new(64)
+    let mut state = 0
+    let mut delim = 0
+    let mut prev = 0
+    let mut positional = false
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        let ch = std::raw::load8(p + i)
+        let mut rematch = false
+        if state == 0 {
+            if ch == 58 {
+                state = 2
+            } else if ch == 47 {
+                state = 8
+            } else if ch == 45 {
+                state = 5
+            } else if ch == 35 {
+                state = 4
+            } else if ch == 39 {
+                state = 1
+                delim = 39
+                prev = 39
+            } else if ch == 34 {
+                state = 1
+                delim = 34
+                prev = 34
+            } else if ch == 63 {
+                positional = true
+            } else if ch == 96 {
+                state = 12
+            }
+        } else if state == 1 {
+            if ch == delim && prev != 92 {
+                state = 0
+            } else {
+                prev = ch
+            }
+        } else if state == 2 {
+            if (ch >= 97 && ch <= 122) || ch == 95 {
+                my_put(marks, i - 1, 8)
+                state = 3
+            } else {
+                rematch = true
+            }
+        } else if state == 3 {
+            if !((ch >= 97 && ch <= 122) || (ch >= 48 && ch <= 57) || ch == 95) {
+                my_put(marks, i, 8)
+                count += 1
+                rematch = true
+            }
+        } else if state == 4 {
+            if ch == 10 {
+                state = 0
+            }
+        } else if state == 5 {
+            if ch == 45 {
+                state = 6
+            } else {
+                state = 0
+            }
+        } else if state == 6 {
+            if (ch == 32 || ch == 9 || ch == 12 || ch == 13) {
+                state = 7
+            } else {
+                state = 0
+            }
+        } else if state == 7 {
+            if ch == 10 {
+                state = 0
+            }
+        } else if state == 8 {
+            if ch == 42 {
+                state = 9
+            } else {
+                state = 0
+            }
+        } else if state == 9 {
+            if ch == 33 || ch == 43 {
+                state = 0
+            } else {
+                state = 10
+            }
+        } else if state == 10 {
+            if ch == 42 {
+                state = 11
+            }
+        } else if state == 11 {
+            if ch == 47 {
+                state = 0
+            } else {
+                state = 10
+            }
+        } else if state == 12 {
+            if ch == 96 {
+                state = 0
+            }
+        }
+        if rematch {
+            if ch == 58 {
+                state = 2
+            } else if ch == 39 {
+                state = 1
+                delim = 39
+                prev = 39
+            } else if ch == 34 {
+                state = 1
+                delim = 34
+                prev = 34
+            } else {
+                state = 0
+            }
+        }
+        i += 1
+    }
+    if state == 3 {
+        my_put(marks, n, 8)
+        count += 1
+    }
+    if count == 0 {
+        tb_free(marks)
+        return (0, sql)
+    }
+    if positional {
+        tb_free(marks)
+        return (1, "")
+    }
+    let sb = sb_new(n + 8)
+    let md = std::raw::load(marks)
+    let mut last = 0
+    let mut k = 0
+    while k < count {
+        let colon = my_le(md + 16 * k, 8)
+        let end = my_le(md + 16 * k + 8, 8)
+        let mut j = last
+        while j < colon {
+            sb_byte(sb, std::raw::load8(p + j))
+            j += 1
+        }
+        sb_byte(sb, 63)
+        last = end
+        k += 1
+    }
+    let mut j2 = last
+    while j2 < n {
+        sb_byte(sb, std::raw::load8(p + j2))
+        j2 += 1
+    }
+    tb_free(marks)
+    return (0, sb_finish(sb))
+}
+
+// Caché de sentencias: bloque {+0 cuántas, +8 capacidad, +16 reloj, +24 entradas de 32 bytes
+// {sql string propio, id, uso, parámetros}}.
+fn my_cache_find(c: int, sql: any) -> int {
+    let cache = pq_gs(c, MY_CACHE)
+    let n = pq_gs(cache, 0)
+    let ents = pq_gs(cache, 24)
+    let mut i = 0
+    while i < n {
+        let e = ents + 32 * i
+        if rt_str_eq(rt_sref(pq_gs(e, 0)), sql) {
+            return e
+        }
+        i += 1
+    }
+    0
+}
+
+// COM_STMT_CLOSE (sin respuesta).
+fn my_stmt_close(c: int, id: int) -> bool {
+    let b = rt_alloc(16)
+    std::raw::store(b, 0)
+    my_put_raw4(b, id)
+    let ok = my_command(c, 25, b, 4)
+    rt_free_block(b)
+    ok
+}
+
+fn my_put_raw4(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+// Guarda una sentencia en la caché; si sobra una, cierra la menos usada.
+fn my_cache_put(c: int, sql: any, id: int, np: int) -> bool {
+    let o = pq_gs(c, MY_OPTS)
+    let cap = pq_gs(o, OP_STMTS)
+    if cap == 0 {
+        return true
+    }
+    let cache = pq_gs(c, MY_CACHE)
+    let n = pq_gs(cache, 0)
+    if n >= pq_gs(cache, 8) {
+        let mut nc = pq_gs(cache, 8) * 2
+        if nc < 8 {
+            nc = 8
+        }
+        let ne = rt_alloc_zero(32 * nc + 32)
+        if n > 0 {
+            rt_copy(ne, pq_gs(cache, 24), 32 * n)
+        }
+        let old = pq_gs(cache, 24)
+        if old != 0 {
+            rt_free_block(old)
+        }
+        pq_ss(cache, 24, ne)
+        pq_ss(cache, 8, nc)
+    }
+    let ents = pq_gs(cache, 24)
+    let clock = pq_gs(cache, 16) + 1
+    pq_ss(cache, 16, clock)
+    let e = ents + 32 * n
+    pq_ss(e, 0, pq_own(sql))
+    pq_ss(e, 8, id)
+    pq_ss(e, 16, clock)
+    pq_ss(e, 24, np)
+    pq_ss(cache, 0, n + 1)
+    if n + 1 > cap {
+        let mut best = 0
+        let mut i = 1
+        while i < n + 1 {
+            if pq_gs(ents + 32 * i, 16) < pq_gs(ents + 32 * best, 16) {
+                best = i
+            }
+            i += 1
+        }
+        let victim = pq_gs(ents + 32 * best, 8)
+        let last = ents + 32 * n
+        if best != n {
+            rt_copy(ents + 32 * best, last, 32)
+        }
+        pq_ss(cache, 0, n)
+        return my_stmt_close(c, victim)
+    }
+    true
+}
+
+// Prepara (o reutiliza de la caché) una sentencia: (ok, id, parámetros).
+fn my_prepare(c: int, q: any) -> (bool, int, int) {
+    let o = pq_gs(c, MY_OPTS)
+    if pq_gs(o, OP_STMTS) > 0 {
+        let e = my_cache_find(c, q)
+        if e != 0 {
+            let cache = pq_gs(c, MY_CACHE)
+            let clock = pq_gs(cache, 16) + 1
+            pq_ss(cache, 16, clock)
+            pq_ss(e, 16, clock)
+            return (true, pq_gs(e, 8), pq_gs(e, 24))
+        }
+    }
+    if !my_command(c, 22, rt_bdata(q), rt_slen(q)) {
+        return (false, 0, 0)
+    }
+    if !my_read(c) {
+        return (false, 0, 0)
+    }
+    let p = pq_gs(c, MY_PL)
+    let n = pq_gs(c, MY_PLEN)
+    if n < 9 || std::raw::load8(p) != 0 {
+        my_unexpected(c)
+        return (false, 0, 0)
+    }
+    let id = my_le(p + 1, 4)
+    let ncols = my_le(p + 5, 2)
+    let np = my_le(p + 7, 2)
+    let mut k = 0
+    if np > 0 {
+        while k < np {
+            if !my_read(c) {
+                return (false, 0, 0)
+            }
+            k += 1
+        }
+        if !my_read(c) {
+            return (false, 0, 0)
+        }
+    }
+    k = 0
+    if ncols > 0 {
+        while k < ncols {
+            if !my_read(c) {
+                return (false, 0, 0)
+            }
+            k += 1
+        }
+        if !my_read(c) {
+            return (false, 0, 0)
+        }
+    }
+    if !my_cache_put(c, q, id, np) {
+        return (false, 0, 0)
+    }
+    return (true, id, np)
+}
+
+// Longitud de un string de longitud variable en la petición.
+fn my_lenstr_len(n: int) -> int {
+    if n < 251 {
+        return 1 + n
+    }
+    if n < 65536 {
+        return 3 + n
+    }
+    if n < 16777216 {
+        return 4 + n
+    }
+    9 + n
+}
+
+// COM_STMT_EXECUTE con los parámetros (y COM_STMT_SEND_LONG_DATA antes si no cabe en un paquete).
+fn my_send_execute(c: int, id: int, params: any, n: int) -> bool {
+    let bitmap_len = (n + 7) / 8
+    let mut data_len = 0
+    let mut i = 0
+    while i < n {
+        let v = rt_seq_get(params, i)
+        let t = std::raw::tag(v)
+        if t == 1 || t == 2 {
+            data_len += 8
+        } else if t == 5 || t == 6 {
+            data_len += my_lenstr_len(rt_slen(v))
+        }
+        i += 1
+    }
+    let total = 10 + bitmap_len + 1 + 2 * n + data_len
+    let long = total > MY_MAX_PAYLOAD
+    if long {
+        i = 0
+        while i < n {
+            let v = rt_seq_get(params, i)
+            let t = std::raw::tag(v)
+            if t == 5 || t == 6 {
+                let bp = rt_bdata(v)
+                let bl = rt_slen(v)
+                let chunk = MY_MAX_PAYLOAD - 6
+                let mut off = 0
+                let mut first = true
+                while off < bl || first {
+                    first = false
+                    let mut len = bl - off
+                    if len > chunk {
+                        len = chunk
+                    }
+                    let b = tb_new(len + 16)
+                    my_put(b, id, 4)
+                    my_put(b, i, 2)
+                    if len > 0 {
+                        tb_bytes(b, bp + off, len)
+                    }
+                    let ok = my_command(c, 24, std::raw::load(b), std::raw::load(b + 8))
+                    tb_free(b)
+                    if !ok {
+                        return false
+                    }
+                    off += len
+                }
+            }
+            i += 1
+        }
+    }
+    let b = tb_new(total + 16)
+    my_put(b, id, 4)
+    tb_u8(b, 0)
+    my_put(b, 1, 4)
+    if n > 0 {
+        let bmpos = std::raw::load(b + 8)
+        let mut z = 0
+        while z < bitmap_len {
+            tb_u8(b, 0)
+            z += 1
+        }
+        tb_u8(b, 1)
+        i = 0
+        while i < n {
+            let v = rt_seq_get(params, i)
+            let t = std::raw::tag(v)
+            if t == 0 {
+                let d = std::raw::load(b) + bmpos
+                std::raw::store8(d + i / 8, std::raw::load8(d + i / 8) | std::raw::shl(1, i % 8))
+                tb_u8(b, 6)
+            } else if t == 1 {
+                tb_u8(b, 8)
+            } else if t == 2 {
+                tb_u8(b, 5)
+            } else {
+                tb_u8(b, 253)
+            }
+            tb_u8(b, 0)
+            i += 1
+        }
+        i = 0
+        while i < n {
+            let v = rt_seq_get(params, i)
+            let t = std::raw::tag(v)
+            if t == 1 || t == 2 {
+                my_put(b, std::raw::bits(v), 8)
+            } else if (t == 5 || t == 6) && !long {
+                my_put_lenenc(b, rt_slen(v))
+                tb_bytes(b, rt_bdata(v), rt_slen(v))
+            }
+            i += 1
+        }
+    }
+    let ok = my_command(c, 23, std::raw::load(b), std::raw::load(b + 8))
+    tb_free(b)
+    ok
+}
+
+// Ejecuta una sentencia con parámetros. mode 0: filas afectadas; mode 1: array de mapas.
+// Devuelve (true, valor) o (false, nil) con MY_ERR.
+fn my_run(c: int, sql: any, params: any, mode: int) -> (bool, any) {
+    let (mixed, q) = my_named(sql)
+    if mixed != 0 {
+        my_driver(c, "Can not mix named and positional parameters in one statement")
+        return (false, nil)
+    }
+    let (ok, id, np) = my_prepare(c, q)
+    if !ok {
+        return (false, nil)
+    }
+    let n = rt_seq_len(params)
+    if np != n {
+        my_driver(c, rt_concat(rt_concat(rt_concat(rt_concat("Statement takes ", rt_int_to_str(np)), " parameters but "), rt_int_to_str(n)), " was supplied"))
+        return (false, nil)
+    }
+    if !my_send_execute(c, id, params, n) {
+        return (false, nil)
+    }
+    let h = my_header(c)
+    if h == 0 {
+        return (false, nil)
+    }
+    if mode == 0 {
+        my_drain(c)
+        let mut a = pq_gs(c, MY_AFF)
+        if a < 0 {
+            a = 9223372036854775807
+        }
+        return (true, a)
+    }
+    let mut rows = []
+    if h == 2 {
+        loop {
+            let r = my_next_row(c)
+            if r < 0 {
+                return (false, nil)
+            }
+            if r == 0 {
+                break
+            }
+            let row = my_bin_row(c)
+            if std::raw::tag(row) == 0 {
+                my_ioe(c, "failed to fill whole buffer")
+                return (false, nil)
+            }
+            rows = std::array::push(rows, row)
+        }
+    }
+    my_drain(c)
+    return (true, rows)
+}
+
+// Filas de una consulta de texto como arrays de strings (NULL = nil); para las migraciones.
+fn my_text_rows(c: int, sql: any) -> (bool, any) {
+    if !my_command(c, 3, rt_bdata(sql), rt_slen(sql)) {
+        return (false, nil)
+    }
+    let h = my_header(c)
+    if h == 0 {
+        return (false, nil)
+    }
+    let mut rows = []
+    if h == 2 {
+        let nc = pq_gs(c, MY_NCOLS)
+        loop {
+            let r = my_next_row(c)
+            if r < 0 {
+                return (false, nil)
+            }
+            if r == 0 {
+                break
+            }
+            let p0 = pq_gs(c, MY_PL)
+            let e = p0 + pq_gs(c, MY_PLEN)
+            let mut p = p0
+            let mut row = []
+            let mut k = 0
+            while k < nc {
+                if p >= e {
+                    my_ioe(c, "failed to fill whole buffer")
+                    return (false, nil)
+                }
+                if std::raw::load8(p) == 251 {
+                    row = std::array::push(row, nil)
+                    p += 1
+                } else {
+                    let (l, q) = my_lenenc(p, e)
+                    if l < 0 || q + l > e {
+                        my_ioe(c, "failed to fill whole buffer")
+                        return (false, nil)
+                    }
+                    row = std::array::push(row, pq_str(q, l))
+                    p = q + l
+                }
+                k += 1
+            }
+            rows = std::array::push(rows, row)
+        }
+    }
+    my_drain(c)
+    return (true, rows)
+}
+
+// ------------------------------------------------------------ conexión completa
+
+// Cierra una conexión como el Drop de Conn: cierra las sentencias de la caché (la menos usada
+// primero), manda COM_QUIT y libera todo. Los errores se ignoran.
+fn my_shutdown(c: int) {
+    let cache = pq_gs(c, MY_CACHE)
+    let mut n = pq_gs(cache, 0)
+    let ents = pq_gs(cache, 24)
+    while n > 0 {
+        let mut best = 0
+        let mut i = 1
+        while i < n {
+            if pq_gs(ents + 32 * i, 16) < pq_gs(ents + 32 * best, 16) {
+                best = i
+            }
+            i += 1
+        }
+        if pq_gs(c, MY_CLOSED) == 0 && pq_gs(c, MY_FD) >= 0 {
+            my_stmt_close(c, pq_gs(ents + 32 * best, 8))
+        }
+        if best != n - 1 {
+            rt_copy(ents + 32 * best, ents + 32 * (n - 1), 32)
+        }
+        n -= 1
+    }
+    pq_ss(cache, 0, 0)
+    if pq_gs(c, MY_CLOSED) == 0 && pq_gs(c, MY_FD) >= 0 {
+        my_command(c, 1, 0, 0)
+    }
+    pq_ss(c, MY_CLOSED, 1)
+    let fd = pq_gs(c, MY_FD)
+    if fd >= 0 {
+        std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+        pq_ss(c, MY_FD, -1)
+    }
+    let inb = pq_gs(c, MY_IN)
+    if inb != 0 {
+        tb_free(inb)
+        pq_ss(c, MY_IN, 0)
+    }
+    let pl = pq_gs(c, MY_PL)
+    if pl != 0 {
+        rt_free_block(pl)
+        pq_ss(c, MY_PL, 0)
+    }
+    my_free_cols(c)
+    let nb = pq_gs(c, MY_NONCE)
+    if nb != 0 {
+        rt_free_block(nb)
+        pq_ss(c, MY_NONCE, 0)
+    }
+    if ents != 0 {
+        rt_free_block(ents)
+        pq_ss(cache, 24, 0)
+        pq_ss(cache, 8, 0)
+    }
+}
+
+fn my_free_conn(c: int) {
+    my_shutdown(c)
+    rt_free_block(pq_gs(c, MY_CACHE))
+    rt_free_block(c)
+}
+
+// Conecta, negocia y deja lista la conexión: (true, c) o (false, c) con MY_ERR en c.
+fn my_establish(o: int) -> (bool, int) {
+    let c = my_conn_new(o)
+    if !my_open(c) {
+        return (false, c)
+    }
+    if !my_handshake(c) {
+        return (false, c)
+    }
+    let mut mx = pq_gs(o, OP_MAXPKT)
+    if mx < 0 {
+        let (st, v) = my_text_first(c, "SELECT @@max_allowed_packet")
+        if st == 0 {
+            return (false, c)
+        }
+        mx = 0
+        if std::raw::tag(v) == 5 {
+            let x = my_uint(v, 9223372036854775807)
+            if x > 0 {
+                mx = x
+            }
+        }
+    }
+    if mx == 0 {
+        my_driver(c, "Could not setup connection")
+        return (false, c)
+    }
+    pq_ss(c, MY_MAXPKT, mx)
+    return (true, c)
+}
+
+// Conecta con una URL. Devuelve (0, conexión, "") o (1, 0, mensaje de error).
+fn my_connect(url: any) -> (int, int, any) {
+    let (st, o, err) = my_parse_url(url)
+    if st != 0 {
+        return (1, 0, err)
+    }
+    let (ok, c0) = my_establish(o)
+    if !ok {
+        let msg = my_err(c0)
+        my_free_conn(c0)
+        return (1, 0, msg)
+    }
+    let mut c = c0
+    // ¿se puede mejorar con el socket Unix del servidor? (prefer_socket y host de loopback)
+    if pq_gs(o, OP_PREFER) != 0 && pq_gs(o, OP_LOOP) != 0 && pq_gs(o, OP_SOCKET) == 0 {
+        let (s2, v) = my_text_first(c, "SELECT @@socket")
+        if s2 == 0 {
+            let msg = my_err(c)
+            my_free_conn(c)
+            return (1, 0, msg)
+        }
+        if std::raw::tag(v) == 5 && rt_slen(v) > 0 {
+            let o2 = rt_alloc_zero(OP_SIZE)
+            rt_copy(o2, o, OP_SIZE)
+            pq_ss(o2, OP_SOCKET, pq_own(v))
+            let (ok2, c2) = my_establish(o2)
+            if ok2 {
+                my_free_conn(c)
+                c = c2
+            } else {
+                my_free_conn(c2)
+            }
+        }
+    }
+    return (0, c, "")
+}
+
+// ------------------------------------------------------------ transacciones, migraciones, ping
+
+fn my_begin(c: int) -> bool {
+    if pq_gs(c, MY_TX) != 0 {
+        my_set_err(c, "transaction already active")
+        return false
+    }
+    if !my_text_drop(c, "START TRANSACTION") {
+        return false
+    }
+    pq_ss(c, MY_TX, 1)
+    true
+}
+
+fn my_tx_end(c: int, commit: bool) -> bool {
+    if pq_gs(c, MY_TX) == 0 {
+        my_set_err(c, "no active transaction")
+        return false
+    }
+    let mut sql = "ROLLBACK"
+    if commit {
+        sql = "COMMIT"
+    }
+    if !my_text_drop(c, sql) {
+        return false
+    }
+    pq_ss(c, MY_TX, 0)
+    true
+}
+
+fn my_ping(c: int) -> bool {
+    let (st, v) = my_text_first(c, "SELECT 1")
+    if st == 0 {
+        return false
+    }
+    std::raw::tag(v) == 5 && rt_str_eq(v, "1")
+}
+
+// Entero de un texto decimal (i64::from_str).
+fn my_text_int(s: any) -> int {
+    let p = rt_bdata(s)
+    let n = rt_slen(s)
+    let mut i = 0
+    let mut neg = false
+    if n > 0 && (std::raw::load8(p) == 45 || std::raw::load8(p) == 43) {
+        neg = std::raw::load8(p) == 45
+        i = 1
+    }
+    let mut v = 0
+    while i < n {
+        let d = std::raw::load8(p + i)
+        if d < 48 || d > 57 {
+            return 0
+        }
+        v = v * 10 + (d - 48)
+        i += 1
+    }
+    if neg {
+        return 0 - v
+    }
+    v
+}
+
+// Aplica las migraciones pendientes con el cerrojo ya tomado: (true, cuántas) o (false, 0).
+fn my_migrate_locked(c: int, migs: any) -> (bool, int) {
+    if !my_text_drop(c, "CREATE TABLE IF NOT EXISTS _titan_migrations(version BIGINT PRIMARY KEY,name VARCHAR(255) NOT NULL,checksum VARCHAR(64) NOT NULL,applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)") {
+        return (false, 0)
+    }
+    let (ok, applied) = my_text_rows(c, "SELECT version,name,checksum FROM _titan_migrations ORDER BY version")
+    if !ok {
+        return (false, 0)
+    }
+    let n = rt_seq_len(migs)
+    let na = rt_seq_len(applied)
+    let mut i = 0
+    while i < n {
+        let m = rt_seq_get(migs, i)
+        let v = std::raw::bits(std__map__get(m, "version"))
+        let mut j = 0
+        while j < na {
+            let a = rt_seq_get(applied, j)
+            if my_text_int(rt_seq_get(a, 0)) == v {
+                if !rt_str_eq(rt_seq_get(a, 1), std__map__get(m, "name")) || !rt_str_eq(rt_seq_get(a, 2), pq_checksum(std__map__get(m, "sql"))) {
+                    my_set_err(c, rt_concat(rt_concat("previously applied migration ", rt_int_to_str(v)), " has changed"))
+                    return (false, 0)
+                }
+            }
+            j += 1
+        }
+        i += 1
+    }
+    let mut count = 0
+    i = 0
+    while i < n {
+        let m = rt_seq_get(migs, i)
+        let v = std::raw::bits(std__map__get(m, "version"))
+        let sql = std__map__get(m, "sql")
+        let mut done = false
+        let mut j = 0
+        while j < na {
+            if my_text_int(rt_seq_get(rt_seq_get(applied, j), 0)) == v {
+                done = true
+            }
+            j += 1
+        }
+        if !done {
+            if !my_text_drop(c, sql) {
+                return (false, 0)
+            }
+            let (si, ri) = my_run(c, "INSERT INTO _titan_migrations(version,name,checksum) VALUES (?,?,?)", [v, std__map__get(m, "name"), pq_checksum(sql)], 0)
+            if !si {
+                return (false, 0)
+            }
+            count += 1
+        }
+        i += 1
+    }
+    return (true, count)
+}
+
+// Migraciones con el cerrojo GET_LOCK: (true, cuántas) o (false, 0) con MY_ERR.
+fn my_migrate(c: int, migs: any) -> (bool, int) {
+    let n = rt_seq_len(migs)
+    let mut prev = 0
+    let mut i = 0
+    while i < n {
+        let v = std::raw::bits(std__map__get(rt_seq_get(migs, i), "version"))
+        if v <= prev {
+            my_set_err(c, "migration versions must be positive, unique, and increasing")
+            return (false, 0)
+        }
+        prev = v
+        i += 1
+    }
+    let (st, got) = my_text_first(c, "SELECT GET_LOCK('titan_migrations',30)")
+    if st == 0 {
+        return (false, 0)
+    }
+    if std::raw::tag(got) != 5 || !rt_str_eq(got, "1") {
+        my_set_err(c, "could not acquire MySQL migration lock")
+        return (false, 0)
+    }
+    let (ok, count) = my_migrate_locked(c, migs)
+    let mut saved = ""
+    if !ok {
+        saved = my_err(c)
+    }
+    let unlocked = my_text_drop(c, "SELECT RELEASE_LOCK('titan_migrations')")
+    if !ok {
+        my_set_err(c, saved)
+        return (false, 0)
+    }
+    if !unlocked {
+        return (false, 0)
+    }
+    return (true, count)
+}
+
+// ------------------------------------------------------------ handles
+
+fn my_conn_of(v: any) -> int {
+    if std::raw::tag(v) != 28 {
+        pq_type_error("operation requires MySQL connection")
+    }
+    let id = tcp_handle_id(v)
+    let e = pq_entry(id, 6)
+    if e == 0 {
+        pq_type_error(rt_concat("unknown MySQL connection ", rt_int_to_str(id)))
+    }
+    std::raw::load(e + 16)
+}
+
+fn my_pool_of(v: any) -> int {
+    if std::raw::tag(v) != 29 {
+        pq_type_error("operation requires MySQL pool")
+    }
+    let id = tcp_handle_id(v)
+    let e = pq_entry(id, 7)
+    if e == 0 {
+        pq_type_error(rt_concat("unknown MySQL pool ", rt_int_to_str(id)))
+    }
+    std::raw::load(e + 16)
+}
+
+// Parámetros: array de nil, int, float finito, string o bytes.
+fn my_check_params(params: any) {
+    let t = std::raw::tag(params)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(params)
+    let mut i = 0
+    while i < n {
+        let v = rt_seq_get(params, i)
+        let tv = std::raw::tag(v)
+        let mut good = tv == 0 || tv == 1 || tv == 5 || tv == 6
+        if tv == 2 && rt_is_finite(std::raw::bits(v)) {
+            good = true
+        }
+        if !good {
+            pq_type_error("MySQL parameters must be nil, int, finite float, string, or bytes")
+        }
+        i += 1
+    }
+}
+
+// Migraciones: array de mapas {version: int, name: string, sql: string}.
+fn my_check_migs(migs: any) {
+    let t = std::raw::tag(migs)
+    if t != 7 && t != 8 {
+        pq_type_error("operation requires an array")
+    }
+    let n = rt_seq_len(migs)
+    let mut i = 0
+    while i < n {
+        let m = rt_seq_get(migs, i)
+        if std::raw::tag(m) != 9 {
+            pq_type_error("migration must be map")
+        }
+        if std::raw::tag(std__map__get(m, "version")) != 1 {
+            pq_type_error("migration.version must be int")
+        }
+        if std::raw::tag(std__map__get(m, "name")) != 5 {
+            pq_type_error("migration.name must be string")
+        }
+        if std::raw::tag(std__map__get(m, "sql")) != 5 {
+            pq_type_error("migration.sql must be string")
+        }
+        i += 1
+    }
+}
+
+fn my_exec_op(c: int, sql: any, params: any, mode: int) -> any {
+    let (ok, v) = my_run(c, sql, params, mode)
+    if !ok {
+        my_raise(c)
+    }
+    v
+}
+
+// Devuelve una conexión de pool al soltar su handle (el Drop de PooledConnection).
+fn my_pool_release(c: int) {
+    let pl = pq_gs(c, MY_POOL)
+    if std::raw::load(pl + PL_CLOSED) != 0 {
+        let t = std::raw::load(pl + PL_TOTAL)
+        if t > 0 {
+            std::raw::store(pl + PL_TOTAL, t - 1)
+        }
+        my_free_conn(c)
+        return
+    }
+    let n = std::raw::load(pl + PL_NIDLE)
+    std::raw::store(pl + PL_IDLE + 8 * n, c)
+    std::raw::store(pl + PL_NIDLE, n + 1)
+}
+
+// 0 conexión, 1 error, 2 plazo agotado. (estado, conexión, texto)
+fn my_pool_acquire(pl: int, ms: int) -> (int, int, any) {
+    let deadline = tk_now() + ms
+    loop {
+        if std::raw::load(pl + PL_CLOSED) != 0 {
+            return (1, 0, "MySQL pool is closed")
+        }
+        let n = std::raw::load(pl + PL_NIDLE)
+        if n > 0 {
+            let c = std::raw::load(pl + PL_IDLE + 8 * (n - 1))
+            std::raw::store(pl + PL_NIDLE, n - 1)
+            return (0, c, "")
+        }
+        if std::raw::load(pl + PL_TOTAL) < std::raw::load(pl + PL_MAX) {
+            std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) + 1)
+            let url = std::raw::value(5, std::raw::load(pl + PL_URL))
+            let (st, c, err) = my_connect(url)
+            if st != 0 {
+                std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) - 1)
+                return (1, 0, err)
+            }
+            pq_ss(c, MY_POOL, pl)
+            return (0, c, "")
+        }
+        let remaining = deadline - tk_now()
+        if remaining <= 0 {
+            return (2, 0, "")
+        }
+        let mut step = remaining
+        if step > 2 {
+            step = 2
+        }
+        tk_sleep(step)
+    }
+    return (2, 0, "")
+}
+
+// ------------------------------------------------------------ instrucciones Mysql*
+
+fn rt_my_connect(url: any) -> any {
+    if std::raw::tag(url) != 5 {
+        pq_type_error("MySQL URL must be string")
+    }
+    pq_reserve()
+    let (st, c, err) = my_connect(url)
+    if st != 0 {
+        my_fail(err)
+    }
+    let id = pq_register(6, c)
+    pq_ss(c, MY_ID, id)
+    tk_handle(28, id, c)
+}
+
+fn rt_my_execute(db: any, sql: any, params: any) -> any {
+    my_check_params(params)
+    pq_sql_arg(sql)
+    let c = my_conn_of(db)
+    my_exec_op(c, sql, params, 0)
+}
+
+fn rt_my_query(db: any, sql: any, params: any) -> any {
+    my_check_params(params)
+    pq_sql_arg(sql)
+    let c = my_conn_of(db)
+    my_exec_op(c, sql, params, 1)
+}
+
+fn rt_my_begin(db: any) -> any {
+    let c = my_conn_of(db)
+    if !my_begin(c) {
+        my_raise(c)
+    }
+    nil
+}
+
+fn rt_my_commit(db: any) -> any {
+    let c = my_conn_of(db)
+    if !my_tx_end(c, true) {
+        my_raise(c)
+    }
+    nil
+}
+
+fn rt_my_rollback(db: any) -> any {
+    let c = my_conn_of(db)
+    if !my_tx_end(c, false) {
+        my_raise(c)
+    }
+    nil
+}
+
+fn rt_my_migrate(db: any, migs: any) -> any {
+    my_check_migs(migs)
+    let c = my_conn_of(db)
+    let (ok, count) = my_migrate(c, migs)
+    if !ok {
+        my_raise(c)
+    }
+    count
+}
+
+fn rt_my_last_id(db: any) -> any {
+    let c = my_conn_of(db)
+    let id = pq_gs(c, MY_LID)
+    if id < 0 {
+        return 9223372036854775807
+    }
+    id
+}
+
+fn rt_my_close(db: any) -> any {
+    if std::raw::tag(db) != 28 {
+        pq_type_error("close requires MySQL connection")
+    }
+    let id = tcp_handle_id(db)
+    let e = pq_entry(id, 6)
+    if e == 0 {
+        return false
+    }
+    let c = std::raw::load(e + 16)
+    pq_unregister(e)
+    if pq_gs(c, MY_POOL) != 0 {
+        my_pool_release(c)
+    } else {
+        if pq_gs(c, MY_TX) != 0 && pq_gs(c, MY_CLOSED) == 0 {
+            my_text_drop(c, "ROLLBACK")
+        }
+        my_free_conn(c)
+    }
+    true
+}
+
+fn rt_my_ping(db: any) -> any {
+    let c = my_conn_of(db)
+    my_ping(c)
+}
+
+fn rt_my_pool_new(url: any, maximum: any) -> any {
+    if std::raw::tag(maximum) != 1 {
+        pq_type_error("MySQL pool maximum must be int")
+    }
+    let mx = std::raw::bits(maximum)
+    if mx < 0 {
+        pq_type_error("MySQL pool maximum must be positive")
+    }
+    if mx == 0 || mx > 67108864 {
+        pq_type_error("MySQL pool maximum must be between 1 and 64 MiB")
+    }
+    if mx > 64 {
+        rt_fatal("runtime database pool size limit exceeded (64)")
+    }
+    if std::raw::tag(url) != 5 {
+        pq_type_error("MySQL pool URL must be string")
+    }
+    pq_reserve()
+    let pl = rt_alloc_zero(PL_SIZE)
+    std::raw::store(pl + PL_URL, pq_own(url))
+    std::raw::store(pl + PL_MAX, mx)
+    let id = pq_register(7, pl)
+    tk_handle(29, id, pl)
+}
+
+fn rt_my_pool_acquire(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pl = my_pool_of(pool)
+    pq_reserve()
+    let (st, c, err) = my_pool_acquire(pl, ms)
+    if st == 2 {
+        return ht_none()
+    }
+    if st != 0 {
+        my_fail(err)
+    }
+    let id = pq_register(6, c)
+    pq_ss(c, MY_ID, id)
+    ht_some(tk_handle(28, id, c))
+}
+
+fn rt_my_pool_stats(pool: any) -> any {
+    let pl = my_pool_of(pool)
+    let idle = std::raw::load(pl + PL_NIDLE)
+    let total = std::raw::load(pl + PL_TOTAL)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "maximum", std::raw::load(pl + PL_MAX))
+    m = std::map::insert(m, "total", total)
+    m = std::map::insert(m, "idle", idle)
+    m = std::map::insert(m, "checked_out", total - idle)
+    m = std::map::insert(m, "closed", std::raw::load(pl + PL_CLOSED) != 0)
+    m
+}
+
+fn rt_my_pool_health(pool: any, timeout: any) -> any {
+    let ms = tk_timeout(timeout)
+    let pl = my_pool_of(pool)
+    let (st, c, err) = my_pool_acquire(pl, ms)
+    if st != 0 {
+        return false
+    }
+    let ok = my_ping(c)
+    my_pool_release(c)
+    ok
+}
+
+fn rt_my_pool_close(pool: any) -> any {
+    if std::raw::tag(pool) != 29 {
+        pq_type_error("pool_close requires MySQL pool")
+    }
+    let id = tcp_handle_id(pool)
+    let e = pq_entry(id, 7)
+    if e == 0 {
+        pq_type_error("unknown MySQL pool")
+    }
+    let pl = std::raw::load(e + 16)
+    pq_unregister(e)
+    std::raw::store(pl + PL_CLOSED, 1)
+    let n = std::raw::load(pl + PL_NIDLE)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load(pl + PL_IDLE + 8 * i)
+        if pq_gs(c, MY_TX) != 0 && pq_gs(c, MY_CLOSED) == 0 {
+            my_text_drop(c, "ROLLBACK")
+        }
+        my_free_conn(c)
+        i += 1
+    }
+    std::raw::store(pl + PL_TOTAL, std::raw::load(pl + PL_TOTAL) - n)
+    std::raw::store(pl + PL_NIDLE, 0)
+    nil
+}
+
+// Las Db* genéricas con un handle MySQL (ver rt_db_* en std_postgres.titan): el orden de las
+// comprobaciones es el de la VM (SQL, conexión, parámetros / migraciones).
+fn my_db_exec(db: any, sql: any, params: any, mode: int) -> any {
+    let c = my_conn_of(db)
+    my_check_params(params)
+    my_exec_op(c, sql, params, mode)
+}
+
+fn my_db_migrate(db: any, migs: any) -> any {
+    let c = my_conn_of(db)
+    my_check_migs(migs)
+    let (ok, count) = my_migrate(c, migs)
+    if !ok {
+        my_raise(c)
+    }
+    count
+}

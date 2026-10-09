@@ -1,0 +1,177 @@
+// Pruebas de sv_matches y sv_cmp. Referencias: semver.org (orden de precedencia, ejemplo
+// 1.0.0-alpha < ... < 1.0.0) y la documentación del crate `semver` 1.x (ejemplos de VersionReq).
+// Se compila con tests/pkg/probar_semver.sh (copia semver.titan junto al test).
+import semver
+
+fn txt(v: any) -> string {
+    "{v}"
+}
+
+fn ver(s: string) -> SvVer {
+    match sv_parse(s) {
+        Result::Ok(v) => v,
+        Result::Err(m) => {
+            print("versión inválida en la prueba: " + s + " (" + m + ")")
+            std::process::exit(2)
+        },
+    }
+}
+
+fn req(s: string) -> array {
+    match sv_parse_req(s) {
+        Result::Ok(r) => r,
+        Result::Err(m) => {
+            print("requisito inválido en la prueba: " + s + " (" + m + ")")
+            std::process::exit(2)
+        },
+    }
+}
+
+fn comprobar(r: any, v: any, esperado: any) -> int {
+    let got = sv_matches(req(r), ver(v))
+    if got != esperado {
+        print("FALLA: '" + r + "' vs " + v + " esperado " + txt(esperado) + " obtenido " + txt(got))
+        return 1
+    }
+    0
+}
+
+fn main() {
+    let mut fallos = 0
+    let mut total = 0
+    let casos = [
+        // caret
+        ["^1.2.3", "1.2.3", true],
+        ["^1.2.3", "1.9.0", true],
+        ["^1.2.3", "2.0.0", false],
+        ["^1.2.3", "1.2.2", false],
+        ["^1.2", "1.2.0", true],
+        ["^1.2", "1.9.9", true],
+        ["^1.2", "2.0.0", false],
+        ["^1", "1.99.99", true],
+        ["^1", "0.9.9", false],
+        ["^0.2.3", "0.2.3", true],
+        ["^0.2.3", "0.2.9", true],
+        ["^0.2.3", "0.3.0", false],
+        ["^0.2", "0.2.7", true],
+        ["^0.2", "0.3.0", false],
+        ["^0.0.3", "0.0.3", true],
+        ["^0.0.3", "0.0.4", false],
+        ["^0.0", "0.0.9", true],
+        ["^0.0", "0.1.0", false],
+        ["^0", "0.9.9", true],
+        ["^0", "1.0.0", false],
+        ["1.2.3", "1.4.0", true],
+        ["1.2.3", "2.0.0", false],
+        // tilde
+        ["~1.2.3", "1.2.3", true],
+        ["~1.2.3", "1.2.9", true],
+        ["~1.2.3", "1.3.0", false],
+        ["~1.2.3", "1.2.2", false],
+        ["~1.2", "1.2.9", true],
+        ["~1.2", "1.3.0", false],
+        ["~1", "1.9.9", true],
+        ["~1", "2.0.0", false],
+        ["~0.0.1", "0.0.9", true],
+        ["~0.0.1", "0.1.0", false],
+        // comodines
+        ["*", "0.0.1", true],
+        ["*", "99.0.0", true],
+        ["1.*", "1.5.5", true],
+        ["1.*", "2.0.0", false],
+        ["1.2.*", "1.2.9", true],
+        ["1.2.*", "1.3.0", false],
+        ["1.x", "1.0.0", true],
+        ["1.X.*", "1.7.0", true],
+        // igualdad y comparadores
+        ["=1.2.3", "1.2.3", true],
+        ["=1.2.3", "1.2.4", false],
+        ["=1.2", "1.2.5", true],
+        ["=1.2", "1.3.0", false],
+        ["=1", "1.9.0", true],
+        [">1.2.3", "1.2.4", true],
+        [">1.2.3", "1.2.3", false],
+        [">1.2", "1.2.9", false],
+        [">1.2", "1.3.0", true],
+        [">1", "1.9.9", false],
+        [">1", "2.0.0", true],
+        [">=1.2.3", "1.2.3", true],
+        [">=1.2.3", "1.2.2", false],
+        [">=1.2", "1.2.0", true],
+        ["<1.2.3", "1.2.2", true],
+        ["<1.2.3", "1.2.3", false],
+        ["<1.2", "1.1.9", true],
+        ["<1.2", "1.2.0", false],
+        ["<1", "0.9.9", true],
+        ["<1", "1.0.0", false],
+        ["<=1.2.3", "1.2.3", true],
+        ["<=1.2.3", "1.2.4", false],
+        ["<=1.2", "1.2.9", true],
+        ["<=1.2", "1.3.0", false],
+        ["<=1", "1.9.9", true],
+        ["<=1", "2.0.0", false],
+        // varios comparadores
+        [">=1.2.0, <1.3.0", "1.2.5", true],
+        [">=1.2.0, <1.3.0", "1.3.0", false],
+        [">=1.2.0, <1.3.0", "1.1.9", false],
+        [">=1.2.0,<1.3.0", "1.2.0", true],
+        ["^1, <1.5", "1.4.9", true],
+        ["^1, <1.5", "1.5.0", false],
+        // prerelease: solo coincide si algún comparador nombra la misma major.minor.patch con prerelease
+        ["^1.2.3-alpha", "1.2.3-alpha.2", true],
+        ["^1.2.3-alpha", "1.2.3-alpha", true],
+        ["^1.2.3-alpha", "1.2.3", true],
+        ["^1.2.3-alpha", "1.3.0", true],
+        ["^1.2.3-alpha", "1.3.0-alpha", false],
+        ["^1.2.3-alpha", "1.2.3-0", false],
+        ["^1.2.3-alpha", "1.2.3-aaa", false],
+        ["^1.2.3", "1.3.0-beta", false],
+        ["^1.2.3", "1.2.3-beta", false],
+        [">=1.2.3", "1.3.0-beta", false],
+        ["<1.2.3", "1.2.3-alpha", false],
+        ["<1.2.3", "1.2.2-alpha", false],
+        ["*", "1.0.0-alpha", false],
+        ["1.*", "1.0.0-alpha", false],
+        ["=1.0.0-alpha", "1.0.0-alpha", true],
+        ["=1.0.0-alpha", "1.0.0-beta", false],
+        ["=1.0.0-alpha", "1.0.0", false],
+        [">=1.0.0-alpha, <1.0.0", "1.0.0-beta", true],
+        [">=1.0.0-alpha, <1.0.0", "1.0.0", false],
+        [">=1.0.0-alpha, <2.0.0", "1.5.0-alpha", false],
+        ["~1.2.3-beta.2", "1.2.3-beta.4", true],
+        ["~1.2.3-beta.2", "1.2.3-beta.1", false],
+        // metadatos de build se ignoran al comparar
+        ["=1.2.3", "1.2.3+build.5", true],
+        ["^1.2.3+x", "1.2.4+y", true],
+    ]
+    for c in casos {
+        total += 1
+        fallos += comprobar(c[0], c[1], c[2])
+    }
+
+    // orden de precedencia (semver.org, sección 11): cada una es menor que la siguiente
+    let orden = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0", "2.0.0", "2.1.0", "2.1.1"]
+    let mut i = 0
+    while i < len(orden) {
+        let mut j = 0
+        while j < len(orden) {
+            let c = sv_cmp(ver(orden[i]), ver(orden[j]))
+            let esperado = if i < j { -1 } else if i > j { 1 } else { 0 }
+            if c != esperado {
+                fallos += 1
+                print("FALLA orden: " + orden[i] + " vs " + orden[j] + " esperado " + txt(esperado) + " obtenido " + txt(c))
+            }
+            j += 1
+        }
+        i += 1
+    }
+    // los números se comparan como números, no como texto
+    if sv_cmp(ver("1.10.0"), ver("1.9.0")) != 1 { fallos += 1; print("FALLA: 1.10.0 > 1.9.0") }
+    // números grandes (u64)
+    if sv_cmp(ver("18446744073709551615.0.0"), ver("18446744073709551614.9.9")) != 1 { fallos += 1; print("FALLA: u64 máximo") }
+
+    print("semver_match: " + txt(total) + " comprobaciones, " + txt(fallos) + " fallos")
+    if fallos > 0 {
+        std::process::exit(1)
+    }
+}

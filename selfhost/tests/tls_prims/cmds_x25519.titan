@@ -1,0 +1,25 @@
+fn tst_cmd(cmd: int, t: int) -> any {
+    if cmd == 1 {
+        let out = rt_alloc_zero(48)
+        let ok = x2_scalarmult(out, tst_ap(t, 1), tst_ap(t, 2))
+        return tst_ret(out, 32)
+    }
+    if cmd == 2 {
+        // a*b mod p, tras desempaquetar y volver a empaquetar
+        let blk = rt_alloc_zero(2048)
+        x2_unpack(blk, tst_ap(t, 1))
+        x2_unpack(blk + 128, tst_ap(t, 2))
+        x2_mul(blk + 256, blk, blk + 128, blk + 512)
+        let out = rt_alloc_zero(48)
+        x2_pack(out, blk + 256, blk + 1024, blk + 1280)
+        return tst_ret(out, 32)
+    }
+    if cmd == 3 {
+        let blk = rt_alloc_zero(2048)
+        x2_unpack(blk, tst_ap(t, 1))
+        let out = rt_alloc_zero(48)
+        x2_pack(out, blk, blk + 1024, blk + 1280)
+        return tst_ret(out, 32)
+    }
+    tst_ret(tst_ap(t, 0), 0)
+}

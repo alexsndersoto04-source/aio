@@ -1,0 +1,1211 @@
+// std::tokenize en Titan, parte 2: motor de expresiones regulares con retroceso (lo que fancy-regex
+// aporta a `tokenizers` para Split/Replace/ByteLevel: semántica leftmost-first, `(?=`, `(?!`, `(?<=`,
+// `(?<!`, clases Unicode). Sin referencias hacia atrás, sin grupos atómicos ni posesivos: se rechazan
+// al compilar con "tokenizer error: ...". Titan "normal"; prefijo `rx`.
+//
+// Sintaxis admitida: literales, `.`, `^ $ \A \z \b \B`, clases `[...]` (rangos, negación, \d\w\s\p{..}),
+// \d \D \w \W \s \S \p{..} \P{..} \pL, escapes \n \r \t \f \v \0 \xHH \x{H..} \u{H..} y signos escapados,
+// grupos `(...)`, `(?:...)`, `(?<n>...)`, `(?P<n>...)`, banderas `(?i)` `(?i:...)` `(?m)` `(?s)` (también
+// con `-`), alternancia, cuantificadores `* + ? {n} {n,} {n,m}` voraces o perezosos (`?`).
+// Mayúsculas/minúsculas (?i): se compara con upper(lower(c)) (equivale al plegado simple salvo rarezas).
+
+// Nodos del AST (arrays):
+//   [1, c, icase]  carácter   [2, dotall]  cualquiera   [3, clase, icase]  clase
+//   [4, tipo]      aserción (0 ^, 1 $, 2 ^línea, 3 $línea, 4 \b, 5 \B, 6 \A, 7 \z)
+//   [5, [nodos]]   alternancia   [6, [nodos]]  concatenación
+//   [7, nodo, min, max, voraz]   repetición (max -1 = infinito)
+//   [8, tipo, nodo]  mirada (0 adelante+, 1 adelante-, 2 atrás+, 3 atrás-)   [10]  vacío
+// Clase: [negada, [rangos planos], [[negada, tabla], ...]]
+
+struct RxP {
+    p: array,
+    u: TkU,
+}
+
+fn nd(x: any) -> any {
+    x
+}
+
+fn rx_err(msg: string) -> (array, int, string) {
+    return ([], 0, msg)
+}
+
+fn rx_hex(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+fn rx_lower_ascii(c: int) -> int {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    c
+}
+
+// Nombre de propiedad normalizado: minúsculas ASCII sin '_', '-' ni espacios.
+fn rx_norm(name: array) -> string {
+    let mut out = []
+    for c in name {
+        if c != 95 && c != 45 && c != 32 {
+            out = std::array::push(out, rx_lower_ascii(c))
+        }
+    }
+    tk_str(out)
+}
+
+fn rx_gc_alias(n: string) -> string {
+    let l = ["l", "letter", "lc", "casedletter", "lu", "uppercaseletter", "ll", "lowercaseletter", "lt", "titlecaseletter",
+        "lm", "modifierletter", "lo", "otherletter", "m", "mark", "mn", "nonspacingmark", "mc", "spacingmark",
+        "me", "enclosingmark", "n", "number", "nd", "decimalnumber", "nl", "letternumber", "no", "othernumber",
+        "p", "punctuation", "pc", "connectorpunctuation", "pd", "dashpunctuation", "ps", "openpunctuation",
+        "pe", "closepunctuation", "pi", "initialpunctuation", "pf", "finalpunctuation", "po", "otherpunctuation",
+        "s", "symbol", "sm", "mathsymbol", "sc", "currencysymbol", "sk", "modifiersymbol", "so", "othersymbol",
+        "z", "separator", "zs", "spaceseparator", "zl", "lineseparator", "zp", "paragraphseparator",
+        "c", "other", "cc", "control", "cf", "format", "co", "privateuse", "cn", "unassigned",
+        "digit", "decimalnumber", "punct", "punctuation", "cntrl", "control"]
+    let mut i = 0
+    while i < len(l) {
+        if l[i] == n {
+            return l[i + 1]
+        }
+        i += 2
+    }
+    n
+}
+
+// Busca "Nombre=rangos" en una tabla "N=a,b,..;N=..." comparando nombres normalizados. [] si no está.
+fn rx_find_prop(tab: string, want: string) -> (bool, array) {
+    let b = std::bytes::to_array(std::encoding::utf8_encode(tab))
+    let n = len(b)
+    let mut i = 0
+    while i < n {
+        let mut name = []
+        while i < n && b[i] != 61 {
+            name = std::array::push(name, b[i])
+            i += 1
+        }
+        i += 1
+        let start = i
+        while i < n && b[i] != 59 {
+            i += 1
+        }
+        if rx_norm(name) == want {
+            let mut seg = []
+            let mut j = start
+            while j < i {
+                seg = std::array::push(seg, b[j])
+                j += 1
+            }
+            return (true, tk_ints(tk_str(seg)))
+        }
+        i += 1
+    }
+    return (false, [])
+}
+
+// Clase \p{nombre}: (ok, rangos).
+fn rx_prop(name: array) -> (bool, array) {
+    let mut key = name
+    let mut kind = 0
+    let mut eq = -1
+    let mut k = 0
+    while k < len(name) {
+        if name[k] == 61 || name[k] == 58 {
+            eq = k
+        }
+        k += 1
+    }
+    if eq >= 0 {
+        let lhs = rx_norm(std::array::slice(name, 0, eq))
+        key = std::array::slice(name, eq + 1, len(name))
+        if lhs == "script" || lhs == "sc" {
+            kind = 1
+        } else if lhs == "scriptextensions" || lhs == "scx" {
+            kind = 1
+        } else if lhs == "generalcategory" || lhs == "gc" || lhs == "category" {
+            kind = 0
+        } else {
+            return (false, [])
+        }
+    }
+    let want = rx_norm(key)
+    if kind == 0 {
+        if want == "any" {
+            return (true, [0, 1114111])
+        }
+        if want == "ascii" {
+            return (true, [0, 127])
+        }
+        if want == "whitespace" || want == "wspace" || want == "space" {
+            return (true, tk_ints(tkt_space()))
+        }
+        let (ok, r) = rx_find_prop(tkt_gc(), rx_gc_alias(want))
+        if ok {
+            return (true, r)
+        }
+        if eq < 0 {
+            return rx_find_prop(tkt_script(), want)
+        }
+        return (false, [])
+    }
+    rx_find_prop(tkt_script(), want)
+}
+
+// Rangos de una clase Perl: 0 \d, 1 \w, 2 \s
+fn rx_perl(u: TkU, k: int) -> array {
+    if k == 0 {
+        return u.digit
+    }
+    if k == 1 {
+        return u.word
+    }
+    u.space
+}
+
+// ¿c pertenece a la clase (sin negación de nivel superior ni icase)?
+fn rx_cls_has(cl: array, c: int) -> bool {
+    let rs = cl[1]
+    let mut i = 0
+    let n = len(rs)
+    while i < n {
+        if c >= rs[i] && c <= rs[i + 1] {
+            return true
+        }
+        i += 2
+    }
+    let subs = cl[2]
+    for s in subs {
+        if len(s) == 3 {
+            if rx_cls_has(nd([false, s[1], s[2]]), c) != s[0] {
+                return true
+            }
+        } else {
+            let inside = tk_in(s[1], c)
+            if inside != s[0] {
+                return true
+            }
+        }
+    }
+    false
+}
+
+fn rx_fold(c: int) -> int {
+    if c < 128 {
+        if c >= 65 && c <= 90 {
+            return c
+        }
+        if c >= 97 && c <= 122 {
+            return c - 32
+        }
+        return c
+    }
+    let lo = tk_cps(std::text::lowercase(tk_str([c])))
+    if len(lo) != 1 {
+        return c
+    }
+    let up = tk_cps(std::text::uppercase(tk_str([lo[0]])))
+    if len(up) != 1 {
+        return lo[0]
+    }
+    up[0]
+}
+
+fn rx_cls_match(cl: array, icase: bool, c: int) -> bool {
+    let mut hit = rx_cls_has(cl, c)
+    if !hit && icase {
+        let f = rx_fold(c)
+        hit = rx_cls_has(cl, f)
+        if !hit {
+            let lo = tk_cps(std::text::lowercase(tk_str([c])))
+            if len(lo) == 1 {
+                hit = rx_cls_has(cl, lo[0])
+            }
+        }
+    }
+    hit != cl[0]
+}
+
+// ------------------------------------------------------------ analizador
+
+// Escape tras '\': devuelve (kind, valor, nueva posición, error).
+//   kind 0 = carácter (valor), 1 = clase (valor = array clase), 2 = aserción (valor = tipo)
+fn rx_escape(rp: RxP, i0: int, in_class: bool) -> (int, any, int, string) {
+    let p = rp.p
+    let n = len(p)
+    if i0 >= n {
+        return (0, 0, i0, "regex parse error: incomplete escape sequence")
+    }
+    let c = p[i0]
+    let i = i0 + 1
+    if c == 100 {
+        return (1, nd([false, [], [[false, rp.u.digit]]]), i, "")
+    }
+    if c == 68 {
+        return (1, nd([false, [], [[true, rp.u.digit]]]), i, "")
+    }
+    if c == 119 {
+        return (1, nd([false, [], [[false, rp.u.word]]]), i, "")
+    }
+    if c == 87 {
+        return (1, nd([false, [], [[true, rp.u.word]]]), i, "")
+    }
+    if c == 115 {
+        return (1, nd([false, [], [[false, rp.u.space]]]), i, "")
+    }
+    if c == 83 {
+        return (1, nd([false, [], [[true, rp.u.space]]]), i, "")
+    }
+    if c == 112 || c == 80 {
+        let neg = c == 80
+        if i >= n {
+            return (0, 0, i, "regex parse error: incomplete Unicode property escape")
+        }
+        let mut name = []
+        let mut j = i
+        if p[i] == 123 {
+            j = i + 1
+            while j < n && p[j] != 125 {
+                name = std::array::push(name, p[j])
+                j += 1
+            }
+            if j >= n {
+                return (0, 0, j, "regex parse error: unclosed Unicode property escape")
+            }
+            j += 1
+        } else {
+            name = [p[i]]
+            j = i + 1
+        }
+        let mut neg2 = neg
+        if len(name) > 0 && name[0] == 94 {
+            neg2 = !neg
+            name = std::array::slice(name, 1, len(name))
+        }
+        let (ok, r) = rx_prop(name)
+        if !ok {
+            return (0, 0, j, "regex parse error: Unicode property not found")
+        }
+        return (1, nd([false, [], [[neg2, r]]]), j, "")
+    }
+    if !in_class {
+        if c == 98 {
+            return (2, 4, i, "")
+        }
+        if c == 66 {
+            return (2, 5, i, "")
+        }
+        if c == 65 {
+            return (2, 6, i, "")
+        }
+        if c == 122 {
+            return (2, 7, i, "")
+        }
+        if c == 71 {
+            return (0, 0, i, "regex parse error: \\G is not supported")
+        }
+        if c >= 49 && c <= 57 {
+            return (0, 0, i, "regex parse error: backreferences are not supported")
+        }
+    }
+    if c == 110 {
+        return (0, 10, i, "")
+    }
+    if c == 114 {
+        return (0, 13, i, "")
+    }
+    if c == 116 {
+        return (0, 9, i, "")
+    }
+    if c == 102 {
+        return (0, 12, i, "")
+    }
+    if c == 118 {
+        return (0, 11, i, "")
+    }
+    if c == 97 {
+        return (0, 7, i, "")
+    }
+    if c == 48 {
+        return (0, 0, i, "")
+    }
+    if c == 120 || c == 117 || c == 85 {
+        let mut v = 0
+        let mut j = i
+        if j < n && p[j] == 123 {
+            j += 1
+            let mut cnt = 0
+            while j < n && p[j] != 125 {
+                let h = rx_hex(p[j])
+                if h < 0 {
+                    return (0, 0, j, "regex parse error: invalid hexadecimal digit")
+                }
+                v = v * 16 + h
+                cnt += 1
+                j += 1
+            }
+            if j >= n || cnt == 0 {
+                return (0, 0, j, "regex parse error: invalid hexadecimal escape")
+            }
+            j += 1
+        } else {
+            let want = if c == 120 { 2 } else if c == 117 { 4 } else { 8 }
+            let mut k = 0
+            while k < want {
+                if j >= n || rx_hex(p[j]) < 0 {
+                    return (0, 0, j, "regex parse error: invalid hexadecimal escape")
+                }
+                v = v * 16 + rx_hex(p[j])
+                j += 1
+                k += 1
+            }
+        }
+        if v > 1114111 {
+            return (0, 0, j, "regex parse error: invalid Unicode scalar value")
+        }
+        return (0, v, j, "")
+    }
+    // letras y dígitos no definidos como escape: error; el resto son signos escapados
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+        return (0, 0, i, "regex parse error: unrecognized escape sequence")
+    }
+    return (0, c, i, "")
+}
+
+// Clase entre corchetes; i apunta tras '['.
+fn rx_class(rp: RxP, i0: int) -> (array, int, string) {
+    let p = rp.p
+    let n = len(p)
+    let mut i = i0
+    let mut neg = false
+    if i < n && p[i] == 94 {
+        neg = true
+        i += 1
+    }
+    let mut rs = []
+    let mut subs = []
+    let mut first = true
+    while true {
+        if i >= n {
+            return ([], i, "regex parse error: unclosed character class")
+        }
+        let c = p[i]
+        if c == 93 && !first {
+            i += 1
+            break
+        }
+        first = false
+        let mut lo = -1
+        if c == 91 {
+            if i + 1 < n && p[i + 1] == 58 {
+                return ([], i, "regex parse error: POSIX classes are not supported")
+            }
+            let (sub, ni, e) = rx_class(rp, i + 1)
+            if e != "" {
+                return ([], ni, e)
+            }
+            subs = std::array::push(subs, nd([sub[0], sub[1], sub[2]]))
+            i = ni
+        } else if c == 38 && i + 1 < n && p[i + 1] == 38 {
+            return ([], i, "regex parse error: class intersection is not supported")
+        } else {
+            if c == 92 {
+                let (k, v, ni, e) = rx_escape(rp, i + 1, true)
+                if e != "" {
+                    return ([], ni, e)
+                }
+                i = ni
+                if k == 1 {
+                    let cl = v
+                    let s2 = cl[2]
+                    for s in s2 {
+                        subs = std::array::push(subs, nd([s[0], s[1]]))
+                    }
+                } else {
+                    lo = v
+                }
+            } else {
+                lo = c
+                i += 1
+            }
+            if lo >= 0 {
+                let mut hi = lo
+                if i + 1 < n && p[i] == 45 && p[i + 1] != 93 {
+                    let mut hc = p[i + 1]
+                    let mut ni = i + 2
+                    if hc == 92 {
+                        let (k, v, nj, e) = rx_escape(rp, i + 2, true)
+                        if e != "" {
+                            return ([], nj, e)
+                        }
+                        if k != 0 {
+                            return ([], nj, "regex parse error: invalid character class range")
+                        }
+                        hc = v
+                        ni = nj
+                    }
+                    if hc < lo {
+                        return ([], ni, "regex parse error: invalid character class range, the start must be <= the end")
+                    }
+                    hi = hc
+                    i = ni
+                }
+                rs = std::array::push(rs, lo)
+                rs = std::array::push(rs, hi)
+            }
+        }
+    }
+    return (nd([neg, rs, subs]), i, "")
+}
+
+fn rx_lit(c: int, fl: int) -> array {
+    nd([1, c, (fl & 1) != 0])
+}
+
+// Banderas: bit0 i, bit1 m, bit2 s.
+fn rx_parse_flags(p: array, i0: int, fl0: int) -> (int, int, bool, string) {
+    let n = len(p)
+    let mut i = i0
+    let mut fl = fl0
+    let mut on = true
+    while i < n {
+        let c = p[i]
+        if c == 45 {
+            on = false
+        } else if c == 105 || c == 109 || c == 115 {
+            let bit = if c == 105 { 1 } else if c == 109 { 2 } else { 4 }
+            if on {
+                fl = fl | bit
+            } else {
+                fl = fl - (fl & bit)
+            }
+        } else if c == 85 || c == 117 {
+            // U (no voraz) no se admite; u (unicode) es el valor por defecto
+            if c == 85 {
+                return (0, i, false, "regex parse error: the U flag is not supported")
+            }
+        } else if c == 120 {
+            return (0, i, false, "regex parse error: the x flag is not supported")
+        } else if c == 41 {
+            return (fl, i + 1, true, "")
+        } else if c == 58 {
+            return (fl, i + 1, false, "")
+        } else {
+            return (0, i, false, "regex parse error: unrecognized flag")
+        }
+        i += 1
+    }
+    return (0, i, false, "regex parse error: unclosed group")
+}
+
+fn rx_parse_alt(rp: RxP, i0: int, fl: int, depth: int) -> (array, int, string) {
+    if depth > 200 {
+        return ([], i0, "regex parse error: exceeded the nest limit")
+    }
+    let p = rp.p
+    let n = len(p)
+    let mut alts = []
+    let mut cur = []
+    let mut i = i0
+    let mut flags = fl
+    while i < n {
+        let c = p[i]
+        if c == 41 {
+            break
+        }
+        if c == 124 {
+            alts = std::array::push(alts, nd([6, cur]))
+            cur = []
+            i += 1
+        } else {
+            let mut atom: any = [10]
+            let mut have = true
+            if c == 40 {
+                // grupo
+                let mut j = i + 1
+                let mut kind = 9
+                let mut gfl = flags
+                let mut set_only = false
+                if j < n && p[j] == 63 {
+                    j += 1
+                    if j >= n {
+                        return ([], j, "regex parse error: unclosed group")
+                    }
+                    let d = p[j]
+                    if d == 58 {
+                        j += 1
+                    } else if d == 61 {
+                        kind = 0
+                        j += 1
+                    } else if d == 33 {
+                        kind = 1
+                        j += 1
+                    } else if d == 60 && j + 1 < n && (p[j + 1] == 61 || p[j + 1] == 33) {
+                        kind = if p[j + 1] == 61 { 2 } else { 3 }
+                        j += 2
+                    } else if d == 62 {
+                        return ([], j, "regex parse error: atomic groups are not supported")
+                    } else if d == 35 {
+                        while j < n && p[j] != 41 {
+                            j += 1
+                        }
+                        if j >= n {
+                            return ([], j, "regex parse error: unclosed comment")
+                        }
+                        have = false
+                        i = j + 1
+                    } else if d == 80 || d == 60 {
+                        // grupo con nombre: (?P<n>..) o (?<n>..)
+                        if d == 80 {
+                            j += 1
+                        }
+                        if j >= n || p[j] != 60 {
+                            return ([], j, "regex parse error: unrecognized group syntax")
+                        }
+                        while j < n && p[j] != 62 {
+                            j += 1
+                        }
+                        if j >= n {
+                            return ([], j, "regex parse error: unclosed group name")
+                        }
+                        j += 1
+                    } else {
+                        let (nf, nj, only, e) = rx_parse_flags(p, j, flags)
+                        if e != "" {
+                            return ([], nj, e)
+                        }
+                        gfl = nf
+                        set_only = only
+                        j = nj
+                    }
+                }
+                if have {
+                    if set_only {
+                        flags = gfl
+                        have = false
+                        i = j
+                    } else {
+                        let (sub, nj, e) = rx_parse_alt(rp, j, gfl, depth + 1)
+                        if e != "" {
+                            return ([], nj, e)
+                        }
+                        if nj >= n || p[nj] != 41 {
+                            return ([], nj, "regex parse error: unclosed group")
+                        }
+                        i = nj + 1
+                        if kind == 9 {
+                            atom = sub
+                        } else {
+                            atom = nd([8, kind, sub])
+                        }
+                    }
+                }
+            } else if c == 91 {
+                let (cl, ni, e) = rx_class(rp, i + 1)
+                if e != "" {
+                    return ([], ni, e)
+                }
+                atom = nd([3, cl, (flags & 1) != 0])
+                i = ni
+            } else if c == 46 {
+                atom = nd([2, (flags & 4) != 0])
+                i += 1
+            } else if c == 94 {
+                atom = nd([4, if (flags & 2) != 0 { 2 } else { 0 }])
+                i += 1
+            } else if c == 36 {
+                atom = [4, if (flags & 2) != 0 { 3 } else { 1 }]
+                i += 1
+            } else if c == 92 {
+                let (k, v, ni, e) = rx_escape(rp, i + 1, false)
+                if e != "" {
+                    return ([], ni, e)
+                }
+                i = ni
+                if k == 0 {
+                    atom = rx_lit(v, flags)
+                } else if k == 1 {
+                    atom = nd([3, v, false])
+                } else {
+                    atom = [4, v]
+                }
+            } else if c == 42 || c == 43 || c == 63 {
+                return ([], i, "regex parse error: repetition operator missing expression")
+            } else if c == 123 {
+                // '{' literal si no forma un cuantificador válido; aquí sin operando es literal
+                atom = rx_lit(c, flags)
+                i += 1
+            } else {
+                atom = rx_lit(c, flags)
+                i += 1
+            }
+            if have {
+                // cuantificadores
+                let mut again = true
+                while again && i < n {
+                    again = false
+                    let q = p[i]
+                    let mut mn = -1
+                    let mut mx = -1
+                    let mut ni = i
+                    if q == 42 {
+                        mn = 0
+                        mx = -1
+                        ni = i + 1
+                    } else if q == 43 {
+                        mn = 1
+                        mx = -1
+                        ni = i + 1
+                    } else if q == 63 {
+                        mn = 0
+                        mx = 1
+                        ni = i + 1
+                    } else if q == 123 {
+                        let mut j = i + 1
+                        let mut a = -1
+                        let mut b = -1
+                        let mut comma = false
+                        let mut ok = true
+                        let mut cur_n = -1
+                        while j < n && p[j] != 125 && ok {
+                            if p[j] >= 48 && p[j] <= 57 {
+                                if cur_n < 0 {
+                                    cur_n = 0
+                                }
+                                cur_n = cur_n * 10 + (p[j] - 48)
+                                if cur_n > 100000 {
+                                    return ([], j, "regex parse error: invalid repetition count range")
+                                }
+                            } else if p[j] == 44 && !comma {
+                                comma = true
+                                a = cur_n
+                                cur_n = -1
+                            } else {
+                                ok = false
+                            }
+                            j += 1
+                        }
+                        if ok && j < n {
+                            if comma {
+                                b = cur_n
+                            } else {
+                                a = cur_n
+                                b = cur_n
+                            }
+                            if a >= 0 {
+                                mn = a
+                                mx = b
+                                ni = j + 1
+                                if mx >= 0 && mx < mn {
+                                    return ([], j, "regex parse error: invalid repetition count range, the start must be <= the end")
+                                }
+                            }
+                        }
+                    }
+                    if ni > i {
+                        let mut greedy = true
+                        i = ni
+                        if i < n && p[i] == 63 {
+                            greedy = false
+                            i += 1
+                        } else if i < n && p[i] == 43 {
+                            return ([], i, "regex parse error: possessive quantifiers are not supported")
+                        }
+                        atom = nd([7, atom, mn, mx, greedy])
+                        again = false
+                    }
+                }
+                cur = std::array::push(cur, atom)
+            }
+        }
+    }
+    alts = std::array::push(alts, nd([6, cur]))
+    if len(alts) == 1 {
+        return (alts[0], i, "")
+    }
+    return (nd([5, alts]), i, "")
+}
+
+// ------------------------------------------------------------ compilador
+
+// Instrucciones: 6 enteros [op, a, b, c, d, e].
+//  0 MATCH  1 CHAR a  2 CHARI a (plegado)  3 ANY a=dotall  4 CLASS a=índice b=icase  5 SPLIT a b
+//  6 JMP a  7 ASSERT a  8 LOOK a=tipo b=pc siguiente  9 SUBMATCH
+//  10 REP a=clase de operando(1 CHAR,2 CHARI,3 ANY,4 CLASS) b=operando c=min d=max(-1) e=bits(1 voraz, 2 icase, 4 dotall)
+struct RxProg {
+    code: array,
+    classes: array,
+    err: string,
+}
+
+fn rx_emit(code: array, op: int, a: int, b: int, c: int, d: int, e: int) -> array {
+    let mut x = std::array::push(code, op)
+    x = std::array::push(x, a)
+    x = std::array::push(x, b)
+    x = std::array::push(x, c)
+    x = std::array::push(x, d)
+    std::array::push(x, e)
+}
+
+fn rx_nullable(node: array) -> bool {
+    let k = node[0]
+    if k == 1 || k == 2 || k == 3 {
+        return false
+    }
+    if k == 6 {
+        for sub in node[1] {
+            if !rx_nullable(sub) {
+                return false
+            }
+        }
+        return true
+    }
+    if k == 5 {
+        for sub in node[1] {
+            if rx_nullable(sub) {
+                return true
+            }
+        }
+        return false
+    }
+    if k == 7 {
+        return node[2] == 0 || rx_nullable(node[1])
+    }
+    true
+}
+
+fn rx_is_single(node: array) -> bool {
+    let k = node[0]
+    k == 1 || k == 2 || k == 3
+}
+
+// Emite un nodo. Devuelve el programa actualizado.
+fn rx_comp(pr: RxProg, node: array) -> RxProg {
+    if pr.err != "" {
+        return pr
+    }
+    let k = node[0]
+    let mut code = pr.code
+    let mut classes = pr.classes
+    if k == 10 {
+        return pr
+    }
+    if k == 1 {
+        if node[2] {
+            code = rx_emit(code, 2, rx_fold(node[1]), 0, 0, 0, 0)
+        } else {
+            code = rx_emit(code, 1, node[1], 0, 0, 0, 0)
+        }
+        return RxProg { code: code, classes: classes, err: "" }
+    }
+    if k == 2 {
+        code = rx_emit(code, 3, if node[1] { 1 } else { 0 }, 0, 0, 0, 0)
+        return RxProg { code: code, classes: classes, err: "" }
+    }
+    if k == 3 {
+        classes = std::array::push(classes, node[1])
+        code = rx_emit(code, 4, len(classes) - 1, if node[2] { 1 } else { 0 }, 0, 0, 0)
+        return RxProg { code: code, classes: classes, err: "" }
+    }
+    if k == 4 {
+        code = rx_emit(code, 7, node[1], 0, 0, 0, 0)
+        return RxProg { code: code, classes: classes, err: "" }
+    }
+    if k == 6 {
+        let mut cur = pr
+        for sub in node[1] {
+            cur = rx_comp(cur, sub)
+        }
+        return cur
+    }
+    if k == 5 {
+        // SPLIT L1, L2; L1: alt1; JMP end; L2: SPLIT ... ; última alternativa sin SPLIT
+        let alts = node[1]
+        let mut cur = pr
+        let mut jmps = []
+        let mut idx = 0
+        while idx < len(alts) {
+            if idx < len(alts) - 1 {
+                let at = len(cur.code) / 6
+                cur = RxProg { code: rx_emit(cur.code, 5, at + 1, 0, 0, 0, 0), classes: cur.classes, err: cur.err }
+                cur = rx_comp(cur, alts[idx])
+                if cur.err != "" {
+                    return cur
+                }
+                jmps = std::array::push(jmps, len(cur.code) / 6)
+                cur = RxProg { code: rx_emit(cur.code, 6, 0, 0, 0, 0, 0), classes: cur.classes, err: cur.err }
+                // parchear SPLIT.b = inicio de la siguiente alternativa
+                cur = RxProg { code: std::array::set(cur.code, at * 6 + 2, len(cur.code) / 6), classes: cur.classes, err: cur.err }
+            } else {
+                cur = rx_comp(cur, alts[idx])
+                if cur.err != "" {
+                    return cur
+                }
+            }
+            idx += 1
+        }
+        let endpc = len(cur.code) / 6
+        let mut c2 = cur.code
+        for j in jmps {
+            c2 = std::array::set(c2, j * 6 + 1, endpc)
+        }
+        return RxProg { code: c2, classes: cur.classes, err: "" }
+    }
+    if k == 8 {
+        let at = len(code) / 6
+        let mut cur = RxProg { code: rx_emit(code, 8, node[1], 0, 0, 0, 0), classes: classes, err: "" }
+        cur = rx_comp(cur, node[2])
+        if cur.err != "" {
+            return cur
+        }
+        let mut c2 = rx_emit(cur.code, 9, 0, 0, 0, 0, 0)
+        c2 = std::array::set(c2, at * 6 + 2, len(c2) / 6)
+        return RxProg { code: c2, classes: cur.classes, err: "" }
+    }
+    if k == 7 {
+        let sub = node[1]
+        let mn = node[2]
+        let mx0 = node[3]
+        let greedy = node[4]
+        if rx_is_single(sub) {
+            let sk = sub[0]
+            let mut a = 0
+            let mut b = 0
+            let mut bits = if greedy { 1 } else { 0 }
+            if sk == 1 {
+                if sub[2] {
+                    a = 2
+                    b = rx_fold(sub[1])
+                } else {
+                    a = 1
+                    b = sub[1]
+                }
+            } else if sk == 2 {
+                a = 3
+                if sub[1] {
+                    bits = bits | 4
+                }
+            } else {
+                classes = std::array::push(classes, sub[1])
+                a = 4
+                b = len(classes) - 1
+                if sub[2] {
+                    bits = bits | 2
+                }
+            }
+            code = rx_emit(code, 10, a, b, mn, mx0, bits)
+            return RxProg { code: code, classes: classes, err: "" }
+        }
+        if len(code) / 6 > 20000 {
+            return RxProg { code: code, classes: classes, err: "regex parse error: compiled program too big" }
+        }
+        let mut cur = pr
+        let mut mx = mx0
+        if mx < 0 && rx_nullable(sub) {
+            mx = mn + 1
+        }
+        // mn copias obligatorias
+        let mut i = 0
+        while i < mn {
+            cur = rx_comp(cur, sub)
+            if cur.err != "" {
+                return cur
+            }
+            i += 1
+        }
+        if mx < 0 {
+            // L: SPLIT body, end; body; JMP L
+            let at = len(cur.code) / 6
+            let mut c2 = rx_emit(cur.code, 5, at + 1, 0, 0, 0, 0)
+            cur = RxProg { code: c2, classes: cur.classes, err: "" }
+            cur = rx_comp(cur, sub)
+            if cur.err != "" {
+                return cur
+            }
+            c2 = rx_emit(cur.code, 6, at, 0, 0, 0, 0)
+            let endpc = len(c2) / 6
+            if greedy {
+                c2 = std::array::set(c2, at * 6 + 2, endpc)
+            } else {
+                c2 = std::array::set(c2, at * 6 + 1, endpc)
+                c2 = std::array::set(c2, at * 6 + 2, at + 1)
+            }
+            return RxProg { code: c2, classes: cur.classes, err: "" }
+        }
+        // (mx - mn) copias opcionales anidadas: SPLIT body, end
+        let opt = mx - mn
+        let mut splits = []
+        let mut j = 0
+        while j < opt {
+            let at = len(cur.code) / 6
+            splits = std::array::push(splits, at)
+            cur = RxProg { code: rx_emit(cur.code, 5, at + 1, 0, 0, 0, 0), classes: cur.classes, err: "" }
+            cur = rx_comp(cur, sub)
+            if cur.err != "" {
+                return cur
+            }
+            j += 1
+        }
+        let endpc = len(cur.code) / 6
+        let mut c3 = cur.code
+        for at in splits {
+            if greedy {
+                c3 = std::array::set(c3, at * 6 + 2, endpc)
+            } else {
+                c3 = std::array::set(c3, at * 6 + 1, endpc)
+                c3 = std::array::set(c3, at * 6 + 2, at + 1)
+            }
+        }
+        return RxProg { code: c3, classes: cur.classes, err: "" }
+    }
+    RxProg { code: code, classes: classes, err: "regex parse error: unsupported construct" }
+}
+
+struct Rx {
+    code: array,
+    classes: array,
+    u: TkU,
+}
+
+// Compila un patrón (string). Resultado: (Rx, error).
+fn rx_compile(u: TkU, pat: string) -> (Rx, string) {
+    let rp = RxP { p: tk_cps(pat), u: u }
+    let empty = Rx { code: [], classes: [], u: u }
+    let (ast, ni, e) = rx_parse_alt(rp, 0, 0, 0)
+    if e != "" {
+        return (empty, e)
+    }
+    if ni < len(rp.p) {
+        return (empty, "regex parse error: unopened group")
+    }
+    let pr = rx_comp(RxProg { code: [], classes: [], err: "" }, ast)
+    if pr.err != "" {
+        return (empty, pr.err)
+    }
+    let code = rx_emit(pr.code, 0, 0, 0, 0, 0, 0)
+    return (Rx { code: code, classes: pr.classes, u: u }, "")
+}
+
+// ------------------------------------------------------------ ejecución
+
+fn rx_is_word_at(rx: Rx, t: array, i: int) -> bool {
+    if i < 0 || i >= len(t) {
+        return false
+    }
+    tk_in(rx.u.word, t[i])
+}
+
+fn rx_assert(rx: Rx, t: array, pos: int, kind: int) -> bool {
+    let n = len(t)
+    if kind == 0 || kind == 6 {
+        return pos == 0
+    }
+    if kind == 1 || kind == 7 {
+        return pos == n
+    }
+    if kind == 2 {
+        return pos == 0 || t[pos - 1] == 10
+    }
+    if kind == 3 {
+        return pos == n || t[pos] == 10
+    }
+    let a = rx_is_word_at(rx, t, pos - 1)
+    let b = rx_is_word_at(rx, t, pos)
+    if kind == 4 {
+        return a != b
+    }
+    a == b
+}
+
+// ¿el carácter en pos casa con el operando de una instrucción simple (a=clase de operando)?
+fn rx_single(rx: Rx, kind: int, operand: int, bits: int, c: int) -> bool {
+    if kind == 1 {
+        return c == operand
+    }
+    if kind == 2 {
+        return rx_fold(c) == operand
+    }
+    if kind == 3 {
+        return (bits & 4) != 0 || c != 10
+    }
+    rx_cls_match(rx.classes[operand], (bits & 2) != 0, c)
+}
+
+// Ejecuta desde pc en pos. Devuelve la posición final o -1. `stop` = posición exacta de fin exigida
+// dentro de una mirada hacia atrás (-1 = no se exige).
+fn rx_run(rx: Rx, t: array, pc0: int, pos0: int, stop: int) -> int {
+    let code = rx.code
+    let n = len(t)
+    let mut pc = pc0
+    let mut pos = pos0
+    while true {
+        let o = pc * 6
+        let op = code[o]
+        if op == 0 || op == 9 {
+            if stop >= 0 && pos != stop {
+                return -1
+            }
+            return pos
+        }
+        if op == 1 {
+            if pos < n && t[pos] == code[o + 1] {
+                pos += 1
+                pc += 1
+            } else {
+                return -1
+            }
+        } else if op == 2 {
+            if pos < n && rx_fold(t[pos]) == code[o + 1] {
+                pos += 1
+                pc += 1
+            } else {
+                return -1
+            }
+        } else if op == 3 {
+            if pos < n && (code[o + 1] == 1 || t[pos] != 10) {
+                pos += 1
+                pc += 1
+            } else {
+                return -1
+            }
+        } else if op == 4 {
+            if pos < n && rx_cls_match(rx.classes[code[o + 1]], code[o + 2] == 1, t[pos]) {
+                pos += 1
+                pc += 1
+            } else {
+                return -1
+            }
+        } else if op == 5 {
+            let r = rx_run(rx, t, code[o + 1], pos, stop)
+            if r >= 0 {
+                return r
+            }
+            pc = code[o + 2]
+        } else if op == 6 {
+            pc = code[o + 1]
+        } else if op == 7 {
+            if rx_assert(rx, t, pos, code[o + 1]) {
+                pc += 1
+            } else {
+                return -1
+            }
+        } else if op == 8 {
+            let kind = code[o + 1]
+            let next = code[o + 2]
+            let mut ok = false
+            if kind == 0 || kind == 1 {
+                ok = rx_run(rx, t, pc + 1, pos, -1) >= 0
+            } else {
+                let mut s = pos
+                while s >= 0 && !ok {
+                    if rx_run(rx, t, pc + 1, s, pos) >= 0 {
+                        ok = true
+                    }
+                    s -= 1
+                }
+            }
+            if kind == 1 || kind == 3 {
+                ok = !ok
+            }
+            if ok {
+                pc = next
+            } else {
+                return -1
+            }
+        } else {
+            // 10 REP
+            let kind = code[o + 1]
+            let operand = code[o + 2]
+            let mn = code[o + 3]
+            let mx = code[o + 4]
+            let bits = code[o + 5]
+            let mut cnt = 0
+            let mut p2 = pos
+            if (bits & 1) != 0 {
+                while p2 < n && (mx < 0 || cnt < mx) && rx_single(rx, kind, operand, bits, t[p2]) {
+                    p2 += 1
+                    cnt += 1
+                }
+                if cnt < mn {
+                    return -1
+                }
+                // retroceder desde el máximo
+                while cnt >= mn {
+                    let r = rx_run(rx, t, pc + 1, pos + cnt, stop)
+                    if r >= 0 {
+                        return r
+                    }
+                    cnt -= 1
+                }
+                return -1
+            }
+            while cnt < mn {
+                if p2 < n && rx_single(rx, kind, operand, bits, t[p2]) {
+                    p2 += 1
+                    cnt += 1
+                } else {
+                    return -1
+                }
+            }
+            while true {
+                let r = rx_run(rx, t, pc + 1, pos + cnt, stop)
+                if r >= 0 {
+                    return r
+                }
+                if (mx >= 0 && cnt >= mx) || p2 >= n || !rx_single(rx, kind, operand, bits, t[p2]) {
+                    return -1
+                }
+                p2 += 1
+                cnt += 1
+            }
+        }
+    }
+    return -1
+}
+
+// Primer prefijo que casa a partir de `from` (búsqueda). Devuelve (inicio, fin) o (-1, -1).
+fn rx_find_at(rx: Rx, t: array, from: int) -> (int, int) {
+    let n = len(t)
+    let mut s = from
+    while s <= n {
+        let e = rx_run(rx, t, 0, s, -1)
+        if e >= 0 {
+            return (s, e)
+        }
+        s += 1
+    }
+    return (-1, -1)
+}
+
+// Matches de fancy-regex: pares planos [ini0, fin0, ini1, fin1, ...] en índices de carácter.
+fn rx_find_iter(rx: Rx, t: array) -> array {
+    let n = len(t)
+    let mut out = []
+    let mut last_end = 0
+    let mut last_match = -1
+    while last_end <= n {
+        let (s, e) = rx_find_at(rx, t, last_end)
+        if s < 0 {
+            break
+        }
+        if s == e {
+            last_end = e + 1
+            if e == last_match {
+                continue
+            }
+        } else {
+            last_end = e
+        }
+        last_match = e
+        out = std::array::push(out, s)
+        out = std::array::push(out, e)
+    }
+    out
+}

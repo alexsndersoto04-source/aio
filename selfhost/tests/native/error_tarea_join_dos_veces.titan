@@ -1,0 +1,5 @@
+fn main() {
+let t = spawn || { 1 }
+print(join(t))
+print(join(t))
+}

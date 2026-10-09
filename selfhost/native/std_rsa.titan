@@ -1544,14 +1544,19 @@ fn jr_em(hash: int, k: int) -> int {
 // Firma RS256 de msg[0..mlen). Devuelve (nil, firma en bytes) o
 // ("RsaFailedSigning", nil).
 fn jr_sign(key: any, msg: int, mlen: int) -> (any, any) {
-    let p = rt_bdata(rt_seq_get(key, 0))
     let k = jr_kf(key, 2)
-    let ln = jr_limbs_for(k)
-    let lp = jr_limbs_for(jr_kf(key, 6))
-    let lq = jr_limbs_for(jr_kf(key, 8))
     let hash = hs_sha256(msg, mlen)
     let em = jr_em(hash, k)
     rt_free_block(hash)
+    return jr_sign_em(key, em, k)
+}
+
+// Operación con la clave privada sobre un bloque ya codificado `em` de k bytes (se libera aquí).
+fn jr_sign_em(key: any, em: int, k: int) -> (any, any) {
+    let p = rt_bdata(rt_seq_get(key, 0))
+    let ln = jr_limbs_for(k)
+    let lp = jr_limbs_for(jr_kf(key, 6))
+    let lq = jr_limbs_for(jr_kf(key, 8))
     let n = jr_from_be(p + jr_kf(key, 1), jr_kf(key, 2), ln)
     let pb = jr_from_be(p + jr_kf(key, 5), jr_kf(key, 6), lp)
     let qb = jr_from_be(p + jr_kf(key, 7), jr_kf(key, 8), lq)

@@ -1,0 +1,138 @@
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over () r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a desc) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (partition by b order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, rank() over (order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, dense_rank() over (order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, rank() over (partition by b order by c desc) r, dense_rank() over (partition by b order by c desc) d from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, percent_rank() over (order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, cume_dist() over (order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(3) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(3) over (order by a) r, ntile(10) over (order by a) q from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(2) over (partition by b order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(c, 2) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(c, 2, -1) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lead(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lead(c, 3, 99) over (partition by b order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, first_value(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, last_value(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, last_value(c) over (order by a rows between unbounded preceding and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, nth_value(c, 2) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, nth_value(c, 2) over (order by a rows between unbounded preceding and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (partition by b order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over () r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(*) over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(c) over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(*) over (order by a rows between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 2 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between current row and 2 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 1 following and 2 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 2 preceding and 1 preceding) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows 2 preceding) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, avg(c) over (order by a rows between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, min(c) over (order by a rows between 2 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, max(c) over (order by a rows between unbounded preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, total(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, group_concat(b) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, group_concat(b, '-') over (order by a rows between 1 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c range between unbounded preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c range between current row and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a range between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a range between 2 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a desc range between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c groups between 1 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c groups between current row and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c rows between unbounded preceding and unbounded following exclude current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c rows between unbounded preceding and unbounded following exclude group) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c rows between unbounded preceding and unbounded following exclude ties) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c rows between unbounded preceding and unbounded following exclude no others) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 1 preceding and 1 following exclude current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(*) filter (where c > 10) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) filter (where b = 'x') over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over w r from t window w as (partition by b order by a)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over w, row_number() over w2 r from t window w as (partition by b), w2 as (w order by a)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (w order by a) r from t window w as (partition by b)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over nosuch r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t order by rn desc
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t where a > 3
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t order by a desc limit 3
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, row_number() over (partition by b order by a) + 100 r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, rank() over (order by b), sum(a) over (order by b) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, abs(a) over () from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(0) over () from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(-1) over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, nth_value(a, 0) over () from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(a, -1) over () from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 1 following and 1 preceding) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between -1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (rows between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (range between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a, b range between 1 preceding and 1 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(distinct c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, json_group_array(c) over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, json_group_array(c) over (order by a rows between 1 preceding and current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select sum(c) over (), count(*) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (partition by a % 2 order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (partition by b order by c nulls last) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c desc nulls first) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by b collate nocase, a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, percent_rank() over (partition by b order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, cume_dist() over (partition by b order by c) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, first_value(c) over (partition by b order by a desc) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, last_value(a) over (partition by b order by a rows between current row and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, min(a) over (partition by b order by a desc) r, max(a) over (partition by b) m from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(b) over (partition by c order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(*) over (order by a range between unbounded preceding and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c range between 5 preceding and 5 following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, avg(c) over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a groups between unbounded preceding and 1 preceding) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) r from (select a from t where a < 4)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select distinct b, count(*) over (partition by b) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, (select count(*) from t t2 where t2.a <= t.a) c, row_number() over (order by a) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, sum(c) s, rank() over (order by sum(c) desc) r from t group by b
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, count(*) n, sum(count(*)) over () tot from t group by b
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, sum(c) s, row_number() over (order by b desc) r from t group by b order by s
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, max(a) m, lag(max(a)) over (order by b) l from t group by b
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, sum(c), sum(sum(c)) over (order by b rows between unbounded preceding and current row) run from t group by b
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select sum(c) over (), count(*) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, count(*), avg(count(*)) over () from t group by b having count(*) > 2
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a), sum(c) over (partition by b) from t where c is not null
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a) - lag(sum(c) over (order by a)) over (order by a) d from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select b, a, rank() over (partition by b order by a desc) from t order by b desc, a
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select count(*) over (), a from t limit 3
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t limit 2 offset 3
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by c, a) rn from t order by rn desc limit 3
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select * from (select a, row_number() over (partition by b order by a desc) rn from t) where rn = 1 order by a
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, first_value(a) over (partition by b order by c desc, a) f, last_value(a) over (partition by b order by c desc, a rows between unbounded preceding and unbounded following) l from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, nth_value(a, 2) over (partition by b order by a groups between current row and 1 following) n from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a rows between 1 preceding and 1 following exclude group) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by c range between 10 preceding and 10 following exclude current row) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(*) over (order by a desc rows between 1 following and unbounded following) r from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(3) over (partition by b order by a desc) n from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) from t where 0
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, json_group_array(a) over (partition by b order by a) j from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, count(distinct c) over () from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (partition by (select 1) order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(c) over (order by a), sum(c) over (order by a desc) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, rank() over (order by b), dense_rank() over (order by c) from t order by a desc
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over win from t window win as (order by a desc)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (win) from t window win as (order by a desc)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (win order by a) from t window win as (partition by b)
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a rows between 1 preceding and 1 preceding) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a rows between unbounded preceding and 1 following) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, cume_dist() over () c, percent_rank() over () p from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(a) over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, ntile(2.5) over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(a, 'x') over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(c, 1, c) over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, lag(a, 100) over (order by a) from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, sum(a) over (order by a, b rows 1 preceding) s from t
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t where rn > 2
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a, row_number() over (order by a) rn from t group by a
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select a from t where row_number() over (order by a) > 2
+with t(a,b,c) as (values (1,'x',10),(2,'x',20),(3,'y',20),(4,'y',null),(5,'z',30),(6,'x',20),(7,'y',5),(8,'z',30)) select row_number() over (order by a) from t order by 1 desc

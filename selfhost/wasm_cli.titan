@@ -1,0 +1,8 @@
+// Uso: titanc <wasm_cli.titan> -> ejecutable `wasm [archivo.titan] [--output salida.wasm]`.
+// Equivale a `zett wasm` (crates/titan_cli, crates/titan_wasm) pero escrito en Titan.
+import args
+import wasm_cmd
+
+fn main() {
+    wa_run(ar_user_args())
+}

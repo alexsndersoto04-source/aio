@@ -1,0 +1,362 @@
+// std::sqlite en Titan, parte 4: árboles de índice y cursores (recorrido en orden).
+// Un cursor es una pila de marcos [página, índice, nº de celdas, modo, tipo]; vacía = inválido.
+// modo 1 = posicionado en la entrada `índice` de una página interior de índice.
+
+// Compara los m primeros valores de dos claves.
+fn sqi_cmp(a: array, b: array, m: int, colls: array, desc: array) -> int {
+    let mut i = 0
+    while i < m {
+        if i >= len(a) || i >= len(b) {
+            return sq_cmp_i(len(a), len(b))
+        }
+        let mut coll = 0
+        if i < len(colls) {
+            coll = colls[i]
+        }
+        let mut c = sq_cmp(a[i], b[i], coll)
+        if c != 0 {
+            if i < len(desc) && desc[i] == 1 {
+                c = 0 - c
+            }
+            return c
+        }
+        i += 1
+    }
+    0
+}
+
+// Valores (los m primeros) de la celda de índice que empieza en `off` de la página `a`.
+fn sqi_page_vals(p: SqPg, a: array, kind: int, off: int, m: int) -> array {
+    let mut st = off
+    if kind == 2 {
+        st = off + 4
+    }
+    let (pl, n1) = sq_varint(a, st)
+    let pay = sqt_payload(p, kind, a, st + n1, pl)
+    sq_rec_dec(pay, m)
+}
+
+// Descenso hasta la primera entrada >= key (comparando m columnas).
+// Devuelve (encontrada exacta, marcos). Si la entrada está en un interior, el último marco
+// tiene modo 1.
+fn sqi_find(p: SqPg, root: int, key: array, m: int, colls: array, desc: array) -> (bool, array) {
+    sqi_find_x(p, root, key, m, colls, desc, true)
+}
+
+fn sqi_find_x(p: SqPg, root: int, key: array, m: int, colls: array, desc: array, stopeq: bool) -> (bool, array) {
+    let mut path = []
+    let mut no = root
+    while true {
+        let a = sqp_read(p, no)
+        let hdr = sqt_hdr(no)
+        let kind = a[hdr]
+        let n = sq_u16(a, hdr + 3)
+        let mut ptr0 = hdr + 8
+        if kind == 2 {
+            ptr0 = hdr + 12
+        }
+        let mut lo = 0
+        let mut hi = n
+        let mut exact = false
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            let off = sq_u16(a, ptr0 + 2 * mid)
+            let vals = sqi_page_vals(p, a, kind, off, m)
+            let c = sqi_cmp(vals, key, m, colls, desc)
+            if c >= 0 {
+                hi = mid
+                if c == 0 {
+                    exact = true
+                }
+            } else {
+                lo = mid + 1
+            }
+        }
+        if kind == 10 {
+            let mut found = false
+            if lo < n {
+                let off = sq_u16(a, ptr0 + 2 * lo)
+                let vals = sqi_page_vals(p, a, kind, off, m)
+                found = sqi_cmp(vals, key, m, colls, desc) == 0
+            }
+            path = std::array::push(path, [no, lo, n, 0, kind])
+            return (found, path)
+        }
+        // interior: ¿la entrada lo es exacta?
+        if lo < n {
+            let off = sq_u16(a, ptr0 + 2 * lo)
+            let vals = sqi_page_vals(p, a, kind, off, m)
+            if stopeq && sqi_cmp(vals, key, m, colls, desc) == 0 {
+                path = std::array::push(path, [no, lo, n, 1, kind])
+                return (true, path)
+            }
+            path = std::array::push(path, [no, lo, n, 0, kind])
+            no = sq_u32(a, off)
+        } else {
+            path = std::array::push(path, [no, lo, n, 0, kind])
+            no = sq_u32(a, hdr + 8)
+        }
+    }
+    return (false, path)
+}
+
+fn sqi_cell_of(p: SqPg, f: array) -> array {
+    let pc = sqt_pc_read(p, f[0])
+    pc.cells[f[1]]
+}
+
+fn sqi_put(p: SqPg, root: int, vals: array, colls: array, desc: array) -> SqPg {
+    let (_, path) = sqi_find(p, root, vals, len(vals), colls, desc)
+    let mut lvl = len(path) - 1
+    // si la entrada ya existe en un interior, no se duplica
+    let top = path[lvl]
+    if top[3] == 1 {
+        return p
+    }
+    let no = top[0]
+    let idx = top[1]
+    let pc = sqt_pc_read(p, no)
+    let n = len(pc.cells)
+    let payload = sq_rec_enc(vals)
+    let (q, cell) = sqt_mk_cell(p, 10, sq_varint_enc(len(payload)), payload)
+    let mut cells = std::array::slice(pc.cells, 0, idx)
+    cells = std::array::push(cells, cell)
+    cells = std::array::concat(cells, std::array::slice(pc.cells, idx, n))
+    sqt_commit_pc(q, path, lvl, SPc { kind: 10, cells: cells, right: 0 }, false)
+}
+
+// Quita la entrada del marco hoja path[lvl]. free_ovf: liberar su desbordamiento.
+fn sqi_leaf_remove(p: SqPg, path: array, free_ovf: bool, colls: array, desc: array) -> SqPg {
+    let lvl = len(path) - 1
+    let f = path[lvl]
+    let no = f[0]
+    let idx = f[1]
+    let pc = sqt_pc_read(p, no)
+    let n = len(pc.cells)
+    let mut q = p
+    if free_ovf {
+        q = sqt_free_cell(q, 10, pc.cells[idx])
+    }
+    let cells = std::array::concat(std::array::slice(pc.cells, 0, idx), std::array::slice(pc.cells, idx + 1, n))
+    if len(cells) == 0 && lvl > 0 {
+        q = sqp_free(q, no)
+        let (q2, gone) = sqt_unlink(q, path, lvl - 1)
+        // la entrada separadora quitada junto al hijo se vuelve a insertar
+        let pay = sqt_cell_payload(q2, 2, gone)
+        let q3 = sqt_free_cell(q2, 2, gone)
+        return sqi_put(q3, path[0][0], sq_rec_dec(pay, -1), colls, desc)
+    }
+    sqt_pc_write(q, no, SPc { kind: 10, cells: cells, right: 0 })
+}
+
+// Borra la entrada exacta `vals` (clave completa). No hace nada si no existe.
+fn sqi_del(p: SqPg, root: int, vals: array, colls: array, desc: array) -> SqPg {
+    let m = len(vals)
+    let (found, path) = sqi_find(p, root, vals, m, colls, desc)
+    if !found {
+        return p
+    }
+    let lvl = len(path) - 1
+    let top = path[lvl]
+    if top[4] == 10 {
+        return sqi_leaf_remove(p, path, true, colls, desc)
+    }
+    // entrada en un interior: se sustituye por su predecesor
+    let epc = sqt_pc_read(p, top[0])
+    let ecell = epc.cells[top[1]]
+    let mut ppath = std::array::slice(path, 0, lvl)
+    ppath = std::array::push(ppath, [top[0], top[1], top[2], 0, top[4]])
+    let mut child = sq_u32(ecell, 0)
+    let mut leafpc = sqt_pc_read(p, child)
+    while leafpc.kind == 2 {
+        let nn = len(leafpc.cells)
+        ppath = std::array::push(ppath, [child, nn, nn, 0, 2])
+        child = leafpc.right
+        leafpc = sqt_pc_read(p, child)
+    }
+    let ln = len(leafpc.cells)
+    ppath = std::array::push(ppath, [child, ln - 1, ln, 0, 10])
+    let pred = leafpc.cells[ln - 1]
+    let q0 = sqi_leaf_remove(p, ppath, false, colls, desc)
+    // reencontrar la entrada (la estructura pudo cambiar)
+    let (found2, path2) = sqi_find(q0, root, vals, m, colls, desc)
+    let lvl2 = len(path2) - 1
+    let t2 = path2[lvl2]
+    let q1 = sqt_free_cell(q0, 2, ecell)
+    if found2 && t2[4] == 2 {
+        let pc2 = sqt_pc_read(q1, t2[0])
+        let oldc = pc2.cells[t2[1]]
+        let nc = std::array::concat(std::array::slice(oldc, 0, 4), pred)
+        let cells = std::array::push(std::array::slice(pc2.cells, 0, t2[1]), nc)
+        let cells2 = std::array::concat(cells, std::array::slice(pc2.cells, t2[1] + 1, len(pc2.cells)))
+        return sqt_commit_pc(q1, path2, lvl2, SPc { kind: 2, cells: cells2, right: pc2.right }, false)
+    }
+    // caso excepcional: la entrada quedó en una hoja
+    let mut q2 = q1
+    if found2 {
+        q2 = sqi_leaf_remove(q1, path2, false, colls, desc)
+    }
+    let ppay = sqt_cell_payload(q2, 10, pred)
+    let q3 = sqt_free_cell(q2, 10, pred)
+    sqi_put(q3, root, sq_rec_dec(ppay, -1), colls, desc)
+}
+
+// ------------------------------------------------------------ cursores
+
+fn sqt_child_of(p: SqPg, f: array, ci: int) -> int {
+    let a = sqp_read(p, f[0])
+    let hdr = sqt_hdr(f[0])
+    if ci >= f[2] {
+        return sq_u32(a, hdr + 8)
+    }
+    let ptr0 = hdr + 12
+    sq_u32(a, sq_u16(a, ptr0 + 2 * ci))
+}
+
+// Baja por la izquierda desde la página `no` añadiendo marcos hasta una hoja (índice 0).
+fn sqt_descend_left(p: SqPg, path: array, no: int) -> array {
+    let mut st = path
+    let mut cur = no
+    while true {
+        let a = sqp_read(p, cur)
+        let hdr = sqt_hdr(cur)
+        let kind = a[hdr]
+        let n = sq_u16(a, hdr + 3)
+        st = std::array::push(st, [cur, 0, n, 0, kind])
+        if kind == 13 || kind == 10 {
+            return st
+        }
+        cur = sqt_child_of(p, [cur, 0, n, 0, kind], 0)
+    }
+    st
+}
+
+fn sqt_cu_first(p: SqPg, root: int) -> array {
+    let st = sqt_descend_left(p, [], root)
+    let f = st[len(st) - 1]
+    if f[2] > 0 {
+        return st
+    }
+    sqt_cu_adv(p, st)
+}
+
+// Avanza a la siguiente entrada; devuelve el cursor (vacío si se acabó).
+fn sqt_cu_adv(p: SqPg, path: array) -> array {
+    let mut st = path
+    let isidx = false
+    while true {
+        let k = len(st)
+        if k == 0 {
+            return st
+        }
+        let f = st[k - 1]
+        if f[3] == 1 {
+            // en una entrada interior de índice: sigue el hijo i+1
+            let ch = sqt_child_of(p, f, f[1] + 1)
+            let top = [f[0], f[1] + 1, f[2], 0, f[4]]
+            st = std::array::push(std::array::slice(st, 0, k - 1), top)
+            st = sqt_descend_left(p, st, ch)
+            let lf = st[len(st) - 1]
+            if lf[2] > 0 {
+                return st
+            }
+            continue
+        }
+        let kind = f[4]
+        if kind == 13 || kind == 10 {
+            if f[1] + 1 < f[2] {
+                st = std::array::push(std::array::slice(st, 0, k - 1), [f[0], f[1] + 1, f[2], 0, kind])
+                return st
+            }
+            // hoja agotada: subir
+            st = std::array::slice(st, 0, k - 1)
+            let mut stop = false
+            while len(st) > 0 && !stop {
+                let kk = len(st)
+                let par = st[kk - 1]
+                let c = par[1]
+                let more = c < par[2]
+                let pidx = par[4] == 2
+                if pidx && more {
+                    st = std::array::push(std::array::slice(st, 0, kk - 1), [par[0], c, par[2], 1, 2])
+                    return st
+                }
+                if !pidx && more {
+                    let ch = sqt_child_of(p, par, c + 1)
+                    st = std::array::push(std::array::slice(st, 0, kk - 1), [par[0], c + 1, par[2], 0, par[4]])
+                    st = sqt_descend_left(p, st, ch)
+                    let lf = st[len(st) - 1]
+                    if lf[2] > 0 {
+                        return st
+                    }
+                    stop = true
+                }
+                if !more {
+                    st = std::array::slice(st, 0, kk - 1)
+                }
+            }
+            continue
+        }
+        return []
+    }
+    st
+}
+
+// Cursor posicionado en la primera entrada >= rowid de una tabla.
+fn sqt_t_seek(p: SqPg, root: int, rowid: int) -> array {
+    let path = sqt_t_path(p, root, rowid)
+    let k = len(path)
+    let f = path[k - 1]
+    if f[1] < f[2] {
+        return path
+    }
+    let st = std::array::push(std::array::slice(path, 0, k - 1), [f[0], f[2] - 1, f[2], 0, f[4]])
+    sqt_cu_adv(p, st)
+}
+
+// Cursor posicionado en la primera entrada >= key (m columnas) de un índice.
+fn sqi_seek(p: SqPg, root: int, key: array, m: int, colls: array, desc: array) -> array {
+    let (_, path) = sqi_find_x(p, root, key, m, colls, desc, false)
+    let k = len(path)
+    let f = path[k - 1]
+    if f[3] == 1 {
+        return path
+    }
+    if f[1] < f[2] {
+        return path
+    }
+    let st = std::array::push(std::array::slice(path, 0, k - 1), [f[0], f[2] - 1, f[2], 0, f[4]])
+    sqt_cu_adv(p, st)
+}
+
+// Entrada actual: celda (bytes) del marco superior.
+fn sqt_cu_cell(p: SqPg, st: array) -> array {
+    let f = st[len(st) - 1]
+    let a = sqp_read(p, f[0])
+    let hdr = sqt_hdr(f[0])
+    let mut ptr0 = hdr + 8
+    if f[4] == 5 || f[4] == 2 {
+        ptr0 = hdr + 12
+    }
+    let off = sq_u16(a, ptr0 + 2 * f[1])
+    let sz = sqt_cell_size(f[4], a, off, p.psize)
+    std::array::slice(a, off, off + sz)
+}
+
+// Rowid y carga de la entrada actual de una tabla.
+fn sqt_cu_row(p: SqPg, st: array) -> (int, array) {
+    let c = sqt_cu_cell(p, st)
+    let (b, pl) = sqt_cell_body(13, c)
+    return (sqt_cell_rowid(c), sqt_payload(p, 13, c, b, pl))
+}
+
+// Valores de la entrada actual de un índice.
+fn sqi_cu_vals(p: SqPg, st: array) -> array {
+    let f = st[len(st) - 1]
+    let c = sqt_cu_cell(p, st)
+    sq_rec_dec(sqt_cell_payload(p, f[4], c), -1)
+}
+
+fn sqt_cu_valid(st: array) -> bool {
+    len(st) > 0
+}

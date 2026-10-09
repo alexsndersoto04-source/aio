@@ -1,0 +1,104 @@
+// puerto: 53304
+// std::mysql: pool de conexiones, handles prestados, estadísticas, salud y cierre.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn tomar(o: any) -> any {
+    match o {
+        Option::Some(v) => v,
+        _ => nil,
+    }
+}
+
+fn es_nada(o: any) -> bool {
+    match o {
+        Option::None => true,
+        _ => false,
+    }
+}
+
+fn id(v: any) -> any {
+    v
+}
+
+fn main() {
+    let url = "mysql://app:secret@127.0.0.1:53304/test?prefer_socket=false"
+    let pool = std::mysql::pool(url, 2)
+    print(pool)
+    mostrar("stats0", std::mysql::pool_stats(pool))
+    let a = tomar(std::mysql::acquire(pool, 1000))
+    print(a)
+    mostrar("stats1", std::mysql::pool_stats(pool))
+    let b = tomar(std::mysql::acquire(pool, 1000))
+    mostrar("stats2", std::mysql::pool_stats(pool))
+    mostrar("agotado", es_nada(std::mysql::acquire(pool, 50)))
+    mostrar("agotado_cero", es_nada(std::mysql::acquire(pool, 0)))
+    mostrar("usar_a", std::mysql::query(a, "SELECT 1 AS uno", []))
+    mostrar("begin_a", std::mysql::begin(a))
+    mostrar("insert_a", std::mysql::execute(a, "CREATE TABLE IF NOT EXISTS pl1(id INTEGER)", []))
+    mostrar("close_a", std::mysql::close(a))
+    mostrar("stats3", std::mysql::pool_stats(pool))
+    mostrar("close_a_otra_vez", std::mysql::close(a))
+    mostrar("usar_a_cerrada", std::try::catch(|| { std::mysql::query(a, "SELECT 1", []) }))
+    let c = tomar(std::mysql::acquire(pool, 1000))
+    print(c)
+    mostrar("tx_heredada", std::try::catch(|| { std::mysql::begin(c) }))
+    mostrar("salud_agotada", std::mysql::pool_health(pool, 20))
+    mostrar("close_b", std::mysql::close(b))
+    mostrar("salud", std::mysql::pool_health(pool, 1000))
+    mostrar("stats4", std::mysql::pool_stats(pool))
+    mostrar("db_ping_c", std::db::ping(c))
+    mostrar("close_c", std::db::close(c))
+    mostrar("stats5", std::mysql::pool_stats(pool))
+    mostrar("pool_close", std::mysql::pool_close(pool))
+    mostrar("stats_cerrado", std::try::catch(|| { std::mysql::pool_stats(pool) }))
+    mostrar("acquire_cerrado", std::try::catch(|| { std::mysql::acquire(pool, 10) }))
+    mostrar("pool_close_otra_vez", std::try::catch(|| { std::mysql::pool_close(pool) }))
+    mostrar("salud_cerrado", std::try::catch(|| { std::mysql::pool_health(pool, 10) }))
+    // errores de argumentos
+    mostrar("pool_cero", std::try::catch(|| { std::mysql::pool(url, 0) }))
+    mostrar("pool_negativo", std::try::catch(|| { std::mysql::pool(url, -1) }))
+    mostrar("pool_65", std::try::catch(|| { std::mysql::pool(url, 65) }))
+    mostrar("pool_enorme", std::try::catch(|| { std::mysql::pool(url, 100000000) }))
+    mostrar("pool_url", std::try::catch(|| { std::mysql::pool(id(5), 2) }))
+    mostrar("pool_max_tipo", std::try::catch(|| { std::mysql::pool(url, id("x")) }))
+    mostrar("acquire_no_pool", std::try::catch(|| { std::mysql::acquire(id(5), 10) }))
+    mostrar("acquire_timeout_neg", std::try::catch(|| { std::mysql::acquire(pool, -1) }))
+    mostrar("stats_no_pool", std::try::catch(|| { std::mysql::pool_stats(id(5)) }))
+    mostrar("close_no_pool", std::try::catch(|| { std::mysql::pool_close(id(5)) }))
+    // URL mala: el error sale al pedir la conexión
+    let mala = std::mysql::pool("mysql://app:wrong@127.0.0.1:53304/test?prefer_socket=false", 1)
+    mostrar("acquire_mala", std::try::catch(|| { std::mysql::acquire(mala, 100) }))
+    mostrar("stats_mala", std::mysql::pool_stats(mala))
+    mostrar("salud_mala", std::mysql::pool_health(mala, 100))
+    mostrar("close_mala", std::mysql::pool_close(mala))
+    let invalida = std::mysql::pool("not a url", 1)
+    mostrar("acquire_invalida", std::try::catch(|| { std::mysql::acquire(invalida, 100) }))
+    std::mysql::pool_close(invalida)
+    // el pool se recupera tras un cierre de pool: conexiones directas siguen funcionando
+    let p2 = std::mysql::pool(url, 1)
+    let d = tomar(std::mysql::acquire(p2, 1000))
+    std::mysql::pool_close(p2)
+    mostrar("directa_tras_pool_close", std::mysql::query(d, "SELECT 5 AS cinco", []))
+    mostrar("close_tras_pool_close", std::mysql::close(d))
+    // tareas que comparten el pool
+    let p3 = std::mysql::pool(url, 2)
+    let mut tareas = []
+    let mut i = 0
+    while i < 4 {
+        let n = i
+        tareas = std::array::push(tareas, spawn || {
+            let h = tomar(std::mysql::acquire(p3, 5000))
+            let r = std::mysql::query(h, "SELECT ? AS n", [n])
+            std::mysql::close(h)
+            r
+        })
+        i += 1
+    }
+    for t in tareas {
+        mostrar("tarea", join(t))
+    }
+    mostrar("stats_tareas", std::mysql::pool_stats(p3))
+    std::mysql::pool_close(p3)
+}

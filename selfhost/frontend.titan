@@ -45,6 +45,7 @@ fn raw_signatures() -> array {
         "std::raw::set_sysreg Int,Int -> Nil",
         "std::raw::bare  -> Int",
         "std::raw::hvc Int,Int -> Int",
+        "std::raw::fiber_switch Int,Int -> Nil",
         "std::raw::fail String -> Never",
         "std::raw::throw Any -> Never",
     ]

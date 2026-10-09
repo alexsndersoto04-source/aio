@@ -12,13 +12,23 @@
 # que es donde el compilador busca el runtime) y git los ignora.
 #
 # Uso: bash selfhost/verify_fixpoint.sh [zett]
+#      SEMILLA=selfhost/titanc3 bash selfhost/verify_fixpoint.sh
+# Con SEMILLA la etapa 1 la hace un compilador nativo ya construido (sin la VM de Rust): hace falta
+# cuando la máquina no tiene memoria para que la VM interprete el compilador (desde que el runtime
+# incluye MySQL, la etapa 1 con la VM pasa de 4 GB y el sistema la mata). Sigue siendo un punto fijo:
+# lo que se exige es titanc1 == titanc2 == titanc3.
 set -u
 ZETT="${1:-zett}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 rm -f selfhost/titanc1 selfhost/titanc2 selfhost/titanc3
-echo "etapa 1: VM de Rust + compilador Titan -> selfhost/titanc1"
-"$ZETT" run selfhost/build.titan selfhost/build.titan selfhost/titanc1 || exit 1
+if [ -n "${SEMILLA:-}" ]; then
+  echo "etapa 1: $SEMILLA (compilador nativo semilla) -> selfhost/titanc1 (sin PATH)"
+  env -i PATH=/nonexistent "$SEMILLA" selfhost/build.titan selfhost/titanc1 || exit 1
+else
+  echo "etapa 1: VM de Rust + compilador Titan -> selfhost/titanc1"
+  "$ZETT" run selfhost/build.titan selfhost/build.titan selfhost/titanc1 || exit 1
+fi
 [ -x selfhost/titanc1 ] || { echo "falló la etapa 1"; exit 1; }
 echo "etapa 2: titanc1 -> selfhost/titanc2 (sin PATH)"
 env -i PATH=/nonexistent ./selfhost/titanc1 selfhost/build.titan selfhost/titanc2 || exit 1

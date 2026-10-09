@@ -1,0 +1,219 @@
+// X25519 (RFC 7748) sobre enteros de 16 miembros de 16 bits (el método de TweetNaCl).
+// Prefijo x2_. Todas las funciones trabajan con bloques de memoria cruda:
+// un elemento del campo son 16 palabras de 8 bytes (int con signo).
+
+fn x2_ld(p: int, i: int) -> int { std::raw::load(p + 8 * i) }
+fn x2_st(p: int, i: int, v: int) { std::raw::store(p + 8 * i, v) }
+
+fn x2_car(o: int) {
+    let mut i = 0
+    while i < 16 {
+        let v = x2_ld(o, i) + 65536
+        let c = std::raw::sar(v, 16)
+        if i < 15 {
+            x2_st(o, i + 1, x2_ld(o, i + 1) + c - 1)
+        } else {
+            x2_st(o, 0, x2_ld(o, 0) + 38 * (c - 1))
+        }
+        x2_st(o, i, v - std::raw::shl(c, 16))
+        i += 1
+    }
+}
+
+// Intercambia p y q si b == 1.
+fn x2_sel(p: int, q: int, b: int) {
+    let c = 0 - b
+    let mut i = 0
+    while i < 16 {
+        let t = c & (x2_ld(p, i) ^ x2_ld(q, i))
+        x2_st(p, i, x2_ld(p, i) ^ t)
+        x2_st(q, i, x2_ld(q, i) ^ t)
+        i += 1
+    }
+}
+
+fn x2_add(o: int, a: int, b: int) {
+    let mut i = 0
+    while i < 16 {
+        x2_st(o, i, x2_ld(a, i) + x2_ld(b, i))
+        i += 1
+    }
+}
+
+fn x2_sub(o: int, a: int, b: int) {
+    let mut i = 0
+    while i < 16 {
+        x2_st(o, i, x2_ld(a, i) - x2_ld(b, i))
+        i += 1
+    }
+}
+
+// o = a*b; t es un bloque de 31 palabras.
+fn x2_mul(o: int, a: int, b: int, t: int) {
+    let mut i = 0
+    while i < 31 {
+        x2_st(t, i, 0)
+        i += 1
+    }
+    i = 0
+    while i < 16 {
+        let ai = x2_ld(a, i)
+        let mut j = 0
+        while j < 16 {
+            x2_st(t, i + j, x2_ld(t, i + j) + ai * x2_ld(b, j))
+            j += 1
+        }
+        i += 1
+    }
+    i = 0
+    while i < 15 {
+        x2_st(t, i, x2_ld(t, i) + 38 * x2_ld(t, i + 16))
+        i += 1
+    }
+    i = 0
+    while i < 16 {
+        x2_st(o, i, x2_ld(t, i))
+        i += 1
+    }
+    x2_car(o)
+    x2_car(o)
+}
+
+fn x2_inv(o: int, i: int, c: int, t: int) {
+    let mut k = 0
+    while k < 16 {
+        x2_st(c, k, x2_ld(i, k))
+        k += 1
+    }
+    let mut a = 253
+    while a >= 0 {
+        x2_mul(c, c, c, t)
+        if a != 2 && a != 4 {
+            x2_mul(c, c, i, t)
+        }
+        a -= 1
+    }
+    k = 0
+    while k < 16 {
+        x2_st(o, k, x2_ld(c, k))
+        k += 1
+    }
+}
+
+// 32 bytes little-endian desde n.
+fn x2_pack(o: int, n: int, t: int, m: int) {
+    let mut i = 0
+    while i < 16 {
+        x2_st(t, i, x2_ld(n, i))
+        i += 1
+    }
+    x2_car(t)
+    x2_car(t)
+    x2_car(t)
+    let mut j = 0
+    while j < 2 {
+        x2_st(m, 0, x2_ld(t, 0) - 65517)
+        i = 1
+        while i < 15 {
+            x2_st(m, i, x2_ld(t, i) - 65535 - (std::raw::sar(x2_ld(m, i - 1), 16) & 1))
+            x2_st(m, i - 1, x2_ld(m, i - 1) & 65535)
+            i += 1
+        }
+        x2_st(m, 15, x2_ld(t, 15) - 32767 - (std::raw::sar(x2_ld(m, 14), 16) & 1))
+        let b = std::raw::sar(x2_ld(m, 15), 16) & 1
+        x2_st(m, 14, x2_ld(m, 14) & 65535)
+        x2_sel(t, m, 1 - b)
+        j += 1
+    }
+    i = 0
+    while i < 16 {
+        std::raw::store8(o + 2 * i, x2_ld(t, i) & 255)
+        std::raw::store8(o + 2 * i + 1, std::raw::shr(x2_ld(t, i), 8) & 255)
+        i += 1
+    }
+}
+
+fn x2_unpack(o: int, n: int) {
+    let mut i = 0
+    while i < 16 {
+        x2_st(o, i, std::raw::load8(n + 2 * i) + std::raw::shl(std::raw::load8(n + 2 * i + 1), 8))
+        i += 1
+    }
+    x2_st(o, 15, x2_ld(o, 15) & 32767)
+}
+
+// out[32] = escalar(n[32]) * punto(p[32]). Devuelve 1 si el resultado no es todo ceros.
+fn x2_scalarmult(out: int, n: int, p: int) -> int {
+    // bloque: 0 a, 1 b, 2 c, 3 d, 4 e, 5 f, 6 x, 7 121665, 8 temporal 16, 10 t (31), 14 z (32 bytes)
+    let blk = rt_alloc_zero(8 * 16 * 16 + 64)
+    let a = blk
+    let b = blk + 128
+    let c = blk + 256
+    let d = blk + 384
+    let e = blk + 512
+    let f = blk + 640
+    let x = blk + 768
+    let k = blk + 896
+    let tmp = blk + 1024
+    let t = blk + 1152
+    let m = blk + 1408
+    let z = blk + 2048
+    let mut i = 0
+    while i < 32 {
+        std::raw::store8(z + i, std::raw::load8(n + i))
+        i += 1
+    }
+    std::raw::store8(z + 31, (std::raw::load8(n + 31) & 127) | 64)
+    std::raw::store8(z, std::raw::load8(n) & 248)
+    x2_unpack(x, p)
+    x2_st(k, 0, 56129)
+    x2_st(k, 1, 1)
+    i = 0
+    while i < 16 {
+        x2_st(b, i, x2_ld(x, i))
+        i += 1
+    }
+    x2_st(a, 0, 1)
+    x2_st(d, 0, 1)
+    i = 254
+    while i >= 0 {
+        let r = std::raw::shr(std::raw::load8(z + i / 8), i & 7) & 1
+        x2_sel(a, b, r)
+        x2_sel(c, d, r)
+        x2_add(e, a, c)
+        x2_sub(a, a, c)
+        x2_add(c, b, d)
+        x2_sub(b, b, d)
+        x2_mul(d, e, e, t)
+        x2_mul(f, a, a, t)
+        x2_mul(a, c, a, t)
+        x2_mul(c, b, e, t)
+        x2_add(e, a, c)
+        x2_sub(a, a, c)
+        x2_mul(b, a, a, t)
+        x2_sub(c, d, f)
+        x2_mul(a, c, k, t)
+        x2_add(a, a, d)
+        x2_mul(c, c, a, t)
+        x2_mul(a, d, f, t)
+        x2_mul(d, b, x, t)
+        x2_mul(b, e, e, t)
+        x2_sel(a, b, r)
+        x2_sel(c, d, r)
+        i -= 1
+    }
+    x2_inv(c, c, tmp, t)
+    x2_mul(a, a, c, t)
+    x2_pack(out, a, t, m)
+    let mut acc = 0
+    i = 0
+    while i < 32 {
+        acc = acc | std::raw::load8(out + i)
+        i += 1
+    }
+    rt_free_block(blk)
+    if acc == 0 {
+        return 0
+    }
+    1
+}

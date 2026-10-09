@@ -1,0 +1,158 @@
+// std::tokenize: BERT (WordPiece), BPE a nivel de bytes y Unigram construidos aquí mismo con
+// std::json::stringify; carga con from_json y con load (archivo), codificación simple, con
+// relleno, por lotes, decodificación y consultas de vocabulario. La salida debe coincidir con la
+// de la VM de Rust.
+fn ins(m: any, k: string, v: any) -> any {
+    std::map::insert(m, k, v)
+}
+
+fn obj(pairs: array) -> any {
+    let mut m = std::map::new()
+    let mut i = 0
+    while i < len(pairs) {
+        m = std::map::insert(m, pairs[i], pairs[i + 1])
+        i += 2
+    }
+    m
+}
+
+fn added(id: int, content: string) -> any {
+    obj(["id", id, "content", content, "single_word", false, "lstrip", false, "rstrip", false, "normalized", false, "special", true])
+}
+
+fn vocab_map(words: array) -> any {
+    let mut m = std::map::new()
+    let mut i = 0
+    while i < len(words) {
+        m = std::map::insert(m, words[i], i)
+        i += 1
+    }
+    m
+}
+
+fn bert_json(trunc: any, pad: any) -> string {
+    let words = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "world", "the", "quick", "brown", "fox", "jump", "##s", "##ed", "over", "lazy", "dog", ",", ".", "!", "'", "t", "don", "cafe", "un", "##known", "number", "1", "2", "3"]
+    let model = obj(["type", "WordPiece", "unk_token", "[UNK]", "continuing_subword_prefix", "##", "max_input_chars_per_word", 100, "vocab", vocab_map(words)])
+    let root = obj([
+        "version", "1.0",
+        "truncation", trunc,
+        "padding", pad,
+        "added_tokens", [added(0, "[PAD]"), added(1, "[UNK]"), added(2, "[CLS]"), added(3, "[SEP]"), added(4, "[MASK]")],
+        "normalizer", obj(["type", "BertNormalizer", "clean_text", true, "handle_chinese_chars", true, "strip_accents", nil, "lowercase", true]),
+        "pre_tokenizer", obj(["type", "BertPreTokenizer"]),
+        "post_processor", obj(["type", "BertProcessing", "sep", ["[SEP]", 3], "cls", ["[CLS]", 2]]),
+        "decoder", obj(["type", "WordPiece", "prefix", "##", "cleanup", true]),
+        "model", model,
+    ])
+    std::json::stringify(root)
+}
+
+fn bpe_json() -> string {
+    let words = ["h", "e", "l", "o", "Ġ", "w", "r", "d", "he", "ll", "hell", "hello", "Ġw", "Ġwo", "Ġwor", "Ġworl", "Ġworld", "<|endoftext|>", "Ã", "©"]
+    let model = obj(["type", "BPE", "dropout", nil, "unk_token", nil, "continuing_subword_prefix", nil, "end_of_word_suffix", nil, "fuse_unk", false, "byte_fallback", false, "vocab", vocab_map(words), "merges", ["h e", "l l", "he ll", "hell o", "Ġ w", "Ġw o", "Ġwo r", "Ġwor l", "Ġworl d"]])
+    let root = obj([
+        "version", "1.0",
+        "added_tokens", [added(17, "<|endoftext|>")],
+        "normalizer", nil,
+        "pre_tokenizer", obj(["type", "ByteLevel", "add_prefix_space", false, "trim_offsets", true, "use_regex", true]),
+        "post_processor", obj(["type", "ByteLevel", "add_prefix_space", true, "trim_offsets", false, "use_regex", true]),
+        "decoder", obj(["type", "ByteLevel", "add_prefix_space", true, "trim_offsets", true, "use_regex", true]),
+        "model", model,
+    ])
+    std::json::stringify(root)
+}
+
+fn unigram_json() -> string {
+    let vocab = [["<unk>", 0.0], ["▁hello", -2.5], ["▁world", -3.0], ["▁", -4.0], ["h", -5.0], ["e", -5.0], ["l", -5.0], ["o", -5.0], ["w", -5.0], ["r", -5.0], ["d", -5.0], ["he", -4.5], ["llo", -4.2], ["▁the", -2.0]]
+    let model = obj(["type", "Unigram", "unk_id", 0, "vocab", vocab, "byte_fallback", false])
+    let root = obj([
+        "version", "1.0",
+        "added_tokens", [added(0, "<unk>")],
+        "normalizer", obj(["type", "Sequence", "normalizers", [obj(["type", "NFKC"]), obj(["type", "Replace", "pattern", obj(["Regex", " {2,}"]), "content", " "])]]),
+        "pre_tokenizer", obj(["type", "Metaspace", "replacement", "▁", "prepend_scheme", "always", "split", true]),
+        "post_processor", nil,
+        "decoder", obj(["type", "Metaspace", "replacement", "▁", "prepend_scheme", "always", "split", true]),
+        "model", model,
+    ])
+    std::json::stringify(root)
+}
+
+fn show(label: string, v: any) {
+    print(label + ": " + std::json::stringify(v))
+}
+
+fn run(name: string, h: int, texts: array) {
+    print("== " + name)
+    show("vocab_size", std::tokenize::vocab_size(h))
+    for t in texts {
+        show("encode", std::tokenize::encode(h, t, true))
+        show("encode(no special)", std::tokenize::encode(h, t, false))
+    }
+    show("padded 8", std::tokenize::encode_padded(h, texts[0], 8, 0, true))
+    show("padded 3", std::tokenize::encode_padded(h, texts[0], 3, 0, true))
+    show("padded 3 sin especiales", std::tokenize::encode_padded(h, texts[0], 3, 7, false))
+    show("padded 1", std::tokenize::encode_padded(h, texts[1], 1, 0, true))
+    show("batch", std::tokenize::encode_batch(h, texts, true))
+    show("batch vacio", std::tokenize::encode_batch(h, [], true))
+    let enc = std::tokenize::encode(h, texts[0], true)
+    show("decode", std::tokenize::decode(h, enc["ids"], false))
+    show("decode skip", std::tokenize::decode(h, enc["ids"], true))
+    show("decode ajeno", std::tokenize::decode(h, [0, 1, 2, 99999, 3, 4], false))
+    show("decode vacio", std::tokenize::decode(h, [], true))
+}
+
+fn main() {
+    let texts = ["Hello, world!", "The quick brown foxes jumped over the lazy dog.", "", "  don't   UNKNOWNZ café 123  ", "[CLS] hello [SEP] [MASK] world"]
+    let none: any = nil
+
+    let h1 = std::tokenize::from_json(bert_json(none, none))
+    run("bert", h1, texts)
+    show("token_to_id hello", std::tokenize::token_to_id(h1, "hello"))
+    show("token_to_id [CLS]", std::tokenize::token_to_id(h1, "[CLS]"))
+    show("token_to_id nada", std::tokenize::token_to_id(h1, "nada"))
+    show("id_to_token 5", std::tokenize::id_to_token(h1, 5))
+    show("id_to_token 3", std::tokenize::id_to_token(h1, 3))
+    show("id_to_token grande", std::tokenize::id_to_token(h1, 4000000))
+
+    let trunc = obj(["direction", "Right", "max_length", 6, "strategy", "LongestFirst", "stride", 0])
+    let pad = obj(["strategy", "BatchLongest", "direction", "Right", "pad_to_multiple_of", nil, "pad_id", 0, "pad_type_id", 0, "pad_token", "[PAD]"])
+    let h2 = std::tokenize::from_json(bert_json(trunc, pad))
+    run("bert con truncado y relleno", h2, texts)
+
+    let pad2 = obj(["strategy", obj(["Fixed", 12]), "direction", "Left", "pad_to_multiple_of", 5, "pad_id", 0, "pad_type_id", 1, "pad_token", "[PAD]"])
+    let h3 = std::tokenize::from_json(bert_json(none, pad2))
+    run("bert relleno fijo a la izquierda", h3, texts)
+
+    let h4 = std::tokenize::from_json(bpe_json())
+    run("bpe de bytes", h4, ["hello world", "hello  world hello", "", "héllo wörld", "hello<|endoftext|>world"])
+    show("token_to_id Ġworld", std::tokenize::token_to_id(h4, "Ġworld"))
+
+    let h5 = std::tokenize::from_json(unigram_json())
+    run("unigram", h5, ["hello world", "the  hello   worldz", "", "HELLO ｗｏｒｌｄ", "hello<unk>world"])
+
+    // Carga desde archivo.
+    let pid = std::process::self_pid()
+    let dir = "/tmp/titan_tokenize_std_" + "{pid}"
+    std::fs::create_dir(dir)
+    let path = dir + "/tokenizer.json"
+    std::fs::write_text(path, bert_json(none, none))
+    let h6 = std::tokenize::load(path)
+    show("load == from_json", std::tokenize::encode(h6, texts[1], true) == std::tokenize::encode(h1, texts[1], true))
+    show("handles distintos", h1 != h6)
+    show("handles", [h1, h2, h3, h4, h5, h6])
+    std::tokenize::close(h6)
+    std::tokenize::close(h6)
+    let r = std::try::catch(|| { std::tokenize::vocab_size(h6) })
+    match r {
+        Result::Ok(v) => { print("inesperado") },
+        Result::Err(m) => { print("cerrado: " + m) },
+    }
+    std::fs::remove_file(path)
+    std::fs::remove_dir(dir)
+    std::tokenize::close(h1)
+    std::tokenize::close(h2)
+    std::tokenize::close(h3)
+    std::tokenize::close(h4)
+    std::tokenize::close(h5)
+    print("fin")
+}

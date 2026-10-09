@@ -1,0 +1,629 @@
+// std::onnx del runtime nativo: carga y ejecuta modelos ONNX con el motor de
+// std_onnx_engine.titan (subconjunto real de operadores; lo demás se rechaza al
+// cargar con "onnx error: unsupported operator ...").
+//
+// Registro de modelos en dos ranuras globales:
+//   +3536  mapa "m<handle>" -> [modelo, forma fijada o nil, bytes del archivo,
+//          formas de salida en caché o nil] (0 = todavía vacío)
+//   +3544  siguiente handle (0 = 1). Empiezan en 1, no se reutilizan.
+//
+// Diferencias con la versión de Rust (tract), a propósito y documentadas:
+//   - archivo de modelo ≤ 64 MiB (en Rust 256 MiB): los tensores viven como
+//     arrays de Titan (16 bytes por elemento).
+//   - los textos de error de un modelo mal formado o incompatible no son los
+//     de tract; los de límites, handles y formas sí.
+//   - load_bert/load_bert3/run_bert/run_bert3/run_bert_pooled sirven los transformers que carga el motor
+//     (ver los operadores de std_onnx_ops.titan); un modelo que no entre falla al cargar.
+//   - la suma de productos se hace en f64 y se redondea a f32 por operador:
+//     coincide con tract en ≈1e-6 relativo, no bit a bit.
+// Prefijo `ox` (el motor) y `oz_` (esta capa).
+
+// Núcleo del producto de matrices: x[ox..] (m×k) por y[oy..] (k×n) -> array de m*n números. Copia a
+// bloques crudos de f64 (con y transpuesta para recorrer ambas filas seguidas) y acumula con
+// aritmética de f64 sin etiquetas; el motor redondea cada resultado a f32 al volver.
+fn ox_mm_kernel(xd: any, ox: int, yd: any, oy: int, m: int, k: int, n: int) -> any {
+    let px = rt_alloc(8 * m * k + 8)
+    let py = rt_alloc(8 * k * n + 8)
+    let tx = m * k
+    let mut i = 0
+    while i < tx {
+        std::raw::store(px + 8 * i, std::raw::bits(rt_seq_get(xd, ox + i)))
+        i += 1
+    }
+    let mut p = 0
+    while p < k {
+        let mut j = 0
+        while j < n {
+            std::raw::store(py + 8 * (j * k + p), std::raw::bits(rt_seq_get(yd, oy + p * n + j)))
+            j += 1
+        }
+        p += 1
+    }
+    let out = rt_array_new(m * n)
+    let data = rt_seq_data(out)
+    i = 0
+    while i < m {
+        let rowx = px + 8 * i * k
+        let mut j = 0
+        while j < n {
+            let coly = py + 8 * j * k
+            let mut acc = 0
+            let mut q = 0
+            while q < k {
+                acc = std::raw::fadd(acc, std::raw::fmul(std::raw::load(rowx + 8 * q), std::raw::load(coly + 8 * q)))
+                q += 1
+            }
+            rt_seq_put(data, i * n + j, rt_float(acc))
+            j += 1
+        }
+        i += 1
+    }
+    rt_free_block(px)
+    rt_free_block(py)
+    out
+}
+
+fn oz_models_slot() -> int { std::raw::globals() + 3536 }
+fn oz_next_slot() -> int { std::raw::globals() + 3544 }
+
+// Mapa de modelos (una referencia nueva).
+fn oz_reg() -> any {
+    let bits = std::raw::load(oz_models_slot())
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::value(9, bits)
+}
+
+// Saca el mapa de la ranura (queda vacía; quien llama es el dueño).
+fn oz_reg_take() -> any {
+    let bits = std::raw::load(oz_models_slot())
+    if bits == 0 {
+        return std__map__new()
+    }
+    std::raw::store(oz_models_slot(), 0)
+    std::raw::adopt(9, bits)
+}
+
+fn oz_reg_put(m: any) {
+    std::raw::store(oz_models_slot(), std::raw::keep(m))
+}
+
+fn oz_next_id() -> int {
+    let v = std::raw::load(oz_next_slot())
+    let mut id = v
+    if v == 0 {
+        id = 1
+    }
+    std::raw::store(oz_next_slot(), id + 1)
+    id
+}
+
+fn oz_fail(f: string, msg: string) {
+    rt_native_fail(f, msg)
+}
+
+// Result::Ok(v) -> v; Result::Err(e) -> falla con "onnx error: e".
+fn oz_unwrap(f: string, r: any) -> any {
+    let mut out: any = nil
+    match r {
+        Result::Ok(v) => {
+            out = v
+        },
+        Result::Err(e) => {
+            oz_fail(f, "onnx error: " + "{e}")
+        },
+        _ => {
+            oz_fail(f, "onnx error: internal failure")
+        },
+    }
+    out
+}
+
+// Ejecuta `ox_parse` capturando los fallos internos (protobuf truncado, etc.).
+fn oz_parse(bytes: any) -> any {
+    let caught = std::try::catch(|| {
+        ox_parse(bytes)
+    })
+    let mut out: any = Result::Err("invalid ONNX model: malformed or truncated protobuf")
+    match caught {
+        Result::Ok(r) => {
+            out = r
+        },
+        _ => {
+            out = Result::Err("invalid ONNX model: malformed or truncated protobuf")
+        },
+    }
+    out
+}
+
+fn oz_check_shape(f: string, shape: any) -> int {
+    rt_expect_array(shape, f)
+    let rank = len(shape)
+    if rank > 8 {
+        oz_fail(f, "tensor shape rank exceeds limit 8")
+    }
+    let mut elements = 1
+    let mut i = 0
+    while i < rank {
+        rt_expect_int(shape[i], f)
+        let d = shape[i]
+        if d <= 0 {
+            oz_fail(f, "shape must not contain zero or negative dimensions")
+        }
+        if d > 4194304 {
+            oz_fail(f, "tensor dimension exceeds limit 4194304")
+        }
+        elements = elements * d
+        if elements > 4194304 {
+            oz_fail(f, "tensor elements exceeds limit 4194304")
+        }
+        i += 1
+    }
+    elements
+}
+
+// `pins`: nil o array de formas fijadas para las primeras entradas del modelo. `ids`: las entradas
+// fijadas deben ser INT64 (load_bert / load_bert3).
+fn oz_load(f: string, path: any, pins: any, ids: bool) -> any {
+    rt_expect_str(path, f)
+    if pins != nil {
+        for pin in pins {
+            oz_check_shape(f, pin)
+        }
+    }
+    if rt_slen(path) > 16384 {
+        oz_fail(f, "ONNX model path bytes exceeds limit 16384")
+    }
+    if std::map::length(oz_reg()) >= 4 {
+        oz_fail(f, "ONNX model handles exceeds limit 4")
+    }
+    if !std__fs__exists(path) {
+        oz_fail(f, "onnx I/O error: " + rt_os_error(2))
+    }
+    if std__fs__is_dir(path) {
+        oz_fail(f, "invalid ONNX model source: model path is not a regular file")
+    }
+    let bytes = std__fs__read_bytes(path)
+    let size = std::bytes::length(bytes)
+    if size > 67108864 {
+        oz_fail(f, "ONNX model file bytes exceeds limit 67108864")
+    }
+    let model = oz_unwrap(f, oz_parse(bytes))
+    if len(model.inputs) > 8 {
+        oz_fail(f, "ONNX inference inputs exceeds limit 8")
+    }
+    if len(model.outputs) > 32 {
+        oz_fail(f, "ONNX inference outputs exceeds limit 32")
+    }
+    if len(model.nodes) > 65536 {
+        oz_fail(f, "ONNX model nodes exceeds limit 65536")
+    }
+    if pins != nil {
+        if len(model.inputs) == 0 {
+            oz_fail(f, "onnx error: the model has no input to pin")
+        }
+        if len(model.inputs) < len(pins) {
+            let np = len(pins)
+            let ni = len(model.inputs)
+            oz_fail(f, "onnx error: the model has " + "{ni}" + " inputs but " + "{np}" + " are required")
+        }
+        let mut k = 0
+        while k < len(pins) {
+            let pin = pins[k]
+            let dims = model.inputs[k].dims
+            let elem_k = model.inputs[k].elem
+            if ids && elem_k != 7 {
+                oz_fail(f, "onnx error: input " + "{k}" + " has element type " + "{elem_k}" + ", expected INT64 (7)")
+            }
+            if len(dims) != len(pin) {
+                oz_fail(f, "onnx error: pinned shape has rank " + "{len(pin)}" + " but the model input has rank " + "{len(dims)}")
+            }
+            let mut i = 0
+            while i < len(dims) {
+                if dims[i] >= 0 && dims[i] != pin[i] {
+                    oz_fail(f, "onnx error: pinned shape " + ox_shape_text(pin) + " is incompatible with the model input shape " + ox_shape_text(dims))
+                }
+                i += 1
+            }
+            k += 1
+        }
+    }
+    let id = oz_next_id()
+    let mut reg = oz_reg_take()
+    reg = std::map::insert(reg, "m" + "{id}", [model, pins, size, nil])
+    oz_reg_put(reg)
+    id
+}
+
+// load_bert (k = 2: input_ids y attention_mask) y load_bert3 (k = 3: más token_type_ids): las k
+// primeras entradas se fijan a [batch, seq_len] de INT64.
+fn oz_load_bert(f: string, path: any, batch: any, seq: any, k: int) -> any {
+    rt_expect_str(path, f)
+    rt_expect_int(batch, f)
+    rt_expect_int(seq, f)
+    let shape = [batch, seq]
+    let elements = oz_check_shape(f, shape)
+    if elements * 8 * k > 67108864 {
+        oz_fail(f, "inference input bytes exceeds limit 67108864")
+    }
+    let mut pins = []
+    let mut i = 0
+    while i < k {
+        pins = std::array::push(pins, shape)
+        i += 1
+    }
+    oz_load(f, path, pins, true)
+}
+
+fn oz_entry(h: any) -> any {
+    let key = "m" + "{h}"
+    let reg = oz_reg()
+    if !std::map::contains(reg, key) {
+        return nil
+    }
+    std::map::get(reg, key)
+}
+
+fn std__onnx__load(path: any) -> any {
+    oz_load("std::onnx::load", path, nil, false)
+}
+
+fn std__onnx__load_shape(path: any, shape: any) -> any {
+    oz_load("std::onnx::load_shape", path, [shape], false)
+}
+
+fn std__onnx__close(h: any) -> any {
+    rt_expect_int(h, "std::onnx::close")
+    let key = "m" + "{h}"
+    let reg = oz_reg()
+    if std::map::contains(reg, key) {
+        let mut taken = oz_reg_take()
+        taken = std::map::remove(taken, key)
+        oz_reg_put(taken)
+    }
+    nil
+}
+
+fn oz_need(f: string, h: any) -> any {
+    rt_expect_int(h, f)
+    let e = oz_entry(h)
+    if e == nil {
+        oz_fail(f, "unknown model handle " + "{h}")
+    }
+    e
+}
+
+fn std__onnx__input_count(h: any) -> any {
+    let e = oz_need("std::onnx::input_count", h)
+    len(e[0].inputs)
+}
+
+fn std__onnx__output_count(h: any) -> any {
+    let e = oz_need("std::onnx::output_count", h)
+    len(e[0].outputs)
+}
+
+fn oz_index(f: string, i: any) {
+    rt_expect_int(i, f)
+    if i < 0 {
+        oz_fail(f, "expected a non-negative integer")
+    }
+}
+
+fn std__onnx__input_shape(h: any, i: any) -> any {
+    let f = "std::onnx::input_shape"
+    let e = oz_need(f, h)
+    oz_index(f, i)
+    if i >= len(e[0].inputs) {
+        oz_fail(f, "onnx error: the model has no input " + "{i}")
+    }
+    if e[1] != nil && i < len(e[1]) {
+        return e[1][i]
+    }
+    e[0].inputs[i].dims
+}
+
+fn std__onnx__output_shape(h: any, i: any) -> any {
+    let f = "std::onnx::output_shape"
+    let e = oz_need(f, h)
+    oz_index(f, i)
+    let model = e[0]
+    if i >= len(model.outputs) {
+        oz_fail(f, "onnx error: the model has no output " + "{i}")
+    }
+    let mut shapes = e[3]
+    if shapes == nil {
+        let caught = std::try::catch(|| {
+            ox_out_shapes(model, e[1])
+        })
+        let mut r: any = Result::Err("shape inference failed")
+        match caught {
+            Result::Ok(v) => {
+                r = v
+            },
+            _ => {
+                r = Result::Err("shape inference failed")
+            },
+        }
+        shapes = oz_unwrap(f, r)
+        let mut reg = oz_reg_take()
+        reg = std::map::insert(reg, "m" + "{h}", [model, e[1], e[2], shapes])
+        oz_reg_put(reg)
+    }
+    shapes[i]
+}
+
+// Ejecuta el modelo (una sola entrada) y devuelve el mapa {values, shape}.
+fn oz_run(f: string, h: any, shape: any, data: any, ids: bool) -> any {
+    rt_expect_int(h, f)
+    let expected = oz_check_shape(f, shape)
+    rt_expect_array(data, f)
+    if len(data) != expected {
+        oz_fail(f, "shape mismatch: model expects a tensor of " + "{expected}" + " elements, got " + "{len(data)}")
+    }
+    let mut values = []
+    let mut i = 0
+    while i < expected {
+        let v = data[i]
+        if ids {
+            rt_expect_int(v, f)
+            values = std::array::push(values, v)
+        } else {
+            let t = std::raw::tag(v)
+            if t != 1 && t != 2 {
+                oz_fail(f, "expected number")
+            }
+            let mut x = 0.0
+            if t == 1 {
+                x = std::math::to_float(v)
+            } else {
+                x = v
+            }
+            if (std::raw::bits(x) & 9218868437227405312) == 9218868437227405312 || x > 3.4028234663852886e38 || x < -3.4028234663852886e38 {
+                oz_fail(f, "ONNX input float out of f32 range")
+            }
+            values = std::array::push(values, ox_f32(x))
+        }
+        i += 1
+    }
+    let e = oz_need(f, h)
+    let model = e[0]
+    let n_inputs = len(model.inputs)
+    if n_inputs != 1 {
+        oz_fail(f, "onnx error: the model has " + "{n_inputs}" + " inputs but a single tensor was provided")
+    }
+    let input = model.inputs[0]
+    let elem = input.elem
+    if ids && elem != 7 {
+        oz_fail(f, "onnx error: input 0 has element type " + "{elem}" + ", expected INT64 (7)")
+    }
+    if !ids && elem != 1 {
+        oz_fail(f, "onnx error: input 0 has element type " + "{elem}" + ", expected FLOAT (1)")
+    }
+    let mut dims = input.dims
+    if e[1] != nil {
+        dims = e[1][0]
+    }
+    let mut ok = len(dims) == len(shape)
+    let mut k = 0
+    while ok && k < len(dims) {
+        if dims[k] >= 0 && dims[k] != shape[k] {
+            ok = false
+        }
+        k += 1
+    }
+    if !ok {
+        oz_fail(f, "onnx error: input shape " + ox_shape_text(shape) + " is incompatible with the model input shape " + ox_shape_text(dims))
+    }
+    let mut dt = 1
+    if ids {
+        dt = 7
+    }
+    let tensor = OxT { dt: dt, shape: shape, data: values }
+    let caught = std::try::catch(|| {
+        ox_run(model, [tensor])
+    })
+    let mut r: any = Result::Err("inference failed")
+    match caught {
+        Result::Ok(v) => {
+            r = v
+        },
+        Result::Err(msg) => {
+            r = Result::Err("inference failed: " + "{msg}")
+        },
+    }
+    let outs = oz_unwrap(f, r)
+    if len(outs) == 0 {
+        oz_fail(f, "onnx error: model produced no outputs")
+    }
+    let first = outs[0]
+    if first.dt != 1 {
+        oz_fail(f, "onnx error: the first output is not f32")
+    }
+    if len(first.data) > 4194304 {
+        oz_fail(f, "inference output elements exceeds limit 4194304")
+    }
+    let mut res = std::map::new()
+    res = std::map::insert(res, "values", first.data)
+    res = std::map::insert(res, "shape", first.shape)
+    res
+}
+
+fn std__onnx__run_f32(h: any, shape: any, data: any) -> any {
+    oz_run("std::onnx::run_f32", h, shape, data, false)
+}
+
+fn std__onnx__run_ids(h: any, shape: any, data: any) -> any {
+    oz_run("std::onnx::run_ids", h, shape, data, true)
+}
+
+fn std__onnx__load_bert(path: any, batch: any, seq: any) -> any {
+    oz_load_bert("std::onnx::load_bert", path, batch, seq, 2)
+}
+
+fn std__onnx__load_bert3(path: any, batch: any, seq: any) -> any {
+    oz_load_bert("std::onnx::load_bert3", path, batch, seq, 3)
+}
+
+// Ejecuta un modelo con `arrs` (k arrays de ids INT64 del mismo tamaño que `shape`) y devuelve el
+// tensor de la primera salida (OxT).
+fn oz_run_ids(f: string, h: any, shape: any, arrs: array) -> any {
+    rt_expect_int(h, f)
+    let k = len(arrs)
+    let expected = oz_check_shape(f, shape)
+    for a in arrs {
+        rt_expect_array(a, f)
+    }
+    if expected * 8 * k > 67108864 {
+        oz_fail(f, "inference input bytes exceeds limit 67108864")
+    }
+    for a in arrs {
+        if len(a) != expected {
+            oz_fail(f, "shape mismatch: model expects a tensor of " + "{expected}" + " elements, got " + "{len(a)}")
+        }
+    }
+    let mut tensors = []
+    for a in arrs {
+        let mut values = []
+        let mut i = 0
+        while i < expected {
+            rt_expect_int(a[i], f)
+            values = std::array::push(values, a[i])
+            i += 1
+        }
+        tensors = std::array::push(tensors, OxT { dt: 7, shape: shape, data: values })
+    }
+    let e = oz_need(f, h)
+    let model = e[0]
+    let n_in = len(model.inputs)
+    if n_in != k {
+        oz_fail(f, "onnx error: the model has " + "{n_in}" + " inputs but " + "{k}" + " tensors were provided")
+    }
+    let mut idx = 0
+    while idx < k {
+        let inp = model.inputs[idx]
+        let elem_i = inp.elem
+        if elem_i != 7 {
+            oz_fail(f, "onnx error: input " + "{idx}" + " has element type " + "{elem_i}" + ", expected INT64 (7)")
+        }
+        let mut dims = inp.dims
+        if e[1] != nil && idx < len(e[1]) {
+            dims = e[1][idx]
+        }
+        let mut ok = len(dims) == len(shape)
+        let mut q = 0
+        while ok && q < len(dims) {
+            if dims[q] >= 0 && dims[q] != shape[q] {
+                ok = false
+            }
+            q += 1
+        }
+        if !ok {
+            oz_fail(f, "onnx error: input shape " + ox_shape_text(shape) + " is incompatible with the model input shape " + ox_shape_text(dims))
+        }
+        idx += 1
+    }
+    let caught = std::try::catch(|| {
+        ox_run(model, tensors)
+    })
+    let mut r: any = Result::Err("inference failed")
+    match caught {
+        Result::Ok(v) => {
+            r = v
+        },
+        Result::Err(msg) => {
+            r = Result::Err("inference failed: " + "{msg}")
+        },
+    }
+    let outs = oz_unwrap(f, r)
+    if len(outs) == 0 {
+        oz_fail(f, "onnx error: model produced no outputs")
+    }
+    let first = outs[0]
+    if first.dt != 1 {
+        oz_fail(f, "onnx error: the first output is not f32")
+    }
+    if len(first.data) > 4194304 {
+        oz_fail(f, "inference output elements exceeds limit 4194304")
+    }
+    first
+}
+
+fn oz_tensor_map(t: any) -> any {
+    let mut res = std::map::new()
+    res = std::map::insert(res, "values", t.data)
+    res = std::map::insert(res, "shape", t.shape)
+    res
+}
+
+fn std__onnx__run_bert(h: any, shape: any, ids: any, mask: any) -> any {
+    let f = "std::onnx::run_bert"
+    rt_expect_array(ids, f)
+    rt_expect_array(mask, f)
+    oz_tensor_map(oz_run_ids(f, h, shape, [ids, mask]))
+}
+
+fn std__onnx__run_bert3(h: any, shape: any, ids: any, mask: any, types: any) -> any {
+    let f = "std::onnx::run_bert3"
+    rt_expect_array(ids, f)
+    rt_expect_array(mask, f)
+    rt_expect_array(types, f)
+    oz_tensor_map(oz_run_ids(f, h, shape, [ids, mask, types]))
+}
+
+// Embedding de frase: promedio de last_hidden_state [batch, seq, hidden] ponderado por la máscara.
+fn std__onnx__run_bert_pooled(h: any, batch: any, seq: any, ids: any, mask: any) -> any {
+    let f = "std::onnx::run_bert_pooled"
+    rt_expect_int(h, f)
+    rt_expect_int(batch, f)
+    rt_expect_int(seq, f)
+    rt_expect_array(ids, f)
+    rt_expect_array(mask, f)
+    let first = oz_run_ids(f, h, [batch, seq], [ids, mask])
+    if len(first.shape) != 3 {
+        oz_fail(f, "onnx error: expected [batch, seq_len, hidden] output, got " + ox_shape_text(first.shape))
+    }
+    let b = first.shape[0]
+    let s = first.shape[1]
+    let hid = first.shape[2]
+    if b * hid > 4194304 {
+        oz_fail(f, "pooled output elements exceeds limit 4194304")
+    }
+    if b != batch || s != seq {
+        oz_fail(f, "onnx error: output batch/seq mismatch: expected " + ox_shape_text([batch, seq]) + ", got " + ox_shape_text(first.shape))
+    }
+    let mut pooled = []
+    let mut bi = 0
+    while bi < b {
+        let mut sums = std::array::filled(hid, 0.0)
+        let mut count = 0
+        let mut si = 0
+        while si < s {
+            if mask[bi * s + si] != 0 {
+                count += 1
+                let base = (bi * s + si) * hid
+                let mut hi = 0
+                while hi < hid {
+                    sums = std::array::set(sums, hi, ox_f32(sums[hi] + first.data[base + hi]))
+                    hi += 1
+                }
+            }
+            si += 1
+        }
+        let mut hi = 0
+        while hi < hid {
+            if count > 0 {
+                pooled = std::array::push(pooled, ox_f32(sums[hi] / std::math::to_float(count)))
+            } else {
+                pooled = std::array::push(pooled, sums[hi])
+            }
+            hi += 1
+        }
+        bi += 1
+    }
+    let mut res = std::map::new()
+    res = std::map::insert(res, "values", pooled)
+    res = std::map::insert(res, "shape", [b, hid])
+    res
+}

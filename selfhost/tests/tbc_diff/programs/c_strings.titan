@@ -1,0 +1,10 @@
+fn main() {
+    let s = "comilla \" barra \\ nueva\nlinea tab\t ñandú 日本語 😀"
+    let c = 'x'
+    let n = '\n'
+    let u = 'é'
+    print(s)
+    print(c)
+    print(n)
+    print(u)
+}

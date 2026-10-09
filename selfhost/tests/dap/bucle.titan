@@ -1,0 +1,7 @@
+fn main() {
+    print("girando")
+    let mut i = 0
+    while true {
+        i += 1
+    }
+}

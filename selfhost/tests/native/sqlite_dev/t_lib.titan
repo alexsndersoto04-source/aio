@@ -1,0 +1,131 @@
+fn sv_any(v: Sv) -> any {
+    let mut x: any = nil
+    match v {
+        Sv::SInt(i) => {
+            x = i
+        },
+        Sv::SReal(f) => {
+            x = f
+        },
+        Sv::SText(s) => {
+            x = s
+        },
+        Sv::SBlob(b) => {
+            x = b
+        },
+        _ => {},
+    }
+    x
+}
+
+fn rows_str(names: array, rows: array) -> string {
+    let mut out = []
+    for r in rows {
+        let mut m = std::map::new()
+        let mut i = 0
+        for n in names {
+            m = std::map::insert(m, n, sv_any(r[i]))
+            i += 1
+        }
+        out = std::array::push(out, m)
+    }
+    "{out}"
+}
+
+// crea tabla en almacenamiento: devuelve (pg, siguiente rowid de master)
+fn mk_table(p0: SqPg, mrow: int, name: string, sql: string, rows: array, ipk: int) -> (SqPg, int, int) {
+    let (p1, root) = sqt_new_root(p0, 13)
+    let mut p = p1
+    p = sqt_t_put(p, 1, mrow, sq_rec_enc([Sv::SText("table"), Sv::SText(name), Sv::SText(name), Sv::SInt(root), Sv::SText(sql)]))
+    let mut rid = 0
+    for r in rows {
+        rid += 1
+        let mut vals = r
+        if ipk >= 0 {
+            rid = sc_to_int(r[ipk])
+            vals = std::array::set(r, ipk, Sv::SNull)
+        }
+        p = sqt_t_put(p, root, rid, sq_rec_enc(vals))
+    }
+    return (p, mrow + 1, root)
+}
+
+fn mk_index(p0: SqPg, mrow: int, name: string, tbl: string, sql: Sv, troot: int, cols: array, ipk: int) -> (SqPg, int) {
+    let (p1, root) = sqt_new_root(p0, 10)
+    let mut p = p1
+    p = sqt_t_put(p, 1, mrow, sq_rec_enc([Sv::SText("index"), Sv::SText(name), Sv::SText(tbl), Sv::SInt(root), sql]))
+    let mut colls = []
+    let mut desc = []
+    for c in cols {
+        colls = std::array::push(colls, 0)
+        desc = std::array::push(desc, 0)
+    }
+    colls = std::array::push(colls, 0)
+    desc = std::array::push(desc, 0)
+    for r in sqt_t_scan(p, troot) {
+        let vals = sq_rec_dec(r[1], -1)
+        let mut key = []
+        for c in cols {
+            if c == ipk {
+                key = std::array::push(key, Sv::SInt(r[0]))
+            } else {
+                key = std::array::push(key, vals[c])
+            }
+        }
+        key = std::array::push(key, Sv::SInt(r[0]))
+        p = sqi_put(p, root, key, colls, desc)
+    }
+    return (p, mrow + 1)
+}
+
+fn rnd(s: int) -> int {
+    (s * 1103515245 + 12345) % 2147483648
+}
+
+fn check(db: any, cx: Cx, sql: string) -> int {
+    let (all, err) = ss_parse_all(sql)
+    if err != "" {
+        let r0 = std::try::catch(|| { std::sqlite::query(db, sql, []) })
+        let mut t0 = ""
+        match r0 {
+            Result::Ok(rs) => {
+                t0 = "{rs}"
+            },
+            Result::Err(m) => {
+                t0 = "ERR " + std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+            },
+        }
+        let m0 = "ERR " + sy_fmt_err(sql, err)
+        if m0 != t0 {
+            print("PARSE-DIFF", sql, "mine=", m0, "oracle=", t0)
+            return 1
+        }
+        return 0
+    }
+    let st = all[0][0]
+    let (names, rows, e2) = sy_select(cx, st.v, [], [], -1)
+    let mut mine = ""
+    if e2 != "" {
+        mine = "ERR " + sy_fmt_err(sql, e2)
+    } else {
+        mine = rows_str(names, rows)
+    }
+    let r = std::try::catch(|| { std::sqlite::query(db, sql, []) })
+    let mut theirs = ""
+    match r {
+        Result::Ok(rs) => {
+            theirs = "{rs}"
+        },
+        Result::Err(m) => {
+            theirs = "ERR " + std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+        },
+    }
+    if mine != theirs {
+        print("DIFF", sql)
+        print("  mine  =", mine, e2)
+        print("  oracle=", theirs)
+        return 1
+    }
+    0
+}
+

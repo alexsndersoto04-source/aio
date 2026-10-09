@@ -1,0 +1,1425 @@
+// Motor de audio de std::audio::engine_* (prefijo ae_): decodificación, cola, mezcla y salida.
+// La decodificación vive en std_audio_decode.titan (ad_*), Ogg/Vorbis en std_audio_ogg/vorbis.
+//
+// Igual que la versión de Rust (audio_engine.rs): un «trabajador» decodifica en trozos de 4096
+// fotogramas, remuestrea (lineal) y ajusta canales a la salida, aplica fundido cruzado, volumen,
+// ecualizador de 3 bandas y recorte, y empuja las muestras al dispositivo. Aquí el trabajador es una
+// fibra cooperativa (los hilos nativos de Titan lo son): avanza cuando el programa cede (sleep,
+// join…) y también cada vez que se llama a cualquier engine_*.
+//
+// Salida (en lugar de cpal): se canaliza PCM f32 little endian al primer reproductor del sistema
+// que lo admita (aplay, paplay, pw-cat, mpv, ffplay); si no hay ninguno, `NoDevice`.
+// TITAN_AUDIO_SINK=file:<ruta> escribe el PCM en un archivo (sin hardware; sirve para pruebas).
+// La posición se calcula con el reloj: el reproductor consume en tiempo real.
+
+const AE_SLOT: int = 32  // campo del bloque rtm_state() (ver std_audio.titan)
+const E_VOL: int = 0
+const E_XF: int = 1
+const E_GAP: int = 2
+const E_EQ0: int = 3
+const E_OUTRATE: int = 6
+const E_OUTCH: int = 7
+const E_SINKKIND: int = 8
+const E_SINKFD: int = 9
+const E_SINKPID: int = 10
+const E_ACT: int = 11
+const E_STOP: int = 12
+const E_PAUSED: int = 13
+const E_DONE: int = 14
+const E_LABEL: int = 16
+const E_QUEUE: int = 18
+const E_HIST: int = 20
+const E_CPATH: int = 22
+const E_CCODEC: int = 24
+const E_CDUR: int = 26
+const E_CRATE: int = 27
+const E_CCH: int = 28
+const E_START: int = 29
+const E_HASSW: int = 30
+const E_SW: int = 32
+const E_HASSEEK: int = 34
+const E_SEEK: int = 35
+const E_DEC: int = 36
+const E_OV: int = 37
+const E_OVPATH: int = 38
+const E_OVTOT: int = 40
+const E_OVDONE: int = 41
+const E_BUF: int = 42
+const E_BUFHEAD: int = 43
+const E_OUTB: int = 44
+const E_OUTLEN: int = 45
+const E_OUTOFF: int = 46
+const E_WBYTES: int = 47
+const E_REND: int = 48
+const E_LASTMS: int = 49
+const E_EQST: int = 50
+const E_EQCFG: int = 51
+const E_LEV: int = 54
+const E_LEVN: int = 55
+const E_LEVH: int = 56
+const E_TASK: int = 58
+const E_CHUNK: int = 60
+const E_SLOTS: int = 72
+
+const AE_CHUNK_FRAMES: int = 4096
+const AE_RING_CAP: int = 4096
+const AE_MAX_QUEUE: int = 500
+const AE_HISTORY_CAP: int = 200
+
+fn ae_vset(e: int, slot: int, v: any) {
+    std::raw::store(e + 8 * slot, std::raw::tag(v))
+    std::raw::store(e + 8 * slot + 8, std::raw::keep(v))
+}
+
+fn ae_vget(e: int, slot: int) -> any {
+    std::raw::value(std::raw::load(e + 8 * slot), std::raw::load(e + 8 * slot + 8))
+}
+
+fn ae_e() -> int {
+    let slot = rtm_state() + AE_SLOT
+    let e = std::raw::load(slot)
+    if e != 0 { return e }
+    let n = rt_alloc_zero(8 * E_SLOTS)
+    ad_st(n, E_VOL, vec_f32(4605380979056443392))
+    ad_st(n, E_GAP, 1)
+    ad_st(n, E_REND, 0)
+    ae_init_values(n)
+    std::raw::store(slot, n)
+    n
+}
+
+fn ae_init_values(e: int) {
+    let empty: any = ""
+    ae_vset(e, E_LABEL, empty)
+    ae_vset(e, E_CPATH, empty)
+    ae_vset(e, E_CCODEC, empty)
+    ae_vset(e, E_SW, empty)
+    ae_vset(e, E_OVPATH, empty)
+    ae_vset(e, E_QUEUE, rt_array_new(0))
+    ae_vset(e, E_HIST, rt_array_new(0))
+    ad_st(e, E_BUF, ob_new())
+    ad_st(e, E_CHUNK, ob_new())
+    ad_st(e, E_LEV, rt_alloc_zero(8 * (AE_RING_CAP + 8)))
+}
+
+fn ae_fail_invalid(function: string, msg: string) {
+    rt_native_fail(function, rt_concat("invalid parameter: ", msg))
+}
+
+fn ae_fail_idle(function: string) {
+    rt_native_fail(function, "nothing is playing right now")
+}
+
+fn ae_now_ms() -> int {
+    let (seconds, nanoseconds) = rt_clock(1)
+    seconds * 1000 + nanoseconds / 1000000
+}
+
+fn ae_f(bits: int) -> any { std::raw::value(2, bits) }
+fn ae_fstr(bits: int) -> string { rt_to_string(std::raw::value(2, bits)) }
+
+// Formato `{:.1}` de Rust (redondeo exacto, empate al par) para x finito y >= 0.
+fn ae_fmt1(bits: int) -> string {
+    let e = std::raw::shr(bits, 52) & 2047
+    let frac = bits & 4503599627370495
+    let mut q = 0
+    if e == 0 && frac == 0 {
+        q = 0
+    } else {
+        let m = if e == 0 { frac } else { frac | 4503599627370496 }
+        let ex = (if e == 0 { 1 } else { e }) - 1075
+        if ex >= 0 {
+            if ex > 20 { q = 9000000000000000000 } else { q = std::raw::shl(m, ex) * 10 }
+        } else if 0 - ex > 62 {
+            q = 0
+        } else {
+            let num = m * 10
+            let den = std::raw::shl(1, 0 - ex)
+            q = num / den
+            let r = num - q * den
+            if 2 * r > den || (2 * r == den && (q & 1) == 1) { q += 1 }
+        }
+    }
+    rt_concat(rt_concat(rt_int_to_str(q / 10), "."), rt_int_to_str(q % 10))
+}
+
+// ------------------------------------------------------------ cola e historial
+fn ae_arr_len(e: int, slot: int) -> int { rt_seq_len(ae_vget(e, slot)) }
+
+fn ae_push_back(e: int, slot: int, s: any) {
+    let a = ae_vget(e, slot)
+    ae_vset(e, slot, std__array__push(a, s))
+}
+
+fn ae_pop_front(e: int, slot: int) -> any {
+    let a = ae_vget(e, slot)
+    let n = rt_seq_len(a)
+    let first = rt_seq_get(a, 0)
+    let mut out = rt_array_new(0)
+    let mut i = 1
+    while i < n {
+        out = std__array__push(out, rt_seq_get(a, i))
+        i += 1
+    }
+    ae_vset(e, slot, out)
+    first
+}
+
+fn ae_push_front(e: int, slot: int, s: any) {
+    let a = ae_vget(e, slot)
+    let n = rt_seq_len(a)
+    let mut out = std__array__push(rt_array_new(0), s)
+    let mut i = 0
+    while i < n {
+        out = std__array__push(out, rt_seq_get(a, i))
+        i += 1
+    }
+    ae_vset(e, slot, out)
+}
+
+fn ae_pop_back(e: int, slot: int) -> any {
+    let a = ae_vget(e, slot)
+    let n = rt_seq_len(a)
+    let last = rt_seq_get(a, n - 1)
+    let mut out = rt_array_new(0)
+    let mut i = 0
+    while i < n - 1 {
+        out = std__array__push(out, rt_seq_get(a, i))
+        i += 1
+    }
+    ae_vset(e, slot, out)
+    last
+}
+
+fn ae_push_history(e: int, path: any) {
+    if rt_slen(path) == 0 { return }
+    let a = ae_vget(e, E_HIST)
+    let n = rt_seq_len(a)
+    if n > 0 && rt_str_eq(rt_seq_get(a, n - 1), path) { return }
+    ae_push_back(e, E_HIST, path)
+    if rt_seq_len(ae_vget(e, E_HIST)) > AE_HISTORY_CAP {
+        let _ = ae_pop_front(e, E_HIST)
+    }
+}
+
+// ------------------------------------------------------------ salida (PCM f32 al reproductor)
+fn ae_has_prog(name: string) -> bool {
+    let path = rt_getenv("PATH")
+    if path == 0 { return false }
+    return au_has_player_program(path, name, 58, false)
+}
+
+fn ae_sink_argv(player: string, rate: int, ch: int) -> any {
+    let r = rt_int_to_str(rate)
+    let c = rt_int_to_str(ch)
+    if player == "aplay" { return ["aplay", "-q", "-t", "raw", "-f", "FLOAT_LE", "-r", r, "-c", c, "-"] }
+    if player == "paplay" { return ["paplay", "--raw", "--format=float32le", rt_concat("--rate=", r), rt_concat("--channels=", c)] }
+    if player == "pw-cat" { return ["pw-cat", "--playback", "--format", "f32", "--rate", r, "--channels", c, "-"] }
+    if player == "mpv" { return ["mpv", "--no-terminal", "--no-video", "--demuxer=rawaudio", "--demuxer-rawaudio-format=floatle", rt_concat("--demuxer-rawaudio-rate=", r), rt_concat("--demuxer-rawaudio-channels=", c), "-"] }
+    return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-f", "f32le", "-ar", r, "-ac", c, "-i", "-"]
+}
+
+// Abre la salida. Falla con NoDevice si no hay ninguna.
+fn ae_ensure_output(e: int, function: string) {
+    if ad_ld(e, E_SINKKIND) != 0 { return }
+    let rate = 48000
+    let ch = 2
+    let sink = std__env__get("TITAN_AUDIO_SINK")
+    if std::raw::tag(sink) != 0 && std::text::starts_with(sink, "file:") {
+        let file = rt_substr_bytes(sink, 5, rt_slen(sink))
+        let cp = rt_cstr(file)
+        let fd = std::raw::syscall(2, cp, 577, 420, 0, 0, 0)
+        rt_free_block(cp)
+        if fd < 0 { rt_native_fail(function, rt_concat("output error: cannot open ", file)) }
+        ad_st(e, E_SINKKIND, 2)
+        ad_st(e, E_SINKFD, fd)
+        ae_vset(e, E_LABEL, rt_concat("file:", file))
+        ad_st(e, E_OUTRATE, rate)
+        ad_st(e, E_OUTCH, ch)
+        ad_st(e, E_WBYTES, 0)
+        ad_st(e, E_REND, 0)
+        return
+    }
+    let mut player = ""
+    if ae_has_prog("pw-cat") {
+        player = "pw-cat"
+    } else if ae_has_prog("paplay") {
+        player = "paplay"
+    } else if ae_has_prog("aplay") {
+        player = "aplay"
+    } else if ae_has_prog("mpv") {
+        player = "mpv"
+    } else if ae_has_prog("ffplay") {
+        player = "ffplay"
+    }
+    if player == "" {
+        rt_native_fail(function, "no audio output device available (headless machine?)")
+    }
+    let fds = ps_pipe()
+    if fds < 0 { rt_native_fail(function, "output error: cannot create the audio pipe") }
+    let rfd = tm_ld32(fds)
+    let wfd = tm_ld32(fds + 4)
+    rt_free_block(fds)
+    let dn = std::raw::syscall(2, rt_cstr("/dev/null"), 1, 0, 0, 0, 0)
+    let pid = ps_spawn(ae_sink_argv(player, rate, ch), rfd, dn, dn)
+    ps_close(rfd)
+    ps_close(dn)
+    if pid <= 0 {
+        ps_close(wfd)
+        rt_native_fail(function, rt_concat("output error: cannot start ", player))
+    }
+    // escritura sin bloqueo
+    std::raw::syscall(72, wfd, 4, 2048, 0, 0, 0)
+    ad_st(e, E_SINKKIND, 1)
+    ad_st(e, E_SINKFD, wfd)
+    ad_st(e, E_SINKPID, pid)
+    ae_vset(e, E_LABEL, player)
+    ad_st(e, E_OUTRATE, rate)
+    ad_st(e, E_OUTCH, ch)
+    ad_st(e, E_WBYTES, 0)
+    ad_st(e, E_REND, 0)
+}
+
+fn ae_sink_close(e: int, graceful: bool) {
+    let k = ad_ld(e, E_SINKKIND)
+    if k == 0 { return }
+    ps_close(ad_ld(e, E_SINKFD))
+    if k == 1 {
+        let pid = ad_ld(e, E_SINKPID)
+        if !graceful {
+            std::raw::syscall(62, pid, 15, 0, 0, 0, 0)
+            std::raw::syscall(62, pid, 18, 0, 0, 0, 0)
+        }
+        ps_waitpid(pid, 0)
+    }
+    ad_st(e, E_SINKKIND, 0)
+    ad_st(e, E_SINKFD, -1)
+    ad_st(e, E_SINKPID, 0)
+    if ad_ld(e, E_OUTB) != 0 {
+        rt_free_block(ad_ld(e, E_OUTB))
+        ad_st(e, E_OUTB, 0)
+    }
+    ad_st(e, E_OUTLEN, 0)
+    ad_st(e, E_OUTOFF, 0)
+}
+
+// f32 (bits de f64 exactos) -> bits de f32.
+fn ae_f32_bits(b: int) -> int {
+    let sign = std::raw::shr(b, 63) & 1
+    let ex = std::raw::shr(b, 52) & 2047
+    let man = b & 4503599627370495
+    if ex == 2047 {
+        if man == 0 { return std::raw::shl(sign, 31) | 2139095040 }
+        return std::raw::shl(sign, 31) | 2143289344
+    }
+    if ex == 0 { return std::raw::shl(sign, 31) }
+    let e32 = ex - 1023 + 127
+    if e32 <= 0 {
+        let v = std::raw::ftoint(std::raw::fmul(b & 9223372036854775807, std::raw::shl(1023 + 149, 52)))
+        return std::raw::shl(sign, 31) | v
+    }
+    std::raw::shl(sign, 31) | std::raw::shl(e32, 23) | std::raw::shr(man, 29)
+}
+
+fn ae_ring_len(e: int) -> int { ob_len(ad_ld(e, E_BUF)) - ad_ld(e, E_BUFHEAD) }
+
+// Vuelca lo posible del anillo al reproductor sin bloquear.
+fn ae_drain(e: int) {
+    let k = ad_ld(e, E_SINKKIND)
+    if k == 0 { return }
+    if ad_ld(e, E_PAUSED) != 0 { return }
+    let fd = ad_ld(e, E_SINKFD)
+    let mut rounds = 0
+    while rounds < 64 {
+        rounds += 1
+        let mut outb = ad_ld(e, E_OUTB)
+        if outb == 0 {
+            outb = rt_alloc(65536 * 4 + 16)
+            ad_st(e, E_OUTB, outb)
+        }
+        let mut len = ad_ld(e, E_OUTLEN)
+        let mut off = ad_ld(e, E_OUTOFF)
+        if off >= len {
+            // refilling
+            let buf = ad_ld(e, E_BUF)
+            let head = ad_ld(e, E_BUFHEAD)
+            let avail = ob_len(buf) - head
+            if avail == 0 { return }
+            let take = if avail < 16384 { avail } else { 16384 }
+            let src = std::raw::load(buf) + 8 * head
+            let mut i = 0
+            while i < take {
+                ae_st32(outb + 4 * i, ae_f32_bits(std::raw::load(src + 8 * i)))
+                i += 1
+            }
+            ad_st(e, E_BUFHEAD, head + take)
+            if head + take >= ob_len(buf) {
+                ob_clear(buf)
+                ad_st(e, E_BUFHEAD, 0)
+            }
+            len = 4 * take
+            off = 0
+            ad_st(e, E_OUTLEN, len)
+            ad_st(e, E_OUTOFF, 0)
+        }
+        let w = std::raw::syscall(1, fd, outb + off, len - off, 0, 0, 0)
+        if w < 0 {
+            if w == -11 || w == -4 { return }
+            // el reproductor se cerró: se descarta lo pendiente
+            ad_st(e, E_OUTLEN, 0)
+            ad_st(e, E_OUTOFF, 0)
+            return
+        }
+        ad_st(e, E_WBYTES, ad_ld(e, E_WBYTES) + w)
+        ad_st(e, E_OUTOFF, off + w)
+        if w < len - off { return }
+    }
+}
+
+// Fotogramas consumidos por el dispositivo (frames_rendered).
+fn ae_rendered(e: int) -> int {
+    let k = ad_ld(e, E_SINKKIND)
+    let ch = ad_ld(e, E_OUTCH)
+    let written = ad_ld(e, E_WBYTES) / (4 * (if ch < 1 { 1 } else { ch }))
+    let now = ae_now_ms()
+    let last = ad_ld(e, E_LASTMS)
+    ad_st(e, E_LASTMS, now)
+    if k == 0 { return ad_ld(e, E_REND) }
+    if k == 2 {
+        ad_st(e, E_REND, written)
+        return written
+    }
+    let mut rend = ad_ld(e, E_REND)
+    if ad_ld(e, E_PAUSED) == 0 && last > 0 && now > last {
+        rend += (now - last) * ad_ld(e, E_OUTRATE) / 1000
+    }
+    if rend > written { rend = written }
+    ad_st(e, E_REND, rend)
+    rend
+}
+
+fn ae_buffer_empty(e: int) -> bool {
+    if ae_ring_len(e) > 0 { return false }
+    if ad_ld(e, E_OUTLEN) > ad_ld(e, E_OUTOFF) { return false }
+    let k = ad_ld(e, E_SINKKIND)
+    if k == 2 { return true }
+    let ch = ad_ld(e, E_OUTCH)
+    let written = ad_ld(e, E_WBYTES) / (4 * (if ch < 1 { 1 } else { ch }))
+    ae_rendered(e) >= written
+}
+
+// ------------------------------------------------------------ DSP en f32 (como audio_decode.rs)
+fn ae_st32(p: int, v: int) {
+    std::raw::store8(p, v & 255)
+    std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+    std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+    std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+}
+
+fn ae_floor_i(x: int) -> int { std::raw::ftoint(x) }
+
+fn ae_ceil_i(x: int) -> int {
+    let c = std::raw::ftoint(x)
+    if std::raw::fcmp(std::raw::ffromint(c), x) == -1 { return c + 1 }
+    c
+}
+
+// resample_linear: entrada con nin fotogramas -> ob nuevo (el llamador lo libera).
+fn ae_resample(src: int, nin: int, channels: int, from_rate: int, to_rate: int) -> int {
+    let out = ob_new()
+    let ch = if channels < 1 { 1 } else { channels }
+    let total = nin * ch
+    if total == 0 || from_rate == 0 || to_rate == 0 || from_rate == to_rate {
+        ob_reserve(out, total + 1)
+        let mut i = 0
+        while i < total {
+            ob_push(out, std::raw::load(src + 8 * i))
+            i += 1
+        }
+        return out
+    }
+    let ratio = std::raw::fdiv(std::raw::ffromint(from_rate), std::raw::ffromint(to_rate))
+    let mut ofr = ae_ceil_i(std::raw::fdiv(std::raw::ffromint(nin), ratio))
+    if ofr < 1 { ofr = 1 }
+    ob_reserve(out, ofr * ch)
+    let mut n = 0
+    while n < ofr {
+        let pos = std::raw::fmul(std::raw::ffromint(n), ratio)
+        let fl = ae_floor_i(pos)
+        let i0 = if fl < nin - 1 { fl } else { nin - 1 }
+        let i1 = if i0 + 1 < nin - 1 { i0 + 1 } else { nin - 1 }
+        let frac = vec_f32(std::raw::fsub(pos, std::raw::ffromint(fl)))
+        let mut c = 0
+        while c < ch {
+            let a = std::raw::load(src + 8 * (i0 * ch + c))
+            let b = std::raw::load(src + 8 * (i1 * ch + c))
+            ob_push(out, vf_add(a, vf_mul(vf_sub(b, a), frac)))
+            c += 1
+        }
+        n += 1
+    }
+    out
+}
+
+// convert_channels
+fn ae_convert(src: int, nvals: int, from: int, to: int) -> int {
+    let out = ob_new()
+    let f = if from < 1 { 1 } else { from }
+    let t = if to < 1 { 1 } else { to }
+    let frames = nvals / f
+    ob_reserve(out, frames * t + 1)
+    let mut n = 0
+    while n < frames {
+        if f == t {
+            let mut c = 0
+            while c < f {
+                ob_push(out, std::raw::load(src + 8 * (n * f + c)))
+                c += 1
+            }
+        } else if t == 1 {
+            let mut acc = 0
+            let mut c = 0
+            while c < f {
+                acc = vf_add(acc, std::raw::load(src + 8 * (n * f + c)))
+                c += 1
+            }
+            ob_push(out, vf_div(acc, std::raw::ffromint(f)))
+        } else if f == 1 {
+            let mut c = 0
+            while c < t {
+                ob_push(out, std::raw::load(src + 8 * n))
+                c += 1
+            }
+        } else {
+            let mut c = 0
+            while c < t {
+                if c < f { ob_push(out, std::raw::load(src + 8 * (n * f + c))) } else { ob_push(out, 0) }
+                c += 1
+            }
+        }
+        n += 1
+    }
+    out
+}
+
+// ---- ecualizador de 3 bandas (Biquad en f32)
+// Biquad: 9 ranuras: b0 b1 b2 a1 a2 x1 x2 y1 y2
+fn ae_bq_new(bq: int, b0: int, b1: int, b2: int, a0in: int, a1: int, a2: int) {
+    let mut a0 = a0in
+    if std::raw::fcmp(a0 & 9223372036854775807, vec_f32(4472406533493227520)) == -1 { a0 = vf_one() }
+    ad_st(bq, 0, vf_div(b0, a0))
+    ad_st(bq, 1, vf_div(b1, a0))
+    ad_st(bq, 2, vf_div(b2, a0))
+    ad_st(bq, 3, vf_div(a1, a0))
+    ad_st(bq, 4, vf_div(a2, a0))
+    ad_st(bq, 5, 0)
+    ad_st(bq, 6, 0)
+    ad_st(bq, 7, 0)
+    ad_st(bq, 8, 0)
+}
+
+fn ae_i2f(i: int) -> int { vec_f32(std::raw::ffromint(i)) }
+
+// kind: 0 lowshelf, 1 peaking, 2 highshelf
+fn ae_bq_design(bq: int, kind: int, freq: int, rate: int, db: int) {
+    let one = vf_one()
+    let two = ae_i2f(2)
+    let a = vec_f32(lm_pow(std::raw::ffromint(10), vf_div(db, ae_i2f(40))))
+    let pi32 = vec_f32(4614256656552045848)
+    let w0 = vf_div(vf_mul(vf_mul(two, pi32), freq), rate)
+    let sn = vec_f32(lm_sin(w0))
+    let cs = vec_f32(lm_cos(w0))
+    if kind == 1 {
+        let alpha = vf_div(sn, two)
+        let aa = vf_mul(alpha, a)
+        let ad = vf_div(alpha, a)
+        let m2c = vf_mul(vf_neg(two), cs)
+        ae_bq_new(bq, vf_add(one, aa), m2c, vf_sub(one, aa), vf_add(one, ad), m2c, vf_sub(one, ad))
+        return
+    }
+    let alpha = vf_mul(vf_div(sn, two), vec_f32(std::raw::fsqrt(2 * 0 + 4611686018427387904)))
+    let sqa = vec_f32(std::raw::fsqrt(a))
+    let ap1 = vf_add(a, one)
+    let am1 = vf_sub(a, one)
+    let t2 = vf_mul(vf_mul(two, sqa), alpha)
+    if kind == 0 {
+        let b0 = vf_mul(a, vf_add(vf_sub(ap1, vf_mul(am1, cs)), t2))
+        let b1 = vf_mul(vf_mul(two, a), vf_sub(am1, vf_mul(ap1, cs)))
+        let b2 = vf_mul(a, vf_sub(vf_sub(ap1, vf_mul(am1, cs)), t2))
+        let a0 = vf_add(vf_add(ap1, vf_mul(am1, cs)), t2)
+        let a1 = vf_mul(vf_neg(two), vf_add(am1, vf_mul(ap1, cs)))
+        let a2 = vf_sub(vf_add(ap1, vf_mul(am1, cs)), t2)
+        ae_bq_new(bq, b0, b1, b2, a0, a1, a2)
+    } else {
+        let b0 = vf_mul(a, vf_add(vf_add(ap1, vf_mul(am1, cs)), t2))
+        let b1 = vf_mul(vf_mul(vf_neg(two), a), vf_add(am1, vf_mul(ap1, cs)))
+        let b2 = vf_mul(a, vf_sub(vf_add(ap1, vf_mul(am1, cs)), t2))
+        let a0 = vf_add(vf_sub(ap1, vf_mul(am1, cs)), t2)
+        let a1 = vf_mul(two, vf_sub(am1, vf_mul(ap1, cs)))
+        let a2 = vf_sub(vf_sub(ap1, vf_mul(am1, cs)), t2)
+        ae_bq_new(bq, b0, b1, b2, a0, a1, a2)
+    }
+}
+
+fn ae_bq_process(bq: int, x: int) -> int {
+    let b0 = ad_ld(bq, 0)
+    let b1 = ad_ld(bq, 1)
+    let b2 = ad_ld(bq, 2)
+    let a1 = ad_ld(bq, 3)
+    let a2 = ad_ld(bq, 4)
+    let x1 = ad_ld(bq, 5)
+    let x2 = ad_ld(bq, 6)
+    let y1 = ad_ld(bq, 7)
+    let y2 = ad_ld(bq, 8)
+    let y = vf_sub(vf_sub(vf_add(vf_add(vf_mul(b0, x), vf_mul(b1, x1)), vf_mul(b2, x2)), vf_mul(a1, y1)), vf_mul(a2, y2))
+    ad_st(bq, 6, x1)
+    ad_st(bq, 5, x)
+    ad_st(bq, 8, y1)
+    ad_st(bq, 7, y)
+    y
+}
+
+// Eq3::new: crea (o reemplaza) el estado para db[3] (enteros), tasa y canales.
+fn ae_eq_new(e: int, rate: int, channels: int, g0: int, g1: int, g2: int) {
+    if ad_ld(e, E_EQST) != 0 { rt_free_block(ad_ld(e, E_EQST)) }
+    let ch = if channels < 1 { 1 } else { channels }
+    let st = rt_alloc_zero(8 * (2 + 27 * ch))
+    ad_st(st, 0, ch)
+    ad_st(st, 1, if g0 == 0 && g1 == 0 && g2 == 0 { 1 } else { 0 })
+    let r = if rate < 8000 { 8000 } else { rate }
+    let rf = ae_i2f(r)
+    let mut c = 0
+    while c < ch {
+        let b = st + 8 * (2 + 27 * c)
+        ae_bq_design(b, 0, ae_i2f(250), rf, ae_i2f(g0))
+        ae_bq_design(b + 72, 1, ae_i2f(1000), rf, ae_i2f(g1))
+        ae_bq_design(b + 144, 2, ae_i2f(4000), rf, ae_i2f(g2))
+        c += 1
+    }
+    ad_st(e, E_EQST, st)
+    ad_st(e, E_EQCFG, g0)
+    ad_st(e, E_EQCFG + 1, g1)
+    ad_st(e, E_EQCFG + 2, g2)
+}
+
+fn ae_eq_process(e: int, buf: int, nvals: int) {
+    let st = ad_ld(e, E_EQST)
+    if st == 0 || ad_ld(st, 1) == 1 || nvals == 0 { return }
+    let ch = ad_ld(st, 0)
+    let frames = nvals / ch
+    let mut n = 0
+    while n < frames {
+        let mut c = 0
+        while c < ch {
+            let idx = n * ch + c
+            let b = st + 8 * (2 + 27 * c)
+            let mut v = std::raw::load(buf + 8 * idx)
+            v = ae_bq_process(b, v)
+            v = ae_bq_process(b + 72, v)
+            v = ae_bq_process(b + 144, v)
+            std::raw::store(buf + 8 * idx, v)
+            c += 1
+        }
+        n += 1
+    }
+}
+
+// spectrum_32 sobre las últimas muestras (mono).
+fn ae_spectrum(mono: int, nin: int, rate: int, out: int) {
+    let n = if nin < 2048 { nin } else { 2048 }
+    let mut k = 0
+    while k < 32 {
+        ad_st(out, k, 0)
+        k += 1
+    }
+    if n < 64 || rate == 0 { return }
+    let rf = ae_i2f(rate)
+    let pi32 = vec_f32(4614256656552045848)
+    k = 0
+    while k < 32 {
+        let ratio = vf_div(ae_i2f(16000), ae_i2f(60))
+        let expo = vf_div(ae_i2f(k), ae_i2f(31))
+        let freq = vf_mul(ae_i2f(60), vec_f32(lm_pow(ratio, expo)))
+        let omega = vf_div(vf_mul(vf_mul(ae_i2f(2), pi32), freq), rf)
+        let mut re = 0
+        let mut im = 0
+        let mut i = 0
+        while i < n {
+            let phase = vf_mul(omega, ae_i2f(i))
+            let m = std::raw::load(mono + 8 * i)
+            re = vf_add(re, vf_mul(m, vec_f32(lm_cos(phase))))
+            im = vf_add(im, vf_mul(m, vec_f32(lm_sin(phase))))
+            i += 1
+        }
+        let mag = vf_div(vec_f32(std::raw::fsqrt(vf_add(vf_mul(re, re), vf_mul(im, im)))), ae_i2f(n))
+        let mut bar = vf_mul(mag, vec_f32(4612136378497499136))
+        if std::raw::fcmp(bar, 0) == -1 { bar = 0 }
+        if std::raw::fcmp(bar, vf_one()) == 1 { bar = vf_one() }
+        ad_st(out, k, bar)
+        k += 1
+    }
+}
+
+// ------------------------------------------------------------ decodificador actual
+fn ae_open(path: any) -> int {
+    let r = std::try::catch(|| ad_open(path))
+    match r {
+        Result::Ok(d) => d,
+        Result::Err(_) => 0,
+    }
+}
+
+fn ae_set_dec(e: int, d: int) {
+    let old = ad_ld(e, E_DEC)
+    if old != 0 && old != d { ad_close(old) }
+    ad_st(e, E_DEC, d)
+}
+
+fn ae_ov_drop(e: int) {
+    let o = ad_ld(e, E_OV)
+    if o != 0 { ad_close(o) }
+    ad_st(e, E_OV, 0)
+}
+
+fn ae_refresh(e: int, d: int, path: any) {
+    ae_vset(e, E_CPATH, path)
+    ae_vset(e, E_CCODEC, ad_codec_str(d))
+    ad_st(e, E_CDUR, ad_ld(d, D_DUR))
+    ad_st(e, E_CRATE, ad_rate(d))
+    ad_st(e, E_CCH, ad_channels(d))
+    ad_st(e, E_START, ae_rendered(e))
+}
+
+// Posición tras buscar: se reabre el archivo y se descartan paquetes hasta llegar a `secs`.
+fn ae_seek_dec(e: int, secs: int) {
+    let path = ae_vget(e, E_CPATH)
+    let d = ae_open(path)
+    if d == 0 { return }
+    let rate = if ad_rate(d) < 1 { 1 } else { ad_rate(d) }
+    let target = std::raw::ftoint(std::raw::fmul(secs, std::raw::ffromint(rate)))
+    let scratch = ob_new()
+    let mut guard = 0
+    while ad_ld(d, D_DECODED) < target && !ad_finished(d) && guard < 100000000 {
+        ob_clear(scratch)
+        let r = std::try::catch(|| ad_fill(d, scratch, 1))
+        match r {
+            Result::Ok(_) => {},
+            Result::Err(_) => { guard = 100000000 },
+        }
+        guard += 1
+    }
+    ob_free(scratch)
+    ad_st(d, D_DECODED, target)
+    ae_set_dec(e, d)
+}
+
+fn ae_ring_push(e: int, v: int) {
+    ob_push(ad_ld(e, E_BUF), v)
+}
+
+fn ae_levels_push(e: int, v: int) {
+    let lev = ad_ld(e, E_LEV)
+    let n = ad_ld(e, E_LEVN)
+    let h = ad_ld(e, E_LEVH)
+    if n < AE_RING_CAP {
+        ad_st(lev, (h + n) % AE_RING_CAP, v)
+        ad_st(e, E_LEVN, n + 1)
+    } else {
+        ad_st(lev, h, v)
+        ad_st(e, E_LEVH, (h + 1) % AE_RING_CAP)
+    }
+}
+
+fn ae_silence(e: int, nvals: int) {
+    let mut i = 0
+    while i < nvals {
+        ae_ring_push(e, 0)
+        i += 1
+    }
+}
+
+// Una vuelta del bucle del trabajador. false = el trabajador termina.
+fn ae_pump(e: int) -> bool {
+    if ad_ld(e, E_STOP) != 0 { return false }
+    ae_drain(e)
+    if ad_ld(e, E_PAUSED) != 0 { return true }
+    let out_rate = if ad_ld(e, E_OUTRATE) < 8000 { 8000 } else { ad_ld(e, E_OUTRATE) }
+    let out_ch = if ad_ld(e, E_OUTCH) < 1 { 1 } else { ad_ld(e, E_OUTCH) }
+    if ad_ld(e, E_HASSW) != 0 {
+        let path = ae_vget(e, E_SW)
+        ad_st(e, E_HASSW, 0)
+        let d = ae_open(path)
+        if d != 0 {
+            ae_ov_drop(e)
+            ob_clear(ad_ld(e, E_BUF))
+            ad_st(e, E_BUFHEAD, 0)
+            ae_refresh(e, d, path)
+            ae_set_dec(e, d)
+        } else {
+            ae_set_dec(e, 0)
+        }
+    }
+    if ad_ld(e, E_HASSEEK) != 0 {
+        let secs = ad_ld(e, E_SEEK)
+        ad_st(e, E_HASSEEK, 0)
+        if ad_ld(e, E_DEC) != 0 {
+            ae_seek_dec(e, secs)
+            ae_ov_drop(e)
+        }
+    }
+    if ad_ld(e, E_DEC) == 0 {
+        if ae_arr_len(e, E_QUEUE) == 0 {
+            if ae_buffer_empty(e) {
+                ae_vset(e, E_CPATH, "")
+                return false
+            }
+            return true
+        }
+        let path = ae_pop_front(e, E_QUEUE)
+        let d = ae_open(path)
+        if d != 0 {
+            ae_push_history(e, ae_vget(e, E_CPATH))
+            ae_refresh(e, d, path)
+            ae_set_dec(e, d)
+        }
+        return true
+    }
+    // el anillo está lleno: se espera a que el dispositivo consuma
+    if ae_ring_len(e) >= out_rate * out_ch * 8 { return true }
+    let dec = ad_ld(e, E_DEC)
+    let chunk = ad_ld(e, E_CHUNK)
+    ob_clear(chunk)
+    let fr = std::try::catch(|| ad_fill(dec, chunk, AE_CHUNK_FRAMES))
+    match fr {
+        Result::Ok(_) => {},
+        Result::Err(_) => { ob_clear(chunk) },
+    }
+    let file_rate = if ad_rate(dec) < 8000 { 8000 } else { ad_rate(dec) }
+    let file_ch = if ad_channels(dec) < 1 { 1 } else { ad_channels(dec) }
+    let eof_now = ad_finished(dec) && ob_len(chunk) == 0
+    let decoded_pos = ad_position_secs(dec)
+    if ob_len(chunk) == 0 && !eof_now { return true }
+    let xf = ad_ld(e, E_XF)
+    // fundido cruzado: se abre la pista siguiente cuando falta poco
+    if ad_ld(e, E_OV) == 0 && std::raw::fcmp(xf, 0) == 1 {
+        let rendered = ae_rendered(e)
+        let start = ad_ld(e, E_START)
+        let rp = if rendered > start { rendered - start } else { 0 }
+        let rendered_pos = std::raw::fdiv(std::raw::ffromint(rp), std::raw::ffromint(out_rate))
+        let duration = ad_ld(e, E_CDUR)
+        let remaining = std::raw::fsub(duration, rendered_pos)
+        if std::raw::fcmp(duration, 0) == 1 && std::raw::fcmp(remaining, xf) == -1 && std::raw::fcmp(remaining, 4598175219545276416) == 1 {
+            if ae_arr_len(e, E_QUEUE) > 0 {
+                let path = ae_pop_front(e, E_QUEUE)
+                let nx = ae_open(path)
+                if nx != 0 {
+                    ad_st(e, E_OV, nx)
+                    ae_vset(e, E_OVPATH, path)
+                    let mut tot = std::raw::ftoint(std::raw::fmul(xf, std::raw::ffromint(out_rate)))
+                    if tot < 1 { tot = 1 }
+                    ad_st(e, E_OVTOT, tot)
+                    ad_st(e, E_OVDONE, 0)
+                } else {
+                    ae_push_front(e, E_QUEUE, path)
+                }
+            }
+        }
+    }
+    let nfr = ob_len(chunk) / file_ch
+    let rs = ae_resample(std::raw::load(chunk), nfr, file_ch, file_rate, out_rate)
+    let main = ae_convert(std::raw::load(rs), ob_len(rs), file_ch, out_ch)
+    ob_free(rs)
+    let mlen = ob_len(main)
+    let mp = std::raw::load(main)
+    let mut promote = false
+    let ov = ad_ld(e, E_OV)
+    if ov != 0 {
+        let head = ob_new()
+        let hr = std::try::catch(|| ad_fill(ov, head, mlen / out_ch))
+        match hr {
+            Result::Ok(_) => {},
+            Result::Err(_) => {},
+        }
+        let ov_ch = if ad_channels(ov) < 1 { 1 } else { ad_channels(ov) }
+        let hrs = ae_resample(std::raw::load(head), ob_len(head) / ov_ch, ov_ch, ad_rate(ov), out_rate)
+        let hcv = ae_convert(std::raw::load(hrs), ob_len(hrs), ov_ch, out_ch)
+        ob_free(hrs)
+        let hp = std::raw::load(hcv)
+        let hl = ob_len(hcv)
+        let total = ad_ld(e, E_OVTOT)
+        let done = ad_ld(e, E_OVDONE)
+        let one = vf_one()
+        let totf = ae_i2f(total)
+        let mut i = 0
+        while i < mlen {
+            let frame = done + i / out_ch
+            let mut t = vf_div(ae_i2f(frame), totf)
+            if std::raw::fcmp(t, 0) == -1 { t = 0 }
+            if std::raw::fcmp(t, one) == 1 { t = one }
+            let hv = if i < hl { std::raw::load(hp + 8 * i) } else { 0 }
+            let v = std::raw::load(mp + 8 * i)
+            std::raw::store(mp + 8 * i, vf_add(vf_mul(v, vf_sub(one, t)), vf_mul(hv, t)))
+            i += 1
+        }
+        ad_st(e, E_OVDONE, done + mlen / out_ch)
+        if eof_now || done + mlen / out_ch >= total || (ad_finished(ov) && ob_len(head) == 0) { promote = true }
+        ob_free(hcv)
+        ob_free(head)
+    }
+    if promote {
+        let nx = ad_ld(e, E_OV)
+        let path = ae_vget(e, E_OVPATH)
+        ad_st(e, E_OV, 0)
+        ae_push_history(e, ae_vget(e, E_CPATH))
+        ae_refresh(e, nx, path)
+        ae_set_dec(e, nx)
+    }
+    // volumen, ecualizador y recorte
+    let vol = ad_ld(e, E_VOL)
+    let mut i = 0
+    while i < mlen {
+        std::raw::store(mp + 8 * i, vf_mul(std::raw::load(mp + 8 * i), vol))
+        i += 1
+    }
+    if ad_ld(e, E_EQST) == 0 || ad_ld(e, E_EQ0) != ad_ld(e, E_EQCFG) || ad_ld(e, E_EQ0 + 1) != ad_ld(e, E_EQCFG + 1) || ad_ld(e, E_EQ0 + 2) != ad_ld(e, E_EQCFG + 2) {
+        ae_eq_new(e, out_rate, out_ch, ad_ld(e, E_EQ0), ad_ld(e, E_EQ0 + 1), ad_ld(e, E_EQ0 + 2))
+    }
+    ae_eq_process(e, mp, mlen)
+    i = 0
+    while i < mlen {
+        let s = std::raw::load(mp + 8 * i)
+        if std::raw::fcmp(s, vf_one()) == 1 {
+            std::raw::store(mp + 8 * i, vf_one())
+        } else if std::raw::fcmp(s, vf_neg(vf_one())) == -1 {
+            std::raw::store(mp + 8 * i, vf_neg(vf_one()))
+        }
+        i += 1
+    }
+    // niveles (media de canales) y salida
+    let frames = mlen / out_ch
+    let ocf = ae_i2f(out_ch)
+    let mut n = 0
+    while n < frames {
+        let mut acc = 0
+        let mut c = 0
+        while c < out_ch {
+            acc = vf_add(acc, std::raw::load(mp + 8 * (n * out_ch + c)))
+            c += 1
+        }
+        ae_levels_push(e, vf_div(acc, ocf))
+        n += 1
+    }
+    ob_reserve(ad_ld(e, E_BUF), mlen)
+    i = 0
+    while i < mlen {
+        ae_ring_push(e, std::raw::load(mp + 8 * i))
+        i += 1
+    }
+    ob_free(main)
+    ae_drain(e)
+    if eof_now && ad_ld(e, E_OV) == 0 {
+        if std::raw::fcmp(decoded_pos, 0) == 1 && std::raw::fcmp(ad_ld(e, E_CDUR), 0) <= 0 {
+            ad_st(e, E_CDUR, decoded_pos)
+        }
+        if ae_arr_len(e, E_QUEUE) > 0 {
+            let path = ae_pop_front(e, E_QUEUE)
+            let d = ae_open(path)
+            if d != 0 {
+                if ad_ld(e, E_GAP) == 0 { ae_silence(e, out_rate * out_ch / 4) }
+                ae_push_history(e, ae_vget(e, E_CPATH))
+                ae_refresh(e, d, path)
+                ae_set_dec(e, d)
+            } else {
+                ae_set_dec(e, 0)
+            }
+        } else {
+            if ae_buffer_empty(e) {
+                ae_vset(e, E_CPATH, "")
+                return false
+            }
+        }
+    }
+    true
+}
+
+fn ae_worker_main() {
+    let e = ae_e()
+    loop {
+        if !ae_pump(e) { break }
+        tk_sleep(5)
+    }
+    ad_st(e, E_DONE, 1)
+}
+
+// Avanza el motor un poco (se llama desde cada engine_* para que suene aunque el programa no ceda).
+fn ae_service(e: int) {
+    if ad_ld(e, E_ACT) == 0 || ad_ld(e, E_DONE) != 0 { return }
+    let mut k = 0
+    while k < 3 {
+        if !ae_pump(e) {
+            ad_st(e, E_DONE, 1)
+            return
+        }
+        k += 1
+    }
+}
+
+fn ae_free_decoders(e: int) {
+    ae_set_dec(e, 0)
+    ae_ov_drop(e)
+}
+
+fn ae_stop_locked(e: int) {
+    if ad_ld(e, E_ACT) != 0 {
+        ad_st(e, E_STOP, 1)
+        let t = ae_vget(e, E_TASK)
+        if std::raw::tag(t) == 13 {
+            let _ = std::try::catch(|| rt_task_join(t))
+        }
+        ad_st(e, E_ACT, 0)
+    }
+    ad_st(e, E_DONE, 0)
+    ob_clear(ad_ld(e, E_BUF))
+    ad_st(e, E_BUFHEAD, 0)
+    ad_st(e, E_PAUSED, 0)
+    ae_free_decoders(e)
+    ae_sink_close(e, false)
+}
+
+// reap_finished: si el trabajador terminó, la sesión se da por acabada.
+fn ae_reap(e: int) {
+    if ad_ld(e, E_ACT) != 0 && ad_ld(e, E_DONE) != 0 {
+        let t = ae_vget(e, E_TASK)
+        if std::raw::tag(t) == 13 {
+            let _ = std::try::catch(|| rt_task_join(t))
+        }
+        ad_st(e, E_ACT, 0)
+        ad_st(e, E_DONE, 0)
+        ae_free_decoders(e)
+        ob_clear(ad_ld(e, E_BUF))
+        ad_st(e, E_BUFHEAD, 0)
+        ae_sink_close(e, true)
+        ae_vset(e, E_QUEUE, rt_array_new(0))
+        ae_vset(e, E_HIST, rt_array_new(0))
+    }
+}
+
+fn ae_begin(e: int) -> int {
+    let e0 = e
+    ae_reap(e0)
+    ae_service(e0)
+    e0
+}
+
+// ------------------------------------------------------------ nativas
+fn ae_active(e: int) -> bool { ad_ld(e, E_ACT) != 0 }
+
+fn ae_position(e: int) -> int {
+    // -1.0 si no hay sesión
+    if !ae_active(e) || ad_ld(e, E_SINKKIND) == 0 { return std::raw::fsub(0, std::raw::ffromint(1)) }
+    let rate = if ad_ld(e, E_OUTRATE) < 1 { 1 } else { ad_ld(e, E_OUTRATE) }
+    let rendered = ae_rendered(e)
+    let start = ad_ld(e, E_START)
+    let rp = if rendered > start { rendered - start } else { 0 }
+    let pos = std::raw::fdiv(std::raw::ffromint(rp), std::raw::ffromint(rate))
+    let dur = ad_ld(e, E_CDUR)
+    if std::raw::fcmp(dur, 0) == 1 && std::raw::fcmp(pos, dur) == 1 { return dur }
+    pos
+}
+
+fn std__audio__engine_play(path: any) -> any {
+    let function = "std::audio::engine_play"
+    rt_expect_str(path, function)
+    if !std::fs::is_file(path) {
+        ae_fail_invalid(function, rt_concat("file not found: ", path))
+    }
+    let r = std::try::catch(|| ad_open(path))
+    let mut d = 0
+    match r {
+        Result::Ok(v) => { d = v },
+        Result::Err(m) => { rt_native_fail(function, rt_concat("decode error: ", m)) },
+    }
+    let cdur = ad_ld(d, D_DUR)
+    let crate_ = ad_rate(d)
+    let cch = ad_channels(d)
+    let ccodec = ad_codec_str(d)
+    ad_close(d)
+    let e = ae_e()
+    ae_reap(e)
+    let mut saved_queue = rt_array_new(0)
+    let mut saved_hist = rt_array_new(0)
+    // la cola en espera (pendiente) y la de la sesión viven en la misma lista
+    saved_queue = ae_vget(e, E_QUEUE)
+    if ae_active(e) {
+        saved_hist = ae_vget(e, E_HIST)
+        let outgoing = ae_vget(e, E_CPATH)
+        if rt_slen(outgoing) > 0 { saved_hist = std__array__push(saved_hist, outgoing) }
+    }
+    ae_stop_locked(e)
+    ae_vset(e, E_QUEUE, rt_array_new(0))
+    ae_vset(e, E_HIST, rt_array_new(0))
+    ae_ensure_output(e, function)
+    ae_vset(e, E_QUEUE, saved_queue)
+    ae_vset(e, E_HIST, saved_hist)
+    ad_st(e, E_STOP, 0)
+    ad_st(e, E_PAUSED, 0)
+    ad_st(e, E_DONE, 0)
+    ad_st(e, E_HASSW, 0)
+    ad_st(e, E_HASSEEK, 0)
+    ad_st(e, E_START, 0)
+    ad_st(e, E_REND, 0)
+    ad_st(e, E_WBYTES, 0)
+    ad_st(e, E_LASTMS, ae_now_ms())
+    ad_st(e, E_LEVN, 0)
+    ad_st(e, E_LEVH, 0)
+    ae_vset(e, E_CPATH, path)
+    ae_vset(e, E_CCODEC, ccodec)
+    ad_st(e, E_CDUR, cdur)
+    ad_st(e, E_CRATE, crate_)
+    ad_st(e, E_CCH, cch)
+    ae_eq_new(e, ad_ld(e, E_OUTRATE), ad_ld(e, E_OUTCH), 0, 0, 0)
+    ad_st(e, E_ACT, 1)
+    // el trabajador abre el primer archivo
+    let d1 = ae_open(path)
+    if d1 == 0 {
+        ad_st(e, E_DONE, 1)
+    } else {
+        ae_refresh(e, d1, path)
+        ae_set_dec(e, d1)
+        ad_st(e, E_START, 0)
+        let t = rt_task_spawn(|| ae_worker_main())
+        ae_vset(e, E_TASK, t)
+        ae_service(e)
+    }
+    rt_concat(rt_concat("playing ", path), " via hifi-engine")
+}
+
+fn std__audio__engine_stop() -> any {
+    let function = "std::audio::engine_stop"
+    let e = ae_e()
+    ae_reap(e)
+    if !ae_active(e) { ae_fail_idle(function) }
+    ae_stop_locked(e)
+    ae_vset(e, E_QUEUE, rt_array_new(0))
+    ae_vset(e, E_HIST, rt_array_new(0))
+    "stopped"
+}
+
+fn std__audio__engine_pause() -> any {
+    let function = "std::audio::engine_pause"
+    let e = ae_e()
+    ae_reap(e)
+    if !ae_active(e) { ae_fail_idle(function) }
+    ae_rendered(e)
+    ad_st(e, E_PAUSED, 1)
+    if ad_ld(e, E_SINKKIND) == 1 { std::raw::syscall(62, ad_ld(e, E_SINKPID), 19, 0, 0, 0, 0) }
+    "paused"
+}
+
+fn std__audio__engine_resume() -> any {
+    let function = "std::audio::engine_resume"
+    let e = ae_e()
+    ae_reap(e)
+    if !ae_active(e) { ae_fail_idle(function) }
+    ad_st(e, E_PAUSED, 0)
+    ad_st(e, E_LASTMS, ae_now_ms())
+    if ad_ld(e, E_SINKKIND) == 1 { std::raw::syscall(62, ad_ld(e, E_SINKPID), 18, 0, 0, 0, 0) }
+    ae_service(e)
+    "resumed"
+}
+
+fn std__audio__engine_position() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    ae_f(ae_position(e))
+}
+
+fn std__audio__engine_duration() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    if !ae_active(e) { return ae_f(0) }
+    ae_f(ad_ld(e, E_CDUR))
+}
+
+fn ae_state(e: int) -> string {
+    if !ae_active(e) { return "idle" }
+    if ad_ld(e, E_PAUSED) != 0 { return "paused" }
+    "playing"
+}
+
+fn std__audio__engine_state() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    ae_state(e)
+}
+
+fn std__audio__engine_seek(secs: any) -> any {
+    let function = "std::audio::engine_seek"
+    let s = rt_expect_number(secs, function)
+    if !rt_is_finite(s) || std::raw::fcmp(s, 0) == -1 {
+        ae_fail_invalid(function, rt_concat("seek=", ae_fstr(s)))
+    }
+    let e = ae_e()
+    ae_reap(e)
+    if !ae_active(e) || ad_ld(e, E_SINKKIND) == 0 { ae_fail_idle(function) }
+    let dur = ad_ld(e, E_CDUR)
+    if std::raw::fcmp(dur, 0) == 1 && std::raw::fcmp(s, dur) == 1 {
+        ae_fail_invalid(function, rt_concat(rt_concat(rt_concat(rt_concat("seek ", ae_fmt1(s)), "s exceeds "), ae_fmt1(dur)), "s"))
+    }
+    ad_st(e, E_HASSEEK, 1)
+    ad_st(e, E_SEEK, s)
+    ob_clear(ad_ld(e, E_BUF))
+    ad_st(e, E_BUFHEAD, 0)
+    let rate = if ad_ld(e, E_OUTRATE) < 1 { 1 } else { ad_ld(e, E_OUTRATE) }
+    let target = std::raw::ftoint(std::raw::fmul(s, std::raw::ffromint(rate)))
+    let rendered = ae_rendered(e)
+    ad_st(e, E_START, if rendered > target { rendered - target } else { 0 })
+    ae_service(e)
+    rt_concat(rt_concat("seek to ", ae_fmt1(s)), "s")
+}
+
+fn std__audio__engine_set_volume(percent: any) -> any {
+    let function = "std::audio::engine_set_volume"
+    rt_expect_int(percent, function)
+    let p = std::raw::bits(percent)
+    if p < 0 || p > 100 { ae_fail_invalid(function, rt_concat("volume=", rt_int_to_str(p))) }
+    let e = ae_e()
+    ad_st(e, E_VOL, vf_div(std::raw::ffromint(p), std::raw::ffromint(100)))
+    true
+}
+
+fn std__audio__engine_set_crossfade(secs: any) -> any {
+    let function = "std::audio::engine_set_crossfade"
+    let s = rt_expect_number(secs, function)
+    if !rt_is_finite(s) || std::raw::fcmp(s, 0) == -1 || std::raw::fcmp(s, std::raw::ffromint(12)) == 1 {
+        ae_fail_invalid(function, rt_concat("crossfade=", ae_fstr(s)))
+    }
+    let e = ae_e()
+    ad_st(e, E_XF, s)
+    true
+}
+
+fn std__audio__engine_set_gapless(on: any) -> any {
+    let e = ae_e()
+    ad_st(e, E_GAP, if on { 1 } else { 0 })
+    true
+}
+
+fn std__audio__engine_set_eq(bass: any, mid: any, treble: any) -> any {
+    let function = "std::audio::engine_set_eq"
+    rt_expect_int(bass, function)
+    rt_expect_int(mid, function)
+    rt_expect_int(treble, function)
+    let b = std::raw::bits(bass)
+    let m = std::raw::bits(mid)
+    let t = std::raw::bits(treble)
+    if b < -12 || b > 12 { ae_fail_invalid(function, rt_concat("eq bass=", rt_int_to_str(b))) }
+    if m < -12 || m > 12 { ae_fail_invalid(function, rt_concat("eq mid=", rt_int_to_str(m))) }
+    if t < -12 || t > 12 { ae_fail_invalid(function, rt_concat("eq treble=", rt_int_to_str(t))) }
+    let e = ae_e()
+    ad_st(e, E_EQ0, b)
+    ad_st(e, E_EQ0 + 1, m)
+    ad_st(e, E_EQ0 + 2, t)
+    true
+}
+
+fn std__audio__engine_queue_add(path: any) -> any {
+    let function = "std::audio::engine_queue_add"
+    rt_expect_str(path, function)
+    if !std::fs::is_file(path) {
+        ae_fail_invalid(function, rt_concat("file not found: ", path))
+    }
+    let e = ae_e()
+    ae_reap(e)
+    if ae_arr_len(e, E_QUEUE) >= AE_MAX_QUEUE { ae_fail_invalid(function, "queue is full (500)") }
+    ae_push_back(e, E_QUEUE, path)
+    rt_concat(rt_concat(rt_concat("queued (", rt_int_to_str(ae_arr_len(e, E_QUEUE))), " waiting): "), path)
+}
+
+fn std__audio__engine_queue_clear() -> any {
+    let e = ae_e()
+    ae_vset(e, E_QUEUE, rt_array_new(0))
+    "queue cleared"
+}
+
+fn std__audio__engine_queue_list() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_vget(e, E_QUEUE)
+}
+
+fn std__audio__engine_next() -> any {
+    let function = "std::audio::engine_next"
+    let e = ae_e()
+    ae_reap(e)
+    if !ae_active(e) { ae_fail_idle(function) }
+    if ae_arr_len(e, E_QUEUE) > 0 {
+        let path = ae_pop_front(e, E_QUEUE)
+        ae_push_history(e, ae_vget(e, E_CPATH))
+        ae_vset(e, E_SW, path)
+        ad_st(e, E_HASSW, 1)
+        ae_service(e)
+        return rt_concat("next: ", path)
+    }
+    ae_stop_locked(e)
+    ae_vset(e, E_QUEUE, rt_array_new(0))
+    ae_vset(e, E_HIST, rt_array_new(0))
+    "end of queue (stopped)"
+}
+
+fn std__audio__engine_prev() -> any {
+    let function = "std::audio::engine_prev"
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    if std::raw::fcmp(ae_position(e), std::raw::ffromint(3)) == 1 {
+        let _ = std__audio__engine_seek(ae_f(0))
+        return "restarted track"
+    }
+    if !ae_active(e) { ae_fail_idle(function) }
+    if ae_arr_len(e, E_HIST) == 0 { ae_fail_invalid(function, "no previous track") }
+    let path = ae_pop_back(e, E_HIST)
+    let outgoing = ae_vget(e, E_CPATH)
+    if rt_slen(outgoing) > 0 { ae_push_front(e, E_QUEUE, outgoing) }
+    ae_vset(e, E_SW, path)
+    ad_st(e, E_HASSW, 1)
+    ae_service(e)
+    rt_concat("previous: ", path)
+}
+
+fn std__audio__engine_current() -> any {
+    let function = "std::audio::engine_current"
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    if !ae_active(e) { ae_fail_idle(function) }
+    let path = ae_vget(e, E_CPATH)
+    if rt_slen(path) == 0 { ae_fail_idle(function) }
+    let mut m = std__map__new()
+    m = std__map__insert(m, "path", path)
+    m = std__map__insert(m, "codec", ae_vget(e, E_CCODEC))
+    m = std__map__insert(m, "position_secs", ae_f(ae_position(e)))
+    m = std__map__insert(m, "duration_secs", ae_f(ad_ld(e, E_CDUR)))
+    m = std__map__insert(m, "state", ae_state(e))
+    m = std__map__insert(m, "queue_len", ae_arr_len(e, E_QUEUE))
+    m
+}
+
+fn std__audio__engine_levels() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    let mut out = rt_array_new(0)
+    let bars = rt_alloc_zero(8 * 40)
+    if ae_active(e) {
+        let n = ad_ld(e, E_LEVN)
+        let h = ad_ld(e, E_LEVH)
+        let lev = ad_ld(e, E_LEV)
+        let mono = rt_alloc_zero(8 * (n + 1))
+        let mut i = 0
+        while i < n {
+            ad_st(mono, i, ad_ld(lev, (h + i) % AE_RING_CAP))
+            i += 1
+        }
+        let rate = if ad_ld(e, E_OUTRATE) < 8000 { 8000 } else { ad_ld(e, E_OUTRATE) }
+        ae_spectrum(mono, n, rate, bars)
+        rt_free_block(mono)
+    }
+    let mut k = 0
+    while k < 32 {
+        out = std__array__push(out, ae_f(ad_ld(bars, k)))
+        k += 1
+    }
+    rt_free_block(bars)
+    out
+}
+
+fn std__audio__engine_device() -> any {
+    let e = ae_e()
+    ae_vget(e, E_LABEL)
+}
+
+fn std__audio__engine_status() -> any {
+    let e = ae_e()
+    ae_reap(e)
+    ae_service(e)
+    let act = ae_active(e)
+    let mut m = std__map__new()
+    m = std__map__insert(m, "state", ae_state(e))
+    m = std__map__insert(m, "path", if act { ae_vget(e, E_CPATH) } else { "" })
+    m = std__map__insert(m, "codec", if act { ae_vget(e, E_CCODEC) } else { "" })
+    m = std__map__insert(m, "position_secs", ae_f(ae_position(e)))
+    m = std__map__insert(m, "duration_secs", ae_f(if act { ad_ld(e, E_CDUR) } else { 0 }))
+    m = std__map__insert(m, "sample_rate", if act { ad_ld(e, E_CRATE) } else { 0 })
+    m = std__map__insert(m, "channels", if act { ad_ld(e, E_CCH) } else { 0 })
+    let pct = std::raw::ftoint(std::raw::fadd(vf_mul(ad_ld(e, E_VOL), std::raw::ffromint(100)), 4602678819172646912))
+    m = std__map__insert(m, "volume", pct)
+    m = std__map__insert(m, "crossfade_secs", ae_f(ad_ld(e, E_XF)))
+    m = std__map__insert(m, "gapless", ad_ld(e, E_GAP) != 0)
+    let eq = [ad_ld(e, E_EQ0), ad_ld(e, E_EQ0 + 1), ad_ld(e, E_EQ0 + 2)]
+    m = std__map__insert(m, "eq", eq)
+    m = std__map__insert(m, "queue_len", ae_arr_len(e, E_QUEUE))
+    m = std__map__insert(m, "device", ae_vget(e, E_LABEL))
+    m
+}
+
+// engine_decode(ruta) -> {channels, codec, duration_secs, peak, sample_rate, verified_secs}:
+// abre, decodifica hasta 5 s y mide el pico. Equivale a decode_report de audio_engine.rs.
+fn std__audio__engine_decode(path: any) -> any {
+    rt_expect_str(path, "std::audio::engine_decode")
+    let r = std::try::catch(|| ad_open(path))
+    let mut d = 0
+    match r {
+        Result::Ok(v) => { d = v },
+        Result::Err(e) => {
+            rt_native_fail("std::audio::engine_decode", rt_concat("decode error: ", e))
+        },
+    }
+    let ob = ob_new()
+    let mut peak = std::raw::ffromint(0)
+    let mut total = 0
+    let mut secs = std::raw::ffromint(0)
+    let max_secs = std::raw::ffromint(5)
+    let mut done = false
+    while !done {
+        ob_clear(ob)
+        let fr = std::try::catch(|| ad_fill(d, ob, 8192))
+        match fr {
+            Result::Ok(_) => {},
+            Result::Err(e) => {
+                ob_free(ob)
+                ad_close(d)
+                rt_native_fail("std::audio::engine_decode", rt_concat("decode error: ", e))
+            },
+        }
+        let n = ob_len(ob)
+        let mut i = 0
+        while i < n {
+            let a = ob_get(ob, i) & 9223372036854775807
+            if std::raw::fcmp(a, peak) == 1 { peak = a }
+            i += 1
+        }
+        total += n
+        let rate = ad_rate(d)
+        let ch = ad_channels(d)
+        let rf = std::raw::ffromint(if rate < 1 { 1 } else { rate })
+        let cf = std::raw::ffromint(if ch < 1 { 1 } else { ch })
+        secs = std::raw::fdiv(std::raw::fdiv(std::raw::ffromint(total), rf), cf)
+        if ad_finished(d) || std::raw::fcmp(secs, max_secs) >= 0 { done = true }
+    }
+    let dur = ad_ld(d, D_DUR)
+    let shown = if std::raw::fcmp(dur, std::raw::ffromint(0)) == 1 { dur } else { secs }
+    let mut m = std__map__new()
+    m = std__map__insert(m, "duration_secs", rt_float(shown))
+    m = std__map__insert(m, "sample_rate", ad_rate(d))
+    m = std__map__insert(m, "channels", ad_channels(d))
+    m = std__map__insert(m, "codec", ad_codec_str(d))
+    m = std__map__insert(m, "verified_secs", rt_float(secs))
+    m = std__map__insert(m, "peak", rt_float(peak))
+    ob_free(ob)
+    ad_close(d)
+    m
+}

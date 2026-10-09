@@ -1,0 +1,61 @@
+// Enrutador HTTP: rutas con parámetros, middleware, after, manejador de errores y métricas.
+fn pet(metodo: string, ruta: string) -> map {
+    std::map::insert(std::map::insert(std::map::new(), "method", metodo), "path", ruta)
+}
+
+fn resp(estado: int, cuerpo: string) -> map {
+    let m = std::map::insert(std::map::new(), "status", estado)
+    std::map::insert(m, "body", cuerpo)
+}
+
+fn mostrar(r: any) {
+    println(std::json::stringify(r))
+}
+
+fn main() {
+    let r = std::http::router()
+    print(r)
+    std::http::middleware(r, |q| std::map::insert(q, "visto", true))
+    std::http::middleware(r, |q| std::map::insert(q, "method", "GET"))
+    std::http::route(r, "get", "/hola/:nombre", |q| {
+        let p = std::map::get(q, "params")
+        resp(200, "hola " + std::map::get(p, "nombre") + " visto=" + std::json::stringify(std::map::get(q, "visto")))
+    })
+    std::http::route(r, "GET", "/archivos/*resto", |q| resp(200, std::map::get(std::map::get(q, "params"), "resto")))
+    std::http::route(r, "GET", "/", |q| resp(200, "raiz"))
+    std::http::route(r, "get", "/cero", |q| {
+        let z = 0
+        let c = 1 / z
+        resp(200, "cociente " + std::json::stringify(c))
+    })
+    std::http::route(r, "get", "/disco", |q| resp(200, std::fs::read_text("/no/existe/nunca")))
+    std::http::after(r, |x| std::map::insert(x, "primero", 1))
+    std::http::after(r, |x| std::map::insert(x, "segundo", std::map::contains(x, "primero")))
+    mostrar(std::http::dispatch(r, pet("GET", "/hola/mundo")))
+    mostrar(std::http::dispatch(r, pet("POST", "/hola/mundo")))
+    mostrar(std::http::dispatch(r, pet("get", "/hola/a%20b")))
+    mostrar(std::http::dispatch(r, pet("GET", "/archivos/a/b/c.txt")))
+    mostrar(std::http::dispatch(r, pet("GET", "/")))
+    mostrar(std::http::dispatch(r, pet("GET", "/nada")))
+    // Sin manejador de errores el error sale.
+    print(std::try::catch(|| std::http::dispatch(r, pet("GET", "/cero"))))
+    print(std::try::catch(|| std::http::dispatch(r, pet("GET", "/disco"))))
+    std::http::on_error(r, |q, e| resp(500, std::map::get(e, "kind") + ": " + std::map::get(e, "message") + " en " + std::map::get(q, "path")))
+    mostrar(std::http::dispatch(r, pet("GET", "/cero")))
+    mostrar(std::http::dispatch(r, pet("GET", "/disco")))
+    // Errores de uso.
+    print(std::try::catch(|| std::http::route(r, "GET", "/a/:x/:x", |q| resp(200, ""))))
+    print(std::try::catch(|| std::http::route(r, "GET", "/a/:", |q| resp(200, ""))))
+    print(std::try::catch(|| std::http::route(r, "GET", "/a/*rest/b", |q| resp(200, ""))))
+    print(std::try::catch(|| std::http::dispatch(r, std::map::new())))
+    print(std::try::catch(|| std::http::dispatch(r, std::map::insert(pet("GET", "/"), "path", 5))))
+    let m = std::http::router()
+    let a = std::http::router()
+    print(m == m)
+    print(m == a)
+    // Métricas.
+    print(std::metrics::counter_get("http.requests.total"))
+    print(std::metrics::counter_get("http.responses.2xx"))
+    print(std::metrics::counter_get("http.responses.4xx"))
+    print(std::metrics::counter_get("http.responses.5xx"))
+}

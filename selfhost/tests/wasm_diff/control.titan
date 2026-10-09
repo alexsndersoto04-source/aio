@@ -1,0 +1,86 @@
+enum Cmd {
+    Inc,
+    Dec,
+    Stop(int),
+}
+
+fn step(c: Cmd, v: int) -> int {
+    match c {
+        Cmd::Inc => v + 1,
+        Cmd::Dec => v - 1,
+        Cmd::Stop(n) => n,
+    }
+}
+
+fn search(limit: int) -> int {
+    let mut i = 2
+    let mut found = 0
+    while i < limit {
+        let mut j = 2
+        let mut prime = true
+        while j * j <= i {
+            if i % j == 0 {
+                prime = false
+                break
+            }
+            j += 1
+        }
+        if !prime {
+            i += 1
+            continue
+        }
+        found += 1
+        if found > 20 {
+            return i
+        }
+        i += 1
+    }
+    found
+}
+
+fn gcd(a: int, b: int) -> int {
+    let mut x = a
+    let mut y = b
+    while y != 0 {
+        let t = y
+        y = x % y
+        x = t
+    }
+    x
+}
+
+fn classify(n: int) -> int {
+    if n < 0 {
+        return -1
+    } else if n == 0 {
+        return 0
+    } else if n < 10 && n % 2 == 1 {
+        return 1
+    } else if n < 10 || n > 1000 {
+        return 2
+    }
+    3
+}
+
+fn drive(n: int) -> int {
+    let mut v = 0
+    let mut k = 0
+    loop {
+        k += 1
+        if k > n {
+            break
+        }
+        if k % 3 == 0 {
+            v = step(Cmd::Dec, v)
+        } else if k % 7 == 0 {
+            v = step(Cmd::Stop(v * 2), v)
+        } else {
+            v = step(Cmd::Inc, v)
+        }
+    }
+    v
+}
+
+fn main() -> int {
+    search(500) + gcd(1071, 462) + classify(-5) + classify(7) + classify(2000) + classify(50) + drive(100)
+}

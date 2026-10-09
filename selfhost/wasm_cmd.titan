@@ -1,0 +1,144 @@
+// `wasm [archivo.titan] [--output salida.wasm]`: equivale a `zett wasm`
+// (crates/titan_cli, crates/titan_wasm) pero escrito en Titan. Lo usan
+// wasm_cli.titan (ejecutable propio) y titan.titan (la CLI única).
+import loader
+import args
+import codegen
+import wasm
+import cli_util
+
+// ------------------------------------------------------------ CLI (equivale a `zett wasm`)
+
+fn wa_diag_text(d: Diag) -> string {
+    let sp = d.span
+    if sp != nil && sp.line > 0 && sp.col > 0 {
+        let l = sp.line
+        let c = sp.col
+        if d.file != nil {
+            return d.file + ":{l}:{c}: " + d.msg
+        }
+        return "{l}:{c}: " + d.msg
+    }
+    d.msg
+}
+
+fn wa_percent_segment(value: string) -> string {
+    let digits = std::text::chars("0123456789ABCDEF")
+    let mut out = ""
+    for byte in wa_utf8(value) {
+        let ok = (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 45 || byte == 46 || byte == 95 || byte == 126
+        if ok {
+            out += std::text::from_char_code(byte)
+        } else {
+            out += "%" + std::text::from_char_code(std::text::char_code(digits[byte / 16])) + std::text::from_char_code(std::text::char_code(digits[byte % 16]))
+        }
+    }
+    out
+}
+
+fn wa_fail(label: string, message: string) {
+    cl_eprint(label + ": " + message)
+    std::process::exit(1)
+}
+
+fn wa_run(args: array) {
+    let mut input = ""
+    let mut output = ""
+    let mut i = 0
+    while i < len(args) {
+        if args[i] == "--output" || args[i] == "-o" {
+            if i + 1 >= len(args) {
+                wa_fail("error", "--output needs a path")
+            }
+            output = args[i + 1]
+            i += 2
+        } else {
+            input = args[i]
+            i += 1
+        }
+    }
+    if input == "" {
+        input = "."
+    }
+    let entry_path = ld_default_entry(input)
+    let loaded = ld_load_project(entry_path)
+    let mut items = []
+    let mut project = LdProject { root: "", source_root: "", entry: "", has_manifest: false, deps: std::map::new(), items: [], files: 0 }
+    match loaded {
+        Result::Ok(v) => {
+            items = v.items
+            project = v
+        },
+        Result::Err(message) => {
+            wa_fail("COMPILATION FAILED", message)
+        },
+    }
+    let diags = check_program(items)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, wa_diag_text(d))
+        }
+        wa_fail("COMPILATION FAILED", cg_join(lines, " "))
+    }
+    let compiled = cg_compile_program(cg_new(cg_native_names()), items)
+    let mut error = ""
+    match compiled {
+        Result::Ok(v) => {
+            wa_write(v, project, output)
+        },
+        Result::Err(message) => {
+            wa_fail("COMPILATION FAILED", message)
+        },
+    }
+}
+
+fn wa_write(g: G, project: LdProject, output: string) {
+    let entry = project.entry
+    let root = project.root
+    let mut target = output
+    if target == "" {
+        let mut name = std::path::file_name(root)
+        if name == "" {
+            name = "program"
+        }
+        target = std::path::join(std::path::join(root, "target"), name + ".wasm")
+    }
+    let parent = std::path::parent(target)
+    if parent != "" && !std::fs::is_dir(parent) {
+        std::fs::create_dir(parent)
+    }
+    if project.has_manifest {
+        match ld_write_lock(project) {
+            Result::Ok(ok) => {
+                let done = ok
+            },
+            Result::Err(message) => {
+                wa_fail("COMPILATION FAILED", message)
+            },
+        }
+    }
+    let mut wasm = []
+    let mut logical = ""
+    let mut standard = ""
+    match wa_compile(g, root) {
+        Result::Ok(r) => {
+            let (w, l, s) = r
+            wasm = w
+            logical = l
+            standard = s
+        },
+        Result::Err(message) => {
+            wa_fail("WASM BUILD ERROR", message)
+        },
+    }
+    let map_path = target + ".map"
+    let url = wa_percent_segment(std::path::file_name(map_path))
+    wasm = std::array::concat(wasm, wa_custom_section("sourceMappingURL", wa_utf8(url)))
+    std::fs::write_bytes(target, std::bytes::from_array(wasm))
+    std::fs::write_text(target + ".map.json", logical)
+    std::fs::write_text(map_path, standard)
+    print("WASM: " + entry + " -> " + target)
+    print("TITAN SOURCE MAP: " + target + ".map.json")
+    print("STANDARD SOURCE MAP: " + map_path)
+}

@@ -1,0 +1,38 @@
+// Prueba de std::onnx::load_bert/load_bert3/run_bert/run_bert3/run_bert_pooled: se ejecuta tal cual bajo `zett`
+// (tract) y como ejecutable nativo; compare_bert.py compara las líneas con onnxruntime y entre sí.
+// Uso: bert <modelo.onnx> <entradas.json>
+fn show(v: any) -> string {
+    std::json::stringify(v)
+}
+
+fn main() {
+    let args = std::env::args()
+    let path = args[len(args) - 2]
+    let doc = std::json::parse(std::fs::read_text(args[len(args) - 1]))
+    let ins = doc.inputs
+    let shape = ins[0].shape
+    let k = len(ins)
+    let mut h = 0
+    if k == 2 {
+        h = std::onnx::load_bert(path, shape[0], shape[1])
+    } else {
+        h = std::onnx::load_bert3(path, shape[0], shape[1])
+    }
+    println("inputs", std::onnx::input_count(h), "outputs", std::onnx::output_count(h))
+    println("in0", show(std::onnx::input_shape(h, 0)), "in1", show(std::onnx::input_shape(h, 1)))
+    println("out0", show(std::onnx::output_shape(h, 0)), "out1", show(std::onnx::output_shape(h, 1)))
+    let mut r = std::map::new()
+    if k == 2 {
+        r = std::onnx::run_bert(h, shape, ins[0].data, ins[1].data)
+    } else {
+        r = std::onnx::run_bert3(h, shape, ins[0].data, ins[1].data, ins[2].data)
+    }
+    println("shape", show(r.shape))
+    println("values", show(r.values))
+    if k == 2 {
+        let p = std::onnx::run_bert_pooled(h, shape[0], shape[1], ins[0].data, ins[1].data)
+        println("pshape", show(p.shape))
+        println("pvalues", show(p.values))
+    }
+    std::onnx::close(h)
+}

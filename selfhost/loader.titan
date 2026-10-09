@@ -7,10 +7,8 @@
 // primero los módulos importados (en orden de aparición) y después los
 // elementos propios del archivo, sin las líneas `import`.
 //
-// Pendiente (anotado en selfhost/ESTADO.md): proyectos con Titan.toml
-// (manifiesto y dependencias). Hoy el cargador los rechaza con un error
-// explícito en lugar de comportarse distinto a Rust sin avisar; en el
-// repositorio no hay ningún Titan.toml.
+// Proyectos con Titan.toml: manifiesto, dependencias por ruta y las instaladas
+// por `Titan.remote.lock` (ver «Titan.toml» más abajo y selfhost/ESTADO.md).
 //
 // Todas las funciones usan el prefijo `ld_` porque `import` junta todos los
 // nombres en un solo espacio.
@@ -22,10 +20,33 @@ struct Ld {
     stack: array,
     visited: map,
     items: array,
+    deps: map,
+    allowed: array,
+}
+
+// SourceProject: lo que devuelve ld_load_project.
+struct LdProject {
+    root: string,
+    source_root: string,
+    entry: string,
+    has_manifest: bool,
+    deps: map,
+    items: array,
+    files: int,
 }
 
 // Result::Ok(elementos) o Result::Err(mensaje con el texto de ProjectError).
 fn ld_load(requested: string) -> Result {
+    let project = ld_load_project(requested)?
+    Result::Ok(project.items)
+}
+
+fn ld_read_error(path: string) -> string {
+    "cannot read " + path + ": No such file or directory (os error 2)"
+}
+
+// SourceProject::load.
+fn ld_load_project(requested: string) -> Result {
     if !std::fs::exists(requested) {
         return Result::Err("entry source not found: " + requested)
     }
@@ -35,12 +56,221 @@ fn ld_load(requested: string) -> Result {
     if found != nil {
         root = found
     }
-    if std::fs::is_file(std::path::join(root, "Titan.toml")) {
-        return Result::Err("selfhost: projects with Titan.toml (manifest and dependencies) are not supported yet by the Titan loader: " + std::path::join(root, "Titan.toml"))
+    let manifest_path = std::path::join(root, "Titan.toml")
+    let has_manifest = std::fs::is_file(manifest_path)
+    let mut source_candidate = root
+    if has_manifest {
+        source_candidate = std::path::join(root, "src")
     }
-    let ld = Ld { source_root: std::path::canonical(root), stack: [], visited: std::map::new(), items: [] }
+    if !std::fs::exists(source_candidate) {
+        return Result::Err(ld_read_error(source_candidate))
+    }
+    let source_root = std::path::canonical(source_candidate)
+    let mut deps = std::map::new()
+    if has_manifest {
+        let parsed = ld_manifest_from_dir(root)
+        let mut manifest = LdManifest { version: "", deps: std::map::new() }
+        match parsed {
+            Result::Ok(m) => {
+                manifest = m
+            },
+            Result::Err(message) => {
+                return Result::Err("invalid manifest at " + manifest_path + ": " + message)
+            },
+        }
+        deps = ld_collect_dependencies(root, manifest)?
+    }
+    let mut allowed = [source_root]
+    for alias in std::map::keys(deps) {
+        allowed = std::array::push(allowed, std::map::get(deps, alias))
+    }
+    let ld = Ld { source_root: source_root, stack: [], visited: std::map::new(), items: [], deps: deps, allowed: allowed }
     let done = ld_visit(ld, entry)?
-    Result::Ok(done.items)
+    Result::Ok(LdProject { root: root, source_root: source_root, entry: entry, has_manifest: has_manifest, deps: deps, items: done.items, files: len(std::map::keys(done.visited)) })
+}
+
+// Titan.remote.lock: nombre -> versión instalada en .titan/packages/<nombre>/<versión>.
+fn ld_remote_versions(root: string) -> Result {
+    let path = std::path::join(root, "Titan.remote.lock")
+    let mut out = std::map::new()
+    if !std::fs::is_file(path) {
+        return Result::Ok(out)
+    }
+    let parsed = std::try::catch(|| { std::json::parse(std::fs::read_text(path)) })
+    let mut doc: any = nil
+    match parsed {
+        Result::Ok(v) => {
+            doc = v
+        },
+        Result::Err(e) => {
+            return Result::Err("invalid manifest at " + path + ": invalid lockfile: " + "{e}")
+        },
+    }
+    let bad = "invalid manifest at " + path + ": "
+    if !std::map::contains(doc, "version") {
+        return Result::Err(bad + "missing field `version`")
+    }
+    if !std::map::contains(doc, "packages") {
+        return Result::Err(bad + "missing field `packages`")
+    }
+    let packages = std::map::get(doc, "packages")
+    for p in packages {
+        for field in ["name", "version", "archive", "sha256", "signing_key", "signature", "dependencies"] {
+            if !std::map::contains(p, field) {
+                return Result::Err(bad + "missing field `" + field + "`")
+            }
+        }
+        out = std::map::insert(out, std::map::get(p, "name"), std::map::get(p, "version"))
+    }
+    Result::Ok(out)
+}
+
+// collect_dependencies: alias -> raíz `src` de la dependencia (primera aparición gana).
+fn ld_collect_dependencies(root: string, manifest: LdManifest) -> Result {
+    let remote = ld_remote_versions(root)?
+    let mut output = std::map::new()
+    output = ld_dep_visit(root, root, remote, manifest, output, [])?
+    Result::Ok(output)
+}
+
+fn ld_dep_visit(raw_root: string, project_root: string, remote: map, manifest: LdManifest, output0: map, stack0: array) -> Result {
+    let root = std::path::canonical(raw_root)
+    let mut position = -1
+    let mut i = 0
+    while i < len(stack0) {
+        if stack0[i] == root {
+            position = i
+            break
+        }
+        i += 1
+    }
+    if position >= 0 {
+        let mut chain = []
+        let mut j = position
+        while j < len(stack0) {
+            chain = std::array::push(chain, stack0[j])
+            j += 1
+        }
+        chain = std::array::push(chain, root)
+        return Result::Err("dependency cycle: " + ld_join(chain, " -> "))
+    }
+    let stack = std::array::push(stack0, root)
+    let mut output = output0
+    for alias in std::map::keys(manifest.deps) {
+        let spec = std::map::get(manifest.deps, alias)
+        let mut candidate = ""
+        if spec[1] != nil {
+            candidate = std::path::join(root, spec[1])
+        } else {
+            if !std::map::contains(remote, alias) {
+                return Result::Err("dependency '" + alias + "' must specify a local path in this compiler version")
+            }
+            candidate = std::path::join(std::path::join(std::path::join(project_root, ".titan/packages"), alias), std::map::get(remote, alias))
+        }
+        if !std::fs::exists(candidate) {
+            return Result::Err(ld_read_error(candidate))
+        }
+        let dependency_root = std::path::canonical(candidate)
+        let parsed = ld_manifest_from_dir(dependency_root)
+        let mut dependency_manifest = LdManifest { version: "", deps: std::map::new() }
+        match parsed {
+            Result::Ok(m) => {
+                dependency_manifest = m
+            },
+            Result::Err(message) => {
+                return Result::Err("invalid manifest at " + std::path::join(dependency_root, "Titan.toml") + ": " + message)
+            },
+        }
+        let source_candidate = std::path::join(dependency_root, "src")
+        if !std::fs::exists(source_candidate) {
+            return Result::Err(ld_read_error(source_candidate))
+        }
+        let source_root = std::path::canonical(source_candidate)
+        if !std::map::contains(output, alias) {
+            output = std::map::insert(output, alias, source_root)
+        }
+        output = ld_dep_visit(dependency_root, project_root, remote, dependency_manifest, output, stack)?
+    }
+    Result::Ok(output)
+}
+
+// default_entry: archivo o `.titan` tal cual; si no, <raíz>/src/main.titan o <ruta>/main.titan.
+fn ld_default_entry(path: string) -> string {
+    if std::fs::is_file(path) || std::text::ends_with(path, ".titan") {
+        return path
+    }
+    let found = ld_find_project_root(path)
+    if found != nil {
+        return std::path::join(found, "src/main.titan")
+    }
+    std::path::join(path, "main.titan")
+}
+
+// Lockfile::from_dependencies + write: Titan.lock con las dependencias por ruta.
+fn ld_json_str(s: string) -> string {
+    let mut out = "\""
+    for c in std::text::chars(s) {
+        let code = ld_code(c)
+        if code == 34 {
+            out += "\\\""
+        } else if code == 92 {
+            out += "\\\\"
+        } else if code == 8 {
+            out += "\\b"
+        } else if code == 12 {
+            out += "\\f"
+        } else if code == 10 {
+            out += "\\n"
+        } else if code == 13 {
+            out += "\\r"
+        } else if code == 9 {
+            out += "\\t"
+        } else if code < 32 {
+            out += "\\u00" + ld_hex_digit(code / 16) + ld_hex_digit(code % 16)
+        } else {
+            out += ld_chr(code)
+        }
+    }
+    out + "\""
+}
+
+fn ld_hex_digit(d: int) -> string {
+    if d < 10 {
+        return ld_chr(48 + d)
+    }
+    ld_chr(87 + d)
+}
+
+fn ld_write_lock(project: LdProject) -> Result {
+    let mut entries = []
+    for alias in std::map::keys(project.deps) {
+        let dep_root = std::path::parent(std::map::get(project.deps, alias))
+        let manifest = ld_manifest_from_dir(dep_root)
+        let mut version = ""
+        match manifest {
+            Result::Ok(m) => {
+                version = m.version
+            },
+            Result::Err(message) => {
+                return Result::Err("invalid manifest at " + std::path::join(dep_root, "Titan.toml") + ": " + message)
+            },
+        }
+        let source = "path+" + std::path::canonical(dep_root)
+        entries = std::array::push(entries, "    {\n      \"name\": " + ld_json_str(alias) + ",\n      \"version\": " + ld_json_str(version) + ",\n      \"source\": " + ld_json_str(source) + "\n    }")
+    }
+    let mut body = "[]"
+    if len(entries) > 0 {
+        body = "[\n" + ld_join(entries, ",\n") + "\n  ]"
+    }
+    let content = "{\n  \"version\": 1,\n  \"packages\": " + body + "\n}\n"
+    let target = std::path::join(project.root, "Titan.lock")
+    let temporary = std::path::join(project.root, "Titan.lock.tmp")
+    std::fs::write_text(temporary, content)
+    if std::fs::exists(target) {
+        std::fs::remove_file(target)
+    }
+    std::fs::rename(temporary, target)
+    Result::Ok(true)
 }
 
 // find_project_root: el directorio más cercano (hacia arriba) con Titan.toml.
@@ -116,7 +346,7 @@ fn ld_visit(ld0: Ld, raw_path: string) -> Result {
     let source = std::fs::read_text(path)
     let parsed = ld_parse_file(path, source)?
     let items = ld_assign_source_files(parsed, path)
-    let mut ld = Ld { source_root: ld0.source_root, stack: std::array::push(ld0.stack, path), visited: ld0.visited, items: ld0.items }
+    let mut ld = Ld { source_root: ld0.source_root, stack: std::array::push(ld0.stack, path), visited: ld0.visited, items: ld0.items, deps: ld0.deps, allowed: ld0.allowed }
     for item in items {
         if item.kind != "import" {
             continue
@@ -141,7 +371,7 @@ fn ld_visit(ld0: Ld, raw_path: string) -> Result {
         }
     }
     let stack = std::array::slice(ld.stack, 0, len(ld.stack) - 1)
-    Result::Ok(Ld { source_root: ld.source_root, stack: stack, visited: std::map::insert(ld.visited, path, true), items: own })
+    Result::Ok(Ld { source_root: ld.source_root, stack: stack, visited: std::map::insert(ld.visited, path, true), items: own, deps: ld.deps, allowed: ld.allowed })
 }
 
 // "a::b::c" -> ["a", "b", "c"] (los segmentos son identificadores, nunca vacíos).
@@ -190,18 +420,47 @@ fn ld_parse_file(path: string, source: string) -> Result {
     Result::Ok(items)
 }
 
-// Sin dependencias, la única raíz permitida es la raíz de fuentes.
+// resolve_import: la primera parte puede ser el alias de una dependencia; si no,
+// la raíz permitida más específica que contiene al archivo que importa.
 fn ld_resolve_import(ld: Ld, segments: array, from: string) -> Result {
     let display = ld_join(segments, "::")
-    let base = ld.source_root
-    let mut length = len(segments)
+    let mut base = ld.source_root
+    let mut path_segments = segments
+    if std::map::contains(ld.deps, segments[0]) {
+        base = std::map::get(ld.deps, segments[0])
+        path_segments = std::array::slice(segments, 1, len(segments))
+    } else {
+        let mut best = -1
+        for root in ld.allowed {
+            if ld_path_starts_with(from, root) {
+                let depth = len(ld_split_slash(root))
+                if depth > best {
+                    best = depth
+                    base = root
+                }
+            }
+        }
+    }
+    if len(path_segments) == 0 {
+        let candidate = std::path::join(base, "lib.titan")
+        if std::fs::is_file(candidate) {
+            return Result::Ok(std::path::canonical(candidate))
+        }
+    }
+    let mut length = len(path_segments)
     while length >= 1 {
-        let relative = ld_join(std::array::slice(segments, 0, length), "/")
+        let relative = ld_join(std::array::slice(path_segments, 0, length), "/")
         let candidates = [std::path::join(base, relative + ".titan"), std::path::join(std::path::join(base, relative), "mod.titan")]
         for candidate in candidates {
             if std::fs::is_file(candidate) {
                 let canonical = std::path::canonical(candidate)
-                if !ld_path_starts_with(canonical, ld.source_root) {
+                let mut inside = false
+                for root in ld.allowed {
+                    if ld_path_starts_with(canonical, root) {
+                        inside = true
+                    }
+                }
+                if !inside {
                     return Result::Err("import '" + display + "' resolves outside source root " + base)
                 }
                 return Result::Ok(canonical)
@@ -210,6 +469,25 @@ fn ld_resolve_import(ld: Ld, segments: array, from: string) -> Result {
         length -= 1
     }
     Result::Err("cannot resolve import '" + display + "' from " + from)
+}
+
+fn ld_split_slash(path: string) -> array {
+    let mut parts = []
+    let mut cur = ""
+    for c in std::text::chars(path) {
+        if ld_code(c) == 47 {
+            if cur != "" {
+                parts = std::array::push(parts, cur)
+            }
+            cur = ""
+        } else {
+            cur += ld_chr(ld_code(c))
+        }
+    }
+    if cur != "" {
+        parts = std::array::push(parts, cur)
+    }
+    parts
 }
 
 // resolve_stdlib_module: $ZETT_STDLIB_DIR, junto al ejecutable
@@ -287,4 +565,582 @@ fn ld_assign_source_files(items: array, file: string) -> array {
 
 fn ld_with_file(n: Node, file: string) -> Node {
     Node { kind: n.kind, text: n.text, text2: file, flag: n.flag, a: n.a, b: n.b, c: n.c, list: n.list, list2: n.list2, span: n.span }
+}
+
+// ------------------------------------------------------------ Titan.toml
+//
+// Subconjunto de TOML suficiente para el manifiesto (tablas `[a.b]`, claves con
+// puntos, cadenas básicas/literales/multilínea, tablas en línea, arreglos,
+// booleanos y números). `[[tabla]]`, fechas con zona y cadenas con salto de línea
+// escapado son errores explícitos, no se aceptan en silencio. Los mensajes de
+// error de TOML no son los del crate `toml` de Rust (solo el prefijo
+// «invalid Titan.toml:» coincide).
+
+struct LdTv {
+    k: string,
+    s: string,
+    t: map,
+    a: array,
+}
+
+fn ld_tv(k: string, s: string) -> LdTv {
+    LdTv { k: k, s: s, t: std::map::new(), a: [] }
+}
+
+fn ld_code(c: any) -> int {
+    std::text::char_code(c)
+}
+
+fn ld_toml_err(cs: array, pos: int, msg: string) -> string {
+    let mut line = 1
+    let mut i = 0
+    while i < pos && i < len(cs) {
+        if ld_code(cs[i]) == 10 {
+            line += 1
+        }
+        i += 1
+    }
+    "invalid Titan.toml: line {line}: " + msg
+}
+
+fn ld_skip_blank(cs: array, pos0: int) -> int {
+    let mut pos = pos0
+    while pos < len(cs) && (ld_code(cs[pos]) == 32 || ld_code(cs[pos]) == 9) {
+        pos += 1
+    }
+    pos
+}
+
+// Espacios, saltos de línea y comentarios.
+fn ld_skip_all(cs: array, pos0: int) -> int {
+    let mut pos = pos0
+    while pos < len(cs) {
+        let c = ld_code(cs[pos])
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            pos += 1
+        } else if c == 35 {
+            while pos < len(cs) && ld_code(cs[pos]) != 10 {
+                pos += 1
+            }
+        } else {
+            break
+        }
+    }
+    pos
+}
+
+fn ld_bare_char(c: int) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+}
+
+fn ld_hex_value(cs: array, pos: int, count: int) -> int {
+    let mut v = 0
+    let mut i = 0
+    while i < count {
+        if pos + i >= len(cs) {
+            return -1
+        }
+        let c = ld_code(cs[pos + i])
+        let mut d = -1
+        if c >= 48 && c <= 57 {
+            d = c - 48
+        } else if c >= 97 && c <= 102 {
+            d = c - 87
+        } else if c >= 65 && c <= 70 {
+            d = c - 55
+        }
+        if d < 0 {
+            return -1
+        }
+        v = v * 16 + d
+        i += 1
+    }
+    v
+}
+
+// Cadena en `pos` (comienza en comilla). Ok((texto, posición siguiente)).
+fn ld_parse_string(cs: array, pos0: int) -> Result {
+    let quote = ld_code(cs[pos0])
+    let mut pos = pos0 + 1
+    let mut triple = false
+    if pos + 1 < len(cs) && ld_code(cs[pos]) == quote && ld_code(cs[pos + 1]) == quote {
+        triple = true
+        pos += 2
+        if pos < len(cs) && ld_code(cs[pos]) == 13 {
+            pos += 1
+        }
+        if pos < len(cs) && ld_code(cs[pos]) == 10 {
+            pos += 1
+        }
+    }
+    let mut out = ""
+    while pos < len(cs) {
+        let c = ld_code(cs[pos])
+        if c == quote {
+            if !triple {
+                return Result::Ok((out, pos + 1))
+            }
+            if pos + 2 < len(cs) + 0 && ld_code(cs[pos + 1]) == quote && ld_code(cs[pos + 2]) == quote {
+                return Result::Ok((out, pos + 3))
+            }
+            out += ld_chr(c)
+            pos += 1
+        } else if c == 10 && !triple {
+            return Result::Err(ld_toml_err(cs, pos, "newline in string"))
+        } else if c == 92 && quote == 34 {
+            if pos + 1 >= len(cs) {
+                return Result::Err(ld_toml_err(cs, pos, "unterminated escape"))
+            }
+            let e = ld_code(cs[pos + 1])
+            pos += 2
+            if e == 98 {
+                out += ld_chr(8)
+            } else if e == 116 {
+                out += ld_chr(9)
+            } else if e == 110 {
+                out += ld_chr(10)
+            } else if e == 102 {
+                out += ld_chr(12)
+            } else if e == 114 {
+                out += ld_chr(13)
+            } else if e == 34 {
+                out += "\""
+            } else if e == 92 {
+                out += "\\"
+            } else if e == 117 || e == 85 {
+                let mut digits = 4
+                if e == 85 {
+                    digits = 8
+                }
+                let v = ld_hex_value(cs, pos, digits)
+                if v < 0 || v > 1114111 || (v >= 55296 && v <= 57343) {
+                    return Result::Err(ld_toml_err(cs, pos, "invalid unicode escape"))
+                }
+                out += ld_chr(v)
+                pos += digits
+            } else {
+                return Result::Err(ld_toml_err(cs, pos, "unsupported escape sequence"))
+            }
+            let escaped = true
+        } else {
+            out += ld_chr(c)
+            pos += 1
+        }
+        let stepped = true
+    }
+    Result::Err(ld_toml_err(cs, pos, "unterminated string"))
+}
+
+fn ld_parse_key(cs: array, pos0: int) -> Result {
+    if pos0 >= len(cs) {
+        return Result::Err(ld_toml_err(cs, pos0, "expected a key"))
+    }
+    let c = ld_code(cs[pos0])
+    if c == 34 || c == 39 {
+        return ld_parse_string(cs, pos0)
+    }
+    let mut pos = pos0
+    let mut out = ""
+    while pos < len(cs) && ld_bare_char(ld_code(cs[pos])) {
+        out += ld_chr(ld_code(cs[pos]))
+        pos += 1
+    }
+    if out == "" {
+        return Result::Err(ld_toml_err(cs, pos0, "expected a key"))
+    }
+    Result::Ok((out, pos))
+}
+
+// clave.con.puntos -> Ok((partes, posición)).
+fn ld_parse_dotted(cs: array, pos0: int) -> Result {
+    let mut parts = []
+    let mut pos = ld_skip_blank(cs, pos0)
+    loop {
+        let (key, next) = ld_parse_key(cs, pos)?
+        parts = std::array::push(parts, key)
+        pos = ld_skip_blank(cs, next)
+        if pos < len(cs) && ld_code(cs[pos]) == 46 {
+            pos = ld_skip_blank(cs, pos + 1)
+        } else {
+            break
+        }
+    }
+    Result::Ok((parts, pos))
+}
+
+fn ld_scalar_ok(token: string) -> bool {
+    if token == "true" || token == "false" || token == "inf" || token == "+inf" || token == "-inf" || token == "nan" || token == "+nan" || token == "-nan" {
+        return true
+    }
+    let first = ld_code(std::text::chars(token)[0])
+    let mut ok = first >= 48 && first <= 57
+    if first == 43 || first == 45 {
+        ok = len(token) > 1
+    }
+    if !ok {
+        return false
+    }
+    for c in std::text::chars(token) {
+        let k = ld_code(c)
+        if !((k >= 48 && k <= 57) || k == 95 || k == 46 || k == 43 || k == 45 || k == 101 || k == 69 || k == 120 || k == 111 || k == 98 || k == 58 || (k >= 97 && k <= 102) || (k >= 65 && k <= 70) || k == 84 || k == 90) {
+            return false
+        }
+    }
+    true
+}
+
+fn ld_parse_value(cs: array, pos0: int) -> Result {
+    if pos0 >= len(cs) {
+        return Result::Err(ld_toml_err(cs, pos0, "expected a value"))
+    }
+    let c = ld_code(cs[pos0])
+    if c == 34 || c == 39 {
+        let (s, next) = ld_parse_string(cs, pos0)?
+        return Result::Ok((ld_tv("str", s), next))
+    }
+    if c == 123 {
+        let mut tbl = ld_tv("tbl", "")
+        let mut pos = ld_skip_blank(cs, pos0 + 1)
+        if pos < len(cs) && ld_code(cs[pos]) == 125 {
+            return Result::Ok((tbl, pos + 1))
+        }
+        loop {
+            let (path, after_key) = ld_parse_dotted(cs, pos)?
+            pos = ld_skip_blank(cs, after_key)
+            if pos >= len(cs) || ld_code(cs[pos]) != 61 {
+                return Result::Err(ld_toml_err(cs, pos, "expected `=`"))
+            }
+            pos = ld_skip_blank(cs, pos + 1)
+            let (value, after) = ld_parse_value(cs, pos)?
+            let inserted = ld_tbl_insert(tbl.t, path, value)
+            match inserted {
+                Result::Ok(m) => {
+                    tbl = LdTv { k: "tbl", s: "", t: m, a: [] }
+                },
+                Result::Err(message) => {
+                    return Result::Err(ld_toml_err(cs, pos, message))
+                },
+            }
+            pos = ld_skip_blank(cs, after)
+            if pos < len(cs) && ld_code(cs[pos]) == 44 {
+                pos = ld_skip_blank(cs, pos + 1)
+            } else if pos < len(cs) && ld_code(cs[pos]) == 125 {
+                return Result::Ok((tbl, pos + 1))
+            } else {
+                return Result::Err(ld_toml_err(cs, pos, "expected `,` or `}`"))
+            }
+        }
+    }
+    if c == 91 {
+        let mut items = []
+        let mut pos = ld_skip_all(cs, pos0 + 1)
+        if pos < len(cs) && ld_code(cs[pos]) == 93 {
+            return Result::Ok((LdTv { k: "arr", s: "", t: std::map::new(), a: items }, pos + 1))
+        }
+        loop {
+            let (value, after) = ld_parse_value(cs, pos)?
+            items = std::array::push(items, value)
+            pos = ld_skip_all(cs, after)
+            if pos < len(cs) && ld_code(cs[pos]) == 44 {
+                pos = ld_skip_all(cs, pos + 1)
+                if pos < len(cs) && ld_code(cs[pos]) == 93 {
+                    return Result::Ok((LdTv { k: "arr", s: "", t: std::map::new(), a: items }, pos + 1))
+                }
+            } else if pos < len(cs) && ld_code(cs[pos]) == 93 {
+                return Result::Ok((LdTv { k: "arr", s: "", t: std::map::new(), a: items }, pos + 1))
+            } else {
+                return Result::Err(ld_toml_err(cs, pos, "expected `,` or `]`"))
+            }
+        }
+    }
+    let mut token = ""
+    let mut pos = pos0
+    while pos < len(cs) {
+        let k = ld_code(cs[pos])
+        if k == 32 || k == 9 || k == 10 || k == 13 || k == 44 || k == 93 || k == 125 || k == 35 {
+            break
+        }
+        token += ld_chr(k)
+        pos += 1
+    }
+    if token == "" || !ld_scalar_ok(token) {
+        return Result::Err(ld_toml_err(cs, pos0, "invalid value"))
+    }
+    Result::Ok((ld_tv("other", token), pos))
+}
+
+// Inserta `value` en `path` dentro de la tabla; error si la clave ya existe.
+fn ld_tbl_insert(tbl: map, path: array, value: LdTv) -> Result {
+    let key = path[0]
+    if len(path) == 1 {
+        if std::map::contains(tbl, key) {
+            return Result::Err("duplicate key `" + key + "`")
+        }
+        return Result::Ok(std::map::insert(tbl, key, value))
+    }
+    let mut child = ld_tv("tbl", "")
+    if std::map::contains(tbl, key) {
+        child = std::map::get(tbl, key)
+        if child.k != "tbl" {
+            return Result::Err("key `" + key + "` is not a table")
+        }
+    }
+    let inner = ld_tbl_insert(child.t, std::array::slice(path, 1, len(path)), value)?
+    Result::Ok(std::map::insert(tbl, key, LdTv { k: "tbl", s: "", t: inner, a: [] }))
+}
+
+// Garantiza que exista la tabla de `path` (cabecera `[a.b]`).
+fn ld_tbl_ensure(tbl: map, path: array) -> Result {
+    let key = path[0]
+    let mut child = ld_tv("tbl", "")
+    if std::map::contains(tbl, key) {
+        child = std::map::get(tbl, key)
+        if child.k != "tbl" {
+            return Result::Err("key `" + key + "` is not a table")
+        }
+    }
+    let mut inner = child.t
+    if len(path) > 1 {
+        inner = ld_tbl_ensure(child.t, std::array::slice(path, 1, len(path)))?
+    }
+    Result::Ok(std::map::insert(tbl, key, LdTv { k: "tbl", s: "", t: inner, a: [] }))
+}
+
+// Documento completo -> Ok(mapa raíz) o Err(mensaje).
+fn ld_toml_parse(text: string) -> Result {
+    let cs = std::text::chars(text)
+    let mut root = std::map::new()
+    let mut current = []
+    let mut headers = std::map::new()
+    let mut pos = 0
+    while true {
+        pos = ld_skip_all(cs, pos)
+        if pos >= len(cs) {
+            break
+        }
+        if ld_code(cs[pos]) == 91 {
+            if pos + 1 < len(cs) && ld_code(cs[pos + 1]) == 91 {
+                return Result::Err(ld_toml_err(cs, pos, "arrays of tables ([[...]]) are not supported"))
+            }
+            let (path, after) = ld_parse_dotted(cs, pos + 1)?
+            if after >= len(cs) || ld_code(cs[after]) != 93 {
+                return Result::Err(ld_toml_err(cs, after, "expected `]`"))
+            }
+            let name = ld_join(path, ".")
+            if std::map::contains(headers, name) {
+                return Result::Err(ld_toml_err(cs, pos, "duplicate table `" + name + "`"))
+            }
+            headers = std::map::insert(headers, name, true)
+            let ensured = ld_tbl_ensure(root, path)
+            match ensured {
+                Result::Ok(m) => {
+                    root = m
+                },
+                Result::Err(message) => {
+                    return Result::Err(ld_toml_err(cs, pos, message))
+                },
+            }
+            current = path
+            pos = after + 1
+        } else {
+            let (kpath, after_key) = ld_parse_dotted(cs, pos)?
+            let mut p = ld_skip_blank(cs, after_key)
+            if p >= len(cs) || ld_code(cs[p]) != 61 {
+                return Result::Err(ld_toml_err(cs, p, "expected `=`"))
+            }
+            p = ld_skip_blank(cs, p + 1)
+            let (value, after) = ld_parse_value(cs, p)?
+            let full = std::array::concat(current, kpath)
+            let inserted = ld_tbl_insert(root, full, value)
+            match inserted {
+                Result::Ok(m) => {
+                    root = m
+                },
+                Result::Err(message) => {
+                    return Result::Err(ld_toml_err(cs, pos, message))
+                },
+            }
+            pos = after
+        }
+        // el resto de la línea: solo espacios y comentario
+        pos = ld_skip_blank(cs, pos)
+        if pos < len(cs) && ld_code(cs[pos]) == 35 {
+            while pos < len(cs) && ld_code(cs[pos]) != 10 {
+                pos += 1
+            }
+        }
+        if pos < len(cs) && ld_code(cs[pos]) == 13 {
+            pos += 1
+        }
+        if pos < len(cs) && ld_code(cs[pos]) != 10 {
+            return Result::Err(ld_toml_err(cs, pos, "expected a newline after the value"))
+        }
+    }
+    Result::Ok(root)
+}
+
+// semver::Version::parse: MAYOR.MENOR.PARCHE[-pre][+build].
+fn ld_all_digits(s: string) -> bool {
+    if s == "" {
+        return false
+    }
+    for c in std::text::chars(s) {
+        let k = ld_code(c)
+        if k < 48 || k > 57 {
+            return false
+        }
+    }
+    true
+}
+
+fn ld_numeric_part(s: string) -> bool {
+    ld_all_digits(s) && (s == "0" || ld_code(std::text::chars(s)[0]) != 48)
+}
+
+fn ld_ident_ok(s: string, numeric_no_zero: bool) -> bool {
+    if s == "" {
+        return false
+    }
+    for c in std::text::chars(s) {
+        let k = ld_code(c)
+        if !((k >= 48 && k <= 57) || (k >= 65 && k <= 90) || (k >= 97 && k <= 122) || k == 45) {
+            return false
+        }
+    }
+    if numeric_no_zero && ld_all_digits(s) && s != "0" && ld_code(std::text::chars(s)[0]) == 48 {
+        return false
+    }
+    true
+}
+
+fn ld_semver_ok(v: string) -> bool {
+    let mut core = v
+    let mut build = ""
+    let mut pre = ""
+    let mut has_build = false
+    let mut has_pre = false
+    let cs = std::text::chars(v)
+    let mut i = 0
+    while i < len(cs) {
+        if ld_code(cs[i]) == 43 {
+            core = std::text::substring(v, 0, i)
+            build = std::text::substring(v, i + 1, len(v))
+            has_build = true
+            break
+        }
+        i += 1
+    }
+    let cc = std::text::chars(core)
+    i = 0
+    while i < len(cc) {
+        if ld_code(cc[i]) == 45 {
+            pre = std::text::substring(core, i + 1, len(core))
+            core = std::text::substring(core, 0, i)
+            has_pre = true
+            break
+        }
+        i += 1
+    }
+    let parts = ld_split_dots(core)
+    if len(parts) != 3 {
+        return false
+    }
+    for p in parts {
+        if !ld_numeric_part(p) {
+            return false
+        }
+    }
+    if has_pre {
+        for p in ld_split_dots(pre) {
+            if !ld_ident_ok(p, true) {
+                return false
+            }
+        }
+    }
+    if has_build {
+        for p in ld_split_dots(build) {
+            if !ld_ident_ok(p, false) {
+                return false
+            }
+        }
+    }
+    true
+}
+
+// Manifest::from_dir -> Ok(mapa raíz) con package validado, o Err(texto de PkgError).
+struct LdManifest {
+    version: string,
+    deps: map,
+}
+
+fn ld_str_field(tbl: map, key: string, required: bool) -> Result {
+    if !std::map::contains(tbl, key) {
+        if required {
+            return Result::Err("invalid Titan.toml: missing field `" + key + "`")
+        }
+        return Result::Ok(nil)
+    }
+    let v = std::map::get(tbl, key)
+    if v.k != "str" {
+        return Result::Err("invalid Titan.toml: invalid type for `" + key + "`, expected a string")
+    }
+    Result::Ok(v.s)
+}
+
+fn ld_manifest_from_dir(dir: string) -> Result {
+    let file = std::path::join(dir, "Titan.toml")
+    if !std::fs::is_file(file) {
+        return Result::Err("Not found: Titan.toml")
+    }
+    let root = ld_toml_parse(std::fs::read_text(file))?
+    if !std::map::contains(root, "package") {
+        return Result::Err("invalid Titan.toml: missing field `package`")
+    }
+    let package = std::map::get(root, "package")
+    if package.k != "tbl" {
+        return Result::Err("invalid Titan.toml: invalid type for `package`, expected a table")
+    }
+    ld_str_field(package.t, "name", true)?
+    let version = ld_str_field(package.t, "version", true)?
+    ld_str_field(package.t, "edition", true)?
+    ld_str_field(package.t, "description", false)?
+    ld_str_field(package.t, "license", false)?
+    let mut deps = std::map::new()
+    if std::map::contains(root, "dependencies") {
+        let table = std::map::get(root, "dependencies")
+        if table.k != "tbl" {
+            return Result::Err("invalid Titan.toml: invalid type for `dependencies`, expected a table")
+        }
+        for alias in std::map::keys(table.t) {
+            let d = std::map::get(table.t, alias)
+            if d.k != "tbl" {
+                return Result::Err("invalid Titan.toml: invalid type for `dependencies." + alias + "`, expected a table with `version` and/or `path`")
+            }
+            let v = ld_str_field(d.t, "version", false)?
+            let p = ld_str_field(d.t, "path", false)?
+            deps = std::map::insert(deps, alias, [v, p])
+        }
+    }
+    if !ld_semver_ok(version) {
+        return Result::Err("invalid package version '" + version + "'")
+    }
+    Result::Ok(LdManifest { version: version, deps: deps })
+}
+
+fn ld_split_dots(s: string) -> array {
+    let mut parts = []
+    let mut cur = ""
+    for c in std::text::chars(s) {
+        if ld_code(c) == 46 {
+            parts = std::array::push(parts, cur)
+            cur = ""
+        } else {
+            cur += ld_chr(ld_code(c))
+        }
+    }
+    std::array::push(parts, cur)
+}
+
+fn ld_chr(code: int) -> string {
+    std::text::from_char_code(code)
 }

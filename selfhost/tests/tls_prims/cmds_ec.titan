@@ -1,0 +1,30 @@
+// 10 curva pub hash r s -> 01/00 ; 11 curva d hash -> r||s (firma) ; 12 curva d -> pub ; 13 curva d pub -> x
+fn tst_cmd(cmd: int, t: int) -> any {
+    let cid = std::raw::load8(tst_ap(t, 1))
+    let cv = ec_curve(cid)
+    let sz = std::raw::load(cv + 24)
+    let out = rt_alloc_zero(256)
+    if cmd == 16 {
+        let ok = ec_verify(cv, tst_ap(t, 2), tst_al(t, 2), tst_ap(t, 3), tst_al(t, 3), tst_ap(t, 4), tst_ap(t, 5))
+        if ok {
+            std::raw::store8(out, 1)
+        }
+        return tst_ret(out, 1)
+    }
+    if cmd == 17 {
+        let ok = ec_sign(cv, tst_ap(t, 2), tst_ap(t, 3), tst_al(t, 3), out, out + sz)
+        return tst_ret(out, 2 * sz)
+    }
+    if cmd == 18 {
+        let ok = ec_pub(cv, tst_ap(t, 2), out)
+        return tst_ret(out, 1 + 2 * sz)
+    }
+    if cmd == 19 {
+        let ok = ec_ecdh(cv, tst_ap(t, 2), tst_ap(t, 3), tst_al(t, 3), out)
+        if !ok {
+            return tst_ret(out, 0)
+        }
+        return tst_ret(out, sz)
+    }
+    tst_ret(tst_ap(t, 0), 0)
+}

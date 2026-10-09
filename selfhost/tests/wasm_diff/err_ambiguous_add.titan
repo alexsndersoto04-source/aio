@@ -1,0 +1,8 @@
+fn greet(name) {
+    let hello = "hola, " + name
+    hello
+}
+
+fn main() {
+    len(greet("x"))
+}

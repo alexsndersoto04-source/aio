@@ -1,0 +1,107 @@
+// Nativas de sistema de archivos y de entrada/salida estándar que solo existen en el runtime Titan
+// (la VM de Rust no las tiene): las usa el gestor de paquetes (`pkg.titan`) y los servidores
+// LSP/DAP (`lsp.titan`).
+
+// std::fs::is_symlink: true si la ruta es un enlace simbólico (sin seguirlo).
+fn std__fs__is_symlink(path: any) -> any {
+    rt_expect_str(path, "std::fs::is_symlink")
+    let buf = rt_alloc(144)
+    let c = rt_cstr(path)
+    // newfstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)
+    let r = std::raw::syscall(262, -100, c, buf, 256, 0, 0)
+    let mode = std::raw::load(buf + 24) & 4294967295
+    rt_free_block(c)
+    rt_free_block(buf)
+    r == 0 && (mode & 61440) == 40960
+}
+
+// std::fs::write_private: crea el archivo con permisos 0600; falla si ya existe.
+fn std__fs__write_private(path: any, bytes: any) -> any {
+    rt_expect_str(path, "std::fs::write_private")
+    rt_expect_bytes(bytes, "std::fs::write_private")
+    let c = rt_cstr(path)
+    // open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)
+    let fd = std::raw::syscall(2, c, 524481, 384, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        rt_native_fail("std::fs::write_private", rt_os_error(-fd))
+    }
+    let r = rt_write_all(fd, std::raw::bits(bytes) + 16, rt_slen(bytes))
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    if r < 0 {
+        rt_native_fail("std::fs::write_private", rt_os_error(-r))
+    }
+    nil
+}
+
+// std::io::read_stdin(n): lee de la entrada estándar como mucho n bytes con UNA llamada read;
+// bloquea hasta que haya algo y devuelve bytes vacíos al llegar al final del flujo.
+fn std__io__read_stdin(n: any) -> any {
+    rt_expect_int(n, "std::io::read_stdin")
+    if n < 0 || n > 16777216 {
+        rt_native_fail("std::io::read_stdin", "length must be between 0 and 16777216")
+    }
+    let buf = rt_alloc(n + 16)
+    let mut got = 0
+    loop {
+        got = std::raw::syscall(0, 0, buf, n, 0, 0, 0)
+        if got != -4 {
+            break
+        }
+    }
+    if got < 0 {
+        rt_free_block(buf)
+        rt_native_fail("std::io::read_stdin", rt_os_error(-got))
+    }
+    let out = rt_bytes_from(buf, got)
+    rt_free_block(buf)
+    out
+}
+
+// std::io::write_stdout(bytes): escribe todos los bytes en la salida estándar, sin salto de línea
+// y sin búfer propio (cada llamada llega al descriptor 1).
+fn std__io__write_stdout(bytes: any) -> any {
+    rt_expect_bytes(bytes, "std::io::write_stdout")
+    let r = rt_write_all(1, std::raw::bits(bytes) + 16, rt_slen(bytes))
+    if r < 0 {
+        rt_native_fail("std::io::write_stdout", rt_os_error(-r))
+    }
+    nil
+}
+
+// std::process::exec_once(ruta, argv): reemplaza este proceso por el ejecutable `ruta` (execve) y
+// lo borra del disco antes de arrancarlo (se abre primero y se ejecuta por el descriptor con
+// execveat(AT_EMPTY_PATH), así no queda un archivo temporal). Hereda stdin/stdout/stderr y el
+// entorno. Solo vuelve (con un error) si el sistema no puede ejecutarlo. La usa `titan debug`.
+fn std__process__exec_once(path: any, argv: any) -> any {
+    let f = "std::process::exec_once"
+    rt_expect_str(path, f)
+    rt_expect_array(argv, f)
+    let n = rt_seq_len(argv)
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(argv, i), f)
+        i += 1
+    }
+    let c = rt_cstr(path)
+    // open(path, O_RDONLY | O_CLOEXEC)
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    if fd < 0 {
+        rt_free_block(c)
+        rt_native_fail(f, rt_os_error(-fd))
+    }
+    std::raw::syscall(87, c, 0, 0, 0, 0, 0)
+    rt_free_block(c)
+    let cargv = rt_alloc(8 * (n + 1))
+    i = 0
+    while i < n {
+        std::raw::store(cargv + 8 * i, rt_cstr(rt_seq_get(argv, i)))
+        i += 1
+    }
+    std::raw::store(cargv + 8 * n, 0)
+    let empty = rt_cstr("")
+    // execveat(fd, "", argv, envp, AT_EMPTY_PATH)
+    let r = std::raw::syscall(322, fd, empty, cargv, rt_environ(), 4096, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    rt_native_fail(f, rt_os_error(-r))
+}

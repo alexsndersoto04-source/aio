@@ -1,0 +1,37 @@
+// 1 MiB por un socket: el escritor se bloquea cuando se llena el búfer del
+// núcleo y el lector (otra tarea) lo vacía.
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    let escritor = spawn || {
+        let c = std::net::tcp_connect(addr)
+        let mut bloque = ""
+        let mut i = 0
+        while i < 1024 {
+            bloque = bloque + "0123456789abcdef"
+            i += 1
+        }
+        let mut enviados = 0
+        let mut j = 0
+        while j < 64 {
+            enviados += std::net::tcp_write(c, bloque)
+            j += 1
+        }
+        std::net::tcp_close(c)
+        enviados
+    }
+    let (s, peer) = std::net::tcp_accept(l)
+    let mut total = 0
+    let mut leyendo = true
+    while leyendo {
+        let b = std::net::tcp_read(s, 65536)
+        let n = std::bytes::length(b)
+        if n == 0 {
+            leyendo = false
+        }
+        total += n
+    }
+    print(total)
+    print(join(escritor))
+    print(std::net::tcp_close(s))
+}

@@ -1,0 +1,182 @@
+// std::sqlite: la API completa. Se compara el nativo (motor en Titan) con la VM de Rust.
+
+fn ok_or(r: any) -> string {
+    match r {
+        Result::Ok(v) => {
+            return "ok {v}"
+        },
+        Result::Err(m) => {
+            return "ERR {m}"
+        },
+        _ => {
+            return "?"
+        },
+    }
+}
+
+fn q(db: Sqlite, sql: string, p: any) {
+    let r = std::try::catch(|| { std::sqlite::query(db, sql, p) })
+    println("Q {sql} => " + ok_or(r))
+}
+
+fn x(db: Sqlite, sql: string, p: any) {
+    let r = std::try::catch(|| { std::sqlite::execute(db, sql, p) })
+    println("X {sql} => " + ok_or(r))
+}
+
+fn main() {
+    let db = std::sqlite::memory()
+    x(db, "create table t(id integer primary key, name text not null, score real, data blob, n integer unique)", [])
+    x(db, "insert into t(name, score, data, n) values (?, ?, ?, ?)", ["ana", 1.5, nil, 1])
+    x(db, "insert into t(name, score, n) values (?, ?, ?), (?, ?, ?)", ["bob", 2, 2, "cy", 3.25, 3])
+    println(std::sqlite::last_insert_id(db))
+    x(db, "insert into t(name, n) values ('dup', 1)", [])
+    x(db, "insert into t(name) values (null)", [])
+    q(db, "select * from t order by id", [])
+    q(db, "select name, score * 2 as d, typeof(score) as ty from t where id > ? order by name desc", [1])
+    q(db, "select count(*) as c, sum(score) as s, avg(score) as a, min(name) as mn, max(name) as mx from t", [])
+    q(db, "select name from t where name like ? and n between ? and ?", ["%b%", 1, 5])
+    q(db, "select length(name) as l, upper(name) as u, substr(name, 2) as s, name || '!' as e from t", [])
+    q(db, "select coalesce(score, -1) as c, ifnull(data, 'nada') as d, nullif(n, 2) as z from t order by id", [])
+    q(db, "select * from nope", [])
+    q(db, "selec 1", [])
+    q(db, "select 1 +", [])
+    q(db, "select ? + ?", [1])
+    q(db, "select ?", [1, 2])
+    x(db, "update t set score = score + 1 where n >= ?", [2])
+    x(db, "delete from t where name = ?", ["cy"])
+    q(db, "select id, name, score from t order by id", [])
+    // transacciones
+    std::sqlite::begin(db)
+    x(db, "insert into t(name, n) values ('tx', 10)", [])
+    q(db, "select count(*) as c from t", [])
+    std::sqlite::rollback(db)
+    q(db, "select count(*) as c from t", [])
+    std::sqlite::begin(db)
+    x(db, "insert into t(name, n) values ('tx2', 11)", [])
+    std::sqlite::commit(db)
+    q(db, "select count(*) as c from t", [])
+    println(ok_or(std::try::catch(|| { std::sqlite::commit(db) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::rollback(db) })))
+    std::sqlite::begin(db)
+    println(ok_or(std::try::catch(|| { std::sqlite::begin(db) })))
+    std::sqlite::rollback(db)
+    // joins, subconsultas, grupos, ventanas, CTE, JSON, fechas
+    x(db, "create table g(k text, v integer)", [])
+    x(db, "insert into g values ('a', 1), ('a', 2), ('b', 3), ('b', 4), ('c', 5)", [])
+    q(db, "select k, sum(v) as s, count(*) as c from g group by k having sum(v) > 2 order by k", [])
+    q(db, "select t.name, g.v from t join g on g.v = t.n order by g.v", [])
+    q(db, "select t.name, g.v from t left join g on g.v = t.n order by t.id", [])
+    q(db, "select k, v, sum(v) over (partition by k order by v) as rs, row_number() over (order by v desc) as rn from g order by k, v", [])
+    q(db, "with r(n) as (select 1 union all select n + 1 from r where n < 5) select n, n * n as sq from r", [])
+    q(db, "select json_extract('{\"a\":[1,2,{\"b\":3}]}', '$.a[2].b') as j, json_array(1, 'x', null) as ja", [])
+    q(db, "select key, value from json_each('[10,20,30]')", [])
+    q(db, "select date('2024-03-15', '+1 month') as d, strftime('%Y/%m/%d', '2000-02-29') as s", [])
+    q(db, "select (select max(v) from g) as m, exists(select 1 from g where v = 9) as e, v in (1, 3) as i from g order by v", [])
+    q(db, "select case when v > 2 then 'big' else 'small' end as c, abs(-v) as a, round(v / 3.0, 2) as r from g order by v", [])
+    // DDL, pragma, indices, vistas, triggers, claves foráneas
+    x(db, "create index ix_g on g(k, v)", [])
+    x(db, "create view vg as select k, count(*) as c from g group by k", [])
+    q(db, "select * from vg order by k", [])
+    x(db, "create table log(m text)", [])
+    x(db, "create trigger tr after insert on g begin insert into log values ('ins ' || new.k); end", [])
+    x(db, "insert into g values ('z', 9)", [])
+    q(db, "select * from log", [])
+    q(db, "pragma table_info(t)", [])
+    q(db, "pragma index_list(g)", [])
+    q(db, "select name, type from sqlite_master order by name", [])
+    x(db, "create table p(id integer primary key)", [])
+    x(db, "create table c(id integer primary key, pid integer references p(id))", [])
+    x(db, "pragma foreign_keys = on", [])
+    x(db, "insert into c(pid) values (7)", [])
+    x(db, "insert into p values (7)", [])
+    x(db, "insert into c(pid) values (7)", [])
+    x(db, "delete from p where id = 7", [])
+    x(db, "alter table g add column w integer default 5", [])
+    q(db, "select * from g where k = 'z'", [])
+    x(db, "drop table log", [])
+    x(db, "drop table log", [])
+    // blobs, enteros grandes y reales
+    x(db, "create table b(x blob, i integer, r real)", [])
+    x(db, "insert into b values (?, ?, ?)", [std::encoding::hex_decode("00ff10"), 9223372036854775807, 0.1])
+    x(db, "insert into b values (zeroblob(2), -9223372036854775807, 1e300)", [])
+    q(db, "select x, i, r, hex(x) as h, typeof(x) as t from b", [])
+    q(db, "select 1/0 as a, 7 / 2 as b, 7 % 3 as c, 7 / 2.0 as d, 9223372036854775807 + 1 as e", [])
+    // migraciones
+    let m = std::json::parse("[{\"version\":1,\"name\":\"uno\",\"sql\":\"create table m1(a integer)\"},{\"version\":2,\"name\":\"dos\",\"sql\":\"create table m2(b text)\"}]")
+    println(ok_or(std::try::catch(|| { std::sqlite::migrate(db, m) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::migrate(db, m) })))
+    q(db, "select version, name, checksum from _titan_migrations order by version", [])
+    println(std::sqlite::ping(db))
+    println(std::sqlite::close(db))
+    println(ok_or(std::try::catch(|| { std::sqlite::ping(db) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::query(db, "select 1", []) })))
+    // archivo: persistencia y reabrir
+    let path = "/tmp/titan_sqlite_api_test.db"
+    let f = std::sqlite::open(path)
+    x(f, "drop table if exists k", [])
+    x(f, "create table k(a integer primary key, b text)", [])
+    std::sqlite::begin(f)
+    let mut i = 0
+    while i < 300 {
+        std::sqlite::execute(f, "insert into k(b) values (?)", ["fila numero {i} xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"])
+        i += 1
+    }
+    std::sqlite::commit(f)
+    q(f, "select count(*) as c, max(a) as m, min(length(b)) as l from k", [])
+    println(std::sqlite::close(f))
+    let f2 = std::sqlite::open(path)
+    q(f2, "select count(*) as c, sum(a) as s from k", [])
+    q(f2, "select a, b from k where a in (1, 150, 300) order by a", [])
+    x(f2, "delete from k where a % 2 = 0", [])
+    q(f2, "select count(*) as c from k", [])
+    // dos conexiones al mismo archivo
+    let f3 = std::sqlite::open(path)
+    q(f3, "select count(*) as c from k", [])
+    std::sqlite::begin(f2)
+    x(f2, "insert into k(b) values ('pend')", [])
+    q(f3, "select count(*) as c from k", [])
+    std::sqlite::rollback(f2)
+    println(std::sqlite::close(f2))
+    println(std::sqlite::close(f3))
+    println(ok_or(std::try::catch(|| { std::sqlite::open("/no/existe/dir/x.db") })))
+    // pool
+    let pool = std::sqlite::pool(path, 2)
+    println(std::sqlite::pool_health(pool, 1000))
+    println(std::sqlite::pool_stats(pool))
+    let a1 = std::sqlite::acquire(pool, 100)
+    let a2 = std::sqlite::acquire(pool, 100)
+    println(std::sqlite::pool_stats(pool))
+    let a3 = std::sqlite::acquire(pool, 50)
+    match a3 {
+        Option::Some(c) => {
+            println("a3 some")
+        },
+        Option::None => {
+            println("a3 none")
+        },
+    }
+    match a1 {
+        Option::Some(c) => {
+            q(c, "select count(*) as c from k", [])
+            println(std::sqlite::ping(c))
+            println(std::sqlite::close(c))
+        },
+        Option::None => {
+            println("a1 none")
+        },
+    }
+    println(std::sqlite::pool_stats(pool))
+    match a2 {
+        Option::Some(c) => {
+            println(std::sqlite::close(c))
+        },
+        Option::None => {
+            println("a2 none")
+        },
+    }
+    println(std::sqlite::pool_stats(pool))
+    std::sqlite::pool_close(pool)
+    println(ok_or(std::try::catch(|| { std::sqlite::pool_stats(pool) })))
+    println(ok_or(std::try::catch(|| { std::sqlite::acquire(pool, 10) })))
+}

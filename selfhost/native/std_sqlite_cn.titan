@@ -1,0 +1,518 @@
+// std::sqlite en Titan, parte 17: capa de conexión (transacciones, ejecución, migraciones).
+// Todo son funciones puras sobre valores `Conn`; el registro de handles vive en std_sqlite.titan.
+// Prefijo `cn`.
+
+struct Conn {
+    cx: Cx,
+    flag: bool,
+    path: string,
+    base: any,
+    snaps: array,
+    spbase: bool,
+    chg: int,
+}
+
+fn cn_cx(cx: Cx, pg: SqPg, params: array, now: int) -> Cx {
+    return Cx { sch: cx.sch, pg: pg, params: params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: 0, flags: cx.flags, trgs: [], settings: cx.settings }
+}
+
+fn cn_with_cx(c: Conn, cx: Cx) -> Conn {
+    return Conn { cx: cx, flag: c.flag, path: c.path, base: c.base, snaps: c.snaps, spbase: c.spbase, chg: c.chg }
+}
+
+fn cn_chg_of(pg: SqPg) -> int {
+    if sqio_size(pg.io) < 28 {
+        return 0
+    }
+    let h = sqio_read(pg.io, 24, 4)
+    return h[0] * 16777216 + h[1] * 65536 + h[2] * 256 + h[3]
+}
+
+// Abre una conexión sobre un SqIo (con el candado de lectura, por si hay un commit en curso).
+fn cn_make(io: SqIo, path: string) -> (any, string) {
+    if io.kind == 1 {
+        if !sqf_lock(io.fd, 1, false, 5000) {
+            return (nil, "database is locked")
+        }
+        let r = cn_make0(io, path)
+        sqf_unlock(io.fd, 1)
+        return r
+    }
+    return cn_make0(io, path)
+}
+
+fn cn_make0(io: SqIo, path: string) -> (any, string) {
+    let (pg, e) = sqp_open(io)
+    if e != "" {
+        return (nil, e)
+    }
+    let (sch, e2) = sh_load(pg)
+    if e2 != "" {
+        return (nil, e2)
+    }
+    let mut st = std::map::new()
+    st = std::map::insert(st, "file", Sv::SText(path))
+    let cx = Cx { sch: sch, pg: pg, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 0, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: st }
+    return (Conn { cx: cx, flag: false, path: path, base: nil, snaps: [], spbase: false, chg: cn_chg_of(pg) }, "")
+}
+
+// Si otro proceso/conexión cambió el archivo, vuelve a leer el esquema.
+fn cn_refresh(c: Conn) -> (Conn, string) {
+    if c.path == "" || c.base != nil {
+        return (c, "")
+    }
+    let now = cn_chg_of(c.cx.pg)
+    if now == c.chg {
+        return (c, "")
+    }
+    let (pg, e) = sqp_open(c.cx.pg.io)
+    if e != "" {
+        return (c, e)
+    }
+    let (sch, e2) = sh_load(pg)
+    if e2 != "" {
+        return (c, e2)
+    }
+    let cx = Cx { sch: sch, pg: pg, params: c.cx.params, ctes: c.cx.ctes, aggs: c.cx.aggs, wvals: c.cx.wvals, now: c.cx.now, lastid: c.cx.lastid, changes: c.cx.changes, tchanges: c.cx.tchanges, depth: 0, flags: c.cx.flags, trgs: [], settings: c.cx.settings }
+    return (Conn { cx: cx, flag: c.flag, path: c.path, base: c.base, snaps: c.snaps, spbase: c.spbase, chg: cn_chg_of(pg) }, "")
+}
+
+fn cn_busy_ms(c: Conn) -> int {
+    return sc_to_int(sg_setting(c.cx, "busy_timeout", Sv::SInt(5000)))
+}
+
+fn cn_begin_txn(c: Conn) -> (Conn, string) {
+    if c.base != nil {
+        return (c, "cannot start a transaction within a transaction")
+    }
+    if c.path != "" {
+        if !sqf_lock(c.cx.pg.io.fd, 0, true, cn_busy_ms(c)) {
+            return (c, "database is locked")
+        }
+    }
+    let (c2, e) = cn_refresh(c)
+    if e != "" {
+        if c.path != "" {
+            sqf_unlock(c.cx.pg.io.fd, 0)
+        }
+        return (c, e)
+    }
+    let pg = sqp_begin(c2.cx.pg)
+    let cx = sw_cx(c2.cx, pg, c2.cx.lastid, c2.cx.changes)
+    return (Conn { cx: cx, flag: c2.flag, path: c2.path, base: c2.cx, snaps: [], spbase: false, chg: c2.chg }, "")
+}
+
+fn cn_commit_txn(c: Conn) -> (Conn, string) {
+    if c.base == nil {
+        return (c, "cannot commit - no transaction is active")
+    }
+    if c.path != "" {
+        if !sqf_lock(c.cx.pg.io.fd, 1, true, cn_busy_ms(c)) {
+            return (c, "database is locked")
+        }
+    }
+    let pg = sqp_commit(c.cx.pg, 3)
+    if c.path != "" {
+        sqf_unlock(c.cx.pg.io.fd, 1)
+        sqf_unlock(c.cx.pg.io.fd, 0)
+    }
+    let cx = sw_cx(c.cx, pg, c.cx.lastid, c.cx.changes)
+    return (Conn { cx: cx, flag: c.flag, path: c.path, base: nil, snaps: [], spbase: false, chg: cn_chg_of(pg) }, "")
+}
+
+fn cn_rollback_txn(c: Conn) -> (Conn, string) {
+    if c.base == nil {
+        return (c, "cannot rollback - no transaction is active")
+    }
+    let mut got = false
+    if c.path != "" {
+        sqf_unlock(c.cx.pg.io.fd, 0)
+        got = sqf_lock(c.cx.pg.io.fd, 1, false, 5000)
+    }
+    let b = c.base
+    let (pg, e) = sqp_open(b.pg.io)
+    let mut cx = b
+    if e == "" && c.path != "" {
+        let (sch, e2) = sh_load(pg)
+        if e2 == "" {
+            cx = Cx { sch: sch, pg: pg, params: b.params, ctes: b.ctes, aggs: b.aggs, wvals: b.wvals, now: b.now, lastid: b.lastid, changes: b.changes, tchanges: b.tchanges, depth: 0, flags: b.flags, trgs: [], settings: b.settings }
+        }
+    }
+    let cx2 = Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: c.cx.lastid, changes: c.cx.changes, tchanges: c.cx.tchanges, depth: 0, flags: cx.flags, trgs: [], settings: cx.settings }
+    let chg2 = cn_chg_of(cx2.pg)
+    if got {
+        sqf_unlock(c.cx.pg.io.fd, 1)
+    }
+    return (Conn { cx: cx2, flag: c.flag, path: c.path, base: nil, snaps: [], spbase: false, chg: chg2 }, "")
+}
+
+// Sentencias de control de transacción. Devuelve (conexión, error).
+fn cn_txn_stmt(c: Conn, st: any) -> (Conn, string) {
+    let k = st.k
+    if k == "begin" {
+        return cn_begin_txn(c)
+    }
+    if k == "commit" {
+        return cn_commit_txn(c)
+    }
+    if k == "rollback" {
+        if st.v == "" {
+            return cn_rollback_txn(c)
+        }
+        // ROLLBACK TO savepoint
+        let mut i = len(c.snaps) - 1
+        while i >= 0 {
+            if sh_key(c.snaps[i][0]) == sh_key(st.v) {
+                let snap = c.snaps[i][1]
+                let keep = std::array::slice(c.snaps, 0, i + 1)
+                let cx = Cx { sch: snap.sch, pg: snap.pg, params: snap.params, ctes: snap.ctes, aggs: snap.aggs, wvals: snap.wvals, now: snap.now, lastid: c.cx.lastid, changes: c.cx.changes, tchanges: c.cx.tchanges, depth: 0, flags: snap.flags, trgs: [], settings: snap.settings }
+                return (Conn { cx: cx, flag: c.flag, path: c.path, base: c.base, snaps: keep, spbase: c.spbase, chg: c.chg }, "")
+            }
+            i -= 1
+        }
+        return (c, "no such savepoint: " + st.v)
+    }
+    if k == "savepoint" {
+        let mut c2 = c
+        let mut spb = c.spbase
+        if c.base == nil {
+            let (c3, e) = cn_begin_txn(c)
+            if e != "" {
+                return (c, e)
+            }
+            c2 = c3
+            spb = true
+        }
+        let snaps = std::array::push(c2.snaps, [st.v, c2.cx])
+        return (Conn { cx: c2.cx, flag: c2.flag, path: c2.path, base: c2.base, snaps: snaps, spbase: spb, chg: c2.chg }, "")
+    }
+    // release
+    let mut i = len(c.snaps) - 1
+    while i >= 0 {
+        if sh_key(c.snaps[i][0]) == sh_key(st.v) {
+            let keep = std::array::slice(c.snaps, 0, i)
+            let c2 = Conn { cx: c.cx, flag: c.flag, path: c.path, base: c.base, snaps: keep, spbase: c.spbase, chg: c.chg }
+            if len(keep) == 0 && c.spbase {
+                return cn_commit_txn(c2)
+            }
+            return (c2, "")
+        }
+        i -= 1
+    }
+    return (c, "no such savepoint: " + st.v)
+}
+
+fn cn_is_txn(k: string) -> bool {
+    return k == "begin" || k == "commit" || k == "rollback" || k == "savepoint" || k == "release"
+}
+
+fn cn_is_dml(k: string) -> bool {
+    return k == "insert" || k == "update" || k == "delete"
+}
+
+// Ejecuta una sentencia ya analizada. Devuelve (conexión, nombres, filas, error).
+fn cn_run_item(c0: Conn, item: array, sql: string, params: array) -> (Conn, array, array, string) {
+    let st = item[0]
+    let k = st.k
+    if cn_is_txn(k) {
+        let (c2, e) = cn_txn_stmt(c0, st)
+        return (c2, [], [], e)
+    }
+    let now = std::time::unix_millis()
+    let mut c = c0
+    let intx = c0.base != nil
+    if k == "select" || (k == "pragma" && false) {
+        // lectura: candado de confirmación compartido (ve siempre lo último confirmado)
+        let mut got = false
+        if !intx && c.path != "" {
+            got = sqf_lock(c.cx.pg.io.fd, 1, false, cn_busy_ms(c))
+            if !got {
+                return (c0, [], [], "database is locked")
+            }
+        }
+        if !intx {
+            let (c1, e0) = cn_refresh(c0)
+            if e0 != "" {
+                if got {
+                    sqf_unlock(c.cx.pg.io.fd, 1)
+                }
+                return (c0, [], [], e0)
+            }
+            c = c1
+        }
+        let cx = cn_cx(c.cx, c.cx.pg, params, now)
+        let (cx2, names, rows, err) = sg_exec(cx, item, sql)
+        if got {
+            sqf_unlock(c.cx.pg.io.fd, 1)
+        }
+        if err != "" {
+            return (c0, [], [], st_clean_err(err))
+        }
+        return (cn_with_cx(c, cx2), names, rows, "")
+    }
+    if intx {
+        let cx = cn_cx(c.cx, c.cx.pg, params, now)
+        let (cx2, names, rows, err) = sg_exec(cx, item, sql)
+        if err != "" {
+            let mut cxe = c.cx
+            if cn_is_dml(k) {
+                cxe = sw_cx(c.cx, c.cx.pg, c.cx.lastid, 0)
+            }
+            return (cn_with_cx(c, cxe), [], [], st_clean_err(err))
+        }
+        return (cn_with_cx(c, sw_tot(cx2, k)), names, rows, "")
+    }
+    // transacción automática
+    let (cb, eb) = cn_begin_txn(c)
+    if eb != "" {
+        return (c0, [], [], eb)
+    }
+    let cx = cn_cx(cb.cx, cb.cx.pg, params, now)
+    let (cx2, names, rows, err) = sg_exec(cx, item, sql)
+    if err != "" {
+        let (cr, er) = cn_rollback_txn(cb)
+        let mut cxe = cr.cx
+        if cn_is_dml(k) {
+            cxe = sw_cx(cr.cx, cr.cx.pg, cr.cx.lastid, 0)
+        }
+        return (cn_with_cx(cr, cxe), [], [], st_clean_err(err))
+    }
+    let cb2 = cn_with_cx(cb, sw_tot(cx2, k))
+    let (cc, ec) = cn_commit_txn(cb2)
+    if ec != "" {
+        let (cr2, er2) = cn_rollback_txn(cb2)
+        return (c0, [], [], ec)
+    }
+    return (cc, names, rows, "")
+}
+
+// total_changes: suma los cambios de las sentencias DML.
+fn sw_tot(cx: Cx, k: string) -> Cx {
+    if cn_is_dml(k) {
+        return Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges + cx.changes, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+    }
+    return cx
+}
+
+fn cn_param_count(toks: array) -> int {
+    let eof = toks[len(toks) - 1]
+    match std::text::parse_int(eof.s) {
+        Option::Some(n) => {
+            return n
+        },
+        _ => {
+            return 0
+        },
+    }
+}
+
+// execute (mode 0) / query (mode 1). Devuelve (conexión, nombres, filas, error).
+fn cn_exec(c: Conn, sql: string, params: array, mode: int) -> (Conn, array, array, string) {
+    let (all, perr) = ss_parse_all(sql)
+    if perr != "" {
+        return (c, [], [], sy_fmt_err(sql, perr))
+    }
+    if len(all) == 0 {
+        return (c, [], [], "not an error")
+    }
+    let item = all[0]
+    let np = cn_param_count(item[1])
+    if np != len(params) {
+        return (c, [], [], "Wrong number of parameters passed to query. Got {len(params)}, needed {np}")
+    }
+    let (c2, names, rows, err) = cn_run_item(c, item, sql, params)
+    if err != "" {
+        return (c2, [], [], sy_fmt_err(sql, err))
+    }
+    if mode == 0 && len(rows) > 0 {
+        return (c2, [], [], "Execute returned results - did you mean to call query?")
+    }
+    return (c2, names, rows, "")
+}
+
+// Ejecuta todas las sentencias de un texto (execute_batch).
+fn cn_batch(c0: Conn, sql: string) -> (Conn, string) {
+    let (all, perr) = ss_parse_all(sql)
+    if perr != "" {
+        return (c0, sy_fmt_err(sql, perr))
+    }
+    let mut c = c0
+    for item in all {
+        let np = cn_param_count(item[1])
+        if np > 0 {
+            return (c0, "Wrong number of parameters passed to query. Got 0, needed {np}")
+        }
+        let (c2, names, rows, err) = cn_run_item(c, item, sql, [])
+        if err != "" {
+            return (c2, sy_fmt_err(sql, err))
+        }
+        c = c2
+    }
+    return (c, "")
+}
+
+// begin/commit/rollback de la API (con el indicador propio de la conexión).
+fn cn_api_begin(c: Conn) -> (Conn, string) {
+    if c.flag {
+        return (c, "transaction is already active")
+    }
+    let (c2, e) = cn_batch(c, "BEGIN IMMEDIATE")
+    if e != "" {
+        return (c2, "SQLite error: " + e)
+    }
+    return (Conn { cx: c2.cx, flag: true, path: c2.path, base: c2.base, snaps: c2.snaps, spbase: c2.spbase, chg: c2.chg }, "")
+}
+
+fn cn_api_end(c: Conn, sql: string) -> (Conn, string) {
+    if !c.flag {
+        return (c, "no active transaction")
+    }
+    let (c2, e) = cn_batch(c, sql)
+    if e != "" {
+        return (c2, "SQLite error: " + e)
+    }
+    return (Conn { cx: c2.cx, flag: false, path: c2.path, base: c2.base, snaps: c2.snaps, spbase: c2.spbase, chg: c2.chg }, "")
+}
+
+// ------------------------------------------------------------ migraciones
+
+fn cn_xor8(a: int, b: int) -> int {
+    let mut r = 0
+    let mut x = a
+    let mut y = b
+    let mut p = 1
+    let mut i = 0
+    while i < 8 {
+        if (x % 2) != (y % 2) {
+            r += p
+        }
+        x = x / 2
+        y = y / 2
+        p = p * 2
+        i += 1
+    }
+    return r
+}
+
+fn cn_hex8(n: int) -> string {
+    let d = "0123456789abcdef"
+    let cs = sql_chars(d)
+    let mut out = ""
+    let mut v = n
+    let mut parts = []
+    let mut i = 0
+    while i < 8 {
+        parts = std::array::push(parts, cs[v % 16])
+        v = v / 16
+        i += 1
+    }
+    let mut j = 7
+    while j >= 0 {
+        out = out + parts[j]
+        j -= 1
+    }
+    return out
+}
+
+// FNV-1a de 64 bits sobre los bytes UTF-8, con el mismo formato que el adaptador de Rust.
+fn cn_checksum(sql: string) -> string {
+    let mut hi = 3421674724
+    let mut lo = 2216829733
+    for b in sq_utf8(sql) {
+        lo = lo - lo % 256 + cn_xor8(lo % 256, b)
+        let p0 = lo * 435
+        let carry = p0 / 4294967296
+        let nlo = p0 % 4294967296
+        let nhi = (hi * 435 + lo * 256 + carry) % 4294967296
+        hi = nhi
+        lo = nlo
+    }
+    return "fnv1a64:" + cn_hex8(hi) + cn_hex8(lo)
+}
+
+// migs: array de [versión (int), nombre (string), sql (string)]. Devuelve (conexión, aplicadas, error).
+fn cn_migrate(c0: Conn, migs: array) -> (Conn, int, string) {
+    if c0.flag {
+        return (c0, 0, "transaction is already active")
+    }
+    let mut prev = 0
+    for m in migs {
+        if m[0] <= prev {
+            return (c0, 0, "migration versions must be positive, unique, and increasing")
+        }
+        prev = m[0]
+    }
+    let (c1, e1) = cn_batch(c0, "CREATE TABLE IF NOT EXISTS _titan_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,checksum TEXT NOT NULL,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);")
+    if e1 != "" {
+        return (c0, 0, "SQLite error: " + e1)
+    }
+    let (c2, names, rows, e2) = cn_exec(c1, "SELECT version,name,checksum FROM _titan_migrations ORDER BY version", [], 1)
+    if e2 != "" {
+        return (c1, 0, "SQLite error: " + e2)
+    }
+    let mut applied = std::map::new()
+    for r in rows {
+        let vk = sc_to_int(r[0])
+        applied = std::map::insert(applied, "{vk}", [sc_to_text(r[1]), sc_to_text(r[2])])
+    }
+    for m in migs {
+        let mv = m[0]
+        let key = "{mv}"
+        if std::map::contains(applied, key) {
+            let ex = std::map::get(applied, key)
+            if ex[1] != cn_checksum(m[2]) || ex[0] != m[1] {
+                return (c2, 0, "previously applied migration {mv} has changed")
+            }
+        }
+    }
+    let (c3, e3) = cn_api_begin(c2)
+    if e3 != "" {
+        return (c2, 0, e3)
+    }
+    let mut c = c3
+    let mut count = 0
+    for m in migs {
+        let mv2 = m[0]
+        let key2 = "{mv2}"
+        if !std::map::contains(applied, key2) {
+            let (c4, e4) = cn_batch(c, m[2])
+            if e4 != "" {
+                let (c5, e5) = cn_api_end(c4, "ROLLBACK")
+                return (c5, 0, "SQLite error: " + e4)
+            }
+            let (c6, n6, r6, e6) = cn_exec(c4, "INSERT INTO _titan_migrations(version,name,checksum) VALUES (?,?,?)", [Sv::SInt(m[0]), Sv::SText(m[1]), Sv::SText(cn_checksum(m[2]))], 0)
+            if e6 != "" {
+                let (c5, e5) = cn_api_end(c6, "ROLLBACK")
+                return (c5, 0, "SQLite error: " + e6)
+            }
+            c = c6
+            count += 1
+        }
+    }
+    let (c7, e7) = cn_api_end(c, "COMMIT")
+    if e7 != "" {
+        return (c7, 0, e7)
+    }
+    return (c7, count, "")
+}
+
+fn cn_ping(c: Conn) -> (Conn, bool) {
+    let (c2, names, rows, e) = cn_exec(c, "SELECT 1", [], 1)
+    if e != "" {
+        return (c, false)
+    }
+    return (c2, len(rows) > 0)
+}
+
+// Cierra la conexión: revierte una transacción abierta con begin().
+fn cn_close(c: Conn) -> Conn {
+    if c.flag && c.base != nil {
+        let (c2, e) = cn_rollback_txn(c)
+        return c2
+    }
+    if c.base != nil && c.path != "" {
+        let (c3, e3) = cn_rollback_txn(c)
+        return c3
+    }
+    return c
+}

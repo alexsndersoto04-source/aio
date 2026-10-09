@@ -1,0 +1,21 @@
+// std::redis y std::net::tcp_* en el mismo programa: antes compartían la posición 3560 de los
+// globals y la segunda conexión Redis tras abrir un socket TCP terminaba en segfault.
+// Uso: TITAN_TEST_REDIS_URL=redis://127.0.0.1:PUERTO/0 TITAN_TEST_REDIS_ADDR=127.0.0.1:PUERTO
+fn main() {
+    let url = std::env::get("TITAN_TEST_REDIS_URL")
+    let addr = std::env::get("TITAN_TEST_REDIS_ADDR")
+    std::testing::assert(url != "" && addr != "", "se necesita un Redis real")
+    let c = std::redis::connect(url)
+    std::redis::set(c, "titan:redis_tcp", "v1")
+    let t = std::net::tcp_connect(addr)
+    std::net::tcp_write(t, "PING\r\n")
+    std::testing::assert_eq(std::encoding::utf8_decode(std::net::tcp_read(t, 16)), "+PONG\r\n", "PING por TCP")
+    std::testing::assert_eq(std::redis::get(c, "titan:redis_tcp"), "v1", "GET tras abrir un socket")
+    let c2 = std::redis::connect(url)
+    std::testing::assert_eq(std::redis::get(c2, "titan:redis_tcp"), "v1", "segunda conexión Redis")
+    std::redis::del(c2, "titan:redis_tcp")
+    std::redis::close(c)
+    std::redis::close(c2)
+    std::net::tcp_close(t)
+    print("redis_tcp ok")
+}

@@ -1,0 +1,43 @@
+// Errores de la API std::onnx (mismos textos bajo tract y en el nativo salvo
+// los que dependen del contenido del modelo). Uso: errors <modelo sin extensión> <directorio>
+fn report(label: string, r: any) {
+    match r {
+        Result::Ok(v) => {
+            print(label + " => ok")
+        },
+        Result::Err(e) => {
+            print(label + " => ERR " + "{e}")
+        },
+        _ => {
+            print(label + " => ?")
+        },
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let base = args[len(args) - 2]
+    let dir = args[len(args) - 1]
+    let doc = std::json::parse(std::fs::read_text(base + ".json"))
+    report("missing", std::try::catch(|| { std::onnx::load(dir + "/no_such_model.onnx") }))
+    report("directory", std::try::catch(|| { std::onnx::load(dir) }))
+    report("bad_handle", std::try::catch(|| { std::onnx::input_count(99) }))
+    report("bad_handle_run", std::try::catch(|| { std::onnx::run_f32(99, [1], [1.0]) }))
+    let h = std::onnx::load(base + ".onnx")
+    print("handle {h}")
+    report("zero_dim", std::try::catch(|| { std::onnx::run_f32(h, [0, 3], []) }))
+    report("negative_dim", std::try::catch(|| { std::onnx::run_f32(h, [-1, 3], []) }))
+    report("rank9", std::try::catch(|| { std::onnx::run_f32(h, [1, 1, 1, 1, 1, 1, 1, 1, 1], [1.0]) }))
+    report("mismatch", std::try::catch(|| { std::onnx::run_f32(h, doc.shape, [1.0]) }))
+    report("huge_dim", std::try::catch(|| { std::onnx::run_f32(h, [4194305], [1.0]) }))
+    std::onnx::close(h)
+    report("after_close", std::try::catch(|| { std::onnx::input_count(h) }))
+    std::onnx::close(h)
+    let h2 = std::onnx::load(base + ".onnx")
+    print("handle2 {h2}")
+    let h3 = std::onnx::load(base + ".onnx")
+    let h4 = std::onnx::load(base + ".onnx")
+    let h5 = std::onnx::load(base + ".onnx")
+    print("handles {h3} {h4} {h5}")
+    report("fifth", std::try::catch(|| { std::onnx::load(base + ".onnx") }))
+}

@@ -1,0 +1,22 @@
+// Revisa de verdad (cargador + typechecker de Titan) selfhost/native/runtime.titan
+// con las mismas firmas que usa build.titan, sin generar código máquina.
+// Uso: zett run selfhost/revisar_runtime.titan
+// Imprime `ok` o los diagnósticos reales; con errores sale con código 1.
+import args
+import frontend
+import native::backend
+
+fn main() {
+    let here = std::path::parent(std::path::canonical(ar_program()))
+    let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
+    let natives = std::array::concat(native_table(), raw_signatures())
+    match front(runtime, natives) {
+        Result::Ok(g) => {
+            println("ok")
+        },
+        Result::Err(message) => {
+            println(message)
+            std::process::exit(1)
+        },
+    }
+}

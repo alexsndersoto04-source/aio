@@ -1,0 +1,295 @@
+// std::sqlite en Titan, parte 5: analizador léxico de SQL. Prefijo `sql`.
+// Un token: k = clase ("id" palabra sin comillas, "qid" identificador entrecomillado, "str",
+// "blob", "int", "float", "param", "op", "eof"), s = texto, u = texto en mayúsculas (solo "id").
+
+struct STok {
+    k: string,
+    s: string,
+    u: string,
+    p: int,
+}
+
+fn sql_isalpha(n: int) -> bool {
+    return (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || n == 95 || n >= 128
+}
+
+fn sql_isdigit(n: int) -> bool {
+    n >= 48 && n <= 57
+}
+
+fn sql_ishex(n: int) -> bool {
+    return (n >= 48 && n <= 57) || (n >= 65 && n <= 70) || (n >= 97 && n <= 102)
+}
+
+fn sql_upper_ascii(s: string) -> string {
+    let cs = std::text::chars(s)
+    let mut out = []
+    for c in cs {
+        let k = std::text::char_code(c)
+        if k >= 97 && k <= 122 {
+            out = std::array::push(out, std::text::from_char_code(k - 32))
+        } else {
+            out = std::array::push(out, c)
+        }
+    }
+    std::collections::join(out, "")
+}
+
+fn sql_lower_ascii(s: string) -> string {
+    sq_fold(s)
+}
+
+// Lee un literal entre comillas `q`; las comillas dobles repetidas son una. Devuelve (texto, siguiente) o (msg, -1).
+fn sql_quoted(cs: array, i: int, q: string) -> (string, int) {
+    let n = len(cs)
+    let mut j = i + 1
+    let mut out = []
+    while j < n {
+        if cs[j] == q {
+            if j + 1 < n && cs[j + 1] == q {
+                out = std::array::push(out, q)
+                j += 2
+                continue
+            }
+            return (std::collections::join(out, ""), j + 1)
+        }
+        out = std::array::push(out, cs[j])
+        j += 1
+    }
+    return ("unrecognized token", -1)
+}
+
+fn sql_chars(sql: string) -> array {
+    let mut out = []
+    for c in std::text::chars(sql) {
+        out = std::array::push(out, std::collections::join([c], ""))
+    }
+    out
+}
+
+fn sql_codes(sql: string) -> array {
+    let mut out = []
+    for c in std::text::chars(sql) {
+        out = std::array::push(out, std::text::char_code(c))
+    }
+    out
+}
+
+fn sql_lex(sql: string) -> (array, string) {
+    let cs = sql_chars(sql)
+    let cd = sql_codes(sql)
+    let n = len(cs)
+    let mut toks = []
+    let mut nparam = 0
+    let mut names = std::map::new()
+    let mut i = 0
+    while i < n {
+        let c = cs[i]
+        if c == " " || c == "\n" || c == "\t" || c == "\r" {
+            i += 1
+            continue
+        }
+        if c == "-" && i + 1 < n && cs[i + 1] == "-" {
+            while i < n && cs[i] != "\n" {
+                i += 1
+            }
+            continue
+        }
+        if c == "/" && i + 1 < n && cs[i + 1] == "*" {
+            i += 2
+            while i < n && !(cs[i] == "*" && i + 1 < n && cs[i + 1] == "/") {
+                i += 1
+            }
+            i += 2
+            continue
+        }
+        if c == "'" {
+            let (s, j) = sql_quoted(cs, i, "'")
+            if j < 0 {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, n), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            toks = std::array::push(toks, STok { k: "str", s: s, u: "", p: i })
+            i = j
+            continue
+        }
+        if c == "\"" || c == "`" {
+            let (s, j) = sql_quoted(cs, i, c)
+            if j < 0 {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, n), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            toks = std::array::push(toks, STok { k: "qid", s: s, u: "", p: i })
+            i = j
+            continue
+        }
+        if c == "[" {
+            let mut j = i + 1
+            while j < n && cs[j] != "]" {
+                j += 1
+            }
+            if j >= n {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, n), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            toks = std::array::push(toks, STok { k: "qid", s: std::collections::join(std::array::slice(cs, i + 1, j), ""), u: "", p: i })
+            i = j + 1
+            continue
+        }
+        if (c == "x" || c == "X") && i + 1 < n && cs[i + 1] == "'" {
+            let mut j = i + 2
+            while j < n && cs[j] != "'" {
+                j += 1
+            }
+            if j >= n {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, n), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            let hex = std::collections::join(std::array::slice(cs, i + 2, j), "")
+            let hl = len(std::text::chars(hex))
+            let mut okh = hl % 2 == 0
+            for h in std::text::chars(hex) {
+                if !sql_ishex(std::text::char_code(h)) {
+                    okh = false
+                }
+            }
+            if !okh {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, j + 1), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            toks = std::array::push(toks, STok { k: "blob", s: hex, u: "", p: i })
+            i = j + 1
+            continue
+        }
+        if sql_isdigit(cd[i]) || (c == "." && i + 1 < n && sql_isdigit(cd[i + 1])) {
+            let mut j = i
+            let mut isf = false
+            if c == "0" && i + 1 < n && (cs[i + 1] == "x" || cs[i + 1] == "X") {
+                j = i + 2
+                while j < n && sql_ishex(cd[j]) {
+                    j += 1
+                }
+                toks = std::array::push(toks, STok { k: "int", s: std::collections::join(std::array::slice(cs, i, j), ""), u: "", p: i })
+                i = j
+                continue
+            }
+            while j < n && sql_isdigit(cd[j]) {
+                j += 1
+            }
+            if j < n && cs[j] == "." {
+                isf = true
+                j += 1
+                while j < n && sql_isdigit(cd[j]) {
+                    j += 1
+                }
+            }
+            if j < n && (cs[j] == "e" || cs[j] == "E") {
+                let mut m = j + 1
+                if m < n && (cs[m] == "+" || cs[m] == "-") {
+                    m += 1
+                }
+                if m < n && sql_isdigit(cd[m]) {
+                    while m < n && sql_isdigit(cd[m]) {
+                        m += 1
+                    }
+                    isf = true
+                    j = m
+                }
+            }
+            if j < n && sql_isalpha(cd[j]) {
+                return ([], "unrecognized token: \"" + std::collections::join(std::array::slice(cs, i, j + 1), "") + "\"" + sx_chr(1) + "{i}")
+            }
+            let txt = std::collections::join(std::array::slice(cs, i, j), "")
+            if isf {
+                toks = std::array::push(toks, STok { k: "float", s: txt, u: "", p: i })
+            } else {
+                toks = std::array::push(toks, STok { k: "int", s: txt, u: "", p: i })
+            }
+            i = j
+            continue
+        }
+        if sql_isalpha(cd[i]) {
+            let mut j = i
+            while j < n && (sql_isalpha(cd[j]) || sql_isdigit(cd[j]) || cs[j] == "$") {
+                j += 1
+            }
+            let w = std::collections::join(std::array::slice(cs, i, j), "")
+            toks = std::array::push(toks, STok { k: "id", s: w, u: sql_upper_ascii(w), p: i })
+            i = j
+            continue
+        }
+        if c == "?" {
+            let mut j = i + 1
+            while j < n && sql_isdigit(cd[j]) {
+                j += 1
+            }
+            if j > i + 1 {
+                let num = std::collections::join(std::array::slice(cs, i + 1, j), "")
+                let nv = match std::text::parse_int(num) {
+                    Option::Some(x) => x,
+                    _ => 0,
+                }
+                if nv > nparam {
+                    nparam = nv
+                }
+                toks = std::array::push(toks, STok { k: "param", s: num, u: "", p: i })
+            } else {
+                nparam += 1
+                toks = std::array::push(toks, STok { k: "param", s: "{nparam}", u: "", p: i })
+            }
+            i = j
+            continue
+        }
+        if c == ":" || c == "@" || c == "$" {
+            let mut j = i + 1
+            while j < n && (sql_isalpha(cd[j]) || sql_isdigit(cd[j])) {
+                j += 1
+            }
+            if j == i + 1 {
+                return ([], "unrecognized token: \"" + c + "\"" + sx_chr(1) + "{i}")
+            }
+            let nm = std::collections::join(std::array::slice(cs, i, j), "")
+            let ex = std::map::get(names, nm)
+            if ex == nil {
+                nparam += 1
+                names = std::map::insert(names, nm, nparam)
+                toks = std::array::push(toks, STok { k: "param", s: "{nparam}", u: "", p: i })
+            } else {
+                let sn = ex
+                toks = std::array::push(toks, STok { k: "param", s: "{sn}", u: "", p: i })
+            }
+            i = j
+            continue
+        }
+        // operadores
+        if i + 2 < n && c == "-" && cs[i + 1] == ">" && cs[i + 2] == ">" {
+            toks = std::array::push(toks, STok { k: "op", s: "->>", u: "", p: i })
+            i += 3
+            continue
+        }
+        if i + 1 < n {
+            let two = c + cs[i + 1]
+            if two == "<=" || two == ">=" || two == "<>" || two == "!=" || two == "==" || two == "||" || two == "<<" || two == ">>" || two == "->" {
+                toks = std::array::push(toks, STok { k: "op", s: two, u: "", p: i })
+                i += 2
+                continue
+            }
+        }
+        if c == "(" || c == ")" || c == "," || c == ";" || c == "." || c == "+" || c == "-" || c == "*" || c == "/" || c == "%" || c == "=" || c == "<" || c == ">" || c == "&" || c == "|" || c == "~" {
+            toks = std::array::push(toks, STok { k: "op", s: c, u: "", p: i })
+            i += 1
+            continue
+        }
+        return ([], "unrecognized token: \"" + c + "\"" + sx_chr(1) + "{i}")
+    }
+    toks = std::array::push(toks, STok { k: "eof", s: "{nparam}", u: sql, p: n })
+    return (toks, "")
+}
+
+fn sq_trim_ws(s: string) -> string {
+    let cs = std::text::chars(s)
+    let mut a = 0
+    let mut b = len(cs)
+    while a < b && std::text::is_whitespace(cs[a]) {
+        a += 1
+    }
+    while b > a && std::text::is_whitespace(cs[b - 1]) {
+        b -= 1
+    }
+    std::collections::join(std::array::slice(cs, a, b), "")
+}

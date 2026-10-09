@@ -1,0 +1,95 @@
+// Métodos de `impl` (Op::CallMethod con un struct) y métodos de colección
+// (`xs.map(f)`, `xs.fold(...)`, ...): despacho dinámico en el backend nativo.
+struct Point { x: int, y: int }
+struct Circle { r: int }
+struct Counter { n: int }
+
+trait Area {
+    fn area(self) -> int;
+}
+
+impl Point {
+    fn sum(self) -> int { self.x + self.y }
+    fn scale(self, k: int) -> Point { Point { x: self.x * k, y: self.y * k } }
+    fn add(self, o: Point) -> Point { Point { x: self.x + o.x, y: self.y + o.y } }
+    fn origin() -> Point { Point { x: 0, y: 0 } }
+}
+
+impl Circle {
+    fn sum(self) -> int { self.r * 100 }
+    fn grow(self) -> Circle { Circle { r: self.r + 1 } }
+}
+
+impl Area for Circle {
+    fn area(self) -> int { self.r * self.r * 3 }
+}
+
+impl Area for Point {
+    fn area(self) -> int { self.x * self.y }
+}
+
+impl Counter {
+    fn fact(self, k: int) -> int {
+        if k <= 1 { return 1 }
+        k * self.fact(k - 1)
+    }
+}
+
+fn total(shapes: [any]) -> int {
+    let mut t = 0
+    for s in shapes { t += s.area() }
+    t
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 }
+    let c = Circle { r: 5 }
+    print(p.sum())
+    print(c.sum())
+    print(p.scale(2).sum())
+    print(p.scale(2).scale(3).add(p).sum())
+    print(Point::origin().sum())
+    print(c.grow().grow().r)
+    print(total([p, c, p.scale(2)]))
+    print(Counter { n: 0 }.fact(10))
+    let f = |q| q.sum()
+    print(f(p))
+    let xs = [5, 3, 8, 1, 9, 2]
+    print(xs.map(|v| v * v))
+    print(xs.filter(|v| v > 2))
+    print(xs.fold(100, |a, v| a - v))
+    print(xs.sort_by(|a, b| a - b))
+    print(xs.sort_by(|a, b| b - a))
+    print(xs.find(|v| v > 5))
+    print(xs.find(|v| v > 50))
+    print(xs.any(|v| v == 8))
+    print(xs.any(|v| v == 80))
+    print(xs.all(|v| v > 0))
+    print(xs.all(|v| v > 1))
+    print(xs.len())
+    print("héllo".len())
+    print((1, 2, 3).len())
+    print((1, 2, 3).map(|v| v + 1))
+    print(std::map::insert(std::map::new(), "a", 1).len())
+    print([].map(|v| v))
+    print([[1, 2], [3]].map(|row| row.len()))
+    let k = 10
+    print(xs.map(|v| v + k).filter(|v| v % 2 == 0).fold(0, |a, v| a + v))
+    print(["a", "b"].map(|s| s + "!"))
+    print(std::try::catch(|| { dyn_nope(p) }))
+    print(std::try::catch(|| { dyn_nope(xs) }))
+    print(std::try::catch(|| { dyn_nope(5) }))
+    print(std::try::catch(|| { dyn_map(xs, 1) }))
+    print(std::try::catch(|| { dyn_filter(xs) }))
+    print(std::try::catch(|| { dyn_map(5, |v| v) }))
+    print(std::try::catch(|| { dyn_map(xs, |a, b| a) }))
+    print(std::try::catch(|| { dyn_len1(xs) }))
+    print(std::try::catch(|| { dyn_area1(c) }))
+    print(std::try::catch(|| { dyn_nope(c) }))
+}
+
+fn dyn_nope(v: any) -> any { v.nope() }
+fn dyn_map(v: any, f: any) -> any { v.map(f) }
+fn dyn_filter(v: any) -> any { v.filter(|x| x) }
+fn dyn_len1(v: any) -> any { v.len(1) }
+fn dyn_area1(v: any) -> any { v.area(1) }

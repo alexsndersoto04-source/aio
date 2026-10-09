@@ -1,0 +1,2337 @@
+// TLS 1.3 (RFC 8446) cliente y servidor sobre sockets TCP reales: std::tls::connect, server_config,
+// accept, read, write y close con la semántica de las instrucciones Tls* de la VM.
+//
+// Soportado: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256; intercambio
+// X25519 (y secp256r1 en el servidor); firmas ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384 y
+// rsa_pss_rsae_sha256/384/512; KeyUpdate. El cliente valida la cadena contra las anclas de Mozilla
+// (std_roots.titan) y el nombre del servidor (std_x509.titan).
+// NO soportado (a diferencia de rustls en la VM): TLS 1.2, HelloRetryRequest, reanudación de sesión,
+// certificados de cliente, ALPN. Un servidor que solo hable TLS 1.2 da error de versión.
+// Prefijos tb_ (constructor de mensajes), tl_ (protocolo).
+
+// ------------------------------------------------------------ constructor de mensajes
+
+fn tb_new(cap: int) -> int {
+    let b = rt_alloc(24)
+    std::raw::store(b, rt_alloc(cap + 16))
+    std::raw::store(b + 8, 0)
+    std::raw::store(b + 16, cap)
+    b
+}
+
+fn tb_room(b: int, extra: int) {
+    let len = std::raw::load(b + 8)
+    let cap = std::raw::load(b + 16)
+    if len + extra > cap {
+        let mut nc = cap * 2
+        if nc < len + extra {
+            nc = len + extra
+        }
+        let nd = rt_alloc(nc + 16)
+        rt_copy(nd, std::raw::load(b), len)
+        rt_free_block(std::raw::load(b))
+        std::raw::store(b, nd)
+        std::raw::store(b + 16, nc)
+    }
+}
+
+fn tb_u8(b: int, v: int) {
+    tb_room(b, 1)
+    let len = std::raw::load(b + 8)
+    std::raw::store8(std::raw::load(b) + len, v & 255)
+    std::raw::store(b + 8, len + 1)
+}
+
+fn tb_u16(b: int, v: int) {
+    tb_u8(b, std::raw::shr(v, 8))
+    tb_u8(b, v)
+}
+
+fn tb_u24(b: int, v: int) {
+    tb_u8(b, std::raw::shr(v, 16))
+    tb_u8(b, std::raw::shr(v, 8))
+    tb_u8(b, v)
+}
+
+fn tb_bytes(b: int, p: int, n: int) {
+    tb_room(b, n)
+    let len = std::raw::load(b + 8)
+    rt_copy(std::raw::load(b) + len, p, n)
+    std::raw::store(b + 8, len + n)
+}
+
+// Quita los n primeros bytes.
+fn tb_drop(b: int, n: int) {
+    let len = std::raw::load(b + 8)
+    let d = std::raw::load(b)
+    rt_copy(d, d + n, len - n)
+    std::raw::store(b + 8, len - n)
+}
+
+fn tb_free(b: int) {
+    rt_free_block(std::raw::load(b))
+    rt_free_block(b)
+}
+
+// Reserva `size` bytes de longitud y devuelve su posición; tb_patch los rellena al terminar.
+fn tb_mark(b: int, size: int) -> int {
+    let pos = std::raw::load(b + 8)
+    let mut i = 0
+    while i < size {
+        tb_u8(b, 0)
+        i += 1
+    }
+    pos
+}
+
+fn tb_patch(b: int, pos: int, size: int) {
+    let v = std::raw::load(b + 8) - pos - size
+    let d = std::raw::load(b) + pos
+    let mut i = 0
+    while i < size {
+        std::raw::store8(d + size - 1 - i, std::raw::shr(v, 8 * i) & 255)
+        i += 1
+    }
+}
+
+// ------------------------------------------------------------ estado de una conexión
+
+const TS_FD: int = 0
+const TS_ROLE: int = 8
+const TS_TMO: int = 16
+const TS_ALG: int = 24
+const TS_HK: int = 32
+const TS_WKEY: int = 40
+const TS_WIV: int = 48
+const TS_WSEQ: int = 56
+const TS_RKEY: int = 64
+const TS_RIV: int = 72
+const TS_RSEQ: int = 80
+const TS_KLEN: int = 88
+const TS_IN: int = 96
+const TS_PLAIN: int = 104
+const TS_POFF: int = 112
+const TS_CLOSED: int = 120
+const TS_RENC: int = 128
+const TS_WENC: int = 136
+const TS_TR: int = 144
+const TS_HSB: int = 152
+const TS_WSEC: int = 160
+const TS_RSEC: int = 168
+const TS_FN: int = 176
+const TS_HS: int = 184
+const TS_VER: int = 192
+const TS_RPEND: int = 200
+const TS_FNAME: int = 208
+const TS_LENIENT: int = 216
+const TS_QUIET: int = 224
+const TS_FIXMSG: int = 232
+
+fn tl_gs(s: int, off: int) -> int {
+    std::raw::load(s + off)
+}
+
+fn tl_ss(s: int, off: int, v: int) {
+    std::raw::store(s + off, v)
+}
+
+fn tl_fname(s: int) -> string {
+    let ov = tl_gs(s, TS_FNAME)
+    if ov != 0 {
+        return std::raw::value(5, ov)
+    }
+    let c = tl_gs(s, TS_FN)
+    if c == 1 { return "std::tls::connect" }
+    if c == 2 { return "std::tls::accept" }
+    if c == 3 { return "std::tls::read" }
+    if c == 5 { return "std::ws" }
+    "std::tls::write"
+}
+
+fn tl_state_new(fd: int, role: int, tmo: int, fn_code: int) -> int {
+    let s = rt_alloc_zero(256)
+    tl_ss(s, TS_FD, fd)
+    tl_ss(s, TS_ROLE, role)
+    tl_ss(s, TS_TMO, tmo)
+    tl_ss(s, TS_IN, tb_new(4096))
+    tl_ss(s, TS_PLAIN, tb_new(64))
+    tl_ss(s, TS_TR, tb_new(2048))
+    tl_ss(s, TS_HSB, tb_new(1024))
+    tl_ss(s, TS_FN, fn_code)
+    tl_ss(s, TS_HS, 1)
+    s
+}
+
+fn tl_state_free(s: int) {
+    tb_free(tl_gs(s, TS_IN))
+    tb_free(tl_gs(s, TS_PLAIN))
+    tb_free(tl_gs(s, TS_TR))
+    tb_free(tl_gs(s, TS_HSB))
+    rt_free_block(s)
+}
+
+// Errores: durante el apretón de manos se cierra el socket antes de propagarlos.
+fn tl_close_fd(s: int) {
+    std::raw::syscall(3, tl_gs(s, TS_FD), 0, 0, 0, 0, 0)
+}
+
+fn tl_io_fail(s: int, errno: int) {
+    if tl_gs(s, TS_HS) != 0 {
+        tl_close_fd(s)
+    }
+    let mut prefix = "TLS I/O error: "
+    if tl_gs(s, TS_FNAME) != 0 {
+        prefix = "TLS error: TLS I/O error: "
+    }
+    if tl_gs(s, TS_FIXMSG) != 0 {
+        rt_native_fail(tl_fname(s), std::raw::value(5, tl_gs(s, TS_FIXMSG)))
+    }
+    rt_native_fail(tl_fname(s), rt_concat(prefix, rt_os_error(errno)))
+}
+
+fn tl_fail(s: int, text: string) {
+    if tl_gs(s, TS_HS) != 0 {
+        tl_close_fd(s)
+    }
+    let mut prefix = "TLS I/O error: "
+    if tl_gs(s, TS_FNAME) != 0 {
+        prefix = "TLS error: TLS I/O error: "
+    }
+    if tl_gs(s, TS_FIXMSG) != 0 {
+        rt_native_fail(tl_fname(s), std::raw::value(5, tl_gs(s, TS_FIXMSG)))
+    }
+    rt_native_fail(tl_fname(s), rt_concat(prefix, text))
+}
+
+fn tl_alert_name(d: int) -> string {
+    if d == 0 { return "CloseNotify" }
+    if d == 10 { return "UnexpectedMessage" }
+    if d == 20 { return "BadRecordMac" }
+    if d == 22 { return "RecordOverflow" }
+    if d == 40 { return "HandshakeFailure" }
+    if d == 42 { return "BadCertificate" }
+    if d == 43 { return "UnsupportedCertificate" }
+    if d == 44 { return "CertificateRevoked" }
+    if d == 45 { return "CertificateExpired" }
+    if d == 46 { return "CertificateUnknown" }
+    if d == 47 { return "IllegalParameter" }
+    if d == 48 { return "UnknownCA" }
+    if d == 50 { return "DecodeError" }
+    if d == 51 { return "DecryptError" }
+    if d == 70 { return "ProtocolVersion" }
+    if d == 71 { return "InsufficientSecurity" }
+    if d == 80 { return "InternalError" }
+    if d == 109 { return "MissingExtension" }
+    if d == 112 { return "UnrecognisedName" }
+    if d == 120 { return "NoApplicationProtocol" }
+    "Unknown"
+}
+
+// ------------------------------------------------------------ HKDF y claves
+
+fn tl_hlen(hk: int) -> int {
+    if hk == 2 {
+        return 48
+    }
+    32
+}
+
+fn tl_hblock(hk: int) -> int {
+    if hk == 2 {
+        return 128
+    }
+    64
+}
+
+fn tl_hmac(hk: int, kp: int, kl: int, dp: int, dl: int) -> int {
+    hs_hmac_raw(hk, tl_hblock(hk), kp, kl, dp, dl)
+}
+
+// HKDF-Extract: bloque de tl_hlen(hk) bytes. salt vacío = ceros.
+fn tl_extract(hk: int, sp: int, sl: int, ip: int, il: int) -> int {
+    if sl == 0 {
+        let z = rt_alloc_zero(tl_hlen(hk) + 8)
+        let r = tl_hmac(hk, z, tl_hlen(hk), ip, il)
+        rt_free_block(z)
+        return r
+    }
+    tl_hmac(hk, sp, sl, ip, il)
+}
+
+// HKDF-Expand-Label con un solo bloque de salida (outlen <= tl_hlen).
+fn tl_expand(hk: int, secret: int, label: string, ctx: int, ctxlen: int, outlen: int) -> int {
+    let ll = rt_slen(label)
+    let info = tb_new(64 + ctxlen)
+    tb_u16(info, outlen)
+    tb_u8(info, 6 + ll)
+    tb_bytes(info, std::raw::bits("tls13 ") + 16, 6)
+    tb_bytes(info, std::raw::bits(label) + 16, ll)
+    tb_u8(info, ctxlen)
+    if ctxlen > 0 {
+        tb_bytes(info, ctx, ctxlen)
+    }
+    tb_u8(info, 1)
+    let r = tl_hmac(hk, secret, tl_hlen(hk), std::raw::load(info), std::raw::load(info + 8))
+    tb_free(info)
+    r
+}
+
+// Derive-Secret(secret, label, transcript-hash).
+fn tl_derive(hk: int, secret: int, label: string, th: int) -> int {
+    tl_expand(hk, secret, label, th, tl_hlen(hk), tl_hlen(hk))
+}
+
+// Hash de la transcripción.
+fn tl_th(s: int) -> int {
+    let t = tl_gs(s, TS_TR)
+    hs_digest(tl_gs(s, TS_HK), std::raw::load(t), std::raw::load(t + 8))
+}
+
+// Instala las claves de tráfico derivadas de `secret` (se guarda una copia para KeyUpdate).
+fn tl_keys(s: int, secret: int, write: bool) {
+    let hk = tl_gs(s, TS_HK)
+    let hl = tl_hlen(hk)
+    let klen = tl_gs(s, TS_KLEN)
+    let k = tl_expand(hk, secret, "key", secret, 0, klen)
+    let iv = tl_expand(hk, secret, "iv", secret, 0, 12)
+    let sec = rt_alloc(hl + 8)
+    rt_copy(sec, secret, hl)
+    if write {
+        tl_ss(s, TS_WKEY, k)
+        tl_ss(s, TS_WIV, iv)
+        tl_ss(s, TS_WSEQ, 0)
+        tl_ss(s, TS_WSEC, sec)
+        tl_ss(s, TS_WENC, 1)
+    } else {
+        tl_ss(s, TS_RKEY, k)
+        tl_ss(s, TS_RIV, iv)
+        tl_ss(s, TS_RSEQ, 0)
+        tl_ss(s, TS_RSEC, sec)
+        tl_ss(s, TS_RENC, 1)
+    }
+}
+
+// Suite de cifrado: 1 AES-128-GCM/SHA-256, 2 AES-256-GCM/SHA-384, 3 ChaCha20-Poly1305/SHA-256; 0 no soportada.
+fn tl_suite(code: int, s: int) -> bool {
+    if code == 4865 {
+        tl_ss(s, TS_ALG, 1)
+        tl_ss(s, TS_HK, 1)
+        tl_ss(s, TS_KLEN, 16)
+        return true
+    }
+    if code == 4866 {
+        tl_ss(s, TS_ALG, 2)
+        tl_ss(s, TS_HK, 2)
+        tl_ss(s, TS_KLEN, 32)
+        return true
+    }
+    if code == 4867 {
+        tl_ss(s, TS_ALG, 3)
+        tl_ss(s, TS_HK, 1)
+        tl_ss(s, TS_KLEN, 32)
+        return true
+    }
+    // TLS 1.2 (ECDHE): 49195 ECDSA-AES128-GCM, 49196 ECDSA-AES256-GCM, 49199 RSA-AES128-GCM,
+    // 49200 RSA-AES256-GCM, 52392 RSA-ChaCha20, 52393 ECDSA-ChaCha20.
+    if code == 49195 || code == 49199 {
+        tl_ss(s, TS_ALG, 1)
+        tl_ss(s, TS_HK, 1)
+        tl_ss(s, TS_KLEN, 16)
+        return true
+    }
+    if code == 49196 || code == 49200 {
+        tl_ss(s, TS_ALG, 2)
+        tl_ss(s, TS_HK, 2)
+        tl_ss(s, TS_KLEN, 32)
+        return true
+    }
+    if code == 52392 || code == 52393 {
+        tl_ss(s, TS_ALG, 3)
+        tl_ss(s, TS_HK, 1)
+        tl_ss(s, TS_KLEN, 32)
+        return true
+    }
+    false
+}
+
+// ------------------------------------------------------------ registros
+
+// nonce = iv XOR número de secuencia (8 bytes big-endian a la derecha).
+fn tl_nonce(iv: int, seq: int) -> int {
+    let n = rt_alloc(16)
+    let mut i = 0
+    while i < 12 {
+        let mut b = std::raw::load8(iv + i)
+        if i >= 4 {
+            b = b ^ (std::raw::shr(seq, 8 * (11 - i)) & 255)
+        }
+        std::raw::store8(n + i, b)
+        i += 1
+    }
+    n
+}
+
+// Cifra (encrypt) o descifra; en el segundo caso devuelve si la etiqueta coincide.
+fn tl_aead(s: int, encrypt: bool, key: int, nonce: int, aad: int, na: int, src: int, n: int, dst: int, tag: int) -> bool {
+    let alg = tl_gs(s, TS_ALG)
+    if alg == 3 {
+        if encrypt {
+            cr_chacha_xor(key, 1, nonce, src, dst, n)
+            cr_chacha_tag(key, nonce, aad, na, dst, n, tag)
+            return true
+        }
+        let t = rt_alloc(32)
+        cr_chacha_tag(key, nonce, aad, na, src, n, t)
+        let ok = cr_tag_eq(t, tag)
+        rt_free_block(t)
+        if ok {
+            cr_chacha_xor(key, 1, nonce, src, dst, n)
+        }
+        return ok
+    }
+    if encrypt {
+        cr_gcm_n(tl_gs(s, TS_KLEN), key, nonce, aad, na, src, dst, n, true, tag)
+        return true
+    }
+    let t = rt_alloc(32)
+    cr_gcm_n(tl_gs(s, TS_KLEN), key, nonce, aad, na, src, dst, n, false, t)
+    let ok = cr_tag_eq(t, tag)
+    rt_free_block(t)
+    ok
+}
+
+fn tl_send_raw(s: int, p: int, n: int) {
+    let fd = tl_gs(s, TS_FD)
+    let mut tmo = tl_gs(s, TS_TMO)
+    if tmo == 0 {
+        tmo = -1
+    }
+    let mut done = 0
+    while done < n {
+        if tcp_wait(fd, 4, tmo) == 0 {
+            if tl_gs(s, TS_QUIET) != 0 {
+                return
+            }
+            tl_io_fail(s, 11)
+        }
+        let w = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            if tl_gs(s, TS_QUIET) != 0 {
+                return
+            }
+            tl_io_fail(s, 0 - w)
+        }
+        done += w
+    }
+}
+
+// Un registro con un máximo de 16384 bytes de contenido.
+fn tl_put_record(s: int, typ: int, p: int, n: int) {
+    if tl_gs(s, TS_WENC) == 0 {
+        let b = rt_alloc(n + 16)
+        std::raw::store8(b, typ)
+        std::raw::store8(b + 1, 3)
+        std::raw::store8(b + 2, 3)
+        std::raw::store8(b + 3, std::raw::shr(n, 8))
+        std::raw::store8(b + 4, n & 255)
+        rt_copy(b + 5, p, n)
+        tl_send_raw(s, b, n + 5)
+        rt_free_block(b)
+        return
+    }
+    if tl_gs(s, TS_VER) == 12 {
+        tl_put_record12(s, typ, p, n)
+        return
+    }
+    let total = n + 1 + 16
+    let b = rt_alloc(5 + total + 16)
+    std::raw::store8(b, 23)
+    std::raw::store8(b + 1, 3)
+    std::raw::store8(b + 2, 3)
+    std::raw::store8(b + 3, std::raw::shr(total, 8))
+    std::raw::store8(b + 4, total & 255)
+    let inner = rt_alloc(n + 16)
+    rt_copy(inner, p, n)
+    std::raw::store8(inner + n, typ)
+    let seq = tl_gs(s, TS_WSEQ)
+    let nonce = tl_nonce(tl_gs(s, TS_WIV), seq)
+    tl_aead(s, true, tl_gs(s, TS_WKEY), nonce, b, 5, inner, n + 1, b + 5, b + 5 + n + 1)
+    tl_ss(s, TS_WSEQ, seq + 1)
+    tl_send_raw(s, b, 5 + total)
+    rt_free_block(nonce)
+    rt_free_block(inner)
+    rt_free_block(b)
+}
+
+// AAD de TLS 1.2: secuencia(8) tipo versión largo(2).
+fn tl_aad12(seq: int, typ: int, n: int) -> int {
+    let a = rt_alloc(16)
+    let mut i = 0
+    while i < 8 {
+        std::raw::store8(a + i, std::raw::shr(seq, 8 * (7 - i)) & 255)
+        i += 1
+    }
+    std::raw::store8(a + 8, typ)
+    std::raw::store8(a + 9, 3)
+    std::raw::store8(a + 10, 3)
+    std::raw::store8(a + 11, std::raw::shr(n, 8))
+    std::raw::store8(a + 12, n & 255)
+    a
+}
+
+// Registro cifrado de TLS 1.2: AES-GCM lleva el nonce explícito (8 bytes) delante; ChaCha20 no.
+fn tl_put_record12(s: int, typ: int, p: int, n: int) {
+    let seq = tl_gs(s, TS_WSEQ)
+    let gcm = tl_gs(s, TS_ALG) != 3
+    let mut ex = 0
+    if gcm {
+        ex = 8
+    }
+    let total = ex + n + 16
+    let b = rt_alloc(5 + total + 16)
+    std::raw::store8(b, typ)
+    std::raw::store8(b + 1, 3)
+    std::raw::store8(b + 2, 3)
+    std::raw::store8(b + 3, std::raw::shr(total, 8))
+    std::raw::store8(b + 4, total & 255)
+    let nonce = tl_nonce(tl_gs(s, TS_WIV), seq)
+    if gcm {
+        let mut i = 0
+        while i < 8 {
+            std::raw::store8(b + 5 + i, std::raw::shr(seq, 8 * (7 - i)) & 255)
+            i += 1
+        }
+    }
+    let aad = tl_aad12(seq, typ, n)
+    tl_aead(s, true, tl_gs(s, TS_WKEY), nonce, aad, 13, p, n, b + 5 + ex, b + 5 + ex + n)
+    tl_ss(s, TS_WSEQ, seq + 1)
+    tl_send_raw(s, b, 5 + total)
+    rt_free_block(aad)
+    rt_free_block(nonce)
+    rt_free_block(b)
+}
+
+fn tl_write_all(s: int, typ: int, p: int, n: int) {
+    let mut off = 0
+    if n == 0 {
+        return
+    }
+    while off < n {
+        let mut c = n - off
+        if c > 16384 {
+            c = 16384
+        }
+        tl_put_record(s, typ, p + off, c)
+        off += c
+    }
+}
+
+// Lee del socket hasta tener n bytes en el búfer de entrada. false si el par cerró.
+fn tl_fill(s: int, n: int) -> bool {
+    let inb = tl_gs(s, TS_IN)
+    let fd = tl_gs(s, TS_FD)
+    let mut tmo = tl_gs(s, TS_TMO)
+    if tmo == 0 {
+        tmo = -1
+    }
+    let tmp = rt_alloc(16400)
+    while std::raw::load(inb + 8) < n {
+        if tcp_wait(fd, 1, tmo) == 0 {
+            rt_free_block(tmp)
+            tl_io_fail(s, 11)
+        }
+        let r = std::raw::syscall(0, fd, tmp, 16384, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            rt_free_block(tmp)
+            tl_io_fail(s, 0 - r)
+        }
+        if r == 0 {
+            rt_free_block(tmp)
+            return false
+        }
+        tb_bytes(inb, tmp, r)
+    }
+    rt_free_block(tmp)
+    true
+}
+
+fn tl_alert_fail(s: int, p: int, n: int) {
+    let mut d = 0
+    if n >= 2 {
+        d = std::raw::load8(p + 1)
+    }
+    tl_fail(s, rt_concat("received fatal alert: ", tl_alert_name(d)))
+}
+
+// Siguiente registro (descifrado) → (tipo, bloque con el contenido, largo); tipo -1 = fin del flujo.
+fn tl_rec(s: int) -> (int, int, int) {
+    let inb = tl_gs(s, TS_IN)
+    loop {
+        if !tl_fill(s, 5) {
+            if std::raw::load(inb + 8) != 0 {
+                tl_io_fail(s, 104)
+            }
+            return (-1, 0, 0)
+        }
+        let h = std::raw::load(inb)
+        let typ = std::raw::load8(h)
+        let len = std::raw::load8(h + 3) * 256 + std::raw::load8(h + 4)
+        if len > 16640 {
+            tl_fail(s, "received record with length exceeding limit")
+        }
+        if !tl_fill(s, 5 + len) {
+            tl_fail(s, "peer closed connection mid-record")
+        }
+        let h2 = std::raw::load(inb)
+        if typ == 20 {
+            if tl_gs(s, TS_RPEND) != 0 {
+                tl_ss(s, TS_RPEND, 0)
+                tl_ss(s, TS_RENC, 1)
+                tl_ss(s, TS_RSEQ, 0)
+            }
+            tb_drop(inb, 5 + len)
+            continue
+        }
+        if tl_gs(s, TS_RENC) != 0 && tl_gs(s, TS_VER) == 12 && (typ == 22 || typ == 23 || typ == 21) {
+            let gcm = tl_gs(s, TS_ALG) != 3
+            let mut ex = 0
+            if gcm {
+                ex = 8
+            }
+            if len < ex + 16 {
+                tl_fail(s, "received corrupt message")
+            }
+            let n = len - ex - 16
+            let out = rt_alloc(n + 16)
+            let seq = tl_gs(s, TS_RSEQ)
+            let nonce = tl_nonce(tl_gs(s, TS_RIV), seq)
+            if gcm {
+                rt_copy(nonce + 4, h2 + 5, 8)
+            }
+            let aad = tl_aad12(seq, typ, n)
+            let ok = tl_aead(s, false, tl_gs(s, TS_RKEY), nonce, aad, 13, h2 + 5 + ex, n, out, h2 + 5 + ex + n)
+            rt_free_block(aad)
+            rt_free_block(nonce)
+            tb_drop(inb, 5 + len)
+            if !ok {
+                rt_free_block(out)
+                tl_fail(s, "decryption failed (bad record mac)")
+            }
+            tl_ss(s, TS_RSEQ, seq + 1)
+            return (typ, out, n)
+        }
+        if tl_gs(s, TS_RENC) != 0 && typ == 23 {
+            if len < 17 {
+                tl_fail(s, "received corrupt message")
+            }
+            let n = len - 16
+            let out = rt_alloc(n + 16)
+            let seq = tl_gs(s, TS_RSEQ)
+            let nonce = tl_nonce(tl_gs(s, TS_RIV), seq)
+            let ok = tl_aead(s, false, tl_gs(s, TS_RKEY), nonce, h2, 5, h2 + 5, n, out, h2 + 5 + n)
+            rt_free_block(nonce)
+            if !ok {
+                rt_free_block(out)
+                tl_fail(s, "decryption failed (bad record mac)")
+            }
+            tl_ss(s, TS_RSEQ, seq + 1)
+            let mut j = n - 1
+            while j >= 0 && std::raw::load8(out + j) == 0 {
+                j -= 1
+            }
+            if j < 0 {
+                rt_free_block(out)
+                tl_fail(s, "received corrupt message of type InvalidContentType")
+            }
+            let it = std::raw::load8(out + j)
+            tb_drop(inb, 5 + len)
+            return (it, out, j)
+        }
+        if tl_gs(s, TS_RENC) != 0 && typ != 21 {
+            tl_fail(s, "received plaintext record after encryption started")
+        }
+        let out = rt_alloc(len + 16)
+        rt_copy(out, h2 + 5, len)
+        tb_drop(inb, 5 + len)
+        return (typ, out, len)
+    }
+    return (-1, 0, 0)
+}
+
+// Siguiente mensaje de handshake completo: bloque {+0 largo total, +8 tipo, +9 u24 largo, +12 cuerpo}.
+fn tl_hs_next(s: int) -> int {
+    let hsb = tl_gs(s, TS_HSB)
+    loop {
+        let have = std::raw::load(hsb + 8)
+        if have >= 4 {
+            let d = std::raw::load(hsb)
+            let l = 4 + std::raw::load8(d + 1) * 65536 + std::raw::load8(d + 2) * 256 + std::raw::load8(d + 3)
+            if have >= l {
+                let m = rt_alloc(l + 24)
+                std::raw::store(m, l)
+                rt_copy(m + 8, d, l)
+                tb_drop(hsb, l)
+                return m
+            }
+        }
+        let (t, p, n) = tl_rec(s)
+        if t == -1 {
+            tl_fail(s, "peer closed connection before completing the handshake")
+        }
+        if t == 22 {
+            tb_bytes(hsb, p, n)
+            rt_free_block(p)
+        } else if t == 21 {
+            tl_alert_fail(s, p, n)
+        } else {
+            rt_free_block(p)
+            tl_fail(s, "received unexpected message during the handshake")
+        }
+    }
+    0
+}
+
+fn tm_type(m: int) -> int { std::raw::load8(m + 8) }
+fn tm_body(m: int) -> int { m + 12 }
+fn tm_blen(m: int) -> int { std::raw::load(m) - 4 }
+
+fn tl_tr_add(s: int, m: int) {
+    tb_bytes(tl_gs(s, TS_TR), m + 8, std::raw::load(m))
+}
+
+// Envía un mensaje de handshake construido en b (con cabecera) y lo añade a la transcripción.
+fn tl_send_hs(s: int, b: int) {
+    let d = std::raw::load(b)
+    let n = std::raw::load(b + 8)
+    tb_bytes(tl_gs(s, TS_TR), d, n)
+    tl_write_all(s, 22, d, n)
+}
+
+// Cabecera de un mensaje de handshake: devuelve la posición del largo para tb_patch(…, 3).
+fn tl_hs_begin(b: int, typ: int) -> int {
+    tb_u8(b, typ)
+    tb_mark(b, 3)
+}
+
+// verify_data = HMAC(finished_key(base), th)
+fn tl_finished(s: int, base: int, th: int) -> int {
+    let hk = tl_gs(s, TS_HK)
+    let hl = tl_hlen(hk)
+    let fk = tl_expand(hk, base, "finished", base, 0, hl)
+    let v = tl_hmac(hk, fk, hl, th, hl)
+    rt_free_block(fk)
+    v
+}
+
+fn tl_ct_eq(a: int, b: int, n: int) -> bool {
+    let mut d = 0
+    let mut i = 0
+    while i < n {
+        d = d | (std::raw::load8(a + i) ^ std::raw::load8(b + i))
+        i += 1
+    }
+    d == 0
+}
+
+// Contenido firmado en CertificateVerify: 64 espacios, etiqueta, 0 y el hash de la transcripción.
+fn tl_cv_content(server: bool, th: int, hl: int) -> int {
+    let b = tb_new(160)
+    let mut i = 0
+    while i < 64 {
+        tb_u8(b, 32)
+        i += 1
+    }
+    let mut label = "TLS 1.3, client CertificateVerify"
+    if server {
+        label = "TLS 1.3, server CertificateVerify"
+    }
+    tb_bytes(b, std::raw::bits(label) + 16, rt_slen(label))
+    tb_u8(b, 0)
+    tb_bytes(b, th, hl)
+    b
+}
+
+// Esquema de firma TLS → (código de xc_verify_sig, tipo de clave exigido); código 0 si no se soporta.
+fn tl_scheme(sc: int) -> (int, int) {
+    if sc == 1027 { return (11, 2) }
+    if sc == 1283 { return (12, 3) }
+    if sc == 2052 { return (21, 1) }
+    if sc == 2053 { return (22, 1) }
+    if sc == 2054 { return (23, 1) }
+    return (0, 0)
+}
+
+// Esquemas de firma de TLS 1.2 (admite además RSA PKCS#1).
+fn tl_scheme12(sc: int) -> (int, int) {
+    if sc == 1025 { return (1, 1) }
+    if sc == 1281 { return (2, 1) }
+    if sc == 1537 { return (3, 1) }
+    tl_scheme(sc)
+}
+
+// PRF de TLS 1.2: P_hash(secret, label + seed) con HMAC de la suite; devuelve outlen bytes.
+fn tl_prf(hk: int, sp: int, sl: int, label: string, seed: int, seedn: int, outlen: int) -> int {
+    let ll = rt_slen(label)
+    let ls = tb_new(ll + seedn + 8)
+    tb_bytes(ls, std::raw::bits(label) + 16, ll)
+    tb_bytes(ls, seed, seedn)
+    let hl = tl_hlen(hk)
+    let out = rt_alloc(outlen + hl + 8)
+    let mut a = tl_hmac(hk, sp, sl, std::raw::load(ls), std::raw::load(ls + 8))
+    let mut got = 0
+    while got < outlen {
+        let blk = tb_new(hl + ll + seedn + 8)
+        tb_bytes(blk, a, hl)
+        tb_bytes(blk, std::raw::load(ls), std::raw::load(ls + 8))
+        let r = tl_hmac(hk, sp, sl, std::raw::load(blk), std::raw::load(blk + 8))
+        rt_copy(out + got, r, hl)
+        rt_free_block(r)
+        tb_free(blk)
+        got += hl
+        if got < outlen {
+            let na = tl_hmac(hk, sp, sl, a, hl)
+            rt_free_block(a)
+            a = na
+        }
+    }
+    rt_free_block(a)
+    tb_free(ls)
+    out
+}
+
+// ------------------------------------------------------------ cliente
+
+fn tl_client_hello(host: int, hn: int, random: int, sid: int, pubkey: int, epub: int) -> int {
+    let b = tb_new(512)
+    let lp = tl_hs_begin(b, 1)
+    tb_u16(b, 771)
+    tb_bytes(b, random, 32)
+    tb_u8(b, 32)
+    tb_bytes(b, sid, 32)
+    tb_u16(b, 18)
+    tb_u16(b, 4866)
+    tb_u16(b, 4865)
+    tb_u16(b, 4867)
+    tb_u16(b, 49196)
+    tb_u16(b, 49195)
+    tb_u16(b, 52393)
+    tb_u16(b, 49200)
+    tb_u16(b, 49199)
+    tb_u16(b, 52392)
+    tb_u8(b, 1)
+    tb_u8(b, 0)
+    let el = tb_mark(b, 2)
+    let mut ip = rt_alloc(8)
+    if hn > 0 && !xc_ipv4(host, hn, ip) {
+        tb_u16(b, 0)
+        let l1 = tb_mark(b, 2)
+        let l2 = tb_mark(b, 2)
+        tb_u8(b, 0)
+        tb_u16(b, hn)
+        tb_bytes(b, host, hn)
+        tb_patch(b, l2, 2)
+        tb_patch(b, l1, 2)
+    }
+    rt_free_block(ip)
+    tb_u16(b, 43)
+    tb_u16(b, 5)
+    tb_u8(b, 4)
+    tb_u16(b, 772)
+    tb_u16(b, 771)
+    tb_u16(b, 11)
+    tb_u16(b, 2)
+    tb_u8(b, 1)
+    tb_u8(b, 0)
+    tb_u16(b, 23)
+    tb_u16(b, 0)
+    tb_u16(b, 65281)
+    tb_u16(b, 1)
+    tb_u8(b, 0)
+    tb_u16(b, 10)
+    tb_u16(b, 6)
+    tb_u16(b, 4)
+    tb_u16(b, 29)
+    tb_u16(b, 23)
+    tb_u16(b, 13)
+    tb_u16(b, 16)
+    tb_u16(b, 14)
+    tb_u16(b, 1027)
+    tb_u16(b, 1283)
+    tb_u16(b, 2052)
+    tb_u16(b, 2053)
+    tb_u16(b, 2054)
+    tb_u16(b, 1025)
+    tb_u16(b, 1281)
+    tb_u16(b, 51)
+    tb_u16(b, 107)
+    tb_u16(b, 105)
+    tb_u16(b, 29)
+    tb_u16(b, 32)
+    tb_bytes(b, pubkey, 32)
+    tb_u16(b, 23)
+    tb_u16(b, 65)
+    tb_bytes(b, epub, 65)
+    tb_patch(b, el, 2)
+    tb_patch(b, lp, 3)
+    b
+}
+
+// Certificate (cliente → servidor sin certificado): vacío.
+fn tl_empty_cert(s: int) {
+    let b = tb_new(16)
+    let lp = tl_hs_begin(b, 11)
+    tb_u8(b, 0)
+    tb_u24(b, 0)
+    tb_patch(b, lp, 3)
+    tl_send_hs(s, b)
+    tb_free(b)
+}
+
+fn tl_verify_cert_msg(s: int, m: int, host: int, hn: int) -> int {
+    // devuelve el bloque `chain` (+0 cuántos, +8.. registros); la hoja es el primero
+    let body = tm_body(m)
+    let n = tm_blen(m)
+    if n < 4 {
+        tl_fail(s, "received corrupt Certificate message")
+    }
+    let v12 = tl_gs(s, TS_VER) == 12
+    let mut ctxl = std::raw::load8(body)
+    if v12 {
+        ctxl = -1
+    }
+    if 1 + ctxl + 3 > n {
+        tl_fail(s, "received corrupt Certificate message")
+    }
+    let ll = std::raw::load8(body + 1 + ctxl) * 65536 + std::raw::load8(body + 2 + ctxl) * 256 + std::raw::load8(body + 3 + ctxl)
+    let mut i = 4 + ctxl
+    let end = i + ll
+    if end != n {
+        tl_fail(s, "received corrupt Certificate message")
+    }
+    let chain = rt_alloc_zero(8 + 8 * 16)
+    let mut count = 0
+    while i < end {
+        if i + 3 > end {
+            tl_fail(s, "received corrupt Certificate message")
+        }
+        let cl = std::raw::load8(body + i) * 65536 + std::raw::load8(body + i + 1) * 256 + std::raw::load8(body + i + 2)
+        i += 3
+        if i + cl > end || (!v12 && i + cl + 2 > end) {
+            tl_fail(s, "received corrupt Certificate message")
+        }
+        if count >= 16 {
+            tl_fail(s, "received too many certificates")
+        }
+        let c = xc_parse(body + i, cl)
+        if c == 0 {
+            tl_fail(s, "invalid peer certificate: BadEncoding")
+        }
+        std::raw::store(chain + 8 + 8 * count, c)
+        count += 1
+        i += cl
+        if !v12 {
+            let xl = std::raw::load8(body + i) * 256 + std::raw::load8(body + i + 1)
+            i += 2 + xl
+        }
+    }
+    if count == 0 {
+        tl_fail(s, "peer sent no certificates")
+    }
+    std::raw::store(chain, count)
+    let (now, ns) = rt_clock(0)
+    let code = xc_verify_server(chain, host, hn, now)
+    if code != 0 {
+        let mut cname = xc_err_name(code)
+        if code == 9 || code == 10 || code == 11 || code == 12 {
+            cname = rt_concat(rt_concat("Other(OtherError(", cname), "))")
+        }
+        let mut ad = 42
+        if code == 1 {
+            ad = 48
+        }
+        if code == 2 || code == 3 {
+            ad = 45
+        }
+        if code >= 9 {
+            ad = 46
+        }
+        tl_abort(s, ad, rt_concat("invalid peer certificate: ", cname))
+    }
+    chain
+}
+
+fn tl_client12(s: int, m: int, host: int, hn: int, random: int, priv: int, pubkey: int, ems: bool) {
+    tl_ss(s, TS_VER, 12)
+    let hk = tl_gs(s, TS_HK)
+    let hl = tl_hlen(hk)
+    let srand = rt_alloc(40)
+    rt_copy(srand, tm_body(m) + 2, 32)
+    tl_tr_add(s, m)
+    rt_free_block(m)
+    let mut chain = 0
+    let mut cert_keep = 0
+    let mut got_ske = false
+    let mut group = 0
+    let mut point = 0
+    let mut plen = 0
+    let mut need_cert = false
+    let mut done = false
+    while !done {
+        let mm = tl_hs_next(s)
+        let t = tm_type(mm)
+        if t == 11 && chain == 0 {
+            tl_tr_add(s, mm)
+            chain = tl_verify_cert_msg(s, mm, host, hn)
+            cert_keep = mm
+        } else if t == 12 && chain != 0 && !got_ske {
+            let bb = tm_body(mm)
+            let bl = tm_blen(mm)
+            if bl < 8 || std::raw::load8(bb) != 3 {
+                tl_fail(s, "received unsupported ServerKeyExchange")
+            }
+            group = std::raw::load8(bb + 1) * 256 + std::raw::load8(bb + 2)
+            plen = std::raw::load8(bb + 3)
+            if 4 + plen + 4 > bl {
+                tl_fail(s, "received corrupt ServerKeyExchange")
+            }
+            let sc = std::raw::load8(bb + 4 + plen) * 256 + std::raw::load8(bb + 5 + plen)
+            let sgl = std::raw::load8(bb + 6 + plen) * 256 + std::raw::load8(bb + 7 + plen)
+            if 8 + plen + sgl != bl {
+                tl_fail(s, "received corrupt ServerKeyExchange")
+            }
+            let (alg, need) = tl_scheme12(sc)
+            if alg == 0 {
+                tl_fail(s, "peer used an unsupported signature scheme")
+            }
+            let sd = tb_new(96 + plen)
+            tb_bytes(sd, random, 32)
+            tb_bytes(sd, srand, 32)
+            tb_bytes(sd, bb, 4 + plen)
+            let leaf = std::raw::load(chain + 8)
+            if !xc_verify_sig(alg, need, std::raw::load(leaf + 96), std::raw::load(leaf + 104), std::raw::load(sd), std::raw::load(sd + 8), bb + 8 + plen, sgl) {
+                tl_fail(s, "invalid peer certificate: BadSignature (ServerKeyExchange)")
+            }
+            tb_free(sd)
+            point = rt_alloc(plen + 8)
+            rt_copy(point, bb + 4, plen)
+            tl_tr_add(s, mm)
+            got_ske = true
+        } else if t == 13 && chain != 0 {
+            tl_tr_add(s, mm)
+            need_cert = true
+        } else if t == 14 && got_ske {
+            tl_tr_add(s, mm)
+            done = true
+        } else {
+            tl_fail(s, "received unexpected message during the handshake")
+        }
+        if mm != cert_keep {
+            rt_free_block(mm)
+        }
+    }
+    // La cadena apunta dentro del mensaje Certificate: se libera al terminar de usarla.
+    if cert_keep != 0 {
+        rt_free_block(cert_keep)
+    }
+    let pms = rt_alloc(64)
+    let mut cpub = pubkey
+    let mut cpl = 32
+    if group == 29 {
+        if plen != 32 || x2_scalarmult(pms, priv, point) == 0 {
+            tl_fail(s, "invalid key share from the peer")
+        }
+    } else if group == 23 {
+        let cv = ec_curve(EC_P256)
+        let d = rt_alloc(40)
+        cpub = rt_alloc(80)
+        rn_os_fill(d, 32)
+        while !ec_pub(cv, d, cpub) {
+            rn_os_fill(d, 32)
+        }
+        cpl = 65
+        if !ec_ecdh(cv, d, point, plen, pms) {
+            tl_fail(s, "invalid key share from the peer")
+        }
+        ec_curve_free(cv)
+        rt_free_block(d)
+    } else {
+        tl_fail(s, "server selected an unsupported key exchange group")
+    }
+    if need_cert {
+        let ce = tb_new(16)
+        let cp = tl_hs_begin(ce, 11)
+        tb_u24(ce, 0)
+        tb_patch(ce, cp, 3)
+        tl_send_hs(s, ce)
+        tb_free(ce)
+    }
+    let cke = tb_new(96)
+    let kp = tl_hs_begin(cke, 16)
+    tb_u8(cke, cpl)
+    tb_bytes(cke, cpub, cpl)
+    tb_patch(cke, kp, 3)
+    tl_send_hs(s, cke)
+    tb_free(cke)
+    let seed = rt_alloc(72)
+    let mut ms = 0
+    if ems {
+        let th = tl_th(s)
+        ms = tl_prf(hk, pms, 32, "extended master secret", th, hl, 48)
+        rt_free_block(th)
+    } else {
+        rt_copy(seed, random, 32)
+        rt_copy(seed + 32, srand, 32)
+        ms = tl_prf(hk, pms, 32, "master secret", seed, 64, 48)
+    }
+    rt_copy(seed, srand, 32)
+    rt_copy(seed + 32, random, 32)
+    let klen = tl_gs(s, TS_KLEN)
+    let mut ivl = 4
+    if tl_gs(s, TS_ALG) == 3 {
+        ivl = 12
+    }
+    let kb = tl_prf(hk, ms, 48, "key expansion", seed, 64, 2 * klen + 2 * ivl)
+    let wk = rt_alloc(klen + 8)
+    let rk = rt_alloc(klen + 8)
+    let wiv = rt_alloc_zero(16)
+    let riv = rt_alloc_zero(16)
+    rt_copy(wk, kb, klen)
+    rt_copy(rk, kb + klen, klen)
+    rt_copy(wiv, kb + 2 * klen, ivl)
+    rt_copy(riv, kb + 2 * klen + ivl, ivl)
+    tl_ss(s, TS_WKEY, wk)
+    tl_ss(s, TS_WIV, wiv)
+    tl_ss(s, TS_WSEQ, 0)
+    tl_ss(s, TS_RKEY, rk)
+    tl_ss(s, TS_RIV, riv)
+    tl_ss(s, TS_RSEQ, 0)
+    tl_ss(s, TS_RPEND, 1)
+    let ccs = rt_alloc(8)
+    std::raw::store8(ccs, 20)
+    std::raw::store8(ccs + 1, 3)
+    std::raw::store8(ccs + 2, 3)
+    std::raw::store8(ccs + 3, 0)
+    std::raw::store8(ccs + 4, 1)
+    std::raw::store8(ccs + 5, 1)
+    tl_send_raw(s, ccs, 6)
+    rt_free_block(ccs)
+    tl_ss(s, TS_WENC, 1)
+    let th1 = tl_th(s)
+    let cfin = tl_prf(hk, ms, 48, "client finished", th1, hl, 12)
+    rt_free_block(th1)
+    let fm = tb_new(32)
+    let fp = tl_hs_begin(fm, 20)
+    tb_bytes(fm, cfin, 12)
+    tb_patch(fm, fp, 3)
+    tl_send_hs(s, fm)
+    tb_free(fm)
+    let mut fin = false
+    while !fin {
+        let mm = tl_hs_next(s)
+        let t = tm_type(mm)
+        if t == 4 && tl_gs(s, TS_RPEND) != 0 {
+            tl_tr_add(s, mm)
+        } else if t == 20 && tl_gs(s, TS_RPEND) == 0 {
+            if tm_blen(mm) != 12 {
+                tl_fail(s, "received corrupt Finished")
+            }
+            let th2 = tl_th(s)
+            let expect = tl_prf(hk, ms, 48, "server finished", th2, hl, 12)
+            if !tl_ct_eq(expect, tm_body(mm), 12) {
+                tl_abort(s, 51, "received a Finished message with an invalid verify_data (DecryptError)")
+            }
+            rt_free_block(th2)
+            rt_free_block(expect)
+            tl_tr_add(s, mm)
+            fin = true
+        } else {
+            tl_fail(s, "received unexpected message during the handshake")
+        }
+        rt_free_block(mm)
+    }
+    tl_ss(s, TS_HS, 0)
+    rt_free_block(pms)
+    rt_free_block(ms)
+    rt_free_block(kb)
+    rt_free_block(seed)
+    rt_free_block(srand)
+    rt_free_block(cfin)
+}
+
+fn tl_client_handshake(s: int, host: int, hn: int) {
+    let random = rt_alloc(40)
+    let sid = rt_alloc(40)
+    let priv = rt_alloc(40)
+    let pubkey = rt_alloc(40)
+    let base = rt_alloc_zero(40)
+    rn_os_fill(random, 32)
+    rn_os_fill(sid, 32)
+    rn_os_fill(priv, 32)
+    std::raw::store8(base, 9)
+    x2_scalarmult(pubkey, priv, base)
+    let ecv = ec_curve(EC_P256)
+    let edk = rt_alloc(40)
+    let epub = rt_alloc(80)
+    rn_os_fill(edk, 32)
+    while !ec_pub(ecv, edk, epub) {
+        rn_os_fill(edk, 32)
+    }
+    let ch = tl_client_hello(host, hn, random, sid, pubkey, epub)
+    tl_send_hs(s, ch)
+    tb_free(ch)
+    // ServerHello
+    let m = tl_hs_next(s)
+    if tm_type(m) != 2 {
+        tl_fail(s, "received unexpected message, expected ServerHello")
+    }
+    let b = tm_body(m)
+    let bl = tm_blen(m)
+    if bl < 38 {
+        tl_fail(s, "received corrupt ServerHello")
+    }
+    if xc_hex_eq(b + 2, 32, "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c") {
+        tl_fail(s, "server requested HelloRetryRequest, which is not supported")
+    }
+    let sl = std::raw::load8(b + 34)
+    if sl > 32 || 35 + sl + 3 + 2 > bl {
+        tl_fail(s, "received corrupt ServerHello")
+    }
+    let mut i = 35 + sl
+    let suite = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+    i += 2
+    if std::raw::load8(b + i) != 0 {
+        tl_fail(s, "received ServerHello with illegal compression method")
+    }
+    i += 1
+    let xl = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+    i += 2
+    if i + xl != bl {
+        tl_fail(s, "received corrupt ServerHello extensions")
+    }
+    let mut version = 0
+    let mut share = 0
+    let mut sharel = 0
+    let mut group = 0
+    let mut ems = false
+    while i < bl {
+        if i + 4 > bl {
+            tl_fail(s, "received corrupt ServerHello extensions")
+        }
+        let et = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+        let el = std::raw::load8(b + i + 2) * 256 + std::raw::load8(b + i + 3)
+        i += 4
+        if i + el > bl {
+            tl_fail(s, "received corrupt ServerHello extensions")
+        }
+        if et == 23 {
+            ems = true
+        }
+        if et == 43 && el == 2 {
+            version = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+        }
+        if et == 51 && el >= 4 {
+            group = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+            let kl = std::raw::load8(b + i + 2) * 256 + std::raw::load8(b + i + 3)
+            if kl == el - 4 {
+                share = b + i + 4
+                sharel = kl
+            }
+        }
+        i += el
+    }
+    if version != 772 {
+        if version != 0 || std::raw::load8(b) != 3 || std::raw::load8(b + 1) != 3 {
+            tl_fail(s, "peer is incompatible: unsupported TLS version")
+        }
+        if xc_hex_eq(b + 26, 8, "444f574e47524401") {
+            tl_fail(s, "server attempted a protocol downgrade")
+        }
+        if suite < 49152 || !tl_suite(suite, s) {
+            tl_fail(s, "server selected an unsupported cipher suite")
+        }
+        tl_client12(s, m, host, hn, random, priv, pubkey, ems)
+        ec_curve_free(ecv)
+        rt_free_block(edk)
+        rt_free_block(epub)
+        rt_free_block(priv)
+        rt_free_block(random)
+        rt_free_block(sid)
+        rt_free_block(pubkey)
+        rt_free_block(base)
+        return
+    }
+    if sl != 32 || !xc_eq(b + 35, sid, 32) {
+        tl_fail(s, "received corrupt ServerHello (session id mismatch)")
+    }
+    if suite >= 49152 || !tl_suite(suite, s) {
+        tl_fail(s, "server selected an unsupported cipher suite")
+    }
+    if share == 0 || !((group == 29 && sharel == 32) || (group == 23 && sharel == 65)) {
+        tl_fail(s, "server selected an unsupported key exchange group")
+    }
+    tl_tr_add(s, m)
+    let shared = rt_alloc(40)
+    if group == 29 {
+        if x2_scalarmult(shared, priv, share) == 0 {
+            tl_fail(s, "invalid key share from the peer")
+        }
+    } else {
+        if !ec_ecdh(ecv, edk, share, 65, shared) {
+            tl_fail(s, "invalid key share from the peer")
+        }
+    }
+    ec_curve_free(ecv)
+    rt_free_block(edk)
+    rt_free_block(epub)
+    rt_free_block(m)
+    let hk = tl_gs(s, TS_HK)
+    let hl = tl_hlen(hk)
+    let zeros = rt_alloc_zero(hl + 8)
+    let eh = hs_digest(hk, zeros, 0)
+    let early = tl_extract(hk, zeros, 0, zeros, hl)
+    let der1 = tl_derive(hk, early, "derived", eh)
+    let hsec = tl_extract(hk, der1, hl, shared, 32)
+    let th = tl_th(s)
+    let chs = tl_derive(hk, hsec, "c hs traffic", th)
+    let shs = tl_derive(hk, hsec, "s hs traffic", th)
+    rt_free_block(th)
+    let der2 = tl_derive(hk, hsec, "derived", eh)
+    let master = tl_extract(hk, der2, hl, zeros, hl)
+    tl_keys(s, shs, false)
+    tl_keys(s, chs, true)
+    // Mensajes cifrados del servidor.
+    let mut stage = 0
+    let mut need_cert = false
+    let mut th_cert = 0
+    let mut chain = 0
+    let mut cert_keep = 0
+    let mut finished = false
+    while !finished {
+        let mm = tl_hs_next(s)
+        let t = tm_type(mm)
+        if t == 8 && stage == 0 {
+            tl_tr_add(s, mm)
+            stage = 1
+        } else if t == 13 && stage == 1 {
+            tl_tr_add(s, mm)
+            need_cert = true
+        } else if t == 11 && stage == 1 {
+            tl_tr_add(s, mm)
+            th_cert = tl_th(s)
+            chain = tl_verify_cert_msg(s, mm, host, hn)
+            cert_keep = mm
+            stage = 2
+        } else if t == 15 && stage == 2 {
+            let cb = tm_body(mm)
+            if tm_blen(mm) < 4 {
+                tl_fail(s, "received corrupt CertificateVerify")
+            }
+            let sc = std::raw::load8(cb) * 256 + std::raw::load8(cb + 1)
+            let sgl = std::raw::load8(cb + 2) * 256 + std::raw::load8(cb + 3)
+            if 4 + sgl != tm_blen(mm) {
+                tl_fail(s, "received corrupt CertificateVerify")
+            }
+            let (alg, need) = tl_scheme(sc)
+            if alg == 0 {
+                tl_fail(s, "peer used an unsupported signature scheme")
+            }
+            let content = tl_cv_content(true, th_cert, hl)
+            let leaf = std::raw::load(chain + 8)
+            if !xc_verify_sig(alg, need, std::raw::load(leaf + 96), std::raw::load(leaf + 104), std::raw::load(content), std::raw::load(content + 8), cb + 4, sgl) {
+                tl_abort(s, 51, "invalid peer certificate: BadSignature (CertificateVerify)")
+            }
+            tb_free(content)
+            tl_tr_add(s, mm)
+            stage = 3
+        } else if t == 20 && stage == 3 {
+            if tm_blen(mm) != hl {
+                tl_fail(s, "received corrupt Finished")
+            }
+            let th2 = tl_th(s)
+            let expect = tl_finished(s, shs, th2)
+            if !tl_ct_eq(expect, tm_body(mm), hl) {
+                tl_abort(s, 51, "received a Finished message with an invalid verify_data (DecryptError)")
+            }
+            rt_free_block(th2)
+            rt_free_block(expect)
+            tl_tr_add(s, mm)
+            finished = true
+        } else {
+            tl_fail(s, "received unexpected message during the handshake")
+        }
+        if mm != cert_keep {
+            rt_free_block(mm)
+        }
+    }
+    // La cadena apunta dentro del mensaje Certificate: se libera al terminar de usarla.
+    if cert_keep != 0 {
+        rt_free_block(cert_keep)
+    }
+    let tha = tl_th(s)
+    let cap = tl_derive(hk, master, "c ap traffic", tha)
+    let sap = tl_derive(hk, master, "s ap traffic", tha)
+    rt_free_block(tha)
+    tl_keys(s, sap, false)
+    if need_cert {
+        tl_empty_cert(s)
+    }
+    let th3 = tl_th(s)
+    let cfin = tl_finished(s, chs, th3)
+    rt_free_block(th3)
+    let fm = tb_new(64)
+    let fp = tl_hs_begin(fm, 20)
+    tb_bytes(fm, cfin, hl)
+    tb_patch(fm, fp, 3)
+    let ccs = rt_alloc(8)
+    std::raw::store8(ccs, 20)
+    std::raw::store8(ccs + 1, 3)
+    std::raw::store8(ccs + 2, 3)
+    std::raw::store8(ccs + 3, 0)
+    std::raw::store8(ccs + 4, 1)
+    std::raw::store8(ccs + 5, 1)
+    tl_send_raw(s, ccs, 6)
+    rt_free_block(ccs)
+    tl_send_hs(s, fm)
+    tb_free(fm)
+    tl_keys(s, cap, true)
+    tl_ss(s, TS_HS, 0)
+    rt_free_block(priv)
+    rt_free_block(random)
+    rt_free_block(sid)
+    rt_free_block(pubkey)
+    rt_free_block(base)
+    rt_free_block(shared)
+    rt_free_block(zeros)
+    rt_free_block(eh)
+    rt_free_block(early)
+    rt_free_block(der1)
+    rt_free_block(hsec)
+    rt_free_block(chs)
+    rt_free_block(shs)
+    rt_free_block(der2)
+    rt_free_block(master)
+    rt_free_block(cap)
+    rt_free_block(sap)
+    rt_free_block(cfin)
+}
+
+// ------------------------------------------------------------ datos de aplicación
+
+// Lee hasta max bytes de datos de la aplicación en dst; 0 = fin del flujo (close_notify).
+fn tl_read_app(s: int, dst: int, max: int) -> int {
+    let pl = tl_gs(s, TS_PLAIN)
+    loop {
+        let have = std::raw::load(pl + 8) - tl_gs(s, TS_POFF)
+        if have > 0 {
+            let mut n = have
+            if n > max {
+                n = max
+            }
+            rt_copy(dst, std::raw::load(pl) + tl_gs(s, TS_POFF), n)
+            tl_ss(s, TS_POFF, tl_gs(s, TS_POFF) + n)
+            if tl_gs(s, TS_POFF) >= std::raw::load(pl + 8) {
+                std::raw::store(pl + 8, 0)
+                tl_ss(s, TS_POFF, 0)
+            }
+            return n
+        }
+        if tl_gs(s, TS_CLOSED) != 0 {
+            return 0
+        }
+        let (t, p, n) = tl_rec(s)
+        if t == -1 && tl_gs(s, TS_LENIENT) != 0 {
+            return 0
+        }
+        if t == -1 {
+            rt_native_fail("std::tls::read", "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof")
+        }
+        if t == 23 {
+            tb_bytes(pl, p, n)
+            rt_free_block(p)
+        } else if t == 21 {
+            if n >= 2 && std::raw::load8(p + 1) == 0 {
+                tl_ss(s, TS_CLOSED, 1)
+                rt_free_block(p)
+            } else {
+                tl_alert_fail(s, p, n)
+            }
+        } else if t == 22 {
+            tl_post_handshake(s, p, n)
+            rt_free_block(p)
+        } else {
+            rt_free_block(p)
+            tl_fail(s, "received unexpected record type")
+        }
+    }
+    0
+}
+
+// Mensajes posteriores al apretón de manos: NewSessionTicket se ignora, KeyUpdate se atiende.
+fn tl_post_handshake(s: int, p: int, n: int) {
+    let mut i = 0
+    while i + 4 <= n {
+        let t = std::raw::load8(p + i)
+        let l = std::raw::load8(p + i + 1) * 65536 + std::raw::load8(p + i + 2) * 256 + std::raw::load8(p + i + 3)
+        if i + 4 + l > n {
+            tl_fail(s, "received corrupt post-handshake message")
+        }
+        if t == 24 {
+            if l != 1 {
+                tl_fail(s, "received corrupt KeyUpdate")
+            }
+            let hk = tl_gs(s, TS_HK)
+            let hl = tl_hlen(hk)
+            let ns = tl_expand(hk, tl_gs(s, TS_RSEC), "traffic upd", tl_gs(s, TS_RSEC), 0, hl)
+            tl_keys(s, ns, false)
+            rt_free_block(ns)
+            if std::raw::load8(p + i + 4) == 1 {
+                let ku = rt_alloc(8)
+                std::raw::store8(ku, 24)
+                std::raw::store8(ku + 1, 0)
+                std::raw::store8(ku + 2, 0)
+                std::raw::store8(ku + 3, 1)
+                std::raw::store8(ku + 4, 0)
+                tl_put_record(s, 22, ku, 5)
+                rt_free_block(ku)
+                let ws = tl_expand(hk, tl_gs(s, TS_WSEC), "traffic upd", tl_gs(s, TS_WSEC), 0, hl)
+                tl_keys(s, ws, true)
+                rt_free_block(ws)
+            }
+        }
+        i += 4 + l
+    }
+}
+
+// ------------------------------------------------------------ operaciones (std::tls)
+
+fn tlx_type_error(message: string) {
+    rt_fatal(rt_concat("type error: ", message))
+}
+
+// Estado TLS de un flujo (etiqueta 19), o error como tls_stream() de la VM.
+fn tlx_stream(v: any, what: string) -> int {
+    if std::raw::tag(v) != 19 {
+        tlx_type_error(rt_concat(what, " requires stream"))
+    }
+    let id = tcp_handle_id(v)
+    let e = tcp_entry(id)
+    if e == 0 || std::raw::load(e + 8) != 3 {
+        tlx_type_error(rt_concat("unknown TLS stream ", rt_int_to_str(id)))
+    }
+    std::raw::load(e + 32)
+}
+
+fn rt_tls_connect(address: any, server_name: any) -> any {
+    let f = "std::tls::connect"
+    if std::raw::tag(server_name) != 5 {
+        tlx_type_error("TLS server name must be string")
+    }
+    if std::raw::tag(address) != 5 {
+        tlx_type_error("TLS address must be string")
+    }
+    tcp_reserve()
+    let hp = std::raw::bits(server_name) + 16
+    let hn = rt_slen(server_name)
+    let ip = rt_alloc(8)
+    let ok = xc_dns_valid(hp, hn) || xc_ipv4(hp, hn, ip)
+    rt_free_block(ip)
+    if !ok {
+        rt_native_fail(f, rt_concat(rt_concat("invalid DNS server name '", server_name), "'"))
+    }
+    let fd = tcp_connect_fd_p(f, address, "TLS I/O error: ")
+    let one = rt_alloc(8)
+    std::raw::store(one, 1)
+    std::raw::syscall(54, fd, 6, 1, one, 4, 0)
+    rt_free_block(one)
+    let s = tl_state_new(fd, 1, 10000, 1)
+    tl_client_handshake(s, hp, hn)
+    let id = tcp_register(3, fd)
+    let e = tcp_entry(id)
+    std::raw::store(e + 32, s)
+    std::raw::store(e + 24, 10000)
+    tk_handle(19, id, 0)
+}
+
+fn rt_tls_read(stream: any, maximum: any) -> any {
+    if std::raw::tag(maximum) != 1 {
+        tlx_type_error("TLS read maximum must be int")
+    }
+    let mut max = std::raw::bits(maximum)
+    if max < 0 {
+        tlx_type_error("TLS read maximum must be nonnegative")
+    }
+    if max > 16777216 {
+        max = 16777216
+    }
+    let s = tlx_stream(stream, "tls_read")
+    if max == 0 {
+        return rt_bytes_from(s, 0)
+    }
+    tl_ss(s, TS_FN, 3)
+    let buf = rt_alloc(max + 16)
+    let n = tl_read_app(s, buf, max)
+    let out = rt_bytes_from(buf, n)
+    rt_free_block(buf)
+    out
+}
+
+fn rt_tls_write(stream: any, data: any) -> any {
+    let t = std::raw::tag(data)
+    if t != 5 && t != 6 {
+        tlx_type_error("tls_write requires bytes or string")
+    }
+    let s = tlx_stream(stream, "tls_write")
+    tl_ss(s, TS_FN, 4)
+    let n = rt_slen(data)
+    tl_write_all(s, 23, rt_bdata(data), n)
+    n
+}
+
+fn rt_tls_close(stream: any) -> any {
+    if std::raw::tag(stream) != 19 {
+        tlx_type_error("tls_close requires stream")
+    }
+    let id = tcp_handle_id(stream)
+    let e = tcp_entry(id)
+    if e == 0 || std::raw::load(e + 8) != 3 {
+        return false
+    }
+    let s = std::raw::load(e + 32)
+    if tl_gs(s, TS_HS) == 0 && tl_gs(s, TS_CLOSED) == 0 {
+        tl_ss(s, TS_QUIET, 1)
+        let a = rt_alloc(8)
+        std::raw::store8(a, 1)
+        std::raw::store8(a + 1, 0)
+        tl_put_record(s, 21, a, 2)
+        rt_free_block(a)
+    }
+    std::raw::syscall(3, std::raw::load(e + 16), 0, 0, 0, 0, 0)
+    tcp_release(e)
+    tl_state_free(s)
+    true
+}
+
+// ------------------------------------------------------------ servidor
+
+// Alerta fatal best-effort antes de abortar.
+fn tl_send_alert(s: int, desc: int) {
+    let a = rt_alloc(8)
+    std::raw::store8(a, 2)
+    std::raw::store8(a + 1, desc)
+    tl_put_record(s, 21, a, 2)
+    rt_free_block(a)
+}
+
+fn tl_abort(s: int, desc: int, text: string) {
+    tl_send_alert(s, desc)
+    tl_fail(s, text)
+}
+
+fn tlc_fail(text: string) {
+    rt_native_fail("std::tls::server_config", text)
+}
+
+// Contenido del fichero (bytes); error de E/S como TlsError::Io.
+fn tlc_read(path: any) -> any {
+    let fd = rt_open(path, 524288, 0)
+    if fd < 0 {
+        tlc_fail(rt_concat("TLS I/O error: ", rt_os_error(0 - fd)))
+    }
+    let b = sb_new(4096)
+    let buf = rt_alloc(4096)
+    loop {
+        let got = std::raw::syscall(0, fd, buf, 4096, 0, 0, 0)
+        if got == -4 {
+            continue
+        }
+        if got < 0 {
+            std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+            tlc_fail(rt_concat("TLS I/O error: ", rt_os_error(0 - got)))
+        }
+        if got == 0 {
+            break
+        }
+        sb_raw(b, buf, got)
+    }
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    sb_finish_bytes(b)
+}
+
+// Siguiente bloque PEM desde off → (etiqueta, contenido DER, desplazamiento siguiente); etiqueta nil si no hay más.
+fn tlc_pem_next(p: int, n: int, off: int) -> (any, any, int) {
+    let s = jr_find(p, off, n, "-----BEGIN ")
+    if s < 0 {
+        return (nil, nil, n)
+    }
+    let e = jr_find(p, s, n, "-----END ")
+    if e < 0 {
+        return (nil, nil, n)
+    }
+    let e2 = jr_find(p, e + 9, n, "-----")
+    if e2 < 0 {
+        return (nil, nil, n)
+    }
+    let (tag, body) = jr_pem(p + s, e2 + 5 - s)
+    let res = (tag, body, e2 + 5)
+    res
+}
+
+// Clave privada: (tipo 1 RSA | 2 P-256 | 3 P-384, valor de clave RSA o bytes de d) o (0, nil).
+fn tlc_key(der: any, label: any) -> (int, any) {
+    let p = rt_bdata(der)
+    let n = rt_slen(der)
+    if rt_str_eq(label, "RSA PRIVATE KEY") {
+        let (err, key) = jr_private_key(der)
+        if err != nil {
+            return (0, nil)
+        }
+        return (1, key)
+    }
+    let (t0, s0, l0, x0) = jr_der_tlv(p, 0, n)
+    if t0 != 48 {
+        return (0, nil)
+    }
+    let e0 = s0 + l0
+    let (vs, vl, i1) = jr_der_int(p, s0, e0)
+    if vs < 0 {
+        return (0, nil)
+    }
+    let mut curve = 0
+    let mut ecp = p
+    let mut ecs = 0
+    let mut ece = 0
+    if rt_str_eq(label, "PRIVATE KEY") {
+        let (t1, s1, l1, x1) = jr_der_tlv(p, i1, e0)
+        if t1 != 48 {
+            return (0, nil)
+        }
+        let (t2, s2, l2, x2) = jr_der_tlv(p, s1, s1 + l1)
+        if t2 != 6 {
+            return (0, nil)
+        }
+        let (t3, s3, l3, x3) = jr_der_tlv(p, x1, e0)
+        if t3 != 4 {
+            return (0, nil)
+        }
+        if xc_hex_eq(p + s2, l2, "2a864886f70d010101") {
+            let inner = rt_bytes_from(p + s3, l3)
+            let (err, key) = jr_private_key(inner)
+            if err != nil {
+                return (0, nil)
+            }
+            return (1, key)
+        }
+        if !xc_hex_eq(p + s2, l2, "2a8648ce3d0201") {
+            return (0, nil)
+        }
+        let (t4, s4, l4, x4) = jr_der_tlv(p, x2, s1 + l1)
+        if t4 == 6 {
+            if xc_hex_eq(p + s4, l4, "2a8648ce3d030107") {
+                curve = 2
+            }
+            if xc_hex_eq(p + s4, l4, "2b81040022") {
+                curve = 3
+            }
+        }
+        // ECPrivateKey interno
+        let (t5, s5, l5, x5) = jr_der_tlv(p, s3, s3 + l3)
+        if t5 != 48 {
+            return (0, nil)
+        }
+        ecs = s5
+        ece = s5 + l5
+    } else if rt_str_eq(label, "EC PRIVATE KEY") {
+        ecs = s0
+        ece = e0
+    } else {
+        return (0, nil)
+    }
+    // ECPrivateKey: INTEGER 1, OCTET STRING d, [0] parámetros opcionales
+    let (va, vb, nx) = jr_der_int(p, ecs, ece)
+    if va < 0 {
+        return (0, nil)
+    }
+    let (t6, s6, l6, x6) = jr_der_tlv(p, nx, ece)
+    if t6 != 4 {
+        return (0, nil)
+    }
+    if x6 < ece {
+        let (t7, s7, l7, x7) = jr_der_tlv(p, x6, ece)
+        if t7 == 160 {
+            let (t8, s8, l8, x8) = jr_der_tlv(p, s7, s7 + l7)
+            if t8 == 6 {
+                if xc_hex_eq(p + s8, l8, "2a8648ce3d030107") {
+                    curve = 2
+                }
+                if xc_hex_eq(p + s8, l8, "2b81040022") {
+                    curve = 3
+                }
+            }
+        }
+    }
+    if curve == 0 {
+        if l6 == 32 {
+            curve = 2
+        }
+        if l6 == 48 {
+            curve = 3
+        }
+    }
+    let mut sz = 32
+    if curve == 3 {
+        sz = 48
+    }
+    if curve == 0 || l6 > sz || l6 == 0 {
+        return (0, nil)
+    }
+    let d = rt_alloc_zero(sz + 8)
+    rt_copy(d + sz - l6, p + s6, l6)
+    let kres = (curve, rt_bytes_from(d, sz))
+    kres
+}
+
+fn rt_tls_server_config(cert: any, key: any) -> any {
+    if std::raw::tag(key) != 5 {
+        tlx_type_error("TLS key path must be string")
+    }
+    if std::raw::tag(cert) != 5 {
+        tlx_type_error("TLS certificate path must be string")
+    }
+    tcp_reserve()
+    let cdata = tlc_read(cert)
+    let cp = rt_bdata(cdata)
+    let cn = rt_slen(cdata)
+    // Certificate (TLS 1.3): contexto vacío + lista de (cert, extensiones vacías)
+    let cm = tb_new(2048)
+    tb_u8(cm, 0)
+    let lp = tb_mark(cm, 3)
+    let mut off = 0
+    let mut count = 0
+    let mut leaf = 0
+    loop {
+        let (tag, der, nx) = tlc_pem_next(cp, cn, off)
+        if tag == nil {
+            break
+        }
+        off = nx
+        if rt_str_eq(tag, "CERTIFICATE") {
+            let dl = rt_slen(der)
+            if count == 0 {
+                leaf = xc_parse(rt_bdata(der), dl)
+                if leaf == 0 {
+                    tlc_fail("TLS protocol error: invalid certificate: BadEncoding")
+                }
+            }
+            tb_u24(cm, dl)
+            tb_bytes(cm, rt_bdata(der), dl)
+            tb_u16(cm, 0)
+            count += 1
+        }
+    }
+    if count == 0 {
+        tlc_fail("certificate file contains no certificates")
+    }
+    tb_patch(cm, lp, 3)
+    let kdata = tlc_read(key)
+    let kp = rt_bdata(kdata)
+    let kn = rt_slen(kdata)
+    let mut kind = 0
+    let mut kval: any = nil
+    off = 0
+    loop {
+        let (tag, der, nx) = tlc_pem_next(kp, kn, off)
+        if tag == nil {
+            break
+        }
+        off = nx
+        if kind == 0 && (rt_str_eq(tag, "RSA PRIVATE KEY") || rt_str_eq(tag, "PRIVATE KEY") || rt_str_eq(tag, "EC PRIVATE KEY")) {
+            let (k2, v2) = tlc_key(der, tag)
+            kind = k2
+            kval = v2
+        }
+    }
+    if kind == 0 {
+        tlc_fail("private key file contains no supported private key")
+    }
+    // La clave debe corresponder a la hoja.
+    let (lk, lpp, lpl) = xc_key_info(std::raw::load(leaf + 96), std::raw::load(leaf + 104))
+    let mut modbits = 0
+    let mut same = false
+    if kind == 1 && lk == 1 {
+        let q = rt_bdata(rt_seq_get(kval, 0))
+        let (tg0, a, b, c) = jr_der_tlv(lpp, 0, lpl)
+        let (ns, nl, nn) = jr_der_int(lpp, a, a + b)
+        let ks = jr_kf(kval, 1)
+        let kl = jr_kf(kval, 2)
+        if nl == kl {
+            let mut diff = 0
+            let mut j = 0
+            while j < nl {
+                diff = diff | (std::raw::load8(lpp + ns + j) ^ std::raw::load8(q + ks + j))
+                j += 1
+            }
+            same = diff == 0
+        }
+        modbits = 8 * kl - 8
+        let mut top = std::raw::load8(q + ks)
+        while top != 0 {
+            modbits += 1
+            top = std::raw::shr(top, 1)
+        }
+    }
+    if kind >= 2 && lk == kind {
+        let cv = ec_curve(kind - 1)
+        let sz = rt_slen(kval)
+        let pk = rt_alloc(160)
+        if ec_pub(cv, rt_bdata(kval), pk) && lpl == 1 + 2 * sz {
+            let mut diff = 0
+            let mut j = 0
+            while j < lpl {
+                diff = diff | (std::raw::load8(pk + j) ^ std::raw::load8(lpp + j))
+                j += 1
+            }
+            same = diff == 0
+        }
+        rt_free_block(pk)
+        ec_curve_free(cv)
+    }
+    if !same {
+        tlc_fail("TLS protocol error: private key does not match the certificate (InconsistentKeys)")
+    }
+    let cfg = rt_alloc_zero(64)
+    std::raw::store(cfg, cm)
+    std::raw::store(cfg + 8, kind)
+    std::raw::store(cfg + 16, std::raw::tag(kval))
+    std::raw::store(cfg + 24, std::raw::keep(kval))
+    std::raw::store(cfg + 32, modbits)
+    let id = tcp_register(4, -1)
+    let e = tcp_entry(id)
+    std::raw::store(e + 32, cfg)
+    tk_handle(20, id, 0)
+}
+
+// SEQUENCE { INTEGER r, INTEGER s } de ECDSA con r y s de sz bytes.
+fn tl_der_sig(r: int, sv: int, sz: int) -> any {
+    let b = tb_new(200)
+    tb_u8(b, 48)
+    let lp = tb_mark(b, 1)
+    let mut k = 0
+    while k < 2 {
+        let mut src = r
+        if k == 1 {
+            src = sv
+        }
+        let mut z = 0
+        while z < sz - 1 && std::raw::load8(src + z) == 0 {
+            z += 1
+        }
+        let l = sz - z
+        tb_u8(b, 2)
+        if std::raw::load8(src + z) >= 128 {
+            tb_u8(b, l + 1)
+            tb_u8(b, 0)
+        } else {
+            tb_u8(b, l)
+        }
+        tb_bytes(b, src + z, l)
+        k += 1
+    }
+    tb_patch(b, lp, 1)
+    let out = rt_bytes_from(std::raw::load(b), std::raw::load(b + 8))
+    tb_free(b)
+    out
+}
+
+// Firma el contenido de CertificateVerify con la clave de la configuración → bytes de la firma.
+fn tl_cv_sign(s: int, cfg: int, content: int, clen: int) -> any {
+    let kind = std::raw::load(cfg + 8)
+    if kind == 1 {
+        let key = std::raw::value(std::raw::load(cfg + 16), std::raw::load(cfg + 24))
+        let mh = hs_sha256(content, clen)
+        let em = xc_pss_encode(1, mh, std::raw::load(cfg + 32))
+        rt_free_block(mh)
+        let k = jr_kf(key, 2)
+        let (err, sig) = jr_sign_em(key, em, k)
+        if err != nil {
+            tl_abort(s, 80, "failed to sign CertificateVerify")
+        }
+        return sig
+    }
+    let cv = ec_curve(kind - 1)
+    let sz = std::raw::load(cv + 24)
+    let mut hk = 1
+    if kind == 3 {
+        hk = 2
+    }
+    let hl = tl_hlen(hk)
+    let h = hs_digest(hk, content, clen)
+    let key = std::raw::value(std::raw::load(cfg + 16), std::raw::load(cfg + 24))
+    let ro = rt_alloc(sz + 8)
+    let so = rt_alloc(sz + 8)
+    if !ec_sign(cv, rt_bdata(key), h, hl, ro, so) {
+        tl_abort(s, 80, "failed to sign CertificateVerify")
+    }
+    let out = tl_der_sig(ro, so, sz)
+    rt_free_block(h)
+    rt_free_block(ro)
+    rt_free_block(so)
+    ec_curve_free(cv)
+    out
+}
+
+fn tl_server_handshake(s: int, cfg: int) {
+    let m = tl_hs_next(s)
+    if tm_type(m) != 1 {
+        tl_abort(s, 10, "received unexpected message, expected ClientHello")
+    }
+    let b = tm_body(m)
+    let bl = tm_blen(m)
+    if bl < 40 {
+        tl_abort(s, 50, "received corrupt ClientHello")
+    }
+    let crandom = b + 2
+    let sl = std::raw::load8(b + 34)
+    let mut i = 35 + sl
+    if sl > 32 || i + 2 > bl {
+        tl_abort(s, 50, "received corrupt ClientHello")
+    }
+    let sid = b + 35
+    let cl = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+    i += 2
+    if i + cl + 1 > bl {
+        tl_abort(s, 50, "received corrupt ClientHello")
+    }
+    let cs = b + i
+    i += cl
+    let cm = std::raw::load8(b + i)
+    i += 1 + cm
+    if i + 2 > bl {
+        tl_abort(s, 50, "received corrupt ClientHello")
+    }
+    let xl = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+    i += 2
+    if i + xl != bl {
+        tl_abort(s, 50, "received corrupt ClientHello")
+    }
+    let mut has13 = false
+    let mut sigs = 0
+    let mut sign = 0
+    let mut share29 = 0
+    let mut share23 = 0
+    while i < bl {
+        if i + 4 > bl {
+            tl_abort(s, 50, "received corrupt ClientHello")
+        }
+        let et = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+        let el = std::raw::load8(b + i + 2) * 256 + std::raw::load8(b + i + 3)
+        i += 4
+        if i + el > bl {
+            tl_abort(s, 50, "received corrupt ClientHello")
+        }
+        if et == 43 && el >= 1 {
+            let vl = std::raw::load8(b + i)
+            let mut k = 0
+            while k + 1 < vl && 1 + k + 1 < el {
+                if std::raw::load8(b + i + 1 + k) * 256 + std::raw::load8(b + i + 2 + k) == 772 {
+                    has13 = true
+                }
+                k += 2
+            }
+        }
+        if et == 13 && el >= 2 {
+            sigs = b + i + 2
+            sign = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+            if sign + 2 > el {
+                tl_abort(s, 50, "received corrupt ClientHello")
+            }
+        }
+        if et == 51 && el >= 2 {
+            let ll = std::raw::load8(b + i) * 256 + std::raw::load8(b + i + 1)
+            let mut k = 2
+            while k + 4 <= 2 + ll && k + 4 <= el {
+                let g = std::raw::load8(b + i + k) * 256 + std::raw::load8(b + i + k + 1)
+                let gl = std::raw::load8(b + i + k + 2) * 256 + std::raw::load8(b + i + k + 3)
+                if k + 4 + gl > el {
+                    tl_abort(s, 50, "received corrupt ClientHello")
+                }
+                if g == 29 && gl == 32 {
+                    share29 = b + i + k + 4
+                }
+                if g == 23 && gl == 65 {
+                    share23 = b + i + k + 4
+                }
+                k += 4 + gl
+            }
+        }
+        i += el
+    }
+    if !has13 {
+        tl_abort(s, 70, "peer is incompatible: TLS 1.3 is required")
+    }
+    // Suite: preferencia del servidor.
+    let mut suite = 0
+    let prefs = [4866, 4865, 4867]
+    let mut pi = 0
+    while pi < 3 && suite == 0 {
+        let want = std::raw::bits(rt_seq_get(prefs, pi))
+        let mut k = 0
+        while k + 1 < cl {
+            if std::raw::load8(cs + k) * 256 + std::raw::load8(cs + k + 1) == want {
+                suite = want
+            }
+            k += 2
+        }
+        pi += 1
+    }
+    if suite == 0 {
+        tl_abort(s, 40, "no cipher suites in common with the client")
+    }
+    tl_suite(suite, s)
+    if share29 == 0 && share23 == 0 {
+        tl_abort(s, 40, "no supported key share offered by the client")
+    }
+    // Esquema de firma.
+    let kind = std::raw::load(cfg + 8)
+    let mut scheme = 1027
+    if kind == 1 {
+        scheme = 2052
+    }
+    if kind == 3 {
+        scheme = 1283
+    }
+    if sigs == 0 {
+        tl_abort(s, 109, "peer sent no signature algorithms")
+    }
+    let mut okp = false
+    let mut k = 0
+    while k + 1 < sign {
+        if std::raw::load8(sigs + k) * 256 + std::raw::load8(sigs + k + 1) == scheme {
+            okp = true
+        }
+        k += 2
+    }
+    if !okp {
+        tl_abort(s, 40, "peer does not support the signature scheme of the server certificate")
+    }
+    tl_tr_add(s, m)
+    // Intercambio de claves.
+    let shared = rt_alloc(40)
+    let spub = rt_alloc(80)
+    let mut group = 29
+    let mut gl = 32
+    if share29 != 0 {
+        let sp = rt_alloc(40)
+        let base = rt_alloc_zero(40)
+        rn_os_fill(sp, 32)
+        std::raw::store8(base, 9)
+        x2_scalarmult(spub, sp, base)
+        if x2_scalarmult(shared, sp, share29) == 0 {
+            tl_abort(s, 47, "invalid key share from the peer")
+        }
+        rt_free_block(sp)
+        rt_free_block(base)
+    } else {
+        let cv = ec_curve(EC_P256)
+        let d = rt_alloc(40)
+        rn_os_fill(d, 32)
+        while !ec_pub(cv, d, spub) {
+            rn_os_fill(d, 32)
+        }
+        if !ec_ecdh(cv, d, share23, 65, shared) {
+            tl_abort(s, 47, "invalid key share from the peer")
+        }
+        ec_curve_free(cv)
+        rt_free_block(d)
+        group = 23
+        gl = 65
+    }
+    // ServerHello
+    let sh = tb_new(256)
+    let hp = tl_hs_begin(sh, 2)
+    tb_u16(sh, 771)
+    let srandom = rt_alloc(40)
+    rn_os_fill(srandom, 32)
+    tb_bytes(sh, srandom, 32)
+    tb_u8(sh, sl)
+    tb_bytes(sh, sid, sl)
+    tb_u16(sh, suite)
+    tb_u8(sh, 0)
+    let el = tb_mark(sh, 2)
+    tb_u16(sh, 43)
+    tb_u16(sh, 2)
+    tb_u16(sh, 772)
+    tb_u16(sh, 51)
+    tb_u16(sh, 4 + gl)
+    tb_u16(sh, group)
+    tb_u16(sh, gl)
+    tb_bytes(sh, spub, gl)
+    tb_patch(sh, el, 2)
+    tb_patch(sh, hp, 3)
+    tl_send_hs(s, sh)
+    tb_free(sh)
+    if sl > 0 {
+        let ccs = rt_alloc(8)
+        std::raw::store8(ccs, 20)
+        std::raw::store8(ccs + 1, 3)
+        std::raw::store8(ccs + 2, 3)
+        std::raw::store8(ccs + 3, 0)
+        std::raw::store8(ccs + 4, 1)
+        std::raw::store8(ccs + 5, 1)
+        tl_send_raw(s, ccs, 6)
+        rt_free_block(ccs)
+    }
+    rt_free_block(m)
+    let hk = tl_gs(s, TS_HK)
+    let hl = tl_hlen(hk)
+    let zeros = rt_alloc_zero(hl + 8)
+    let eh = hs_digest(hk, zeros, 0)
+    let early = tl_extract(hk, zeros, 0, zeros, hl)
+    let der1 = tl_derive(hk, early, "derived", eh)
+    let hsec = tl_extract(hk, der1, hl, shared, 32)
+    let th = tl_th(s)
+    let chs = tl_derive(hk, hsec, "c hs traffic", th)
+    let shs = tl_derive(hk, hsec, "s hs traffic", th)
+    rt_free_block(th)
+    let der2 = tl_derive(hk, hsec, "derived", eh)
+    let master = tl_extract(hk, der2, hl, zeros, hl)
+    tl_keys(s, chs, false)
+    tl_keys(s, shs, true)
+    // EncryptedExtensions
+    let ee = tb_new(16)
+    let ep = tl_hs_begin(ee, 8)
+    tb_u16(ee, 0)
+    tb_patch(ee, ep, 3)
+    tl_send_hs(s, ee)
+    tb_free(ee)
+    // Certificate
+    let cb = std::raw::load(cfg)
+    let ce = tb_new(std::raw::load(cb + 8) + 16)
+    let cp2 = tl_hs_begin(ce, 11)
+    tb_bytes(ce, std::raw::load(cb), std::raw::load(cb + 8))
+    tb_patch(ce, cp2, 3)
+    tl_send_hs(s, ce)
+    tb_free(ce)
+    // CertificateVerify
+    let th_cert = tl_th(s)
+    let content = tl_cv_content(true, th_cert, hl)
+    rt_free_block(th_cert)
+    let sig = tl_cv_sign(s, cfg, std::raw::load(content), std::raw::load(content + 8))
+    tb_free(content)
+    let cvm = tb_new(rt_slen(sig) + 16)
+    let cvp = tl_hs_begin(cvm, 15)
+    tb_u16(cvm, scheme)
+    tb_u16(cvm, rt_slen(sig))
+    tb_bytes(cvm, rt_bdata(sig), rt_slen(sig))
+    tb_patch(cvm, cvp, 3)
+    tl_send_hs(s, cvm)
+    tb_free(cvm)
+    // Finished
+    let th2 = tl_th(s)
+    let sfin = tl_finished(s, shs, th2)
+    rt_free_block(th2)
+    let fm = tb_new(64)
+    let fp = tl_hs_begin(fm, 20)
+    tb_bytes(fm, sfin, hl)
+    tb_patch(fm, fp, 3)
+    tl_send_hs(s, fm)
+    tb_free(fm)
+    let tha = tl_th(s)
+    let cap = tl_derive(hk, master, "c ap traffic", tha)
+    let sap = tl_derive(hk, master, "s ap traffic", tha)
+    rt_free_block(tha)
+    tl_keys(s, sap, true)
+    // Finished del cliente
+    let cm2 = tl_hs_next(s)
+    if tm_type(cm2) != 20 {
+        tl_abort(s, 10, "received unexpected message, expected client Finished")
+    }
+    if tm_blen(cm2) != hl {
+        tl_abort(s, 50, "received corrupt Finished")
+    }
+    let th3 = tl_th(s)
+    let expect = tl_finished(s, chs, th3)
+    if !tl_ct_eq(expect, tm_body(cm2), hl) {
+        tl_abort(s, 51, "received a Finished message with an invalid verify_data (DecryptError)")
+    }
+    tl_tr_add(s, cm2)
+    tl_keys(s, cap, false)
+    tl_ss(s, TS_HS, 0)
+    rt_free_block(th3)
+    rt_free_block(expect)
+    rt_free_block(cm2)
+    rt_free_block(shared)
+    rt_free_block(spub)
+    rt_free_block(srandom)
+    rt_free_block(zeros)
+    rt_free_block(eh)
+    rt_free_block(early)
+    rt_free_block(der1)
+    rt_free_block(hsec)
+    rt_free_block(chs)
+    rt_free_block(shs)
+    rt_free_block(der2)
+    rt_free_block(master)
+    rt_free_block(cap)
+    rt_free_block(sap)
+    rt_free_block(sfin)
+}
+
+fn rt_tls_accept(listener: any, config: any) -> any {
+    if std::raw::tag(config) != 20 {
+        tlx_type_error("tls_accept requires server config")
+    }
+    if std::raw::tag(listener) != 16 {
+        tlx_type_error("tls_accept requires listener")
+    }
+    let ce = tcp_entry(tcp_handle_id(config))
+    if ce == 0 || std::raw::load(ce + 8) != 4 {
+        tlx_type_error("unknown TLS config")
+    }
+    let le = tcp_entry(tcp_handle_id(listener))
+    if le == 0 || std::raw::load(le + 8) != 1 {
+        tlx_type_error("unknown TCP listener")
+    }
+    let f = "std::tls::accept"
+    tcp_reserve()
+    let lfd = std::raw::load(le + 16)
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    let mut cfd = -1
+    loop {
+        tcp_wait(lfd, 1, -1)
+        std::raw::store(lenp, 32)
+        let r = std::raw::syscall(288, lfd, sa, lenp, 524288, 0, 0)
+        if r >= 0 {
+            cfd = r
+            break
+        }
+        if r == -4 || r == -11 {
+            continue
+        }
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        rt_native_fail(f, rt_os_error(0 - r))
+    }
+    let peer = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    rt_free_block(lenp)
+    let one = rt_alloc(8)
+    std::raw::store(one, 1)
+    std::raw::syscall(54, cfd, 6, 1, one, 4, 0)
+    rt_free_block(one)
+    let s = tl_state_new(cfd, 2, 0, 2)
+    tl_server_handshake(s, std::raw::load(ce + 32))
+    let id = tcp_register(3, cfd)
+    let e = tcp_entry(id)
+    std::raw::store(e + 32, s)
+    std::raw::store(e + 24, 0)
+    let pair = (tk_handle(19, id, 0), peer)
+    pair
+}

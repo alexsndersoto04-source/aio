@@ -1,0 +1,1386 @@
+// std::sqlite en Titan, parte 6: árbol sintáctico y analizador de expresiones y SELECT. Prefijo `sp`.
+// Todas las funciones reciben (tokens, posición) y devuelven (nodo, nueva posición).
+// Un error se señala con posición negativa: -(índice del token + 1).
+
+enum Ex {
+    ELit(Sv),
+    EPar(string),
+    ECol((string, string, int)),
+    ESlot((int, int, string, string)),
+    ECoerce((Ex, string)),
+    EUn((string, Ex)),
+    EBin((string, Ex, Ex)),
+    EFn((string, array, bool, bool, any, any, int)),
+    EAgg(int),
+    ECase((any, array, any)),
+    ECast((Ex, string)),
+    ECollate((Ex, string)),
+    EBetween((Ex, Ex, Ex, bool)),
+    EIn((Ex, array, bool)),
+    EInSel((Ex, any, bool)),
+    EInSet((Ex, any, bool)),
+    EExists(any),
+    ESub(any),
+    ELike((string, Ex, Ex, any, bool)),
+    EIsNull((Ex, bool)),
+    ERow(array),
+    ERaise((string, string)),
+    EWin(int),
+}
+
+struct WinSpec {
+    base: string,
+    part: array,
+    order: array,
+    frame: any,
+}
+
+struct OrdT {
+    e: any,
+    desc: bool,
+    nulls: int,
+}
+
+struct SelCol {
+    e: any,
+    alias: string,
+    star: bool,
+    qual: string,
+}
+
+struct Src {
+    kind: string,
+    name: string,
+    alias: string,
+    sub: any,
+    jt: string,
+    on: any,
+    using: array,
+    args: array,
+}
+
+struct Core {
+    distinct: bool,
+    cols: array,
+    from: array,
+    wh: any,
+    group: array,
+    having: any,
+    wins: array,
+    vals: any,
+}
+
+struct Cte {
+    name: string,
+    cols: array,
+    sel: any,
+}
+
+struct Sel {
+    with: array,
+    rec: bool,
+    cores: array,
+    ops: array,
+    order: array,
+    limit: any,
+    offset: any,
+}
+
+fn sp_err(i: int) -> int {
+    0 - (i + 1)
+}
+
+fn sp_kw(t: array, i: int, w: string) -> bool {
+    t[i].k == "id" && t[i].u == w
+}
+
+fn sp_op(t: array, i: int, o: string) -> bool {
+    t[i].k == "op" && t[i].s == o
+}
+
+// Palabras que no pueden ser alias sin AS.
+fn sp_reserved(u: string) -> bool {
+    let ws = ["FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "UNION", "INTERSECT", "EXCEPT", "ON", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "USING", "WINDOW", "OFFSET", "RETURNING", "SET", "VALUES", "WHEN", "THEN", "ELSE", "END", "AND", "OR", "NOT", "AS", "IS", "IN", "LIKE", "GLOB", "BETWEEN", "CASE", "OUTER", "INDEXED", "SELECT", "INSERT", "UPDATE", "DELETE", "NULL", "ISNULL", "NOTNULL", "ESCAPE", "COLLATE", "MATCH", "REGEXP", "CAST", "EXISTS", "DISTINCT", "ALL", "CREATE", "DROP", "FILTER", "OVER", "DO", "BEGIN"]
+    for w in ws {
+        if w == u {
+            return true
+        }
+    }
+    false
+}
+
+// Nombre (identificador, entrecomillado o cadena).
+fn sp_name(t: array, i: int) -> (string, int) {
+    let k = t[i].k
+    if k == "qid" || k == "str" || k == "id" {
+        return (t[i].s, i + 1)
+    }
+    return ("", sp_err(i))
+}
+
+fn sp_int_lit(s: string) -> Sv {
+    if len(s) > 2 && (std::text::substring(s, 0, 2) == "0x" || std::text::substring(s, 0, 2) == "0X") {
+        let mut v = 0
+        let mut over = false
+        for h in std::text::chars(std::text::substring(s, 2, len(s))) {
+            let c = std::text::char_code(h)
+            let mut d = 0
+            if c >= 48 && c <= 57 {
+                d = c - 48
+            } else if c >= 97 {
+                d = c - 87
+            } else {
+                d = c - 55
+            }
+            if v > 576460752303423487 {
+                over = true
+            }
+            if !over {
+                v = v * 16 + d
+            }
+        }
+        return Sv::SInt(v)
+    }
+    let r = std::text::parse_int(s)
+    match r {
+        Option::Some(v) => Sv::SInt(v),
+        _ => {
+            let f = std::text::parse_float(s)
+            match f {
+                Option::Some(x) => Sv::SReal(x),
+                _ => Sv::SNull,
+            }
+        },
+    }
+}
+
+fn sp_blob_lit(h: string) -> Sv {
+    Sv::SBlob(std::encoding::hex_decode(h))
+}
+
+// ------------------------------------------------------------ expresiones
+
+fn sp_expr(t: array, i: int) -> (any, int) {
+    sp_or(t, i)
+}
+
+fn sp_or(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_and(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while sp_kw(t, k, "OR") {
+        let (r, j2) = sp_and(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin(("OR", left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_and(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_not(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while sp_kw(t, k, "AND") {
+        let (r, j2) = sp_not(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin(("AND", left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_not(t: array, i: int) -> (any, int) {
+    if sp_kw(t, i, "NOT") {
+        let (e, j) = sp_not(t, i + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        return (Ex::EUn(("NOT", e)), j)
+    }
+    sp_eq(t, i)
+}
+
+fn sp_eq(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_cmp(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while true {
+        let mut neg = false
+        let mut m = k
+        if t[m].k == "op" && (t[m].s == "=" || t[m].s == "==" || t[m].s == "!=" || t[m].s == "<>") {
+            let (r, j2) = sp_cmp(t, m + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            let mut op = t[m].s
+            if op == "==" {
+                op = "="
+            }
+            if op == "<>" {
+                op = "!="
+            }
+            left = Ex::EBin((op, left, r))
+            k = j2
+            continue
+        }
+        if sp_kw(t, m, "IS") {
+            m += 1
+            let mut isneg = false
+            if sp_kw(t, m, "NOT") {
+                isneg = true
+                m += 1
+            }
+            if sp_kw(t, m, "DISTINCT") && sp_kw(t, m + 1, "FROM") {
+                m += 2
+                isneg = !isneg
+            }
+            let (r, j2) = sp_cmp(t, m)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if isneg {
+                left = Ex::EBin(("ISNOT", left, r))
+            } else {
+                left = Ex::EBin(("IS", left, r))
+            }
+            k = j2
+            continue
+        }
+        if sp_kw(t, m, "ISNULL") {
+            left = Ex::EIsNull((left, false))
+            k = m + 1
+            continue
+        }
+        if sp_kw(t, m, "NOTNULL") {
+            left = Ex::EIsNull((left, true))
+            k = m + 1
+            continue
+        }
+        if sp_kw(t, m, "NOT") && sp_kw(t, m + 1, "NULL") {
+            left = Ex::EIsNull((left, true))
+            k = m + 2
+            continue
+        }
+        if sp_kw(t, m, "NOT") {
+            neg = true
+            m += 1
+        }
+        if sp_kw(t, m, "IN") {
+            let (e, j2) = sp_in(t, m + 1, left, neg)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            left = e
+            k = j2
+            continue
+        }
+        if sp_kw(t, m, "BETWEEN") {
+            let (lo, j2) = sp_cmp(t, m + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_kw(t, j2, "AND") {
+                return (nil, sp_err(j2))
+            }
+            let (hi, j3) = sp_cmp(t, j2 + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            left = Ex::EBetween((left, lo, hi, neg))
+            k = j3
+            continue
+        }
+        if sp_kw(t, m, "LIKE") || sp_kw(t, m, "GLOB") || sp_kw(t, m, "REGEXP") || sp_kw(t, m, "MATCH") {
+            let op = t[m].u
+            let (pat, j2) = sp_cmp(t, m + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            let mut esc = nil
+            let mut j3 = j2
+            if sp_kw(t, j2, "ESCAPE") {
+                let (e, j4) = sp_cmp(t, j2 + 1)
+                if j4 < 0 {
+                    return (nil, j4)
+                }
+                esc = e
+                j3 = j4
+            }
+            left = Ex::ELike((op, left, pat, esc, neg))
+            k = j3
+            continue
+        }
+        if neg {
+            return (nil, sp_err(m))
+        }
+        break
+    }
+    return (left, k)
+}
+
+fn sp_in(t: array, i: int, left: any, neg: bool) -> (any, int) {
+    if sp_op(t, i, "(") {
+        if sp_kw(t, i + 1, "SELECT") || sp_kw(t, i + 1, "WITH") || sp_kw(t, i + 1, "VALUES") {
+            let (s, j) = sp_select(t, i + 1)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_op(t, j, ")") {
+                return (nil, sp_err(j))
+            }
+            return (Ex::EInSel((left, s, neg)), j + 1)
+        }
+        let mut items = []
+        let mut k = i + 1
+        if sp_op(t, k, ")") {
+            return (Ex::EIn((left, [], neg)), k + 1)
+        }
+        while true {
+            let (e, j) = sp_expr(t, k)
+            if j < 0 {
+                return (nil, j)
+            }
+            items = std::array::push(items, e)
+            if sp_op(t, j, ",") {
+                k = j + 1
+                continue
+            }
+            if sp_op(t, j, ")") {
+                return (Ex::EIn((left, items, neg)), j + 1)
+            }
+            return (nil, sp_err(j))
+        }
+    }
+    // IN tabla
+    let (nm, j) = sp_name(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let sel = Sel { with: [], rec: false, cores: [Core { distinct: false, cols: [SelCol { e: nil, alias: "", star: true, qual: "" }], from: [Src { kind: "table", name: nm, alias: "", sub: nil, jt: "", on: nil, using: [], args: [] }], wh: nil, group: [], having: nil, wins: [], vals: nil }], ops: [], order: [], limit: nil, offset: nil }
+    return (Ex::EInSel((left, sel, neg)), j)
+}
+
+fn sp_cmp(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_bit(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while t[k].k == "op" && (t[k].s == "<" || t[k].s == "<=" || t[k].s == ">" || t[k].s == ">=") {
+        let (r, j2) = sp_bit(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin((t[k].s, left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_bit(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_add(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while t[k].k == "op" && (t[k].s == "&" || t[k].s == "|" || t[k].s == "<<" || t[k].s == ">>") {
+        let (r, j2) = sp_add(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin((t[k].s, left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_add(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_mul(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while t[k].k == "op" && (t[k].s == "+" || t[k].s == "-") {
+        let (r, j2) = sp_mul(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin((t[k].s, left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_mul(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_cat(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while t[k].k == "op" && (t[k].s == "*" || t[k].s == "/" || t[k].s == "%") {
+        let (r, j2) = sp_cat(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin((t[k].s, left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_cat(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_collate(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while t[k].k == "op" && (t[k].s == "||" || t[k].s == "->" || t[k].s == "->>") {
+        let (r, j2) = sp_collate(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::EBin((t[k].s, left, r))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_collate(t: array, i: int) -> (any, int) {
+    let (l, j) = sp_unary(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut left = l
+    let mut k = j
+    while sp_kw(t, k, "COLLATE") {
+        let (nm, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        left = Ex::ECollate((left, nm))
+        k = j2
+    }
+    return (left, k)
+}
+
+fn sp_unary(t: array, i: int) -> (any, int) {
+    if t[i].k == "op" && (t[i].s == "-" || t[i].s == "+" || t[i].s == "~") {
+        let (e, j) = sp_unary(t, i + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        // -9223372036854775808
+        if t[i].s == "-" && t[i + 1].k == "int" {
+            match e {
+                Ex::ELit(lv) => {
+                    match lv {
+                        Sv::SInt(v) => {
+                            return (Ex::ELit(Sv::SInt(0 - v)), j)
+                        },
+                        Sv::SReal(v) => {
+                            if v == 9223372036854775808.0 {
+                                return (Ex::ELit(Sv::SInt(-9223372036854775807 - 1)), j)
+                            }
+                        },
+                        _ => {},
+                    }
+                },
+                _ => {},
+            }
+        }
+        return (Ex::EUn((t[i].s, e)), j)
+    }
+    sp_primary(t, i)
+}
+
+fn sp_cast_type(t: array, i: int) -> (string, int) {
+    let mut parts = []
+    let mut k = i
+    while t[k].k == "id" || t[k].k == "qid" {
+        parts = std::array::push(parts, t[k].s)
+        k += 1
+    }
+    if len(parts) == 0 {
+        return ("", sp_err(k))
+    }
+    if sp_op(t, k, "(") {
+        let mut depth = 0
+        let mut txt = "("
+        k += 1
+        while !sp_op(t, k, ")") && t[k].k != "eof" {
+            if !sp_op(t, k, ",") {
+                txt = txt + t[k].s
+            } else {
+                txt = txt + ","
+            }
+            k += 1
+        }
+        if t[k].k == "eof" {
+            return ("", sp_err(k))
+        }
+        k += 1
+        return (std::collections::join(parts, " ") + txt + ")", k)
+    }
+    return (std::collections::join(parts, " "), k)
+}
+
+fn sp_list(t: array, i: int) -> (any, int) {
+    // lista de expresiones separadas por comas (sin paréntesis); devuelve (array, pos)
+    let mut items = []
+    let mut k = i
+    while true {
+        let (e, j) = sp_expr(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        items = std::array::push(items, e)
+        if sp_op(t, j, ",") {
+            k = j + 1
+            continue
+        }
+        return (items, j)
+    }
+    return (items, k)
+}
+
+fn sp_primary(t: array, i: int) -> (any, int) {
+    let tk = t[i]
+    if tk.k == "int" {
+        return (Ex::ELit(sp_int_lit(tk.s)), i + 1)
+    }
+    if tk.k == "float" {
+        return (Ex::ELit(sp_int_lit(tk.s)), i + 1)
+    }
+    if tk.k == "str" {
+        return (Ex::ELit(Sv::SText(tk.s)), i + 1)
+    }
+    if tk.k == "blob" {
+        return (Ex::ELit(sp_blob_lit(tk.s)), i + 1)
+    }
+    if tk.k == "param" {
+        return (Ex::EPar(tk.s), i + 1)
+    }
+    if tk.k == "op" && tk.s == "(" {
+        if sp_kw(t, i + 1, "SELECT") || sp_kw(t, i + 1, "WITH") || sp_kw(t, i + 1, "VALUES") {
+            let (s, j) = sp_select(t, i + 1)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_op(t, j, ")") {
+                return (nil, sp_err(j))
+            }
+            return (Ex::ESub(s), j + 1)
+        }
+        let (items, j) = sp_list(t, i + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        if !sp_op(t, j, ")") {
+            return (nil, sp_err(j))
+        }
+        if len(items) == 1 {
+            return (items[0], j + 1)
+        }
+        return (Ex::ERow(items), j + 1)
+    }
+    if tk.k == "id" {
+        let u = tk.u
+        if u == "NULL" {
+            return (Ex::ELit(Sv::SNull), i + 1)
+        }
+        if u == "TRUE" {
+            return (Ex::ELit(Sv::SInt(1)), i + 1)
+        }
+        if u == "FALSE" {
+            return (Ex::ELit(Sv::SInt(0)), i + 1)
+        }
+        if (u == "CURRENT_TIME" || u == "CURRENT_DATE" || u == "CURRENT_TIMESTAMP") && !sp_op(t, i + 1, "(") {
+            return (Ex::EFn((u, [], false, false, nil, nil, tk.p)), i + 1)
+        }
+        if u == "CASE" {
+            return sp_case(t, i + 1)
+        }
+        if u == "CAST" && sp_op(t, i + 1, "(") {
+            let (e, j) = sp_expr(t, i + 2)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_kw(t, j, "AS") {
+                return (nil, sp_err(j))
+            }
+            let (ty, j2) = sp_cast_type(t, j + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_op(t, j2, ")") {
+                return (nil, sp_err(j2))
+            }
+            return (Ex::ECast((e, ty)), j2 + 1)
+        }
+        if u == "EXISTS" && sp_op(t, i + 1, "(") {
+            let (s, j) = sp_select(t, i + 2)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_op(t, j, ")") {
+                return (nil, sp_err(j))
+            }
+            return (Ex::EExists(s), j + 1)
+        }
+        if u == "RAISE" && sp_op(t, i + 1, "(") {
+            let kind = t[i + 2].u
+            if kind == "IGNORE" {
+                if !sp_op(t, i + 3, ")") {
+                    return (nil, sp_err(i + 3))
+                }
+                return (Ex::ERaise(("IGNORE", "")), i + 4)
+            }
+            if (kind == "ROLLBACK" || kind == "ABORT" || kind == "FAIL") && sp_op(t, i + 3, ",") && t[i + 4].k == "str" && sp_op(t, i + 5, ")") {
+                return (Ex::ERaise((kind, t[i + 4].s)), i + 6)
+            }
+            return (nil, sp_err(i + 2))
+        }
+        if sp_reserved(u) && u != "REPLACE" && u != "LIKE" && u != "GLOB" {
+            return (nil, sp_err(i))
+        }
+    }
+    if tk.k == "id" || tk.k == "qid" || (tk.k == "str" && false) {
+        // llamada a función
+        if sp_op(t, i + 1, "(") && tk.k == "id" {
+            return sp_call(t, i)
+        }
+        // columna: a, a.b, a.b.c
+        let mut parts = [tk.s]
+        let mut k = i + 1
+        while sp_op(t, k, ".") && (t[k + 1].k == "id" || t[k + 1].k == "qid") {
+            parts = std::array::push(parts, t[k + 1].s)
+            k += 2
+        }
+        if len(parts) == 1 {
+            return (Ex::ECol(("", parts[0], tk.p)), k)
+        }
+        if len(parts) == 2 {
+            return (Ex::ECol((parts[0], parts[1], tk.p)), k)
+        }
+        return (Ex::ECol((parts[1], parts[2], tk.p)), k)
+    }
+    return (nil, sp_err(i))
+}
+
+fn sp_call(t: array, i: int) -> (any, int) {
+    let name = t[i].s
+    let mut k = i + 2
+    let mut star = false
+    let mut distinct = false
+    let mut args = []
+    if sp_op(t, k, "*") {
+        star = true
+        k += 1
+    } else if sp_op(t, k, ")") {
+    } else {
+        if sp_kw(t, k, "DISTINCT") {
+            distinct = true
+            k += 1
+        }
+        let (items, j) = sp_list(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        args = items
+        k = j
+        // ORDER BY dentro de agregados (group_concat) se ignora salvo que se pida
+        if sp_kw(t, k, "ORDER") && sp_kw(t, k + 1, "BY") {
+            return (nil, sp_err(k))
+        }
+    }
+    if !sp_op(t, k, ")") {
+        return (nil, sp_err(k))
+    }
+    k += 1
+    let mut filter = nil
+    if sp_kw(t, k, "FILTER") && sp_op(t, k + 1, "(") && sp_kw(t, k + 2, "WHERE") {
+        let (f, j) = sp_expr(t, k + 3)
+        if j < 0 {
+            return (nil, j)
+        }
+        if !sp_op(t, j, ")") {
+            return (nil, sp_err(j))
+        }
+        filter = f
+        k = j + 1
+    }
+    let mut over = nil
+    if sp_kw(t, k, "OVER") {
+        let (w, j) = sp_window(t, k + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        over = w
+        k = j
+    }
+    return (Ex::EFn((name, args, star, distinct, filter, over, t[i].p)), k)
+}
+
+fn sp_order_list(t: array, i: int) -> (any, int) {
+    let mut items = []
+    let mut k = i
+    while true {
+        let (e, j) = sp_expr(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        let mut desc = false
+        let mut m = j
+        if sp_kw(t, m, "ASC") {
+            m += 1
+        } else if sp_kw(t, m, "DESC") {
+            desc = true
+            m += 1
+        }
+        let mut nulls = 0
+        if sp_kw(t, m, "NULLS") && sp_kw(t, m + 1, "FIRST") {
+            nulls = 1
+            m += 2
+        } else if sp_kw(t, m, "NULLS") && sp_kw(t, m + 1, "LAST") {
+            nulls = 2
+            m += 2
+        }
+        items = std::array::push(items, OrdT { e: e, desc: desc, nulls: nulls })
+        if sp_op(t, m, ",") {
+            k = m + 1
+            continue
+        }
+        return (items, m)
+    }
+    return (items, k)
+}
+
+// Especificación de ventana: nombre | ( [base] [PARTITION BY] [ORDER BY] [marco] )
+fn sp_window(t: array, i: int) -> (any, int) {
+    if t[i].k == "id" || t[i].k == "qid" {
+        return (WinSpec { base: t[i].s, part: [], order: [], frame: nil }, i + 1)
+    }
+    if !sp_op(t, i, "(") {
+        return (nil, sp_err(i))
+    }
+    let mut k = i + 1
+    let mut base = ""
+    if (t[k].k == "id" && !sp_reserved(t[k].u) && t[k].u != "PARTITION" && t[k].u != "ROWS" && t[k].u != "RANGE" && t[k].u != "GROUPS") || t[k].k == "qid" {
+        base = t[k].s
+        k += 1
+    }
+    let mut part = []
+    if sp_kw(t, k, "PARTITION") && sp_kw(t, k + 1, "BY") {
+        let (items, j) = sp_list(t, k + 2)
+        if j < 0 {
+            return (nil, j)
+        }
+        part = items
+        k = j
+    }
+    let mut order = []
+    if sp_kw(t, k, "ORDER") && sp_kw(t, k + 1, "BY") {
+        let (items, j) = sp_order_list(t, k + 2)
+        if j < 0 {
+            return (nil, j)
+        }
+        order = items
+        k = j
+    }
+    let mut frame: any = nil
+    if sp_kw(t, k, "ROWS") || sp_kw(t, k, "RANGE") || sp_kw(t, k, "GROUPS") {
+        let mode = t[k].u
+        k += 1
+        let mut hasb = false
+        if sp_kw(t, k, "BETWEEN") {
+            hasb = true
+            k += 1
+        }
+        let (sk, sx, j) = sp_bound(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        k = j
+        let mut ek = "CURRENT"
+        let mut ex = nil
+        if hasb {
+            if !sp_kw(t, k, "AND") {
+                return (nil, sp_err(k))
+            }
+            let (k2, x2, j2) = sp_bound(t, k + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            ek = k2
+            ex = x2
+            k = j2
+        }
+        let mut excl = ""
+        if sp_kw(t, k, "EXCLUDE") {
+            if sp_kw(t, k + 1, "NO") && sp_kw(t, k + 2, "OTHERS") {
+                excl = "NO OTHERS"
+                k += 3
+            } else if sp_kw(t, k + 1, "CURRENT") && sp_kw(t, k + 2, "ROW") {
+                excl = "CURRENT ROW"
+                k += 3
+            } else if sp_kw(t, k + 1, "GROUP") {
+                excl = "GROUP"
+                k += 2
+            } else if sp_kw(t, k + 1, "TIES") {
+                excl = "TIES"
+                k += 2
+            } else {
+                return (nil, sp_err(k + 1))
+            }
+        }
+        frame = [mode, sk, sx, ek, ex, excl]
+    }
+    if !sp_op(t, k, ")") {
+        return (nil, sp_err(k))
+    }
+    return (WinSpec { base: base, part: part, order: order, frame: frame }, k + 1)
+}
+
+fn sp_bound(t: array, i: int) -> (string, any, int) {
+    if sp_kw(t, i, "UNBOUNDED") && (sp_kw(t, i + 1, "PRECEDING") || sp_kw(t, i + 1, "FOLLOWING")) {
+        return ("UNBOUNDED " + t[i + 1].u, nil, i + 2)
+    }
+    if sp_kw(t, i, "CURRENT") && sp_kw(t, i + 1, "ROW") {
+        return ("CURRENT", nil, i + 2)
+    }
+    let (e, j) = sp_expr(t, i)
+    if j < 0 {
+        return ("", nil, j)
+    }
+    if sp_kw(t, j, "PRECEDING") || sp_kw(t, j, "FOLLOWING") {
+        return (t[j].u, e, j + 1)
+    }
+    return ("", nil, sp_err(j))
+}
+
+fn sp_case(t: array, i: int) -> (any, int) {
+    let mut k = i
+    let mut base = nil
+    if !sp_kw(t, k, "WHEN") {
+        let (b, j) = sp_expr(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        base = b
+        k = j
+    }
+    let mut whens = []
+    while sp_kw(t, k, "WHEN") {
+        let (c, j) = sp_expr(t, k + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        if !sp_kw(t, j, "THEN") {
+            return (nil, sp_err(j))
+        }
+        let (r, j2) = sp_expr(t, j + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        whens = std::array::push(whens, [c, r])
+        k = j2
+    }
+    if len(whens) == 0 {
+        return (nil, sp_err(k))
+    }
+    let mut els = nil
+    if sp_kw(t, k, "ELSE") {
+        let (e, j) = sp_expr(t, k + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        els = e
+        k = j
+    }
+    if !sp_kw(t, k, "END") {
+        return (nil, sp_err(k))
+    }
+    return (Ex::ECase((base, whens, els)), k + 1)
+}
+
+// ------------------------------------------------------------ SELECT
+
+fn sp_alias(t: array, i: int) -> (string, int) {
+    if sp_kw(t, i, "AS") {
+        let (nm, j) = sp_name(t, i + 1)
+        if j < 0 {
+            return ("", j)
+        }
+        return (nm, j)
+    }
+    if t[i].k == "qid" || t[i].k == "str" {
+        return (t[i].s, i + 1)
+    }
+    if t[i].k == "id" && !sp_reserved(t[i].u) {
+        return (t[i].s, i + 1)
+    }
+    return ("", i)
+}
+
+fn sp_select_cols(t: array, i: int) -> (any, int) {
+    let mut cols = []
+    let mut k = i
+    while true {
+        if sp_op(t, k, "*") {
+            cols = std::array::push(cols, SelCol { e: nil, alias: "", star: true, qual: "" })
+            k += 1
+        } else if (t[k].k == "id" || t[k].k == "qid") && sp_op(t, k + 1, ".") && sp_op(t, k + 2, "*") {
+            cols = std::array::push(cols, SelCol { e: nil, alias: "", star: true, qual: t[k].s })
+            k += 3
+        } else {
+            let (e, j) = sp_expr(t, k)
+            if j < 0 {
+                return (nil, j)
+            }
+            let (al, j2) = sp_alias(t, j)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            // texto original de la expresión para el nombre de columna
+            let sqltxt = t[len(t) - 1].u
+            let rawtxt = std::text::substring(sqltxt, t[k].p, t[j].p)
+            cols = std::array::push(cols, SelCol { e: e, alias: al, star: false, qual: sq_trim_ws(rawtxt) })
+            k = j2
+        }
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        return (cols, k)
+    }
+    return (cols, k)
+}
+
+fn sp_table_ref(t: array, i: int) -> (any, int) {
+    // subconsulta o (join anidado)
+    if sp_op(t, i, "(") {
+        if sp_kw(t, i + 1, "SELECT") || sp_kw(t, i + 1, "WITH") || sp_kw(t, i + 1, "VALUES") {
+            let (s, j) = sp_select(t, i + 1)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_op(t, j, ")") {
+                return (nil, sp_err(j))
+            }
+            let (al, j2) = sp_alias(t, j + 1)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            return (Src { kind: "sub", name: "", alias: al, sub: s, jt: "", on: nil, using: [], args: [] }, j2)
+        }
+        // (tabla JOIN ...): se aplana
+        let (srcs, j) = sp_from_list(t, i + 1)
+        if j < 0 {
+            return (nil, j)
+        }
+        if !sp_op(t, j, ")") {
+            return (nil, sp_err(j))
+        }
+        return (Src { kind: "group", name: "", alias: "", sub: srcs, jt: "", on: nil, using: [], args: [] }, j + 1)
+    }
+    let (nm, j) = sp_name(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut name = nm
+    let mut k = j
+    if sp_op(t, k, ".") {
+        let (n2, j2) = sp_name(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        name = n2
+        k = j2
+        // el esquema se descarta salvo `main`/`temp`
+    }
+    if sp_op(t, k, "(") {
+        // función con valores de tabla
+        let mut args = []
+        k += 1
+        if !sp_op(t, k, ")") {
+            let (items, j3) = sp_list(t, k)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            args = items
+            k = j3
+        }
+        if !sp_op(t, k, ")") {
+            return (nil, sp_err(k))
+        }
+        let (al, j4) = sp_alias(t, k + 1)
+        if j4 < 0 {
+            return (nil, j4)
+        }
+        return (Src { kind: "fn", name: name, alias: al, sub: nil, jt: "", on: nil, using: [], args: args }, j4)
+    }
+    let (al, j5) = sp_alias(t, k)
+    if j5 < 0 {
+        return (nil, j5)
+    }
+    let mut m = j5
+    if sp_kw(t, m, "INDEXED") && sp_kw(t, m + 1, "BY") {
+        m += 3
+    } else if sp_kw(t, m, "NOT") && sp_kw(t, m + 1, "INDEXED") {
+        m += 2
+    }
+    return (Src { kind: "table", name: name, alias: al, sub: nil, jt: "", on: nil, using: [], args: [] }, m)
+}
+
+fn sp_from_list(t: array, i: int) -> (any, int) {
+    let (first, j) = sp_table_ref(t, i)
+    if j < 0 {
+        return (nil, j)
+    }
+    let mut srcs = [first]
+    let mut k = j
+    while true {
+        let mut jt = ""
+        if sp_op(t, k, ",") {
+            jt = ","
+            k += 1
+        } else {
+            let mut natural = false
+            let mut m = k
+            if sp_kw(t, m, "NATURAL") {
+                natural = true
+                m += 1
+            }
+            let mut kind = "INNER"
+            if sp_kw(t, m, "LEFT") || sp_kw(t, m, "RIGHT") || sp_kw(t, m, "FULL") {
+                kind = t[m].u
+                m += 1
+                if sp_kw(t, m, "OUTER") {
+                    m += 1
+                }
+            } else if sp_kw(t, m, "INNER") {
+                m += 1
+            } else if sp_kw(t, m, "CROSS") {
+                kind = "CROSS"
+                m += 1
+            }
+            if !sp_kw(t, m, "JOIN") {
+                return (srcs, k)
+            }
+            if natural {
+                kind = "NATURAL " + kind
+            }
+            jt = kind
+            k = m + 1
+        }
+        let (r, j2) = sp_table_ref(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        k = j2
+        let mut on = nil
+        let mut using = []
+        if sp_kw(t, k, "ON") {
+            let (e, j3) = sp_expr(t, k + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            on = e
+            k = j3
+        } else if sp_kw(t, k, "USING") && sp_op(t, k + 1, "(") {
+            k += 2
+            while true {
+                let (nm, j3) = sp_name(t, k)
+                if j3 < 0 {
+                    return (nil, j3)
+                }
+                using = std::array::push(using, nm)
+                k = j3
+                if sp_op(t, k, ",") {
+                    k += 1
+                    continue
+                }
+                break
+            }
+            if !sp_op(t, k, ")") {
+                return (nil, sp_err(k))
+            }
+            k += 1
+        }
+        srcs = std::array::push(srcs, Src { kind: r.kind, name: r.name, alias: r.alias, sub: r.sub, jt: jt, on: on, using: using, args: r.args })
+    }
+    return (srcs, k)
+}
+
+fn sp_core(t: array, i: int) -> (any, int) {
+    if sp_kw(t, i, "VALUES") {
+        let mut rows = []
+        let mut k = i + 1
+        while true {
+            if !sp_op(t, k, "(") {
+                return (nil, sp_err(k))
+            }
+            let (items, j) = sp_list(t, k + 1)
+            if j < 0 {
+                return (nil, j)
+            }
+            if !sp_op(t, j, ")") {
+                return (nil, sp_err(j))
+            }
+            rows = std::array::push(rows, items)
+            k = j + 1
+            if sp_op(t, k, ",") {
+                k += 1
+                continue
+            }
+            break
+        }
+        return (Core { distinct: false, cols: [], from: [], wh: nil, group: [], having: nil, wins: [], vals: rows }, k)
+    }
+    if !sp_kw(t, i, "SELECT") {
+        return (nil, sp_err(i))
+    }
+    let mut k = i + 1
+    let mut distinct = false
+    if sp_kw(t, k, "DISTINCT") {
+        distinct = true
+        k += 1
+    } else if sp_kw(t, k, "ALL") {
+        k += 1
+    }
+    let (cols, j) = sp_select_cols(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    k = j
+    let mut from = []
+    if sp_kw(t, k, "FROM") {
+        let (srcs, j2) = sp_from_list(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        from = srcs
+        k = j2
+    }
+    let mut wh = nil
+    if sp_kw(t, k, "WHERE") {
+        let (e, j2) = sp_expr(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        wh = e
+        k = j2
+    }
+    let mut group = []
+    if sp_kw(t, k, "GROUP") && sp_kw(t, k + 1, "BY") {
+        let (items, j2) = sp_list(t, k + 2)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        group = items
+        k = j2
+    }
+    let mut having = nil
+    if sp_kw(t, k, "HAVING") {
+        let (e, j2) = sp_expr(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        having = e
+        k = j2
+    }
+    let mut wins = []
+    if sp_kw(t, k, "WINDOW") {
+        k += 1
+        while true {
+            let (nm, j2) = sp_name(t, k)
+            if j2 < 0 {
+                return (nil, j2)
+            }
+            if !sp_kw(t, j2, "AS") {
+                return (nil, sp_err(j2))
+            }
+            let (w, j3) = sp_window(t, j2 + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            wins = std::array::push(wins, [nm, w])
+            k = j3
+            if sp_op(t, k, ",") {
+                k += 1
+                continue
+            }
+            break
+        }
+    }
+    return (Core { distinct: distinct, cols: cols, from: from, wh: wh, group: group, having: having, wins: wins, vals: nil }, k)
+}
+
+fn sp_with(t: array, i: int) -> (any, bool, int) {
+    let mut k = i + 1
+    let mut rec = false
+    if sp_kw(t, k, "RECURSIVE") {
+        rec = true
+        k += 1
+    }
+    let mut ctes = []
+    while true {
+        let (nm, j) = sp_name(t, k)
+        if j < 0 {
+            return (nil, false, j)
+        }
+        k = j
+        let mut cols = []
+        if sp_op(t, k, "(") {
+            k += 1
+            while true {
+                let (cn, j2) = sp_name(t, k)
+                if j2 < 0 {
+                    return (nil, false, j2)
+                }
+                cols = std::array::push(cols, cn)
+                k = j2
+                if sp_op(t, k, ",") {
+                    k += 1
+                    continue
+                }
+                break
+            }
+            if !sp_op(t, k, ")") {
+                return (nil, false, sp_err(k))
+            }
+            k += 1
+        }
+        if !sp_kw(t, k, "AS") {
+            return (nil, false, sp_err(k))
+        }
+        k += 1
+        if sp_kw(t, k, "NOT") && sp_kw(t, k + 1, "MATERIALIZED") {
+            k += 2
+        } else if sp_kw(t, k, "MATERIALIZED") {
+            k += 1
+        }
+        if !sp_op(t, k, "(") {
+            return (nil, false, sp_err(k))
+        }
+        let (s, j3) = sp_select(t, k + 1)
+        if j3 < 0 {
+            return (nil, false, j3)
+        }
+        if !sp_op(t, j3, ")") {
+            return (nil, false, sp_err(j3))
+        }
+        ctes = std::array::push(ctes, Cte { name: nm, cols: cols, sel: s })
+        k = j3 + 1
+        if sp_op(t, k, ",") {
+            k += 1
+            continue
+        }
+        break
+    }
+    return (ctes, rec, k)
+}
+
+fn sp_select(t: array, i: int) -> (any, int) {
+    let mut k = i
+    let mut with = []
+    let mut rec = false
+    if sp_kw(t, k, "WITH") {
+        let (ctes, r, j) = sp_with(t, k)
+        if j < 0 {
+            return (nil, j)
+        }
+        with = ctes
+        rec = r
+        k = j
+    }
+    let (c0, j) = sp_core(t, k)
+    if j < 0 {
+        return (nil, j)
+    }
+    k = j
+    let mut cores = [c0]
+    let mut ops = []
+    while true {
+        let mut op = ""
+        if sp_kw(t, k, "UNION") {
+            op = "UNION"
+            k += 1
+            if sp_kw(t, k, "ALL") {
+                op = "UNION ALL"
+                k += 1
+            }
+        } else if sp_kw(t, k, "INTERSECT") {
+            op = "INTERSECT"
+            k += 1
+        } else if sp_kw(t, k, "EXCEPT") {
+            op = "EXCEPT"
+            k += 1
+        } else {
+            break
+        }
+        let (c, j2) = sp_core(t, k)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        cores = std::array::push(cores, c)
+        ops = std::array::push(ops, op)
+        k = j2
+    }
+    let mut order = []
+    if sp_kw(t, k, "ORDER") && sp_kw(t, k + 1, "BY") {
+        let (items, j2) = sp_order_list(t, k + 2)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        order = items
+        k = j2
+    }
+    let mut limit = nil
+    let mut offset = nil
+    if sp_kw(t, k, "LIMIT") {
+        let (e, j2) = sp_expr(t, k + 1)
+        if j2 < 0 {
+            return (nil, j2)
+        }
+        limit = e
+        k = j2
+        if sp_kw(t, k, "OFFSET") {
+            let (e2, j3) = sp_expr(t, k + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            offset = e2
+            k = j3
+        } else if sp_op(t, k, ",") {
+            // LIMIT offset, count
+            let (e2, j3) = sp_expr(t, k + 1)
+            if j3 < 0 {
+                return (nil, j3)
+            }
+            offset = limit
+            limit = e2
+            k = j3
+        }
+    }
+    return (Sel { with: with, rec: rec, cores: cores, ops: ops, order: order, limit: limit, offset: offset }, k)
+}
