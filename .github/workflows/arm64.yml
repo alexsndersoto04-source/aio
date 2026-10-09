@@ -133,6 +133,7 @@ jobs:
           # Nombres fijos para que instalar-termux.sh encuentre siempre «latest/download/…».
           cp titan-*-linux-aarch64.tar.gz titan-linux-aarch64.tar.gz
           cp titan-*-linux-x86_64.tar.gz titan-linux-x86_64.tar.gz
+          sha256sum titan-linux-*.tar.gz > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
-            --notes "Paquetes de Titan para Linux (x86-64 y ARM64/Termux). Descomprime y ejecuta ./titan (la carpeta native/ debe quedar junto al ejecutable). Ver LEEME.txt dentro del paquete." \
-            titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz
+            --notes "Primera versión construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x anteriores son del prototipo en Rust). Paquetes para Linux x86-64 y ARM64/Termux; el de ARM64 se probó en un servidor ARM64 real, no en un teléfono. Descomprime y ejecuta ./titan (la carpeta native/ debe quedar junto al ejecutable). Ver LEEME.txt dentro del paquete. SHA256SUMS.txt trae las sumas de verificación." \
+            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz

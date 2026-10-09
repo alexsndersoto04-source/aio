@@ -4,14 +4,14 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
-## Sin versión (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64
+## 1.1.0 (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64
 
 - El compilador, el runtime nativo y la biblioteca estándar (812 funciones `std::*` en 73 espacios de nombres) están escritos en
   Titan. El compilador se compila a sí mismo con punto fijo verificado (etapa 1 = 2 = 3, byte a byte) a partir de una semilla
   (`selfhost/semilla/`). El código Rust se borró del repositorio (sigue en el historial, etiqueta `ultimo-con-rust`).
 - `titan run`/`compile` generan código nativo (x86-64 directo, o LLVM para x86-64 y ARM64); ya no hay VM al ejecutar.
 - Linux ARM64 (Termux): `titan compile --target aarch64`; el ejecutable `titan` ARM64 se prueba en un ARM64 real en CI
-  (95 programas con salida idéntica a la del backend x86-64). Paquetes `titan-v1.0.0-linux-{x86_64,aarch64}.tar.gz`
+  (95 programas con salida idéntica a la del backend x86-64). Paquetes `titan-v1.1.0-linux-{x86_64,aarch64}.tar.gz`
   (`selfhost/empaquetar.sh`), instalador `selfhost/instalar-termux.sh`.
 - Backend LLVM: tareas y canales (fibras con cambio de pila en ensamblador x86-64/ARM64) y `map/filter/fold/find/any/all` como llamadas.
 - Corregido: el estado de `std::server` y de `std::window` (Wayland) estaba en globales que en ARM64 corrompía `ppoll` o que

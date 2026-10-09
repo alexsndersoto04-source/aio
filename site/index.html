@@ -222,7 +222,7 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
 <section id="instalar" class="alt"><div class="wrap">
   <p class="eyebrow">Instalación</p>
   <h2>Construir Titan desde las fuentes</h2>
-  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 se publican en <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a> a partir de la versión 1.1; las versiones 1.0.x de esa página son del prototipo antiguo en Rust.</p>
+  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 están en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">Releases</a>: la versión 1.1.0 es la primera construida con el compilador escrito en Titan; las 1.0.x anteriores son del prototipo antiguo en Rust.</p>
   <div class="steps">
     <div class="step"><div class="step-h"><span class="stepn">1</span><h3>Construir</h3><p>Tarda unos 2–3 minutos.</p></div>
       <div class="step-b"><div class="code"><div class="cap">Linux x86-64</div><pre><code>git clone https://github.com/alexsndersoto04-source/aio.git
@@ -238,7 +238,7 @@ titan run</code></pre></div></div></div>
   </div>
   <div class="grid2 sp">
     <div class="note"><b>Cómo se construye.</b> El repositorio incluye una semilla: una copia ya compilada del compilador (7,7 MB, <code>selfhost/semilla/</code>). <code>bootstrap.sh</code> la usa para compilar el compilador escrito en Titan, que luego se compila a sí mismo dos veces; el script comprueba que las tres versiones sean idénticas byte a byte.</div>
-    <div class="note"><b>Termux (Android, ARM64).</b> El flujo «Linux ARM64 (Termux)» de GitHub Actions fabrica <code>titan-v1.0.0-linux-aarch64.tar.gz</code>. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="docs/termux.html">guía de Termux</a>.</div>
+    <div class="note"><b>Termux (Android, ARM64).</b> El flujo «Linux ARM64 (Termux)» de GitHub Actions fabrica <code>titan-v1.1.0-linux-aarch64.tar.gz</code>. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="docs/termux.html">guía de Termux</a>.</div>
   </div>
 </div></section>
 

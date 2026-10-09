@@ -12,8 +12,8 @@ arch="$2"
 mkdir -p "${3:-.}"
 out="$(readlink -f "${3:-.}")"
 case "$arch" in x86_64|aarch64) ;; *) echo "arquitectura: x86_64 o aarch64" >&2; exit 2 ;; esac
-ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo v1.0.0)" | head -1 || true)"
-[ -n "$ver" ] || ver=v1.0.0
+ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo v1.1.0)" | head -1 || true)"
+[ -n "$ver" ] || ver=v1.1.0
 name="titan-$ver-linux-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

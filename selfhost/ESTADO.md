@@ -714,7 +714,7 @@ lo que antes eran programas sueltos:
 | `titan exec [artefacto.tbc]` | decodifica y valida el `.tbc`, lo compila a nativo (temporal) y lo ejecuta | `zett exec` (que usa la VM) |
 | `titan wasm [entrada] [-o salida]` | WebAssembly + mapas de fuente | `zett wasm` |
 | `titan bytecode <entrada>` | volcado del bytecode | `zett bytecode` |
-| `titan version` | `TITAN Language Compiler v1.0.0` | `zett version` |
+| `titan version` | `TITAN Language Compiler v1.1.0` | `zett version` |
 | `titan add/fetch/update/keygen/pack/publish` | gestor de paquetes (ver «Gestor de paquetes en Titan») | los mismos de `zett` |
 
 Los errores salen por stderr con el formato de Rust (`ETIQUETA: causa` aplanada, el
@@ -1562,7 +1562,7 @@ que dependen de pantalla/audio): **59 idénticos, 0 distintos**. `titan check pr
   `tests/**`) quedan como registro; para repetirlas hay que construir la etiqueta `ultimo-con-rust` (ver
   `selfhost/tests/LEEME.md`). Los tests ONNX comparan además con onnxruntime, que sí sigue sirviendo.
 - **Plataformas:** hoy hay paquetes para Linux x86-64 y Linux ARM64 (Termux); macOS y Windows no tienen paquete nuevo
-  (los binarios de la release v1.0.0 son de la versión en Rust). Ver «Linux x86-64 y ARM64/Termux» más abajo.
+  (las releases hasta v1.0.26 son de la versión en Rust; la v1.1.0 es la primera construida sin Rust). Ver «Linux x86-64 y ARM64/Termux» más abajo.
 - **Flujos de GitHub Actions**: `ci.yml` (bootstrap sin Rust) y `arm64.yml` se ejecutaron en GitHub y pasan (ver más abajo);
   `check-moon.yml` y `pages.yml` aún no se han ejecutado allí.
 - `zett run` como intérprete: `titan run` compila a nativo y ejecuta (no hay VM).
@@ -1571,7 +1571,7 @@ que dependen de pantalla/audio): **59 idénticos, 0 distintos**. `titan check pr
 
 ## Linux x86-64 y ARM64/Termux (2026-10-09)
 
-**Qué hay.** Dos paquetes, `titan-v1.0.0-linux-x86_64.tar.gz` y `titan-v1.0.0-linux-aarch64.tar.gz` (los fabrica
+**Qué hay.** Dos paquetes, `titan-v1.1.0-linux-x86_64.tar.gz` y `titan-v1.1.0-linux-aarch64.tar.gz` (los fabrica
 `selfhost/empaquetar.sh`; cada uno lleva el ejecutable `titan`, la carpeta `native/` con el runtime en Titan y un
 `LEEME.txt`; ≈2,7 MB). Para Termux, `selfhost/instalar-termux.sh`. Los fabrica el flujo `.github/workflows/arm64.yml` y
 quedan como artefacto `paquetes` de cada ejecución; el paso de publicación como release solo corre en etiquetas `v*` y

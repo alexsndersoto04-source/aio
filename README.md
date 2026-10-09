@@ -6,7 +6,7 @@
 
 **TITAN** es un lenguaje de programación compilado y con tipos comprobados antes de ejecutar. El compilador, el runtime y la biblioteca estándar están escritos en Titan; el repositorio no contiene código Rust (Titan nació como un prototipo en Rust, que sigue en el historial de git, etiqueta `ultimo-con-rust`). Los programas usan la extensión **`.titan`** y se compilan a ejecutables nativos (o a WebAssembly). **Zett** es el nombre con el que se distribuyó antes, sobre todo en Android/Termux.
 
-> **Estado (octubre de 2026).** Plataformas con ejecutable probado: **Linux x86-64** y **Linux ARM64 (Termux)**. En ARM64 el ejecutable se probó en un servidor ARM64 real (GitHub Actions), no en un teléfono. macOS y Windows todavía no tienen ejecutable. Los binarios de la release [v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0) son de la versión antigua en Rust y no se actualizan. Lo que está verificado y lo que no, con detalle: [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
+> **Estado (octubre de 2026).** Plataformas con ejecutable probado: **Linux x86-64** y **Linux ARM64 (Termux)**. En ARM64 el ejecutable se probó en un servidor ARM64 real (GitHub Actions), no en un teléfono. macOS y Windows todavía no tienen ejecutable. La release [v1.1.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.1.0) es la primera construida con el compilador escrito en Titan (sin Rust); las anteriores (hasta v1.0.26) son del prototipo antiguo en Rust y no se actualizan. Lo que está verificado y lo que no, con detalle: [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
 
 ```text
 código fuente (.titan)
@@ -43,7 +43,7 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 
 ### ARM64 y Termux
 
-El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.0.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
+El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.1.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 
 ### Cruzar de arquitectura
 

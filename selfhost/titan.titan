@@ -45,7 +45,7 @@ import dap
 import native::dap_core
 
 fn cl_version() -> string {
-    "1.0.0"
+    "1.1.0"
 }
 
 // Bytes crudos en stdout / stderr (print siempre añade un salto de línea).
