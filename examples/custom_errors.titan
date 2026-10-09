@@ -15,7 +15,7 @@
 //   4) Combinable con std::try::catch para atrapar cualquier error.
 //
 // Ejecutar con:
-//     zett run examples/custom_errors.titan
+//     titan run examples/custom_errors.titan
 
 // ---------------- Definicion del error ----------------
 

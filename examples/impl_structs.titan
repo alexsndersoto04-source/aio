@@ -11,7 +11,7 @@
 // structs pueden compartir nombre de metodo sin colision.
 //
 // Ejecutar con:
-//     zett run examples/impl_structs.titan
+//     titan run examples/impl_structs.titan
 
 struct Point { x: float, y: float }
 

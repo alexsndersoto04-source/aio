@@ -15,7 +15,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ CI `37187789306` (`f7747b0`): compilador nativo = Zett precompilado, byte a byte, en 911/911 archivos `.titan` (incluidos diagnósticos) |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats); la paridad funcional se registra aparte por batería y arquitectura |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 == etapa3 byte a byte) | ✅ CI `37187789306` (`f7747b0`): tres generaciones idénticas; etapas 2 y 3 sin Rust ni `PATH` (`selfhost/verify_fixpoint.sh`) |
-| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | en curso: **700/816** firmas tienen cuerpo Titan/intrínseco (`std::onnx` pasó de 0 a 9 en la sesión del 2026-10-08, ver «std::onnx en Titan»); 116 siguen atendidas por nativas Rust (corregido el 2026-10-08: el 713 anterior incluía código que no compilaba, ver «Corrección de cifras» más abajo). `std::redis` ya tiene sus 21 cuerpos Titan integrados y la prueba diferencial pasó contra un Redis 7.2.4 real, con AUTH (credencial percent-encoded), SELECT de DB 13 y operaciones RESP2; ambos backends dieron salida, errores y código idénticos, sin timeout ni caso no admitido. `std::server` tiene sus 23 cuerpos Titan, reescritos como port de `server_mod.rs` (handles compartidos desde 1, límites por handles vivos, errores como errores con el texto de Rust, parseo estricto de petición, cuerpo fijo/chunked con trailers, upgrade y decodificador WebSocket); la prueba diferencial `selfhost/tests/server_diff/` (≈640 líneas de salida del servidor y ≈150 del cliente, con casos límite y malformados) da salida **idéntica** entre la VM de Rust y el binario nativo, y `server_std.titan` también. Las únicas desviaciones conocidas están en «Corrección de cifras». El punto fijo local posterior a las integraciones dio `titanc1 == titanc2 == titanc3` (SHA-256 `84b33e340d747c4fd89425f8f2ce584c27adbd5ccb6d54c52f9099a9e19dbde4`, anterior a la corrección del backend descrita abajo). Cruce estático actualizado: 326 programas nativos + 8 pruebas suplementarias; 649 nombres de API citados y definidos, sin referencias sin definición; 42 cuerpos Titan no aparecen citados y 167 firmas no tienen mención directa. Son referencias de fuente, no cobertura de ramas ni prueba de paridad funcional (`selfhost/native/auditar_pruebas.py`). Las 103 restantes se mantienen desglosadas por namespace para implementación o clasificación explícita de APIs de plataforma; no se consideran resueltas por estar en Rust. La validación conductual se registra por batería y arquitectura; no se infiere de estos conteos. |
+| 6 | Biblioteca estándar y runtime en Titan; borrar el último `.rs` | ✅ **812/812** funciones `std::*` con cuerpo en Titan (`bash selfhost/native/cobertura.sh -v`); el código Rust se borró del repositorio (última versión con Rust: etiqueta `ultimo-con-rust`, `5dbb238`) |
 | L | **Backend LLVM** en Titan: bytecode → LLVM IR → clang/llc (LLVM real) (`selfhost/native/llvm.titan`, `selfhost/build_llvm.titan`) | ✅ CI `37396772922` (`b30105d`): LLVM x86-64 y ARM64 en hardware real dieron **313/313 idénticos**, sin diferencias, timeouts ni casos no admitidos; se generaron los 313 objetos ARM64 sin rechazos. `audio_synthesis` es una prueba positiva: requiere código 0 en VM y nativo. La matriz también contiene las pruebas WAV; esto valida esos casos, no todas las ramas ni paridad global. El run anterior `37272142744` detectó un defecto del arnés: `image_gif_validate` y `image_webp_validate` recibían carpetas separadas de sus productores y fallaban ambos lados con código 1. `7a67de3` corrigió el directorio compartido y el orden determinista; el run nuevo pasó. El punto fijo por LLVM (`native/llvm/punto_fijo.sh`) también se ha verificado anteriormente. |
 | O | **Optimizador propio** en Titan, estilo `opt` de LLVM, sobre el bytecode (la representación intermedia de Titan) (`selfhost/opt.titan`): cálculo de constantes, saltos encadenados, valores descartados, código inalcanzable. Lo usan los dos backends | ✅ en marcha: el compilador pasa de 74 550 a 69 358 instrucciones (−7 %); punto fijo propio y por LLVM ✅; `selfhost/opt_ver.titan ARCHIVO [--dump]` muestra el antes/después; `TITAN_OPT=0` lo apaga. Integración de funciones pequeñas (inlining) hecha y probada, cuenta la profundidad de llamadas igual que una llamada real; va apagada salvo con `TITAN_INLINE=1` porque medida sobre el compilador no lo acelera (ni con el backend propio ni con LLVM) y agranda el ejecutable |
 | M | **Memoria del runtime**: medido con un perfilador por muestreo propio (`selfhost/native/perfil.py`, sin perf), el compilador pasaba casi la mitad del tiempo pidiendo y devolviendo bloques grandes al sistema. Ahora esos bloques se reutilizan (listas por tamaño, potencias de 2) | ✅ compilador hecho por LLVM: 6,5 s → 4,3 s (−34 %); con el backend propio: 41,4 s → 31,0 s (−25 %); misma salida byte a byte; puntos fijos ✅; prueba `memoria_grande.titan` |
@@ -1013,7 +1013,7 @@ con `titan run`/`exec`. Ahora sí (`native/backend.titan`, `bk_call_method`; `na
 - Pruebas: `tests/native/metodos_impl.titan` y `coleccion_llamadas.titan` (salida y errores
   idénticos a `zett run`); `examples/` (`traits`, `impl_structs`, `qol_higher_order`,
   `pipeline_spaceship`, `aliases_spread`, `const_and_maps`, `for_destructuring`) también.
-- El backend LLVM (`llvm.titan`) no lo tiene: sigue rechazando `CallMethod` y las seis de colección.
+- Backend LLVM: `ArrayMap/Filter/Fold/Find/Any/All` (las llamadas `map(xs, f)`) ya se admiten (2026-10-09, mismas rutinas del runtime; `coleccion_llamadas` idéntico). `CallMethod` sigue sin admitirse en LLVM.
 
 ## Instrucciones de la VM sin equivalente nativo (2026-10-08)
 
@@ -1070,8 +1070,10 @@ funcionan en el backend x86-64 propio (`Op::Spawn`, `JoinTask`, `JoinTaskTimeout
     se colgaría; aquí termina con `RUNTIME ERROR: deadlock: every task is blocked and none can ever
     wake up` (código 1). Con plazos se duerme hasta el más próximo.
   - Al salir `main`, las tareas pendientes no se ejecutan ni se esperan (como la VM).
-- **Backend LLVM / ARM64**: sin tareas (`Spawn` sigue rechazada); `std::raw::fiber_switch` es una
-  trampa que no se alcanza porque nunca se crea otra pila.
+- **Backend LLVM / ARM64**: desde 2026-10-09 las tareas y canales también funcionan por LLVM (x86-64 y ARM64): `Spawn`,
+  `JoinTask`, `ChannelSend/Recv/Select`… llaman a las mismas rutinas de `std_task.titan`, y `std::raw::fiber_switch` es
+  `lv_fiber_switch`, escrito en ensamblador para cada arquitectura (registros que conserva una llamada, pila y salto a la
+  entrada). Verificado en un ARM64 real (ver «Linux x86-64 y ARM64/Termux» al final).
 - **Sin sustituto**: `SpawnQuota` (límite de memoria por tarea).
 - **Pruebas** (idénticas a `zett run`, salida, errores y código de salida): `tareas_basico`,
   `tareas_canales`, `tareas_select`, `tareas_estres` (ping-pong de 2000 viajes sin capacidad, 256
@@ -1559,10 +1561,51 @@ que dependen de pantalla/audio): **59 idénticos, 0 distintos**. `titan check pr
 - **Oráculo de pruebas:** la VM de Rust ya no está. Las pruebas diferenciales (`verify_*.sh`, `native/verify_native.sh`,
   `tests/**`) quedan como registro; para repetirlas hay que construir la etiqueta `ultimo-con-rust` (ver
   `selfhost/tests/LEEME.md`). Los tests ONNX comparan además con onnxruntime, que sí sigue sirviendo.
-- **Plataformas:** solo Linux x86-64 tiene compilador nativo empaquetado. macOS, Windows, ARM64/Termux (antes con
-  binarios de Rust en la release v1.0.0) no tienen empaquetado nuevo. El backend LLVM (`build_llvm.titan`) genera ARM64 y se
-  verificó en hardware real en CI; falta empaquetarlo (hace falta clang). Es lo siguiente para recuperar Termux.
-- **Flujos de GitHub Actions** (`ci.yml`, `check-moon.yml`): reescritos para el bootstrap sin Rust; **no se han
-  ejecutado en GitHub** desde aquí (sí sus comandos, a mano).
+- **Plataformas:** hoy hay paquetes para Linux x86-64 y Linux ARM64 (Termux); macOS y Windows no tienen paquete nuevo
+  (los binarios de la release v1.0.0 son de la versión en Rust). Ver «Linux x86-64 y ARM64/Termux» más abajo.
+- **Flujos de GitHub Actions**: `ci.yml` (bootstrap sin Rust) y `arm64.yml` se ejecutaron en GitHub y pasan (ver más abajo);
+  `check-moon.yml` y `pages.yml` aún no se han ejecutado allí.
 - `zett run` como intérprete: `titan run` compila a nativo y ejecuta (no hay VM).
 - Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.
+
+
+## Linux x86-64 y ARM64/Termux (2026-10-09)
+
+**Qué hay.** Dos paquetes, `titan-v1.0.0-linux-x86_64.tar.gz` y `titan-v1.0.0-linux-aarch64.tar.gz` (los fabrica
+`selfhost/empaquetar.sh`; cada uno lleva el ejecutable `titan`, la carpeta `native/` con el runtime en Titan y un
+`LEEME.txt`; ≈2,7 MB). Para Termux, `selfhost/instalar-termux.sh`. Los fabrica el flujo `.github/workflows/arm64.yml` y
+quedan como artefacto `paquetes` de cada ejecución; el paso de publicación como release solo corre en etiquetas `v*` y
+**todavía no se ha ejecutado**.
+
+**Cómo se hace el ejecutable ARM64.** El compilador x86-64 construido por el punto fijo compila la CLI (`selfhost/titan.titan`) con
+el backend LLVM: `titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64` (LLVM lo pone `clang`; la CLI
+no incluye LLVM, lo invoca). El resultado es un ELF estático ARM64 sin libc: habla con el núcleo Linux por llamadas al
+sistema, igual que en x86-64. En ARM64, `titan run/compile` genera LLVM IR y llama a `clang` (con `lld`); por eso en Termux
+hace falta `pkg install clang`. En una máquina x86-64, `--target aarch64` compila para ARM64 (también por `clang` o por `zig cc`
+como alternativa vía `TITAN_CC`).
+
+**Qué se verificó, en un ARM64 real** (runner `ubuntu-24.04-arm` de GitHub Actions; ejecución `37890535640`, commit `7deb0fc`):
+- el ejecutable ARM64 arranca y `titan version` responde;
+- compila y ejecuta un programa en la propia máquina ARM64;
+- procesos hijos (`std::process::spawn`) y servidor HTTP (`std::server`) con un cliente `curl` real;
+- **diferencial: 95 programas de `selfhost/tests/native` compilados y ejecutados con el backend x86-64 y con LLVM/ARM64: 95 idénticos
+  (stdout, stderr y código de salida), 0 distintos, 0 no admitidos.** La muestra es 1 de cada 4 de las pruebas que no necesitan red
+  externa, pantalla ni audio, más todas las de tareas/canales, `coleccion_llamadas`, `server_std` y `window_state`;
+- el propio `titan` ARM64 compila `selfhost/titan.titan` en ARM64 (2 min 17 s). Ese ejecutable **no** es idéntico byte a byte al
+  cruzado (clang distinto en cada caso): no se afirma punto fijo en ARM64.
+
+**Fallos reales encontrados y corregidos al hacerlo.**
+- `std::server` guardaba su puntero de estado en `globals+3592`, que en ARM64 es la zona de trabajo de `rt_sys_arm64`;
+  `ppoll` escribe ahí el tiempo restante y corrompía el puntero (SIGSEGV al recibir la primera petición). Ahora el estado vive en
+  `rtm_state()+64`. `std::window` (Wayland) guardaba el suyo en `globals+3552`, el mismo hueco de las tareas; ahora en `rtm_state()+72`.
+- El backend LLVM no admitía `map(xs, f)`/`filter`/`fold`/`find`/`any`/`all` como llamadas, ni tareas ni canales: ahora sí.
+- `ci.yml` tenía un error de YAML que lo hacía fallar en 0 s; corregido.
+
+**Límites que quedan, dichos claro.**
+- No está probado en un teléfono: el runner ARM64 es un servidor Linux, no Android. Termux usa el mismo núcleo, pero Android puede
+  filtrar algunas llamadas al sistema; si algo falla en un dispositivo, hay que mirarlo ahí.
+- En ARM64 hace falta `clang` + `lld` (Termux: `pkg install clang`) para compilar programas; el paquete no lo trae.
+- `titan debug`/DAP: sus ranuras de estado (`globals+3600…3728`) caen en la zona de trabajo ARM64; sin probar en ARM64.
+- `std_audio_engine`, `gui`/ventanas, `fswatch`, Redis/Postgres/MySQL, TLS y `ws_*` no están en el diferencial (necesitan servicios o
+  dispositivos externos): se compilan por LLVM, pero su paridad en ARM64 no está medida.
+- macOS y Windows: sin paquete (el runtime usa llamadas al sistema de Linux).

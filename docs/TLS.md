@@ -1,6 +1,10 @@
 # TITAN TLS
 
-TITAN uses rustls 0.23 and WebPKI roots; it does not implement cryptography itself. TLS 1.2/1.3 streams are VM-managed handles and require the Network capability. Loading server credentials additionally requires Filesystem.
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
+TITAN implements TLS 1.2/1.3 itself, in Titan (`selfhost/native/std_tls.titan`), with its own X.509 validation. TLS streams are handles managed by the runtime. There is no capability system in native executables: any program can open connections and read credential files.
 
 ```titan
 let stream = std::tls::connect("example.com:443", "example.com")

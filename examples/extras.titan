@@ -1,5 +1,5 @@
 // Demo de las nuevas librerías (Fase 1).
-// Ejecutar con:  zett run examples/extras.titan
+// Ejecutar con:  titan run examples/extras.titan
 
 fn main() {
     // regex

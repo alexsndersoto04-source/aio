@@ -1,6 +1,6 @@
 // Demo Fase 37: Connection Pooling ACID y Resiliencia en Red (`std::sqlite` + `std::db`).
 // Ejecutar con:
-//     zett run examples/enterprise_pool.titan
+//     titan run examples/enterprise_pool.titan
 //
 // Demuestra:
 // 1. Creación de pool de conexiones ACID persistente en archivo con capacidad máxima estricta

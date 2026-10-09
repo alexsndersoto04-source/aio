@@ -9,35 +9,24 @@ de datos PostgreSQL, mismo frontend. CERO simulaciones.
 
 | Herramienta | Para qué | Cómo obtenerla |
 |---|---|---|
-| Binario `zett` (Titan, compilado del repo) | Compilar/ejecutar la API | ver sección 2 |
+| `titan` (compilado del repo, enlazado como `bin/zett`) | Compilar/ejecutar la API | ver sección 2 |
 | PostgreSQL 16+ (cualquier versión ≥16) | Base de datos | `apt install postgresql`, Homebrew, Docker, o [embedded-postgres](https://www.npmjs.com/package/embedded-postgres) |
 | Node.js 22.x | Frontend (Vite) | `nvm install 22` o tu gestor |
 
-> **El binario sale de este mismo repo.** Los binarios que publican las
-> releases y la rama espejo `tools-zett-x86_64` son de versiones anteriores del
-> lenguaje (esa rama llegó a contener un archivo de relleno en vez de un
-> binario), así que la vía fiable —y la que usa la propia CI— es compilarlo.
+> **El compilador sale de este mismo repo**, construido sin Rust (`bash selfhost/bootstrap.sh`).
 
 ---
 
 ## 2. Obtener el binario `zett`
 
 ```sh
-# Desde la raíz del repo (necesita Rust: https://rustup.rs)
-cargo build --release -p titan_cli   # (titan_cli produce el binario `titan`)
-cp target/release/titan ./zett
-./zett --version
-```
-
-O con el atajo que lo deja listo en `projects/moon/bin/zett`:
-
-```sh
+# Desde la raíz del repo: construye `selfhost/titan` y lo enlaza como projects/moon/bin/zett
 projects/moon/ops/fetch-zett.sh
+projects/moon/bin/zett version
 ```
 
-Es el mismo comando que corre la CI antes del E2E completo, así que lo que
-ejecutas es exactamente lo que está verificado (`cargo test -p titan_cli
---test moon_e2e`).
+Es lo mismo que construye la CI (`.github/workflows/ci.yml`). El binario real es `selfhost/titan` y debe quedar junto a
+`selfhost/native/` (el enlace lo respeta).
 
 ---
 
@@ -76,13 +65,13 @@ que quieras y ajusta `DATABASE_URL`.)
 
 ```sh
 cd projects/moon
-bash ops/start-api.sh        # envs saneos + JWT_SECRET persistente + zett run
+bash ops/start-api.sh        # envs saneos + JWT_SECRET persistente + titan run
 ```
 
 El script espera el binario en `projects/moon/bin/zett` (descárgalo con
 `bash ops/fetch-zett.sh`). También puedes exportar las variables a mano
 (mínimo `DATABASE_URL` + `JWT_SECRET` ≥ 32 chars; opcionales `CORS_ORIGIN`,
-`PUBLIC_BASE_URL`, `SMTP_*`) y ejecutar `bin/zett run src/main.titan`.
+`PUBLIC_BASE_URL`, `SMTP_*`) y ejecutar `bin/titan run src/main.titan`.
 
 Arranque correcto se ve así:
 

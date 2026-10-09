@@ -1,6 +1,6 @@
 // Demo Fase 12 (parte 3): sentiment analysis end-to-end en Termux.
 // Ejecutar con:
-//     zett run examples/sentiment.titan
+//     titan run examples/sentiment.titan
 //
 // Combina las dos partes anteriores:
 //   * std::tokenize (Fase 12 pt.1) — WordPiece de DistilBERT
@@ -131,5 +131,5 @@ fn print_download_instructions() {
     print("  curl -L -o ~/distilbert-sentiment.onnx \\")
     print("    https://huggingface.co/Xenova/distilbert-base-uncased-finetuned-sst-2-english/resolve/main/onnx/model.onnx")
     print("")
-    print("Y volve a correr:  zett run examples/sentiment.titan")
+    print("Y volve a correr:  titan run examples/sentiment.titan")
 }

@@ -1,53 +1,62 @@
-# Titan Architecture
+# Arquitectura de Titan
 
-## Executable pipeline
+Todo el compilador, el runtime y la biblioteca estándar están escritos en Titan y viven en `selfhost/`. No hay código
+Rust en el repositorio (el prototipo original sigue en el historial de git, etiqueta `ultimo-con-rust`).
+
+## Del código fuente al ejecutable
 
 ```text
-.titan source
-  → titan_lexer          tokens, byte-accurate spans, lexical diagnostics
-  → titan_parser         recursive descent + precedence parsing
-  → titan_ast            declarations, statements, expressions and patterns
-  → titan_typechecker    scopes, signatures, aggregate and control-flow checks
-  → titan_codegen        AST to versioned stack bytecode
-  → titan_vm             checked frame-based interpreter
+programa.titan
+  → lexer.titan          tokens con posiciones
+  → parser.titan         sintaxis → AST (ast.titan)
+  → typechecker.titan    ámbitos, firmas, tipos
+  → codegen.titan        AST → bytecode de pila (la representación intermedia)
+  → opt.titan            optimizador sobre el bytecode
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+  native/backend.titan      native/llvm.titan            wasm.titan
+  x86-64 directo (ELF)      LLVM IR (x86-64 y ARM64)     WebAssembly
 ```
 
-For project commands, `titan_pkg::SourceProject` first discovers `Titan.toml`, resolves canonical local dependencies and recursively loads imports. It rejects missing files, path escapes, duplicate dependency traversal, import cycles and dependency cycles. The resulting unified `Program` enters the pipeline above. The CLI stops at the first failed phase and never executes a partial program.
+- **Proyectos:** `loader.titan` y `pkg.titan` descubren `Titan.toml`, resuelven dependencias locales y remotas, siguen los
+  `import` (detectan ciclos y rutas que escapan del árbol) y entregan un único programa a la tubería.
+- **Bytecode:** `titan build` escribe un artefacto `TITAN-BYTECODE 1` (cabecera, versión, CRC-32) y `titan exec` lo valida
+  (funciones, saltos, locales, llamadas) antes de ejecutarlo (`artifact.titan`, `bytecode.titan`).
+- **No hay máquina virtual al ejecutar.** `titan run` compila el programa a código nativo y lo ejecuta; el bytecode es solo
+  la representación intermedia entre el front-end y los backends.
 
-## Workspace crates
+## Backends
 
-| Crate | Responsibility | Pipeline status |
-|---|---|---|
-| `titan_lexer` | Unicode-aware tokenization | Connected |
-| `titan_ast` | Source-level representation | Connected |
-| `titan_parser` | Syntax and recovery diagnostics | Connected |
-| `titan_typechecker` | Semantic/type checks | Connected |
-| `titan_codegen` | Bytecode generation | Connected |
-| `titan_vm` | Safe bytecode execution | Connected |
-| `titan_hir` | Future desugared high IR | Library layer |
-| `titan_mir` | Future optimization IR | Library layer |
-| `titan_gc` | Tracing object graph metadata | Tested library; VM values currently use Rust ownership |
-| `titan_macros` | Macro registry foundation | Experimental |
-| `titan_runtime` | Fiber scheduling foundation | Experimental |
-| `titan_stdlib` | Rust host helpers | Library layer |
-| `titan_cli` | `build`, `run`, `repl`, `version` | Connected |
-| `titan_lsp` | Document diagnostics core | Connected as a library |
-| `titan_pkg` | Manifest and lockfile model | Local library layer |
+| Backend | Archivo | Qué produce | Notas |
+|---|---|---|---|
+| x86-64 propio | `native/backend.titan`, `native/x64.titan`, `native/elf.titan` | ELF estático x86-64, sin libc ni enlazador | Es el que usa `titan run/compile` en x86-64. |
+| LLVM | `native/llvm.titan`, `llvm_build.titan` | LLVM IR, que `clang` + `lld` convierten en ELF estático (x86-64 o ARM64) | Es el que usa `titan` en ARM64 y `--target aarch64`. También `aarch64-none` (sin sistema operativo). |
+| WebAssembly | `wasm.titan`, `wasm_cmd.titan` | módulo `.wasm` con source maps | El host JS de `std::web` está en `native/`. |
 
-HIR and MIR are deliberately not shown in the active path until their lowering passes preserve all executable semantics. Documentation must not claim an optimization stage is active merely because a crate with that name exists.
+Los dos backends nativos comparten el **runtime** (`native/runtime.titan` y los `native/std_*.titan`): asignador con
+conteo de referencias, cadenas, arrays, mapas, tareas, red, etc. Está escrito en Titan y se compila junto con cada programa
+(con una caché `.runtime-cache-*.json` dentro de `native/`). Habla con el sistema operativo por llamadas al sistema de
+Linux, sin libc. En ARM64, `native/sys_arm64.titan` traduce las llamadas al sistema de x86-64 a las de ARM64.
 
-## VM model
+## Biblioteca estándar
 
-Each call creates an isolated vector of locals and an operand stack. `Call` contains a resolved function index and argument count. Values include numbers, booleans, chars, strings, arrays, tuples, structs, enums and `nil`.
+`natives.titan` lista las firmas de las funciones `std::*` (el typechecker las consulta) y `codegen_tables.titan` dice cuáles
+se convierten en instrucciones propias del bytecode. El cuerpo de cada función está en `selfhost/native/` (SQLite, TLS,
+regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 812 funciones en 73 espacios de nombres; la medición
+se repite con `bash selfhost/native/cobertura.sh -v`. Ver [STDLIB.md](STDLIB.md).
 
-The VM reports errors for stack corruption, invalid locals/functions, arity, bad operand types, division by zero, overflow, bounds, missing fields, instruction exhaustion and excessive call depth.
+## Herramientas
 
-## Native standard library
+`titan.titan` es la CLI (`new`, `check`, `run`, `build`, `exec`, `compile`, `wasm`, `test`, `repl`, `debug`, `add`, `fetch`,
+`update`, `keygen`, `pack`, `publish`, `lsp`, `dap`, `version`). Servidor de lenguaje: `lsp.titan`. Adaptador de depuración:
+`dap.titan` y `native/dap_core.titan`.
 
-`titan_stdlib::native::NATIVES` is the authoritative registry of qualified names, parameter types, return types and required capabilities. The type checker consumes this metadata, codegen emits `CallNative`, and `titan_vm::native` dispatches the call. This avoids treating host calls as unresolved globals and keeps all compiler stages aligned.
+## Cómo se construye a sí mismo
 
-The VM adds `Bytes` and `Map` runtime values for binary I/O, JSON, processes and HTTP. Effectful native calls are guarded by `RuntimeCapabilities`; embedders can construct a sandboxed VM while the CLI offers `titan run --sandbox`.
+`bash selfhost/bootstrap.sh`: una **semilla** (el compilador x86-64 ya compilado, `selfhost/semilla/`) compila el compilador
+escrito en Titan (`titanc1`); éste se compila (`titanc2`) y otra vez (`titanc3`); las tres tienen que ser idénticas byte a
+byte. Después se construye la CLI `selfhost/titan`. Ver `selfhost/semilla/LEEME.md`.
 
-## Artifact model
+## Estado y límites
 
-`build` writes a `TITAN-BYTECODE 1` artifact containing a versioned JSON envelope, compiler version and CRC-32 checksum. `BytecodeArtifact::decode` applies size limits and structural validation to functions, strings, locals, jumps, calls, closures and natives. `titan exec` executes only after that validation, so precompiled artifacts no longer require their source files.
+El estado detallado, con lo verificado y lo que no, está en [`selfhost/ESTADO.md`](../selfhost/ESTADO.md).

@@ -1,6 +1,6 @@
 // Demo Fase 8: sistema (procfs + fswatch + signals).
 // Ejecutar en Termux con:
-//     zett run examples/system.titan
+//     titan run examples/system.titan
 //
 // Muestra: info del OS, CPU, memoria, procesos top, discos y red.
 

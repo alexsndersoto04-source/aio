@@ -1,7 +1,7 @@
 // Demo Fase 42A: motor de audio nativo — Titan decodifica y suena por sí
 // solo (`std::audio::engine_*`, sin mpv ni ayudantes).
 // Ejecutar con:
-//     zett run examples/reproductor_hifi.titan
+//     titan run examples/reproductor_hifi.titan
 //
 // Qué demuestra:
 // 1. Generar dos pistas WAV de 5 segundos (tonos LA y SOL)

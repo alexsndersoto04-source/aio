@@ -1,6 +1,6 @@
 // Demo Fase 6: Terminal & TUI.
 // Ejecutar en Termux con:
-//     zett run examples/tui.titan
+//     titan run examples/tui.titan
 //
 // Muestra colores ANSI, tamano de terminal, cursor, spinner y barra de progreso.
 

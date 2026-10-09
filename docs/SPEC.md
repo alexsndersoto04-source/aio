@@ -1,7 +1,9 @@
 # Titan Language Specification
 
 **Document version:** 1.0 — 2026-08-21
-**Applies to:** TITAN / Zett compiler `1.0.0` (workspace version in `Cargo.toml`)
+**Applies to:** TITAN / Zett compiler `1.0.0`. Written when the reference implementation was a bytecode VM; the language semantics
+it describes are what the native backends (x86-64, LLVM) implement. Where it says "VM", read "the program at run time".
+Language features listed as unsupported may differ from today's compiler: `selfhost/ESTADO.md` is the current record.
 **Canonical source extension:** `.titan`
 **Compiled artifact:** `TITAN-BYTECODE 1` container (`.tbc`)
 

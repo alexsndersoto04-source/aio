@@ -1,10 +1,8 @@
 // Fase 31: std::async — primer modulo de la stdlib escrito en Titan.
 //
-// Este es un momento historico chico para Titan: la primera vez que
-// un modulo de `std::` se carga desde un archivo .titan (no desde
-// codigo Rust). El loader busca el modulo en
-//   $PREFIX/share/zett/stdlib/async.titan  (instalado con el .deb)
-//   o ./stdlib/async.titan                  (desarrollo)
+// `std::async` es un modulo de la stdlib escrito en Titan que vive en un archivo .titan. El loader lo busca en
+//   $ZETT_STDLIB_DIR/async.titan, o en el primer `stdlib/` hacia arriba desde el ejecutable o el proyecto
+//   (en este repo: stdlib/async.titan).
 //
 // Funciones que expone std::async:
 //   delay(ms)                        — sleep bloqueante
@@ -17,7 +15,7 @@
 // std::try::catch (Fase 18) y enums custom (Fase 27).
 //
 // Ejecutar con:
-//     zett run examples/async_demo.titan
+//     titan run examples/async_demo.titan
 
 import std::async
 

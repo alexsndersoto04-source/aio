@@ -20,7 +20,7 @@
 //   * Cripto: std::password::argon2, std::jwt::hs256, std::uuid::v4
 //
 // Ejecutar:
-//     zett run examples/rest/main.titan
+//     titan run examples/rest/main.titan
 //
 // Bindea 127.0.0.1:8080 y procesa hasta 40 requests. Desde otra
 // sesion de Termux (Sesiones -> Nueva) probar los endpoints con
@@ -310,7 +310,7 @@ fn main() {
     print("  POST   /api/posts               (auth JWT) body: {\"title\":\"...\",\"body\":\"...\"}")
     print("  DELETE /api/posts/<id>          (auth JWT) solo el dueno")
     print("")
-    print("En otra sesion de Termux: zett run examples/rest/client.titan")
+    print("En otra sesion de Termux: titan run examples/rest/client.titan")
     print("O con curl:  curl -X POST http://127.0.0.1:8080/api/register \\")
     print("               -H 'Content-Type: application/json' \\")
     print("               -d '{\"username\":\"alex\",\"password\":\"secret123\"}'")

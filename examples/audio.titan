@@ -1,6 +1,6 @@
 // Demo Fase 9: audio (WAV real, sintesis, playback).
 // Ejecutar en Termux con:
-//     zett run examples/audio.titan
+//     titan run examples/audio.titan
 //
 // Para escuchar el resultado necesitas 'pkg install termux-api' + la app
 // Termux:API. Igualmente, el WAV se genera bien aunque no lo puedas

@@ -1,6 +1,6 @@
 // Demo Fase 40: Aceleración del Intérprete (VM Fast-Paths) y Benchmark Operacional (`std::runtime` v3).
 // Ejecutar con:
-//     zett run examples/enterprise_benchmark.titan
+//     titan run examples/enterprise_benchmark.titan
 //
 // Demuestra:
 // 1. Verificación del nivel de optimización de la VM y fast-paths activos

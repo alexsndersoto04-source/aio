@@ -16,7 +16,7 @@
 // niega con honestidad (live_open = -1) en vez de fingir.
 //
 // Ejecutar con:
-//     zett run examples/gui_live_window.titan
+//     titan run examples/gui_live_window.titan
 
 fn main() {
     print("==== La primera ventana VIVA de TITAN ====")

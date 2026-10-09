@@ -84,7 +84,7 @@ Diseño minimalista blanco único (Inter, un solo acento tinta, tarjetas suaves)
 ## 3. Despliegue (Render)
 
 - `render.yaml`: servicios `moon-api` (Docker, health `/api/health`), `moon-db` (PostgreSQL 16 free, DATABASE_URL automática) y `moon-web` (Node, SPA).
-- `Dockerfile`: Ubuntu 24.04 + binario `zett` v1.0.0 de la release del repo + `CMD zett run src/main.titan`, con HEALTHCHECK real.
+- `Dockerfile`: construye `titan` desde las fuentes del repo (semilla + punto fijo, sin Rust) y arranca con `titan run src/main.titan`, con HEALTHCHECK real.
 - Variables a completar en Render: `CORS_ORIGIN`, `PUBLIC_BASE_URL`, `SMTP_*` (email real), `VITE_API_URL`.
 
 ---

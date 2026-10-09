@@ -4,7 +4,7 @@
 // demuestra features reales, no wrappers vacios.
 //
 // Ejecutar con:
-//     zett run examples/phase34_demo.titan
+//     titan run examples/phase34_demo.titan
 
 fn banner(titulo: string) {
     print("")

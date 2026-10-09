@@ -1,6 +1,6 @@
 #!/bin/bash
 # Arranca la API de moon con la BD local (setup-local.sh) y el binario
-# zett descargado en projects/moon/bin/zett.
+# titan enlazado en projects/moon/bin/zett (ops/fetch-zett.sh).
 # Uso: bash ops/start-api.sh   (desde projects/moon o desde donde sea)
 set -e
 OPS="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ MOON="$OPS/.."
 ZETT="$MOON/bin/zett"
 if [ ! -x "$ZETT" ]; then
   echo "Falta el binario: $ZETT"
-  echo "(Se descarga de la rama tools-zett-x86_64 del repo, ver LOCAL.md)"
+  echo "(Ejecuta ops/fetch-zett.sh: construye titan desde este repo; ver LOCAL.md)"
   exit 1
 fi
 cd "$MOON"

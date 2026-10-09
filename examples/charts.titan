@@ -1,6 +1,6 @@
 // Demo Fase 14: graficos SVG con plotters (pure Rust, sin C-deps).
 // Ejecutar en Termux con:
-//     zett run examples/charts.titan
+//     titan run examples/charts.titan
 //
 // Escribe 4 SVGs en tu HOME. Para verlos:
 //   * Abrirlos con Firefox: termux-open ~/chart_line.svg

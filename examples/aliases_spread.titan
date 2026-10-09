@@ -17,7 +17,7 @@
 // desazucara a std::array::concat en el parser (cero cambios en VM).
 //
 // Ejecutar con:
-//     zett run examples/aliases_spread.titan
+//     titan run examples/aliases_spread.titan
 
 // ---------------- Type aliases ----------------
 

@@ -1,5 +1,9 @@
 # TITAN Remote Package Registry
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 `RegistryClient` requires an HTTPS base URL. It fetches `/v1/packages/{percent-encoded-name}`, parses version metadata, resolves the highest release matching a SemVer requirement, downloads a bounded archive, verifies lowercase/uppercase SHA-256, and writes it atomically into a content-addressed cache.
 
 Metadata records version, HTTPS archive URL, SHA-256 and dependency ranges. Registry/package-name mismatch, insecure initial/redirect URL, malformed metadata/ranges/hashes, non-200 status, body limits and checksum mismatches are errors.

@@ -13,7 +13,7 @@
 // restriccion era puramente del static typechecker.
 //
 // Ejecutar con:
-//     zett run examples/qol_hetero_arrays.titan
+//     titan run examples/qol_hetero_arrays.titan
 
 fn main() {
     print("---- Fase 17 pt.2: arrays heterogeneos ----")

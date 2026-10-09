@@ -1,6 +1,6 @@
 // Demo Fase 12 pt.4: busqueda semantica end-to-end en Termux.
 // Ejecutar con:
-//     zett run examples/search.titan
+//     titan run examples/search.titan
 //
 // ⚠️⚠️⚠️ REQUIERE 4+ GB DE RAM LIBRE. NO CORRE EN UN REDMI 9C.
 //
@@ -169,5 +169,5 @@ fn print_download_instructions() {
     print("  curl -L -o ~/minilm.onnx \\")
     print("    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx")
     print("")
-    print("Y volve a correr: zett run examples/search.titan")
+    print("Y volve a correr: titan run examples/search.titan")
 }

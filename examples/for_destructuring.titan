@@ -13,7 +13,7 @@
 // funcionan aca tambien: wildcards `_`, rename `x: cx`, anidados.
 //
 // Ejecutar con:
-//     zett run examples/for_destructuring.titan
+//     titan run examples/for_destructuring.titan
 
 struct Point { x: int, y: int }
 struct Producto { titulo: string, precio: int }

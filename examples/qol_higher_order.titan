@@ -4,7 +4,7 @@
 // Ahora sumamos: sort_by, find, any, all.
 //
 // Ejecutar con:
-//     zett run examples/qol_higher_order.titan
+//     titan run examples/qol_higher_order.titan
 
 fn main() {
     print("---- Fase 19: higher-order + closures ----")

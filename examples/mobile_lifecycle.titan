@@ -4,7 +4,7 @@
 // Corre identico en Termux, Linux, Windows y macOS.
 //
 // Ejecutar con:
-//     zett run examples/mobile_lifecycle.titan
+//     titan run examples/mobile_lifecycle.titan
 
 fn resumen(accion: string) {
     print("{accion} -> estado: {std::mobile::state()}")

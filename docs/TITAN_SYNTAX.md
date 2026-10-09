@@ -1,5 +1,9 @@
 # Titan Language Reference — Programación Real
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 Una guía práctica basada en 15 releases de escribir código Titan.
 Cubre los patrones, los gotchas conocidos, y cómo escribir programas
 que realmente funcionen.

@@ -1,6 +1,10 @@
 # TITAN MySQL
 
-`titan_mysql` uses the maintained Rust `mysql` protocol driver with `minimal-rust` and `rustls-tls`, avoiding OpenSSL. It provides URL connections, prepared positional parameters, typed rows, affected-row counts, last insert ID and explicit transactions with rollback-on-drop.
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
+The MySQL client is written in Titan (`selfhost/native/std_mysql.titan`; it speaks the protocol itself). It provides URL connections, prepared positional parameters, typed rows, affected-row counts, last insert ID and explicit transactions with rollback-on-drop.
 
 Supported values include NULL, signed/unsigned integers, float/double, text/binary bytes, DATE/DATETIME and TIME. MySQL bytes are returned as UTF-8 text when valid and bytes otherwise. Live integration runs when `TITAN_MYSQL_TEST_URL` is configured; it is skipped without an external MySQL server.
 

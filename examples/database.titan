@@ -1,6 +1,6 @@
 // Demo Fase 10: base de datos NoSQL embebida (sled).
 // Ejecutar en Termux con:
-//     zett run examples/database.titan
+//     titan run examples/database.titan
 //
 // La demo de Redis (std::redis::*) esta al final: solo corre si tenes un
 // servidor Redis andando; por eso lo dejo comentado.

@@ -1,12 +1,14 @@
 # Motor de audio nativo — `std::audio::engine_*` (Fase 42A)
 
-Titan suena por sí solo: decodifica **MP3/FLAC/Vorbis/Opus/WAV/AAC dentro
-del binario** (`symphonia`, Rust puro) y empuja el PCM a las bocinas
-(`cpal`: CoreAudio / WASAPI / ALSA). Sin mpv, sin afplay, sin ayudantes.
+Titan decodifica **WAV/PCM/ADPCM, FLAC y Ogg Vorbis** con decodificadores escritos en Titan
+(`selfhost/native/std_audio_decode.titan`, `std_audio_ogg.titan`, `std_audio_vorbis.titan`) y envía el PCM al reproductor
+del sistema (`pw-cat`, `paplay`, `aplay`, `mpv`, `ffplay`) por una tubería. **No decodifica MP3, Opus, AAC, AIFF ni CAF**, y la
+salida a dispositivo no se ha probado en hardware real (la salida a archivo `TITAN_AUDIO_SINK=file:<ruta>` sí). Ver
+«Audio: decodificador y engine en Titan» en `selfhost/ESTADO.md`.
 
 ```
- tu .titan → engine_play() → symphonia (decode) → resample/EQ/crossfade
-          → cpal → bocinas
+ tu .titan → engine_play() → decodificador en Titan → resample/EQ/crossfade
+          → reproductor del sistema → bocinas
 ```
 
 ## Cuándo usar qué
@@ -126,5 +128,5 @@ que usará la caché de streaming de Telegram (Fase 43).
 headless, ajusta volumen/crossfade/EQ, encola y reproduce con niveles:
 
 ```bash
-zett run examples/reproductor_hifi.titan
+titan run examples/reproductor_hifi.titan
 ```

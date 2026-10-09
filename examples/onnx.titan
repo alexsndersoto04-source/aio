@@ -1,6 +1,6 @@
 // Demo Fase 12 (parte 2): inferencia ONNX real corriendo en Termux.
 // Ejecutar con:
-//     zett run examples/onnx.titan
+//     titan run examples/onnx.titan
 //
 // Requiere el modelo MNIST-8 (~26 KB) en $HOME/mnist-8.onnx.
 // El primer bloque te da las instrucciones de descarga.

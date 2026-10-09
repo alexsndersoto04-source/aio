@@ -1,3 +1,6 @@
+> Registro histórico. Hasta octubre de 2026 estas validaciones se hicieron contra el prototipo escrito en Rust (`zett`, VM).
+> Para el estado actual (compilador nativo en Titan, Linux x86-64 y ARM64) ver `selfhost/ESTADO.md`.
+
 # Registro visible de validación
 
 Este documento registra evidencia comprobable. Un cambio no se marca como

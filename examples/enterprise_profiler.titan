@@ -1,6 +1,6 @@
 // Demo Fase 39: Observabilidad Operacional y Profiler de Servidor (`std::runtime` v2).
 // Ejecutar con:
-//     zett run examples/enterprise_profiler.titan
+//     titan run examples/enterprise_profiler.titan
 //
 // Demuestra:
 // 1. Configuración dinámica del umbral de recolección de basura (GC threshold)

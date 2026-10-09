@@ -1,6 +1,6 @@
 // Dashboard de sistema — herramienta real que combina 3 fases.
 // Ejecutar con:
-//     zett run examples/dashboard.titan
+//     titan run examples/dashboard.titan
 //
 // Levanta un servidor HTTP en http://127.0.0.1:8080 que sirve:
 //   /              → HTML con stats en vivo (CPU %, RAM, disco, procesos)

@@ -1,5 +1,9 @@
 # TITAN Multipart Uploads
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 `std::http::parse_multipart(content_type, body, max_parts, max_part_bytes)` parses bounded `multipart/form-data` bodies and returns part maps containing `name`, optional `filename`, optional `content_type`, normalized `headers`, and binary `data`.
 
 The parser validates boundary syntax/length, opening/final delimiters, CRLF framing, per-part headers (16 KiB/32 header hard limits), Content-Disposition, requested part count and per-part byte limits. Filenames containing path separators, CR/LF or traversal components are rejected rather than sanitized ambiguously.
