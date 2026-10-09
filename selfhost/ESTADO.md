@@ -1371,7 +1371,7 @@ servidor): idénticos a la VM salvo `audio_player_backend` y `gui_std`, que fall
 | Audio | ✅ ver «Audio: decodificador y engine en Titan» |
 | **tokenize** (10 nativas) | ✅ ver «std::tokenize en Titan» (sin `Precompiled`, `UnicodeScripts` ni BPE con dropout) |
 | Borrar el Rust (`titan_vm`, `titan_stdlib`, …) | ✅ ver «Rust borrado» (se arranca desde una semilla de 650 KB) |
-| Página oficial con GitHub Pages | pendiente (después de lo anterior) |
+| Página oficial con GitHub Pages | ✅ hecha (`site/` + `.github/workflows/pages.yml`); se publica en `https://alexsndersoto04-source.github.io/aio/` al llegar a `main` (Pages ya está activado con «GitHub Actions»); **aún no se ha desplegado** |
 
 
 ## Audio: decodificador y engine en Titan

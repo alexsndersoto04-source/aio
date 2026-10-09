@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TITAN — el lenguaje que se compila a sí mismo</title>
+<meta name="description" content="TITAN es un lenguaje de programación compilado y tipado, escrito en sí mismo: compilador, biblioteca estándar y herramientas, sin una sola línea de Rust.">
+<meta property="og:title" content="TITAN — el lenguaje que se compila a sí mismo">
+<meta property="og:description" content="Compilador, biblioteca estándar y herramientas escritos en Titan. Ejecutables nativos x86-64 y WebAssembly.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg2: #11151e;
+    --card: #141a26;
+    --line: #232c3d;
+    --text: #e6eaf2;
+    --muted: #94a0b8;
+    --acc: #ffb454;
+    --acc2: #59c2ff;
+    --ok: #7fd962;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--acc2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  header.nav {
+    position: sticky; top: 0; z-index: 10; backdrop-filter: blur(10px);
+    background: rgba(11,14,20,.85); border-bottom: 1px solid var(--line);
+  }
+  header.nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .08em; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  nav a { margin-left: 22px; color: var(--muted); font-size: .95rem; }
+  nav a:hover { color: var(--text); text-decoration: none; }
+  @media (max-width: 720px) { nav a.hide-sm { display: none; } }
+
+  .hero { padding: 88px 0 56px; text-align: center; position: relative; overflow: hidden; }
+  .hero::before {
+    content: ""; position: absolute; inset: -200px -100px auto -100px; height: 520px; z-index: -1;
+    background: radial-gradient(600px 300px at 50% 0%, rgba(255,180,84,.18), transparent 70%),
+                radial-gradient(500px 260px at 20% 30%, rgba(89,194,255,.12), transparent 70%);
+  }
+  .tag {
+    display: inline-block; font-family: var(--mono); font-size: .8rem; color: var(--acc);
+    border: 1px solid rgba(255,180,84,.35); border-radius: 999px; padding: 4px 14px; margin-bottom: 22px;
+  }
+  h1 { font-size: clamp(2.2rem, 6vw, 4rem); line-height: 1.08; margin: 0 0 18px; letter-spacing: -.02em; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, var(--acc), #ff7a59); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 1.2rem; color: var(--muted); max-width: 720px; margin: 0 auto 30px; }
+  .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 22px; border-radius: 10px; font-weight: 600; border: 1px solid var(--line);
+    color: var(--text); background: var(--card);
+  }
+  .btn:hover { text-decoration: none; border-color: var(--acc2); }
+  .btn.primary { background: var(--acc); color: #1a1205; border-color: var(--acc); }
+  .btn.primary:hover { filter: brightness(1.08); border-color: var(--acc); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 44px 0 0; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; text-align: left; }
+  .stat b { display: block; font-size: 1.9rem; font-family: var(--mono); color: var(--acc); }
+  .stat span { color: var(--muted); font-size: .92rem; }
+
+  section { padding: 56px 0; }
+  section + section { border-top: 1px solid var(--line); }
+  h2 { font-size: 1.9rem; margin: 0 0 8px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 760px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+  .term {
+    background: #0a0d13; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    font-family: var(--mono); font-size: .86rem;
+  }
+  .term .bar { background: var(--bg2); padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .78rem; display: flex; gap: 6px; align-items: center; }
+  .term .bar i { width: 10px; height: 10px; border-radius: 50%; background: #3a4358; display: inline-block; }
+  .term .bar span { margin-left: 8px; }
+  .term pre { margin: 0; padding: 16px 18px; overflow-x: auto; line-height: 1.55; }
+  .k { color: #ff7a59; } .s { color: var(--ok); } .c { color: #5c6a85; } .t { color: var(--acc2); } .n { color: var(--acc); } .p { color: var(--muted); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+  .card h3 { margin: 0 0 8px; font-size: 1.08rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  .card code, .sub code, li code, p code {
+    font-family: var(--mono); font-size: .86em; background: #0a0d13; border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 6px; color: var(--acc);
+  }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+  .steps li { counter-increment: s; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px 16px 60px; position: relative; }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 18px; top: 14px; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--acc); color: #1a1205; font-weight: 800; display: grid; place-items: center; font-family: var(--mono);
+  }
+  .steps b { color: var(--text); }
+  .steps span { color: var(--muted); }
+
+  .honest { background: linear-gradient(180deg, rgba(89,194,255,.06), transparent); border: 1px solid var(--line); border-radius: 14px; padding: 6px 24px; }
+  .honest ul { padding-left: 18px; color: var(--muted); }
+  .honest li { margin: 10px 0; }
+  .honest li b { color: var(--text); }
+
+  .story { max-width: 760px; }
+  .story p { color: var(--muted); font-size: 1.05rem; }
+
+  footer { border-top: 1px solid var(--line); padding: 34px 0 50px; color: var(--muted); font-size: .92rem; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb454"/><stop offset="1" stop-color="#ff7a59"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="#141a26"/><path d="M14 18h36v8H36v22h-8V26H14z" fill="url(#g)"/></svg>
+      TITAN
+    </a>
+    <nav>
+      <a class="hide-sm" href="#lenguaje">Lenguaje</a>
+      <a class="hide-sm" href="#empezar">Empezar</a>
+      <a class="hide-sm" href="#stdlib">Biblioteca</a>
+      <a class="hide-sm" href="#origen">Origen</a>
+      <a href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <div class="tag">self-hosting completo · punto fijo verificado</div>
+    <h1>El lenguaje que<br><em>se compila a sí mismo</em></h1>
+    <p class="lead">TITAN es un lenguaje compilado y tipado. Su compilador, su biblioteca estándar y sus herramientas están escritos en Titan: el repositorio ya no contiene una sola línea de Rust.</p>
+    <div class="btns">
+      <a class="btn primary" href="#empezar">Empezar</a>
+      <a class="btn" href="https://github.com/alexsndersoto04-source/aio">Ver en GitHub</a>
+      <a class="btn" href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado detallado</a>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>812</b><span>funciones <code>std::*</code> en 72 módulos, todas con cuerpo en Titan</span></div>
+      <div class="stat"><b>3 = 3 = 3</b><span>el compilador se compila a sí mismo tres veces y sale idéntico, byte a byte</span></div>
+      <div class="stat"><b>650 KB</b><span>la semilla comprimida desde la que se construye todo</span></div>
+      <div class="stat"><b>0</b><span>líneas de Rust en el repositorio</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="lenguaje">
+  <div class="wrap">
+    <h2>Un lenguaje pequeño y directo</h2>
+    <p class="sub">Tipos estáticos, <code>struct</code>, <code>enum</code>, <code>match</code>, closures, módulos e interpolación de texto. Este programa es real: se compila a un ejecutable nativo y escribe lo que se ve a la derecha.</p>
+    <div class="grid2">
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>formas.titan</span></div>
+<pre><span class="k">struct</span> <span class="t">Punto</span> {
+    x: <span class="t">int</span>,
+    y: <span class="t">int</span>,
+}
+
+<span class="k">enum</span> <span class="t">Forma</span> {
+    Circulo(<span class="t">int</span>),
+    Rect(<span class="t">int</span>),
+}
+
+<span class="k">fn</span> area(f: <span class="t">Forma</span>) -&gt; <span class="t">int</span> {
+    <span class="k">match</span> f {
+        Forma::Circulo(r) =&gt; <span class="n">3</span> * r * r,
+        Forma::Rect(l) =&gt; l * l,
+    }
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> p = Punto { x: <span class="n">3</span>, y: <span class="n">4</span> }
+    <span class="k">let</span> formas = [Forma::Circulo(<span class="n">2</span>), Forma::Rect(<span class="n">5</span>)]
+    <span class="k">for</span> f <span class="k">in</span> formas {
+        println(<span class="s">"área = {area(f)}"</span>)
+    }
+    <span class="k">let</span> d = p.x * p.x + p.y * p.y
+    println(<span class="s">"distancia² = {d}"</span>)
+}</pre>
+      </div>
+      <div style="display:grid; gap:20px; align-content:start">
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
+<pre><span class="p">$</span> selfhost/titan run formas.titan
+área = 12
+área = 25
+distancia² = 25
+
+<span class="p">$</span> selfhost/titan compile formas.titan -o formas
+<span class="p">$</span> ./formas
+área = 12
+área = 25
+distancia² = 25</pre>
+        </div>
+        <div class="card">
+          <h3>Dos destinos, una sola herramienta</h3>
+          <p><code>titan compile</code> genera un ejecutable <b>x86-64</b> con backend propio (sin ensamblador ni enlazador externos) y <code>titan wasm</code> emite <b>WebAssembly</b> con mapas de fuente. Un backend LLVM genera además ARM64.</p>
+        </div>
+        <div class="card">
+          <h3>Herramientas incluidas</h3>
+          <p><code>new</code> · <code>check</code> · <code>run</code> · <code>test</code> · <code>build</code> · <code>exec</code> · <code>wasm</code> · <code>repl</code> · <code>debug</code> · <code>lsp</code> · <code>dap</code> · <code>add</code> / <code>fetch</code> / <code>pack</code> / <code>publish</code> (paquetes firmados con Ed25519).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="empezar">
+  <div class="wrap">
+    <h2>Empezar</h2>
+    <p class="sub">Titan se construye desde las fuentes con solo <code>bash</code> y <code>gzip</code>. Hoy el compilador es para <b>Linux x86-64</b>.</p>
+    <div class="grid2">
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
+<pre><span class="p">$</span> git clone https://github.com/alexsndersoto04-source/aio.git
+<span class="p">$</span> cd aio
+<span class="p">$</span> bash selfhost/bootstrap.sh
+etapa 1: selfhost/titanc0 (compilador nativo semilla) -&gt; titanc1
+etapa 2: titanc1 -&gt; titanc2
+etapa 3: titanc2 -&gt; titanc3
+<span class="c"># ...tres hashes SHA-256 iguales...</span>
+PUNTO FIJO: etapa1 == etapa2 == etapa3 (byte a byte)
+listo: selfhost/titan
+
+<span class="p">$</span> selfhost/titan new hola
+<span class="p">$</span> cd hola &amp;&amp; ../selfhost/titan run</pre>
+      </div>
+      <ol class="steps">
+        <li><b>La semilla.</b> <span>Un compilador que se compila a sí mismo necesita uno que ya exista: un ejecutable de 650 KB que va dentro del repositorio.</span></li>
+        <li><b>El punto fijo.</b> <span>La semilla compila el compilador; ese resultado se compila a sí mismo, y otra vez. Si las tres copias son idénticas, el compilador se explica solo.</span></li>
+        <li><b>La CLI.</b> <span>Con el compilador resultante se construye <code>selfhost/titan</code>. Tarda unos 3 minutos en total.</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="stdlib">
+  <div class="wrap">
+    <h2>Biblioteca estándar completa, escrita en Titan</h2>
+    <p class="sub">Las 812 funciones <code>std::*</code> del lenguaje tienen su cuerpo en Titan, sin bibliotecas del sistema detrás. Esto incluye piezas grandes que normalmente se piden prestadas a otro lenguaje.</p>
+    <div class="cards">
+      <div class="card"><h3>Red y seguridad</h3><p>TCP, HTTP/HTTPS, WebSocket, servidor y router, DNS, TLS con validación X.509 (cliente 1.2 y 1.3, servidor 1.3), Ed25519, X25519, RSA, JWT, hashes, AES-GCM, ChaCha20-Poly1305, Argon2.</p></div>
+      <div class="card"><h3>Datos</h3><p>Un motor <b>SQLite</b> propio (SQL, JSON, funciones de ventana, triggers, transacciones), clientes de PostgreSQL, MySQL y Redis, JSON, YAML, XML, CSV, gzip, zstd, TAR y ZIP.</p></div>
+      <div class="card"><h3>IA local</h3><p>Motor <b>ONNX</b> propio (incluye BERT de tamaño pequeño) y tokenizadores de estilo HuggingFace: WordPiece, BPE y Unigram.</p></div>
+      <div class="card"><h3>Audio e imagen</h3><p>Decodificadores de WAV, FLAC y Ogg Vorbis, un motor de audio con EQ y remuestreo; lectura y escritura de PNG, JPEG, GIF, WebP y BMP; códigos QR.</p></div>
+      <div class="card"><h3>Texto</h3><p>Unicode, motor de expresiones regulares, normalización, zonas horarias, IDNA, URLs y formato de fechas.</p></div>
+      <div class="card"><h3>Sistema</h3><p>Archivos, procesos, señales, tareas y canales, observador de archivos, terminal (TUI, teclado, readline), ventanas y Termux:API.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="origen">
+  <div class="wrap story">
+    <h2>De dónde viene</h2>
+    <p>TITAN nació como un prototipo escrito en Rust. Cuando el lenguaje fue lo bastante capaz, se reescribió pieza por pieza en el propio Titan —analizador, compilador, biblioteca estándar, herramientas— y cada pieza se comprobó contra la versión original antes de reemplazarla. Al final se borró el Rust. Esa primera versión sigue disponible en el historial de git, bajo la etiqueta <code>ultimo-con-rust</code>.</p>
+  </div>
+</section>
+
+<section id="limites">
+  <div class="wrap">
+    <h2>Lo que todavía no hace</h2>
+    <p class="sub">Esta página dice lo que está verificado; lo que falta también está aquí. El detalle completo, con cada limitación, vive en <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">selfhost/ESTADO.md</a>.</p>
+    <div class="honest">
+      <ul>
+        <li><b>Plataformas:</b> el compilador empaquetado es para Linux x86-64. macOS, Windows y ARM64/Termux aún no tienen paquete (el backend ARM64 existe, falta empaquetarlo).</li>
+        <li><b>ONNX / BERT:</b> solo modelos pequeños (archivo ≤ 64 MiB); un BERT-base completo no cabe en este motor.</li>
+        <li><b>SQLite:</b> sin FTS, R-Tree, <code>ATTACH</code> ni <code>EXPLAIN</code>; no es libsqlite3, es un motor propio con diferencias documentadas.</li>
+        <li><b>Audio:</b> sin MP3, Opus ni AAC; la salida a un dispositivo de sonido real no se ha podido probar.</li>
+        <li><b>Navegador:</b> <code>std::web</code> y <code>std::wasm</code> existen en el runtime nativo, pero fuera de un host JavaScript dan error de ejecución.</li>
+        <li><b>Sin sandbox por capacidades</b> en los ejecutables nativos.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>TITAN · licencia MIT</div>
+    <div>
+      <a href="https://github.com/alexsndersoto04-source/aio">Código</a> ·
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/docs">Documentación</a> ·
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
