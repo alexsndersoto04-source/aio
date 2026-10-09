@@ -1,0 +1,77 @@
+name: Linux ARM64 (Termux)
+
+# 1. En x86-64: bootstrap sin Rust, y la CLI `titan` se compila para ARM64 por LLVM (cruzado).
+# 2. En un ARM64 de verdad (ubuntu-24.04-arm): el ejecutable se prueba, compila programas con LLVM y su salida se
+#    compara con la del compilador x86-64 (selfhost/tests/arm64_diff.sh).
+# Termux usa el mismo núcleo Linux sobre ARM64, pero esta CI no es un teléfono: ver selfhost/ESTADO.md.
+on:
+  push:
+    branches: [ main, "arena/**" ]
+  workflow_dispatch:
+
+jobs:
+  construir:
+    name: construir (x86-64 -> ARM64 cruzado)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar clang y lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+      - name: Bootstrap (semilla -> titanc1 == titanc2 == titanc3 -> titan)
+        run: bash selfhost/bootstrap.sh
+      - name: Compilar titan para ARM64 (LLVM, cruzado)
+        run: selfhost/titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+      - name: Salidas del compilador x86-64 (referencia)
+        run: bash selfhost/tests/arm64_diff.sh generar selfhost/titan x86out
+      - name: Paquetes
+        run: |
+          bash selfhost/empaquetar.sh selfhost/titan x86_64 paquetes
+          bash selfhost/empaquetar.sh titan-aarch64 aarch64 paquetes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-entrada
+          path: |
+            titan-aarch64
+            x86out
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paquetes
+          path: paquetes
+          retention-days: 30
+
+  probar:
+    name: probar en ARM64 real
+    needs: construir
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar clang y lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-entrada
+      - name: El ejecutable ARM64 arranca
+        run: |
+          uname -m
+          cp titan-aarch64 selfhost/titan-arm
+          chmod +x selfhost/titan-arm
+          selfhost/titan-arm version
+      - name: Un programa compilado y ejecutado en ARM64
+        run: |
+          printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
+          test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
+      - name: Diferencial contra x86-64
+        run: |
+          bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout
+          bash selfhost/tests/arm64_diff.sh comparar x86out armout
+      - name: titan compilado por titan en ARM64 (informativo)
+        continue-on-error: true
+        run: |
+          selfhost/titan-arm compile selfhost/titan.titan -o selfhost/titan-arm2
+          sha256sum titan-aarch64 selfhost/titan-arm2
+          cmp titan-aarch64 selfhost/titan-arm2 && echo "IGUALES: el compilado en ARM64 coincide con el cruzado"
+          cp selfhost/titan-arm2 selfhost/titan-arm
+          test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"

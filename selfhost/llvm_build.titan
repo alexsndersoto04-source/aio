@@ -1,0 +1,143 @@
+// Compilación por LLVM como biblioteca: la usa titan.titan para `titan compile --target aarch64`
+// y para compilar en máquinas ARM64 (Termux, Linux ARM64), donde el backend propio (que escribe código
+// x86-64) no sirve. Genera LLVM IR con native/llvm.titan y llama a un compilador de C/LLVM externo:
+//
+//   TITAN_CC="..."  el comando completo (p. ej. `clang`, `clang-18`, `python3 -m ziglang cc`)
+//   sin TITAN_CC    se prueba `clang` y después `python3 -m ziglang cc`
+//
+// Hace falta clang con el enlazador lld (en Termux: `pkg install clang`; en Debian/Ubuntu: `clang lld`).
+import cli_util
+import frontend
+import native_build
+import native::llvm
+
+// Parte un comando por espacios (sin comillas): ["python3", "-m", "ziglang", "cc"].
+fn lb_words(text: string) -> array {
+    let mut out = []
+    let mut cur = ""
+    for c in std::text::chars(text) {
+        if c == " " {
+            if cur != "" {
+                out = std::array::push(out, cur)
+                cur = ""
+            }
+        } else {
+            cur = cur + c
+        }
+    }
+    if cur != "" {
+        out = std::array::push(out, cur)
+    }
+    out
+}
+
+fn lb_works(words: array) -> bool {
+    let probe = std::try::catch(|| {
+        std::process::run_timeout(words[0], std::array::concat(std::array::slice(words, 1, len(words)), ["--version"]), 20000)
+    })
+    match probe {
+        Result::Ok(m) => {
+            let status = std::map::get(m, "status")
+            status == 0
+        },
+        _ => false,
+    }
+}
+
+// El comando del compilador de C/LLVM, o Err con instrucciones.
+fn lb_cc() -> Result {
+    let env = cl_env("TITAN_CC")
+    if env != "" {
+        let words = lb_words(env)
+        if len(words) > 0 && lb_works(words) {
+            return Result::Ok(words)
+        }
+        return Result::Err("TITAN_CC='" + env + "' no funciona (probado con --version)")
+    }
+    let a = ["clang"]
+    if lb_works(a) {
+        return Result::Ok(a)
+    }
+    let b = ["python3", "-m", "ziglang", "cc"]
+    if lb_works(b) {
+        return Result::Ok(b)
+    }
+    Result::Err("no se encuentra clang: el backend LLVM lo necesita (Termux: pkg install clang; Debian/Ubuntu: apt install clang lld) o define TITAN_CC")
+}
+
+fn lb_is_zig(words: array) -> bool {
+    let mut zig = false
+    for w in words {
+        if std::text::contains(w, "zig") {
+            zig = true
+        }
+    }
+    zig
+}
+
+// Compila `entry` a un ejecutable `target` (Linux, `arch` = "x86_64" o "aarch64") pasando por LLVM.
+// `host` es la arquitectura de esta máquina: si difiere de `arch` hay que cruzar (--target y lld).
+fn lb_compile(entry: string, runtime: string, exe: string, target: string, arch: string, host: string) -> Result {
+    let cc = lb_cc()?
+    let gu = front(entry, native_table())?
+    let gr = build_runtime(runtime, exe)?
+    let text = lv_build(gu, gr, arch)?
+    lb_link(cc, text, target, arch, host)
+}
+
+// Lo mismo a partir de bytecode ya generado (el de un artefacto .tbc).
+fn lb_compile_g(g: G, runtime: string, exe: string, target: string, arch: string, host: string) -> Result {
+    let cc = lb_cc()?
+    let gr = build_runtime(runtime, exe)?
+    let text = lv_build(ot_optimize(g, true), gr, arch)?
+    lb_link(cc, text, target, arch, host)
+}
+
+fn lb_link(cc: array, text: string, target: string, arch: string, host: string) -> Result {
+    let pid = std::process::self_pid()
+    let now = std::time::unix_millis()
+    let mut tmp = cl_env("TMPDIR")
+    if tmp == "" {
+        tmp = "/tmp"
+    }
+    let ll = std::path::join(tmp, "titan-ll-{pid}-{now}.ll")
+    std::fs::write_text(ll, text)
+    let mut flags = ["-O2", "-nostdlib", "-static", "-fno-pie", "-no-pie", "-Wl,-e,_start"]
+    if lb_is_zig(cc) {
+        flags = std::array::concat(["-target", arch + "-linux-none"], flags)
+    } else {
+        flags = std::array::concat(["--target=" + arch + "-linux-gnu"], flags)
+        if arch != host {
+            flags = std::array::push(flags, "-fuse-ld=lld")
+        }
+    }
+    flags = std::array::concat(flags, ["-w", ll, "-o", target])
+    let ran = std::try::catch(|| {
+        std::process::run_timeout(cc[0], std::array::concat(std::array::slice(cc, 1, len(cc)), flags), 1800000)
+    })
+    std::fs::remove_file(ll)
+    match ran {
+        Result::Ok(m) => {
+            let status = std::map::get(m, "status")
+            if status != 0 {
+                let shown = std::try::catch(|| {
+                    std::encoding::utf8_decode(std::map::get(m, "stderr"))
+                })
+                let mut err = "(salida no UTF-8)"
+                match shown {
+                    Result::Ok(text) => {
+                        err = text
+                    },
+                    _ => {
+                        err = "(salida no UTF-8)"
+                    },
+                }
+                return Result::Err("el compilador de C/LLVM falló (código {status}): {err}")
+            }
+        },
+        Result::Err(e) => {
+            return Result::Err("no se pudo ejecutar el compilador de C/LLVM: {e}")
+        },
+    }
+    Result::Ok(true)
+}

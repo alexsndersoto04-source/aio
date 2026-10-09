@@ -4,7 +4,7 @@
 //   titan check [entrada]                 analiza y revisa tipos sin producir nada
 //   titan run [entrada] [args...]         compila a un ejecutable nativo temporal y lo ejecuta
 //   titan test [entrada]                  compila y ejecuta cada tests/**/*.titan
-//   titan compile [entrada] [-o salida]   compila a un ejecutable nativo x86-64
+//   titan compile [entrada] [-o salida] [--target x86_64|aarch64]   compila a un ejecutable nativo Linux (aarch64 pasa por LLVM: necesita clang)
 //   titan wasm [entrada] [-o salida]      compila a WebAssembly con mapas de fuente
 //   titan bytecode <entrada>              imprime el bytecode (el que genera zett)
 //   titan version
@@ -34,6 +34,7 @@ import loader
 import codegen
 import frontend
 import native_build
+import llvm_build
 import cli_util
 import artifact
 import wasm_cmd
@@ -178,10 +179,41 @@ fn cl_runtime_path() -> string {
     std::path::join(std::path::join(here, "native"), "runtime.titan")
 }
 
-// Compila `input` a un ejecutable nativo en `target`; Err(mensaje) si falla.
+// Arquitectura de esta máquina: "aarch64" (ARM64) o "x86_64".
+fn cl_host_arch() -> string {
+    let r = std::try::catch(|| {
+        std::process::run_timeout("uname", ["-m"], 5000)
+    })
+    match r {
+        Result::Ok(m) => {
+            let out = std::encoding::utf8_decode(std::map::get(m, "stdout"))
+            if std::text::starts_with(out, "aarch64") || std::text::starts_with(out, "arm64") {
+                return "aarch64"
+            }
+            "x86_64"
+        },
+        _ => "x86_64",
+    }
+}
+
+// Compila `input` a un ejecutable nativo en `target` para la arquitectura de esta máquina.
 fn cl_native(input: string, target: string) -> Result {
+    cl_native_arch(input, target, cl_host_arch())
+}
+
+// Compila `input` a un ejecutable Linux de `arch` ("x86_64" o "aarch64"). x86_64 usa el backend propio (no
+// necesita nada externo, ni siquiera en una máquina ARM64); aarch64 pasa por LLVM (llvm_build.titan).
+fn cl_native_arch(input: string, target: string, arch: string) -> Result {
     let compiled = cl_compile(input)?
     let (project, g) = compiled
+    if arch == "aarch64" {
+        let parent = std::path::parent(target)
+        if parent != "" {
+            cl_mkdirs(parent)
+        }
+        lb_compile(project.entry, cl_runtime_path(), cl_program(), target, arch, cl_host_arch())?
+        return Result::Ok(project)
+    }
     let built = build(project.entry, cl_runtime_path(), cl_program())?
     let (bytes, symbols) = built
     let parent = std::path::parent(target)
@@ -195,6 +227,15 @@ fn cl_native(input: string, target: string) -> Result {
 // Lo mismo a partir de bytecode ya generado (el de un artefacto .tbc): se
 // optimiza y se enlaza con el runtime como cualquier programa.
 fn cl_native_g(g: G, target: string) -> Result {
+    let host = cl_host_arch()
+    if host == "aarch64" {
+        let parent = std::path::parent(target)
+        if parent != "" {
+            cl_mkdirs(parent)
+        }
+        lb_compile_g(g, cl_runtime_path(), cl_program(), target, host, host)?
+        return Result::Ok(true)
+    }
     let gr = build_runtime(cl_runtime_path(), cl_program())?
     let built = bk_build(ot_optimize(g, true), gr)?
     let (bytes, symbols) = built
@@ -211,16 +252,24 @@ struct ClArgs {
     positional: array,
     output: string,
     sandbox: bool,
+    target: string,
 }
 
 fn cl_parse(args: array, label: string) -> ClArgs {
     let mut positional = []
     let mut output = ""
     let mut sandbox = false
+    let mut target = ""
     let mut i = 0
     while i < len(args) {
         let a = args[i]
-        if a == "--output" || a == "-o" {
+        if a == "--target" {
+            if i + 1 >= len(args) {
+                cl_fatal("error", "--target needs x86_64 or aarch64")
+            }
+            target = args[i + 1]
+            i += 2
+        } else if a == "--output" || a == "-o" {
             if i + 1 >= len(args) {
                 cl_fatal("error", a + " needs a path")
             }
@@ -234,7 +283,7 @@ fn cl_parse(args: array, label: string) -> ClArgs {
             i += 1
         }
     }
-    ClArgs { positional: positional, output: output, sandbox: sandbox }
+    ClArgs { positional: positional, output: output, sandbox: sandbox, target: target }
 }
 
 fn cl_first(parsed: ClArgs) -> string {
@@ -392,7 +441,14 @@ fn cl_compile_cmd(args: array) {
             },
         }
     }
-    match cl_native(input, target) {
+    let mut arch = cl_host_arch()
+    if parsed.target != "" {
+        if parsed.target != "x86_64" && parsed.target != "aarch64" {
+            cl_fatal("error", "--target must be x86_64 or aarch64, got '" + parsed.target + "'")
+        }
+        arch = parsed.target
+    }
+    match cl_native_arch(input, target, arch) {
         Result::Ok(project) => {
             print("COMPILE: " + project.entry + " -> " + target)
         },
@@ -669,7 +725,7 @@ fn cl_usage() {
     print("  check [input]                    parse and type-check without producing an artifact")
     print("  run [input] [args...]            compile to a temporary native executable and run it")
     print("  test [input]                     compile and run every .titan under tests/")
-    print("  compile [input] [-o output]      compile to a native x86-64 executable")
+    print("  compile [input] [-o output]      compile to a native Linux executable (--target x86_64|aarch64; aarch64 needs clang)")
     print("  wasm [input] [-o output]         compile to WebAssembly plus source maps")
     print("  build [input] [-o output]        compile to an inspectable .tbc bytecode artifact")
     print("  exec [artifact.tbc]              compile an artifact to native code and run it")
