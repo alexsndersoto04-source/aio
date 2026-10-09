@@ -45,7 +45,7 @@ import dap
 import native::dap_core
 
 fn cl_version() -> string {
-    "1.1.0"
+    "1.2.0"
 }
 
 // Bytes crudos en stdout / stderr (print siempre añade un salto de línea).
@@ -166,12 +166,21 @@ fn cl_args() -> array {
     std::array::slice(a, 1, len(a))
 }
 
+// Ruta del ejecutable de `titan`. En Linux se pregunta al sistema (/proc/self/exe, ya con los enlaces
+// simbólicos resueltos): así funciona aunque se invoque por el PATH (`titan run x.titan`, donde argv[0]
+// es solo «titan») o mediante un enlace como `zett -> titan`. Si no se puede, se usa argv[0].
 fn cl_program() -> string {
     let a = std::env::args()
     if cl_under_vm() {
         return a[2]
     }
-    a[0]
+    let r = std::try::catch(|| {
+        std::path::canonical("/proc/self/exe")
+    })
+    match r {
+        Result::Ok(p) => p,
+        _ => a[0],
+    }
 }
 
 fn cl_runtime_path() -> string {
@@ -742,14 +751,27 @@ fn cl_usage() {
 }
 
 // Comandos del gestor de paquetes (selfhost/pkg.titan).
+// Con el nombre `zett`, las líneas «Usage: titan <comando>» de la ayuda y de los errores dicen «Usage: zett …».
+fn cl_rename_usage(text: string) -> string {
+    if !cl_is_zett() {
+        return text
+    }
+    let key = "Usage: titan "
+    let at = cl_find(text, key)
+    if at < 0 {
+        return text
+    }
+    std::text::substring(text, 0, at) + "Usage: zett " + std::text::substring(text, at + len(key), len(text))
+}
+
 fn cl_pkg(command: string, rest: array) {
     match pk_run(command, rest) {
         Result::Ok(text) => {
-            print(text)
+            print(cl_rename_usage(text))
         },
         Result::Err(f) => {
             if f.label == "" {
-                cl_eprint(f.message)
+                cl_eprint(cl_rename_usage(f.message))
                 std::process::exit(f.code)
             }
             cl_fatal(f.label, f.message)
@@ -1145,12 +1167,73 @@ fn cl_dap() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// zett: el gestor de paquetes de Titan.
+//
+// `zett` es el mismo ejecutable que `titan`, invocado con el nombre `zett` (el paquete trae un
+// enlace simbólico `zett -> titan`). Con ese nombre solo ofrece la gestión de paquetes; el resto de
+// la herramienta (compilar, ejecutar, depurar...) sigue siendo `titan`.
+// ---------------------------------------------------------------------------
+fn cl_is_zett() -> bool {
+    let a = std::env::args()
+    if cl_under_vm() {
+        return false
+    }
+    std::path::file_name(a[0]) == "zett"
+}
+
+fn cl_zett_usage() {
+    print("zett: el gestor de paquetes de Titan")
+    print("")
+    print("uso: zett <comando> [argumentos]")
+    print("")
+    print("comandos:")
+    print("  add <paquete> [requisito]    añade una dependencia remota a Titan.toml")
+    print("  fetch [--offline]            resuelve, descarga, verifica e instala las dependencias")
+    print("  install [--offline]          igual que fetch")
+    print("  update                       vuelve a resolver y actualiza las dependencias")
+    print("  keygen <ruta>                genera una clave privada Ed25519 para firmar paquetes")
+    print("  pack --key K --output O      crea un paquete .tpkg determinista y firmado")
+    print("  publish --key K              empaqueta, firma y sube un paquete (TITAN_REGISTRY_TOKEN)")
+    print("  version                      muestra la versión")
+    print("")
+    print("Para compilar, ejecutar o depurar programas usa `titan`.")
+}
+
+fn cl_zett(args: array) {
+    if len(args) == 0 {
+        cl_zett_usage()
+        std::process::exit(2)
+    }
+    let command = args[0]
+    let rest = std::array::slice(args, 1, len(args))
+    if command == "add" || command == "fetch" || command == "update" || command == "keygen" || command == "pack" || command == "publish" {
+        cl_pkg(command, rest)
+    } else if command == "install" {
+        cl_pkg("fetch", rest)
+    } else if command == "version" {
+        print("zett (gestor de paquetes de Titan) v" + cl_version())
+    } else if command == "--version" || command == "-V" {
+        print("zett " + cl_version())
+    } else if command == "--help" || command == "-h" || command == "help" {
+        cl_zett_usage()
+    } else {
+        cl_eprint("error: comando de zett desconocido '" + command + "'")
+        cl_zett_usage()
+        std::process::exit(2)
+    }
+}
+
 fn cl_unsupported(command: string) {
     cl_fatal("error", "command '" + command + "' is not implemented in the self-hosted CLI yet")
 }
 
 fn main() {
     let args = cl_args()
+    if cl_is_zett() {
+        cl_zett(args)
+        std::process::exit(0)
+    }
     if len(args) == 0 {
         cl_usage()
         std::process::exit(2)

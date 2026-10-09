@@ -49,7 +49,7 @@ x86-64 con `--target aarch64` (ver [`../docs/GUIA_TERMUX.md`](../docs/GUIA_TERMU
 
 `titan.titan` es el programa principal; el resto son sus piezas:
 `args.titan` y `cli_util.titan` (argumentos), `pkg.titan` y `semver.titan`
-(dependencias y paquetes), `lsp.titan` (servidor de lenguaje), `dap.titan` y
+(dependencias y paquetes; es lo que usa **Zett**, el gestor de paquetes: ver [`../docs/ZETT.md`](../docs/ZETT.md)), `lsp.titan` (servidor de lenguaje), `dap.titan` y
 `debug_table.titan` (depuración), `rtcache.titan` (caché de la parte del runtime que no cambia entre programas).
 
 Herramientas auxiliares para verificar las etapas: `tokens.titan`, `ast.titan` y `check.titan` imprimen los tokens, el árbol y los diagnósticos de un archivo (las usan los `verify_*.sh`); `revisar_runtime.titan` revisa el runtime sin generar código; `prueba_interna.titan` es un compilador de pruebas que expone funciones internas y no se usa para programas normales.
@@ -83,7 +83,7 @@ bash selfhost/native/cobertura.sh -v    # cuántas de las 812 funciones std:: ti
 | `bootstrap.sh` | Construye `selfhost/titan` desde la semilla |
 | `verify_fixpoint.sh` | Comprueba que el compilador se compila a sí mismo (etapas idénticas) |
 | `verify_lexer.sh`, `verify_parser.sh`, `verify_typechecker.sh`, `verify_codegen.sh` | Verificaciones por etapa |
-| `empaquetar.sh` | Arma `titan-<versión>-linux-<arquitectura>.tar.gz` |
+| `empaquetar.sh` | Arma `titan-<versión>-linux-<arquitectura>.tar.gz` (con `titan`, el enlace `zett → titan` y `native/`) |
 | `instalar-termux.sh` | Instalador para Android (Termux) |
 | `tests/arm64_diff.sh` | Compara x86-64 con ARM64 programa a programa (en la CI de ARM64) |
 

@@ -1,10 +1,20 @@
 # Zett / TITAN — Changelog
 
-> Las entradas de abajo (hasta 1.3.0) describen el prototipo escrito en Rust, que se reemplazó por el compilador escrito en
+> Las entradas con número `1.x.0` de más abajo (hasta 1.3.0) usan la numeración interna del prototipo en Rust y no coinciden con las
+> etiquetas de las releases de GitHub (`v1.0.x` del prototipo; `v1.1.0` y posteriores, con Titan). Esas entradas describen el prototipo escrito en Rust, que se reemplazó por el compilador escrito en
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
-## 1.1.0 (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64
+## v1.2.0 (2026-10) — Zett, el gestor de paquetes; arreglo del arranque por el PATH
+
+- **Zett:** `zett` es ahora el gestor de paquetes de Titan (`add`, `fetch`/`install`, `update`, `keygen`, `pack`, `publish`,
+  `version`). Es el mismo ejecutable que `titan`, invocado con el nombre `zett`: el paquete trae el enlace `zett → titan` y
+  `instalar-termux.sh` lo deja en el `PATH`. Documentación: `docs/ZETT.md`. Los comandos siguen disponibles como `titan add`, etc.
+- **Corregido:** `titan` buscaba su carpeta `native/` a partir de `argv[0]`; si se invocaba solo por el nombre (`titan run x.titan`
+  con el ejecutable en el `PATH`, como deja el instalador de Termux) fallaba con `No such file or directory`. Ahora usa
+  `/proc/self/exe`, que resuelve también los enlaces simbólicos.
+
+## v1.1.0 (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64
 
 - El compilador, el runtime nativo y la biblioteca estándar (812 funciones `std::*` en 73 espacios de nombres) están escritos en
   Titan. El compilador se compila a sí mismo con punto fijo verificado (etapa 1 = 2 = 3, byte a byte) a partir de una semilla

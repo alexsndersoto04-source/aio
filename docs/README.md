@@ -39,7 +39,8 @@ La misma documentación está publicada, con menú lateral y buscador, en la
 |---|---|
 | [`DEBUGGER.md`](DEBUGGER.md) | Depurador interactivo (`titan debug`) |
 | [`DAP.md`](DAP.md), [`LSP.md`](LSP.md) | Servidores para editores (depuración y lenguaje) |
-| [`PACKAGE_REGISTRY.md`](PACKAGE_REGISTRY.md) | Paquetes `.tpkg` firmados y registro |
+| [`ZETT.md`](ZETT.md) | **Zett, el gestor de paquetes**: añadir, instalar, firmar y publicar paquetes |
+| [`PACKAGE_REGISTRY.md`](PACKAGE_REGISTRY.md) | Detalle técnico del registro, el formato `.tpkg` y el resolvedor |
 
 ## Estado del proyecto
 

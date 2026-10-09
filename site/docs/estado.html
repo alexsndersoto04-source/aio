@@ -57,6 +57,7 @@
 <li><a href="wasm.html">WebAssembly</a></li>
 </ul>
 <div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
 <li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
 <li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
 <li><a href="depurador.html">Depurador</a></li>
@@ -1170,7 +1171,7 @@ lo que antes eran programas sueltos:</p>
 </tr>
 <tr>
 <td><code>titan version</code></td>
-<td><code>TITAN Language Compiler v1.1.0</code></td>
+<td><code>TITAN Language Compiler v1.2.0</code></td>
 <td><code>zett version</code></td>
 </tr>
 <tr>
@@ -1748,6 +1749,16 @@ conexión de Redis llevan el prefijo <code>Redis I/O error:</code> como en la VM
 <code>TITAN_TEST_REDIS_URL</code> y <code>TITAN_TEST_REDIS_ADDR</code>; <code>redis_conexion.titan</code> no necesita servidor), idénticas a
 <code>zett run</code>, y <code>tests/native/redis.titan</code> sigue idéntica contra un Redis 6.2.14 real con contraseña.</p>
 <h2 id="gestor-de-paquetes-en-titan-2026-10-08">Gestor de paquetes en Titan (2026-10-08)</h2>
+<p><strong>Zett (v1.2.0).</strong> El gestor se llama <code>zett</code>: es el mismo ejecutable que <code>titan</code> invocado con ese nombre (el paquete trae el
+enlace <code>zett → titan</code>; <code>selfhost/titan.titan</code>, <code>cl_zett</code>). Ofrece <code>add</code>, <code>fetch</code>/<code>install</code>, <code>update</code>, <code>keygen</code>, <code>pack</code>, <code>publish</code> y
+<code>version</code>; <code>titan add</code> etc. siguen funcionando igual. Probado: <code>selfhost/tests/pkg/registro/probar.sh</code> (40/40, contra un registro HTTPS
+local de prueba, con la CLI <code>titan</code>); con el ejecutable <code>zett</code> empaquetado se comprobaron a mano <code>version</code>, <code>help</code>, <code>add</code>, <code>keygen</code>,
+<code>pack</code> (dos empaquetados idénticos byte a byte), los mensajes de uso con el nombre <code>zett</code> y que <code>titan run</code> funciona invocado solo por
+el <code>PATH</code>. <strong>No hay servidor de registro en el repositorio</strong>; la dirección por defecto (<code>registry.titan-lang.org</code>) no se ha podido
+comprobar que exista. Sin probar en ARM64 real. Guía: <code>docs/ZETT.md</code>.</p>
+<p><strong>Corrección (v1.2.0):</strong> <code>titan</code> calculaba la ruta de <code>native/</code> a partir de <code>argv[0]</code>; invocado solo por nombre (<code>titan run x.titan</code>
+con el ejecutable en el <code>PATH</code>) fallaba con <code>std::path::canonical … No such file or directory</code>. Desde v1.2.0 usa <code>/proc/self/exe</code>.
+<strong>La release v1.1.0 tiene ese fallo</strong>: con ella, <code>titan run</code> por el <code>PATH</code> no funciona (con la ruta completa sí).</p>
 <p>Port completo de <code>crates/titan_pkg</code> y de los subcomandos <code>add</code>, <code>fetch</code>, <code>update</code>, <code>keygen</code>, <code>pack</code> y
 <code>publish</code> de <code>titan_cli</code>. Piezas:</p>
 <ul>
@@ -2081,13 +2092,13 @@ que dependen de pantalla/audio): <strong>59 idénticos, 0 distintos</strong>. <c
   <code>tests/**</code>) quedan como registro; para repetirlas hay que construir la etiqueta <code>ultimo-con-rust</code> (ver
   <code>selfhost/tests/LEEME.md</code>). Los tests ONNX comparan además con onnxruntime, que sí sigue sirviendo.
 - <strong>Plataformas:</strong> hoy hay paquetes para Linux x86-64 y Linux ARM64 (Termux); macOS y Windows no tienen paquete nuevo
-  (los binarios de la release v1.0.0 son de la versión en Rust). Ver «Linux x86-64 y ARM64/Termux» más abajo.
+  (las releases hasta v1.0.26 son de la versión en Rust; desde la v1.1.0 se construyen sin Rust). Ver «Linux x86-64 y ARM64/Termux» más abajo.
 - <strong>Flujos de GitHub Actions</strong>: <code>ci.yml</code> (bootstrap sin Rust) y <code>arm64.yml</code> se ejecutaron en GitHub y pasan (ver más abajo);
   <code>check-moon.yml</code> y <code>pages.yml</code> aún no se han ejecutado allí.
 - <code>zett run</code> como intérprete: <code>titan run</code> compila a nativo y ejecuta (no hay VM).
 - Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.</p>
 <h2 id="linux-x86-64-y-arm64termux-2026-10-09">Linux x86-64 y ARM64/Termux (2026-10-09)</h2>
-<p><strong>Qué hay.</strong> Dos paquetes, <code>titan-v1.1.0-linux-x86_64.tar.gz</code> y <code>titan-v1.1.0-linux-aarch64.tar.gz</code> (los fabrica
+<p><strong>Qué hay.</strong> Dos paquetes, <code>titan-v1.2.0-linux-x86_64.tar.gz</code> y <code>titan-v1.2.0-linux-aarch64.tar.gz</code> (los fabrica
 <code>selfhost/empaquetar.sh</code>; cada uno lleva el ejecutable <code>titan</code>, la carpeta <code>native/</code> con el runtime en Titan y un
 <code>LEEME.txt</code>; ≈2,7 MB). Para Termux, <code>selfhost/instalar-termux.sh</code>. Los fabrica el flujo <code>.github/workflows/arm64.yml</code> y
 quedan como artefacto <code>paquetes</code> de cada ejecución; el paso de publicación como release solo corre en etiquetas <code>v*</code> y

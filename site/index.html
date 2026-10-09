@@ -68,7 +68,7 @@
     <div class="feat-i"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v10l-8 4-8-4V7z"/><path d="M4 7l8 4 8-4M12 11v10"/></svg>
       <h3>Biblioteca estándar</h3><p>812 funciones escritas en Titan, sin dependencias externas: datos, red, criptografía, bases de datos, multimedia e IA local.</p></div>
     <div class="feat-i"><svg viewBox="0 0 24 24"><path d="M4 17l5-5-5-5"/><path d="M12 19h8"/></svg>
-      <h3>Herramientas integradas</h3><p>Una sola CLI: proyectos, pruebas, REPL, depurador, servidores LSP y DAP para editores, y paquetes firmados con Ed25519.</p></div>
+      <h3>Herramientas integradas</h3><p>Una CLI, <code>titan</code>, para proyectos, pruebas, REPL, depurador y servidores LSP y DAP; y <b>Zett</b>, el gestor de paquetes con firmas Ed25519.</p></div>
   </div>
 </div></section>
 
@@ -196,8 +196,8 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
     <div><b class="cn"><code>titan repl</code></b><span>Intérprete interactivo.</span></div>
     <div><b class="cn"><code>titan debug</code></b><span>Depurador con puntos de interrupción por <code>archivo:línea</code>.</span></div>
     <div><b class="cn"><code>titan lsp</code> · <code>dap</code></b><span>Servidores de lenguaje y de depuración para editores.</span></div>
-    <div><b class="cn"><code>titan add</code> · <code>fetch</code></b><span>Dependencias remotas con verificación SHA-256.</span></div>
-    <div><b class="cn"><code>titan pack</code> · <code>publish</code></b><span>Paquetes <code>.tpkg</code> firmados con Ed25519.</span></div>
+    <div><b class="cn"><code>zett add</code> · <code>fetch</code></b><span>Zett, el gestor de paquetes: dependencias con SHA-256 y firma Ed25519.</span></div>
+    <div><b class="cn"><code>zett pack</code> · <code>publish</code></b><span>Crea y publica paquetes <code>.tpkg</code> firmados.</span></div>
     <div><b class="cn"><code>titan build</code> · <code>exec</code></b><span>Escribe y ejecuta bytecode <code>.tbc</code> validado.</span></div>
   </div>
   <div class="grid2 sp">
@@ -222,7 +222,7 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
 <section id="instalar" class="alt"><div class="wrap">
   <p class="eyebrow">Instalación</p>
   <h2>Construir Titan desde las fuentes</h2>
-  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 están en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">Releases</a>: la versión 1.1.0 es la primera construida con el compilador escrito en Titan; las 1.0.x anteriores son del prototipo antiguo en Rust.</p>
+  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 están en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">Releases</a>: desde la versión 1.1.0 se construyen con el compilador escrito en Titan; las 1.0.x anteriores son del prototipo antiguo en Rust.</p>
   <div class="steps">
     <div class="step"><div class="step-h"><span class="stepn">1</span><h3>Construir</h3><p>Tarda unos 2–3 minutos.</p></div>
       <div class="step-b"><div class="code"><div class="cap">Linux x86-64</div><pre><code>git clone https://github.com/alexsndersoto04-source/aio.git
@@ -238,7 +238,7 @@ titan run</code></pre></div></div></div>
   </div>
   <div class="grid2 sp">
     <div class="note"><b>Cómo se construye.</b> El repositorio incluye una semilla: una copia ya compilada del compilador (7,7 MB, <code>selfhost/semilla/</code>). <code>bootstrap.sh</code> la usa para compilar el compilador escrito en Titan, que luego se compila a sí mismo dos veces; el script comprueba que las tres versiones sean idénticas byte a byte.</div>
-    <div class="note"><b>Termux (Android, ARM64).</b> El flujo «Linux ARM64 (Termux)» de GitHub Actions fabrica <code>titan-v1.1.0-linux-aarch64.tar.gz</code>. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="docs/termux.html">guía de Termux</a>.</div>
+    <div class="note"><b>Termux (Android, ARM64).</b> El flujo «Linux ARM64 (Termux)» de GitHub Actions fabrica <code>titan-v1.2.0-linux-aarch64.tar.gz</code>. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="docs/termux.html">guía de Termux</a>.</div>
   </div>
 </div></section>
 

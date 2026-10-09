@@ -25,6 +25,9 @@ tar -xzf "$tmp/titan.tar.gz" -C "$tmp"
 rm -rf "$PREFIX/opt/titan"
 mv "$tmp"/titan-* "$PREFIX/opt/titan"
 ln -sf "$PREFIX/opt/titan/titan" "$PREFIX/bin/titan"
+# zett (el gestor de paquetes) viene en el paquete como un enlace a titan; los paquetes antiguos no lo traen.
+if [ -e "$PREFIX/opt/titan/zett" ]; then ln -sf "$PREFIX/opt/titan/zett" "$PREFIX/bin/zett"; fi
 titan version
+if command -v zett > /dev/null 2>&1; then zett version; fi
 echo "listo. Prueba: printf 'fn main() {\n    println(\"hola desde Termux\")\n}\n' > hola.titan && titan run hola.titan"
 echo "(la primera compilación tarda más: genera una caché del runtime junto al ejecutable)"

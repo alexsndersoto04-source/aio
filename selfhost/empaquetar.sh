@@ -12,14 +12,15 @@ arch="$2"
 mkdir -p "${3:-.}"
 out="$(readlink -f "${3:-.}")"
 case "$arch" in x86_64|aarch64) ;; *) echo "arquitectura: x86_64 o aarch64" >&2; exit 2 ;; esac
-ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo v1.1.0)" | head -1 || true)"
-[ -n "$ver" ] || ver=v1.1.0
+ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo v1.2.0)" | head -1 || true)"
+[ -n "$ver" ] || ver=v1.2.0
 name="titan-$ver-linux-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/$name"
 cp "$exe" "$tmp/$name/titan"
 chmod +x "$tmp/$name/titan"
+ln -s titan "$tmp/$name/zett"   # zett: el gestor de paquetes (el mismo ejecutable, con otro nombre)
 ( cd "$ROOT/selfhost" && find native -name '*.titan' | sort | tar -cf - -T - ) | tar -xf - -C "$tmp/$name"
 cat > "$tmp/$name/LEEME.txt" <<TXT
 Titan $ver — Linux $arch
@@ -27,6 +28,7 @@ Titan $ver — Linux $arch
   ./titan version
   ./titan run programa.titan
   ./titan compile programa.titan -o programa
+  ./zett                      (el gestor de paquetes: zett add, fetch, update, pack, publish)
 
 El ejecutable busca el runtime en la carpeta native/ que está junto a él: no los separes.
 $(if [ "$arch" = aarch64 ]; then echo "En ARM64 Titan compila con LLVM: hace falta clang con lld (Termux: pkg install clang; Debian/Ubuntu: apt install clang lld)."; else echo "En x86-64 no hace falta nada más."; fi)

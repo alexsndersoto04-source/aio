@@ -57,6 +57,7 @@
 <li><a href="wasm.html">WebAssembly</a></li>
 </ul>
 <div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
 <li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
 <li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
 <li><a href="depurador.html">Depurador</a></li>
@@ -302,6 +303,17 @@ titan run
 <p><code>titan new</code> crea <code>Titan.toml</code> (nombre y dependencias) y <code>src/main.titan</code>. Para
 dividir el código en varios archivos y escribir tests (<code>tests/*.titan</code>, que
 ejecuta <code>titan test</code>), sigue <a href="proyectos.html"><code>PROJECTS.md</code></a>.</p>
+<h2 id="11-paquetes-con-zett">11. Paquetes con Zett</h2>
+<p><code>zett</code> es el gestor de paquetes de Titan (viene con <code>titan</code>; ver <a href="zett.html"><code>ZETT.md</code></a>):</p>
+<pre><code class="language-bash">cd mi_app
+zett add demo &quot;^1&quot;     # añade [dependencies.demo] a Titan.toml
+zett fetch             # descarga, verifica (SHA-256 y firma) e instala
+</code></pre>
+<p><code>zett add</code> escribe esto en <code>Titan.toml</code>:</p>
+<pre><code class="language-toml">[dependencies.demo]
+version = &quot;^1&quot;
+</code></pre>
+<p><code>zett fetch</code> necesita un registro de paquetes por HTTPS; este repositorio trae el cliente, no el servidor.</p>
 <h2 id="que-leer-despues">Qué leer después</h2>
 <div class="tablewrap"><table>
 <thead>
@@ -334,6 +346,10 @@ ejecuta <code>titan test</code>), sigue <a href="proyectos.html"><code>PROJECTS.
 <tr>
 <td>Depurar</td>
 <td><a href="depurador.html"><code>DEBUGGER.md</code></a></td>
+</tr>
+<tr>
+<td>Usar y publicar paquetes</td>
+<td><a href="zett.html"><code>ZETT.md</code></a></td>
 </tr>
 <tr>
 <td>Ver una aplicación completa</td>

@@ -57,6 +57,7 @@
 <li><a href="wasm.html">WebAssembly</a></li>
 </ul>
 <div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
 <li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
 <li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
 <li><a href="depurador.html">Depurador</a></li>
@@ -77,7 +78,7 @@ Android.</strong> Android puede filtrar algunas llamadas al sistema que un Linux
 ese dato es justo lo que falta saber.</p>
 </blockquote>
 <h2 id="1-instalar">1. Instalar</h2>
-<p>Necesitas el paquete <code>titan-v1.1.0-linux-aarch64.tar.gz</code>. Lo fabrica el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions
+<p>Necesitas el paquete <code>titan-v1.2.0-linux-aarch64.tar.gz</code>. Lo fabrica el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions
 (artefacto <code>paquetes</code> de la ejecución; también se publica como release cuando se crea una etiqueta <code>v*</code>).</p>
 <p>Con la release publicada:</p>
 <pre><code class="language-sh">pkg install -y curl
@@ -85,8 +86,9 @@ curl -fLO https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/self
 bash instalar-termux.sh
 </code></pre>
 <p>Con un paquete que ya descargaste (por ejemplo el artefacto de Actions):</p>
-<pre><code class="language-sh">bash selfhost/instalar-termux.sh /ruta/a/titan-v1.1.0-linux-aarch64.tar.gz
+<pre><code class="language-sh">bash selfhost/instalar-termux.sh /ruta/a/titan-v1.2.0-linux-aarch64.tar.gz
 </code></pre>
+<p>Desde la versión 1.2.0 el paquete trae también <code>zett</code>, el gestor de paquetes (ver <a href="zett.html"><code>ZETT.md</code></a>); el script lo deja en el <code>PATH</code> junto a <code>titan</code>.</p>
 <p>El script instala <code>clang</code> (Titan en ARM64 genera LLVM IR y llama a <code>clang</code>/<code>lld</code> para producir el ejecutable) y deja <code>titan</code>
 en <code>$PREFIX/bin</code>. Comprueba:</p>
 <pre><code class="language-sh">titan version

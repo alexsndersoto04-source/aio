@@ -6,7 +6,7 @@
 
 **TITAN** es un lenguaje de programación compilado y con tipos comprobados antes de ejecutar. El compilador, el runtime y la biblioteca estándar están escritos en Titan; el repositorio no contiene código Rust (Titan nació como un prototipo en Rust, que sigue en el historial de git, etiqueta `ultimo-con-rust`). Los programas usan la extensión **`.titan`** y se compilan a ejecutables nativos (o a WebAssembly). **Zett** es el nombre con el que se distribuyó antes, sobre todo en Android/Termux.
 
-> **Estado (octubre de 2026).** Plataformas con ejecutable probado: **Linux x86-64** y **Linux ARM64 (Termux)**. En ARM64 el ejecutable se probó en un servidor ARM64 real (GitHub Actions), no en un teléfono. macOS y Windows todavía no tienen ejecutable. La release [v1.1.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.1.0) es la primera construida con el compilador escrito en Titan (sin Rust); las anteriores (hasta v1.0.26) son del prototipo antiguo en Rust y no se actualizan. Lo que está verificado y lo que no, con detalle: [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
+> **Estado (octubre de 2026).** Plataformas con ejecutable probado: **Linux x86-64** y **Linux ARM64 (Termux)**. En ARM64 el ejecutable se probó en un servidor ARM64 real (GitHub Actions), no en un teléfono. macOS y Windows todavía no tienen ejecutable. Las releases desde [v1.1.0](https://github.com/alexsndersoto04-source/aio/releases) se construyen con el compilador escrito en Titan (sin Rust); las anteriores (hasta v1.0.26) son del prototipo antiguo en Rust y no se actualizan. Lo que está verificado y lo que no, con detalle: [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
 
 ```text
 código fuente (.titan)
@@ -21,7 +21,8 @@ código fuente (.titan)
 - **Ejecutables nativos:** `titan run` y `titan compile` generan código de máquina. El backend propio produce x86-64; el backend LLVM (necesita `clang` y `lld`) produce x86-64 o ARM64 (`--target aarch64`).
 - **Concurrencia:** `spawn`, `join`, canales, `select` y timeouts, sobre fibras cooperativas (no hilos del sistema). Ver [`docs/CONCURRENCY.md`](docs/CONCURRENCY.md).
 - **WebAssembly:** `titan wasm` genera módulos con memoria lineal, strings, arrays, mapas, structs y enums, más un host JavaScript para DOM, eventos, `fetch`, WebSocket y Canvas.
-- **Herramientas:** CLI, REPL, proyectos con `Titan.toml`, paquetes firmados con Ed25519, servidor LSP, servidor DAP y depurador interactivo.
+- **Herramientas:** CLI `titan`, REPL, proyectos con `Titan.toml`, servidor LSP, servidor DAP y depurador interactivo.
+- **Gestor de paquetes: Zett.** `zett add`, `zett fetch`, `zett update`, `zett pack`, `zett publish`: dependencias remotas verificadas con SHA-256 y firmas Ed25519. Ver [`docs/ZETT.md`](docs/ZETT.md).
 - **Biblioteca estándar:** 812 funciones en 73 espacios de nombres `std::*`, escritas en Titan (ver abajo).
 
 ## Instalación
@@ -43,7 +44,7 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 
 ### ARM64 y Termux
 
-El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.1.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
+El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.2.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 
 ### Cruzar de arquitectura
 
@@ -112,11 +113,24 @@ titan wasm [archivo|proyecto]        Generar WebAssembly
 titan test [proyecto]                Ejecutar tests/*.titan
 titan debug [ruta] -b archivo:línea  Depurador interactivo
 titan repl                           REPL
-titan add / fetch / update           Dependencias remotas
-titan keygen / pack / publish        Paquetes .tpkg firmados con Ed25519
+titan add / fetch / update           Dependencias remotas (igual que `zett`, ver abajo)
+titan keygen / pack / publish        Paquetes .tpkg firmados con Ed25519 (igual que `zett`)
 titan lsp / dap                      Servidores para editores
 titan version
 ```
+
+### Zett, el gestor de paquetes
+
+`zett` es el gestor de paquetes de Titan. Es el mismo ejecutable que `titan`, con otro nombre (el paquete trae el enlace `zett → titan`):
+
+```text
+zett add <paquete> [requisito]     Añadir una dependencia a Titan.toml
+zett fetch  (o install)            Descargar, verificar (SHA-256 y firma Ed25519) e instalar
+zett update                        Actualizar dependencias
+zett keygen / pack / publish       Crear, firmar y publicar un paquete .tpkg
+```
+
+Detalle, qué comprueba antes de instalar y qué está probado: [`docs/ZETT.md`](docs/ZETT.md). Importante: este repositorio incluye el cliente, no un servidor de registro.
 
 Un proyecto tiene `Titan.toml`, `src/main.titan` y opcionalmente `tests/*.titan`. Los imports se canonicalizan, se detectan ciclos y no pueden salir del árbol de fuentes. Ver [`docs/PROJECTS.md`](docs/PROJECTS.md).
 
@@ -164,6 +178,7 @@ Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementac
 Índice completo, ordenado por objetivo: [`docs/README.md`](docs/README.md). También está publicada, con menú y buscador, en la [página oficial](https://alexsndersoto04-source.github.io/aio/).
 
 - [Guía rápida (20 minutos)](docs/GUIA_RAPIDA.md)
+- [Zett, el gestor de paquetes](docs/ZETT.md)
 - [Mapa de `selfhost/` (cómo está hecho y cómo se construye)](selfhost/README.md)
 - [Ejemplos](examples/README.md)
 - [Estado verificado y limitaciones](selfhost/ESTADO.md)

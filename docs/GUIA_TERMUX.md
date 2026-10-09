@@ -10,7 +10,7 @@ Titan funciona en Linux ARM64. Termux usa el mismo núcleo Linux, así que el ej
 
 ## 1. Instalar
 
-Necesitas el paquete `titan-v1.1.0-linux-aarch64.tar.gz`. Lo fabrica el flujo `Linux ARM64 (Termux)` de GitHub Actions
+Necesitas el paquete `titan-v1.2.0-linux-aarch64.tar.gz`. Lo fabrica el flujo `Linux ARM64 (Termux)` de GitHub Actions
 (artefacto `paquetes` de la ejecución; también se publica como release cuando se crea una etiqueta `v*`).
 
 Con la release publicada:
@@ -24,8 +24,10 @@ bash instalar-termux.sh
 Con un paquete que ya descargaste (por ejemplo el artefacto de Actions):
 
 ```sh
-bash selfhost/instalar-termux.sh /ruta/a/titan-v1.1.0-linux-aarch64.tar.gz
+bash selfhost/instalar-termux.sh /ruta/a/titan-v1.2.0-linux-aarch64.tar.gz
 ```
+
+Desde la versión 1.2.0 el paquete trae también `zett`, el gestor de paquetes (ver [`ZETT.md`](ZETT.md)); el script lo deja en el `PATH` junto a `titan`.
 
 El script instala `clang` (Titan en ARM64 genera LLVM IR y llama a `clang`/`lld` para producir el ejecutable) y deja `titan`
 en `$PREFIX/bin`. Comprueba:

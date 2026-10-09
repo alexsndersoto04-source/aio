@@ -282,6 +282,25 @@ titan run
 dividir el código en varios archivos y escribir tests (`tests/*.titan`, que
 ejecuta `titan test`), sigue [`PROJECTS.md`](PROJECTS.md).
 
+## 11. Paquetes con Zett
+
+`zett` es el gestor de paquetes de Titan (viene con `titan`; ver [`ZETT.md`](ZETT.md)):
+
+```bash
+cd mi_app
+zett add demo "^1"     # añade [dependencies.demo] a Titan.toml
+zett fetch             # descarga, verifica (SHA-256 y firma) e instala
+```
+
+`zett add` escribe esto en `Titan.toml`:
+
+```toml
+[dependencies.demo]
+version = "^1"
+```
+
+`zett fetch` necesita un registro de paquetes por HTTPS; este repositorio trae el cliente, no el servidor.
+
 ## Qué leer después
 
 | Si quieres… | Lee |
@@ -292,6 +311,7 @@ ejecuta `titan test`), sigue [`PROJECTS.md`](PROJECTS.md).
 | Hacer un servidor web | [`NETWORKING.md`](NETWORKING.md) y `examples/webserver.titan` |
 | Guardar datos | [`SQLITE.md`](SQLITE.md), [`POSTGRESQL.md`](POSTGRESQL.md) |
 | Depurar | [`DEBUGGER.md`](DEBUGGER.md) |
+| Usar y publicar paquetes | [`ZETT.md`](ZETT.md) |
 | Ver una aplicación completa | [`projects/moon`](../projects/moon) |
 
 ## Trampas frecuentes

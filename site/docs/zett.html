@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zett, el gestor de paquetes — Documentación de Titan</title>
+<meta name="description" content="Añadir, instalar, firmar y publicar paquetes.">
+<meta property="og:title" content="Zett, el gestor de paquetes — Documentación de Titan">
+<meta property="og:description" content="Añadir, instalar, firmar y publicar paquetes.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html" class="on">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Herramientas</p><h1 id="zett-el-gestor-de-paquetes-de-titan">Zett — el gestor de paquetes de Titan</h1>
+<p><strong>Zett</strong> es el gestor de paquetes de Titan: añade dependencias a un proyecto, las
+descarga, comprueba que son auténticas y las deja listas para usarlas con <code>import</code>.
+También crea y publica paquetes propios.</p>
+<p>Zett viene escrito en Titan, igual que el resto del compilador. No es un programa
+aparte: es el mismo ejecutable que <code>titan</code>, que cuando se llama <code>zett</code> solo ofrece la
+gestión de paquetes. El paquete de Titan trae un enlace <code>zett → titan</code>, y el instalador de
+Termux (<code>selfhost/instalar-termux.sh</code>) lo deja en el <code>PATH</code>.</p>
+<blockquote>
+<p>Los mismos comandos también funcionan escribiendo <code>titan add</code>, <code>titan fetch</code>, etc.
+Con <code>zett</code> es más corto de escribir y deja claro que se trata de paquetes.</p>
+</blockquote>
+<h2 id="comandos">Comandos</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Comando</th>
+<th>Qué hace</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zett add &lt;paquete&gt; [requisito]</code></td>
+<td>Añade la dependencia a <code>Titan.toml</code> (por ejemplo <code>zett add demo "^1"</code>)</td>
+</tr>
+<tr>
+<td><code>zett fetch</code> · <code>zett install</code></td>
+<td>Resuelve versiones, descarga, verifica e instala las dependencias; escribe <code>Titan.remote.lock</code></td>
+</tr>
+<tr>
+<td><code>zett fetch --offline</code></td>
+<td>Instala solo desde el caché y el archivo de bloqueo, sin red</td>
+</tr>
+<tr>
+<td><code>zett update</code></td>
+<td>Vuelve a resolver y actualiza a las versiones más nuevas que permite el requisito</td>
+</tr>
+<tr>
+<td><code>zett keygen &lt;ruta&gt;</code></td>
+<td>Genera una clave privada Ed25519 para firmar paquetes</td>
+</tr>
+<tr>
+<td><code>zett pack --key K --output O</code></td>
+<td>Crea un paquete <code>.tpkg</code> determinista y firmado</td>
+</tr>
+<tr>
+<td><code>zett publish --key K</code></td>
+<td>Empaqueta, firma y sube el paquete al registro</td>
+</tr>
+<tr>
+<td><code>zett version</code></td>
+<td>Muestra la versión</td>
+</tr>
+</tbody>
+</table></div>
+<p>Opciones comunes: <code>--project &lt;carpeta&gt;</code> (por defecto, la actual) y <code>--registry &lt;URL&gt;</code>
+(por defecto <code>https://registry.titan-lang.org</code>; debe ser HTTPS).</p>
+<h2 id="usar-una-dependencia">Usar una dependencia</h2>
+<pre><code class="language-bash">cd mi_app
+zett add demo &quot;^1&quot;      # escribe [dependencies.demo] en Titan.toml
+zett fetch              # descarga e instala en .titan/packages/
+titan run
+</code></pre>
+<p><code>Titan.toml</code> queda así:</p>
+<pre><code class="language-toml">[dependencies.demo]
+version = &quot;^1&quot;
+</code></pre>
+<p>Los requisitos de versión siguen SemVer (<code>^1</code>, <code>~1.2</code>, <code>&gt;=1.0, &lt;2</code>, <code>*</code>). Si dos paquetes
+piden versiones que chocan, Zett prueba otras combinaciones, empezando por las más altas.
+El resultado exacto queda en <code>Titan.remote.lock</code> (versión, hash y clave de firma de cada
+paquete); conviene subirlo a git para que todos instalen lo mismo.</p>
+<h2 id="que-comprueba-zett-antes-de-instalar">Qué comprueba Zett antes de instalar</h2>
+<ul>
+<li>La dirección del registro debe ser <strong>HTTPS</strong>.</li>
+<li>El hash <strong>SHA-256</strong> del archivo descargado debe coincidir con el del registro.</li>
+<li>La <strong>firma Ed25519</strong> del hash debe ser válida.</li>
+<li>Al extraer, solo se aceptan archivos y carpetas normales con rutas relativas: se
+  rechazan enlaces, dispositivos, duplicados y rutas que salgan de la carpeta.</li>
+<li>La descarga se escribe en un archivo temporal y solo se mueve a su sitio tras la
+  verificación, así una descarga interrumpida nunca se toma por un paquete.</li>
+</ul>
+<h2 id="crear-y-publicar-un-paquete">Crear y publicar un paquete</h2>
+<pre><code class="language-bash">zett keygen ~/.titan/mi-clave          # una sola vez; guarda la clave fuera del proyecto
+zett pack --key ~/.titan/mi-clave --output mi_paquete.tpkg
+export TITAN_REGISTRY_TOKEN=...        # la credencial de tu registro
+zett publish --key ~/.titan/mi-clave
+</code></pre>
+<ul>
+<li>Un <code>.tpkg</code> es un <code>tar.gz</code> con <code>Titan.toml</code>, <code>src/</code> y el resto del proyecto, sin
+  archivos de git, cachés ni compilaciones. Es <strong>determinista</strong>: el mismo proyecto da el
+  mismo archivo, byte a byte.</li>
+<li><code>pack</code> solo muestra la clave pública, el hash y la firma; la clave privada nunca se
+  imprime y no puede estar dentro del proyecto.</li>
+<li><code>publish</code> lee la credencial solo de <code>TITAN_REGISTRY_TOKEN</code>.</li>
+</ul>
+<h2 id="que-esta-probado-y-que-no">Qué está probado y qué no</h2>
+<p>Probado de verdad (pruebas del repositorio, <code>selfhost/tests/pkg/</code>):
+- Resolución de versiones y SemVer, extracción segura, hashes y firmas.
+- <code>add</code>, <code>fetch</code>, <code>update</code> y <code>publish</code> contra un registro HTTPS <strong>de prueba</strong> que corre en
+  la propia máquina (<code>selfhost/tests/pkg/registro/probar.sh</code>).
+- <code>keygen</code> y <code>pack</code> (incluido que dos empaquetados salen idénticos) con el ejecutable
+  <code>zett</code> del paquete.</p>
+<p><strong>Lo que no está probado ni existe en este repositorio:</strong>
+- <strong>No hay un servidor de registro dentro de este repositorio.</strong> El cliente está
+  completo, pero necesita un registro que hable su protocolo (descrito en
+  <a href="paquetes.html"><code>PACKAGE_REGISTRY.md</code></a>). La dirección por defecto,
+  <code>registry.titan-lang.org</code>, no se ha podido comprobar que exista; si no responde, indica
+  otro con <code>--registry</code>.
+- La rotación de claves y la política de propiedad de los paquetes dependen del
+  registro, no del cliente.
+- En ARM64 (Termux) el gestor usa el mismo código que en x86-64, pero no se ha probado
+  allí paquete por paquete.</p>
+<p>Detalles técnicos del protocolo, del formato <code>.tpkg</code> y del resolvedor:
+<a href="paquetes.html"><code>PACKAGE_REGISTRY.md</code></a>.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/ZETT.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

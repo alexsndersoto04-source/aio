@@ -52,6 +52,7 @@ GRUPOS = [
         ("docs/WASM.md", "wasm", "WebAssembly", "Backend WASM, memoria y host JavaScript."),
     ]),
     ("Herramientas", [
+        ("docs/ZETT.md", "zett", "Zett, el gestor de paquetes", "Añadir, instalar, firmar y publicar paquetes."),
         ("docs/LSP.md", "lsp", "Servidor de lenguaje (LSP)", "Diagnósticos, símbolos y renombrado en editores."),
         ("docs/DAP.md", "dap", "Adaptador de depuración (DAP)", "Depuración desde editores."),
         ("docs/DEBUGGER.md", "depurador", "Depurador", "Información de depuración y depurador interactivo."),
