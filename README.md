@@ -1,22 +1,22 @@
 # TITAN / Zett
 
 [![CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/ci.yml)
-[![cross-platform CI](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/alexsndersoto04-source/aio/actions/workflows/cross-platform.yml)
 [![Release](https://img.shields.io/github/v/release/alexsndersoto04-source/aio?label=release\&color=brightgreen)](https://github.com/alexsndersoto04-source/aio/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**TITAN** es un lenguaje de programación compilado y verificado estáticamente, implementado en Rust. Los programas usan la extensión **`.titan`**, se compilan a bytecode portable y se ejecutan en una máquina virtual de pila segura. **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
+**TITAN** es un lenguaje de programación compilado y verificado estáticamente, **escrito en sí mismo**: el compilador, la biblioteca estándar y las herramientas están en Titan y no queda código Rust en el repositorio (Titan nació de un prototipo en Rust, que sigue en el historial de git). Los programas usan la extensión **`.titan`** y se compilan a ejecutables nativos x86-64 (también a WebAssembly). **Zett** es el nombre de distribución del compilador, especialmente en Android/Termux; ambos nombres se refieren al mismo ecosistema.
 
-> **TITAN/Zett 1.0.0 — release estable.** Lenguaje compilado y verificado estáticamente: lexer, parser, typechecker, codegen, VM segura, biblioteca estándar, herramientas de desarrollo y backend WebAssembly. El registro reúne **797 funciones nativas únicas en 72 namespaces `std::*`** además de primitivas del runtime. Binarios oficiales en el release **[v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0)** (Linux, macOS, Windows) y, en Android/Termux, instalación directa con `pkg install zett`.
+> **Estado:** self-hosting completo. El compilador se compila a sí mismo (punto fijo verificado) y la biblioteca estándar (812 funciones nativas en 72 namespaces `std::*`) está escrita en Titan. Los binarios antiguos de la release [v1.0.0](https://github.com/alexsndersoto04-source/aio/releases/tag/v1.0.0) (Linux, macOS, Windows, Termux) son de la versión en Rust y no se actualizan.
 
 ```text
 TITAN source (.titan)
         │
         ▼
- lexer → parser → AST → typechecker → codegen → bytecode / WebAssembly
+ lexer → parser → AST → typechecker → codegen → bytecode
                                                 │
-                                                ▼
-                                           safe Titan VM
+                              ┌─────────────────┴──────────────┐
+                              ▼                                ▼
+                  ejecutable nativo x86-64               WebAssembly
 ```
 
 ## ¿Qué incluye?
@@ -36,59 +36,16 @@ TITAN es más que un intérprete de ejemplos. El repositorio reúne un lenguaje,
 
 ## Instalación
 
-Los binarios precompilados se publican en [**Releases**](https://github.com/alexsndersoto04-source/aio/releases/latest). En paquetes de distribución el ejecutable se llama `zett`; al compilar directamente desde esta fuente, Cargo genera el binario `titan`.
-
-### Linux x86-64
-
-```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-x86_64.tar.gz | tar xz
-./zett version
-```
-
-### Linux ARM64 y ARMv7
+Titan se construye desde las fuentes, sin Rust ni ninguna otra herramienta, a partir de una **semilla**: el
+compilador nativo ya compilado (650 KB) que está en `selfhost/semilla/` (ver `selfhost/semilla/LEEME.md`).
+Hoy el compilador es para **Linux x86-64**. macOS, Windows y ARM64/Termux todavía no tienen empaquetado (el
+backend ARM64 existe vía LLVM, pero no está empaquetado).
 
 ```bash
-# ARM de 64 bits
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-aarch64.tar.gz | tar xz
-
-# ARM de 32 bits hard-float; útil, por ejemplo, en proot Debian armhf + Termux:X11
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-linux-armv7hf.tar.gz | tar xz
-
-./zett version
-```
-
-### macOS Apple Silicon
-
-```bash
-curl -L https://github.com/alexsndersoto04-source/aio/releases/download/v1.0.0/zett-macos-arm64.tar.gz | tar xz
-xattr -d com.apple.quarantine zett 2>/dev/null || true
-./zett version
-```
-
-### Windows x86-64
-
-Descarga `zett-windows-x86_64.zip` desde [Releases](https://github.com/alexsndersoto04-source/aio/releases/latest), descomprímelo y ejecuta:
-
-```powershell
-.\zett.exe version
-```
-
-### Android / Termux
-
-Zett también se distribuye mediante el repositorio APT del proyecto:
-
-```bash
-echo 'deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo ./ ' \
-  > "$PREFIX/etc/apt/sources.list.d/zett.list"
-pkg update
-pkg install zett
-zett --help
-```
-
-Para las integraciones Android de `std::termux::*`, instala también la app **Termux:API** y su paquete de comandos:
-
-```bash
-pkg install termux-api
+git clone https://github.com/alexsndersoto04-source/aio.git
+cd aio
+bash selfhost/bootstrap.sh      # desempaqueta la semilla, repite el punto fijo y construye selfhost/titan
+selfhost/titan version
 ```
 
 ### Primera ejecución
@@ -103,37 +60,22 @@ fn main() {
 }
 EOF
 
-zett run hi.titan       # Usa ./titan si compilaste desde el código fuente.
+selfhost/titan run hi.titan
 ```
 
-## Compilar desde el código fuente
+## Compilar el compilador
 
-Requisitos: Rust estable reciente, `rustfmt` y `clippy`.
-
-```bash
-git clone https://github.com/alexsndersoto04-source/aio.git
-cd aio
-cargo build --release -p titan_cli
-
-# Cargo genera target/release/titan.
-target/release/titan version
-target/release/titan run examples/hello.titan
-```
-
-Instalación local opcional:
+`bash selfhost/bootstrap.sh` ejecuta el **punto fijo**: la semilla compila el compilador escrito en Titan
+(`titanc1`), éste se compila a sí mismo (`titanc2`) y otra vez (`titanc3`); las tres tienen que ser idénticas byte a
+byte. Después se construye la CLI `selfhost/titan` (`titan new`, `check`, `run`, `test`, `compile`, `wasm`,
+`build`, `exec`, `add`, `fetch`, `lsp`, `dap`, `repl`, `debug`...).
 
 ```bash
-cargo install --path crates/titan_cli
-
-titan new hola_titan
+selfhost/titan new hola_titan
 cd hola_titan
-titan check
-titan run
-titan build
-titan test
+../selfhost/titan check
+../selfhost/titan run
 ```
-
-> El build completo con las features predeterminadas incorpora ONNX, tokenizers, imágenes, bases de datos, TLS y otras dependencias grandes. En Termux o dispositivos ARM con poco espacio, libera almacenamiento antes de ejecutar todas las pruebas; `target/` puede ocupar varios GB durante compilación y enlace.
 
 ## Un programa TITAN
 
@@ -275,24 +217,15 @@ El workspace también incluye:
 
 Documentación: [debugger](docs/DEBUGGER.md), [LSP](docs/LSP.md), [DAP](docs/DAP.md) y [WASM](docs/WASM.md).
 
-## Arquitectura del workspace
+## Arquitectura
 
-| Crate | Responsabilidad |
-|---|---|
-| `titan_lexer` | Tokenización Unicode, spans y diagnósticos léxicos. |
-| `titan_ast` / `titan_parser` | Árbol sintáctico, precedencia y parser. |
-| `titan_typechecker` | Scopes, firmas, tipos, structs, enums, traits y control de flujo. |
-| `titan_codegen` | Bytecode, source locations y artefactos `.tbc`. |
-| `titan_vm` | Ejecución segura, nativas, sandbox, concurrencia, DBs y runtime operativo. |
-| `titan_wasm` | Emisión WebAssembly, memoria administrada, host imports y source maps. |
-| `titan_stdlib` | Implementaciones Rust y metadata de la API estándar. |
-| `titan_pkg` | Manifiestos, imports, lockfiles, registry, archivos y firma de paquetes. |
-| `titan_lsp` / `titan_dap` | Servicios para editores y depuradores. |
-| `titan_tls` | TLS basado en rustls y WebPKI. |
-| `titan_sqlite` / `titan_postgres` / `titan_mysql` | Adaptadores y pools de bases de datos. |
-| `titan_gc` / `titan_runtime` | Primitivas de GC y scheduling usadas como capas de runtime. |
+Todo está en `selfhost/`: `lexer.titan`, `parser.titan`, `typechecker.titan`, `codegen.titan` (bytecode),
+`opt.titan` (optimizador), `native/` (backend x86-64, runtime y biblioteca estándar: 812 funciones `std::*`
+escritas en Titan, más SQLite, TLS, audio, ONNX...), `native/llvm.titan` (backend LLVM), `wasm.titan`,
+`loader.titan`/`pkg.titan` (proyectos y paquetes), `lsp.titan`, `dap.titan` y `titan.titan` (la CLI).
+El estado detallado, con lo verificado y las limitaciones declaradas, está en `selfhost/ESTADO.md`.
 
-Consulta [la arquitectura completa](docs/ARCHITECTURE.md).
+Consulta [la arquitectura completa](docs/ARCHITECTURE.md) (describe el diseño original en Rust).
 
 ## Ejemplos incluidos
 
@@ -325,19 +258,14 @@ Algunos ejemplos requieren recursos externos o del sistema: internet, un servido
 ## Desarrollo y validación
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+bash selfhost/verify_fixpoint.sh               # punto fijo del compilador (con la semilla)
+bash selfhost/native/cobertura.sh -v           # cuántas funciones std:: tienen cuerpo en Titan
+selfhost/titan test                            # tests de un proyecto
 ```
 
-El repositorio contiene más de **400 pruebas Rust declaradas** distribuidas entre lexer, parser, typechecker, VM, WebAssembly, stdlib, paquetes, TLS, LSP, DAP y conectores de base de datos. GitHub Actions incluye comprobaciones del workspace, build sin features predeterminadas, comprobación Android AArch64 y una matriz de test/build para Linux, macOS y Windows.
-
-En dispositivos con almacenamiento limitado, especialmente ARM/Termux, el comando completo puede agotar espacio durante el enlace aunque la compilación del código haya avanzado correctamente. Para reducir el pico de disco:
-
-```bash
-cargo clean
-CARGO_INCREMENTAL=0 cargo test --workspace --all-targets -j 1
-```
+Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementación original en Rust; ese
+oráculo ya no está en el repositorio. Para repetirlas hay que construir la última versión con Rust
+(`git checkout ultimo-con-rust`, commit `5dbb238`) y ver `selfhost/tests/LEEME.md`.
 
 ## Documentación
 

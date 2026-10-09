@@ -1,17 +1,14 @@
 # Build artefactos
-target/
 *.tbc
 *.wasm
 *.wasm.map
 *.wasm.map.json
 
-# Logs de cargo — nunca commitear
+# Logs
 *.log
-cargo-*.log
 
 # Archivos de parcheo temporales
 *.bak
-crates/*/src/*.rs.bak
 fix_*.py
 rmir.py
 

@@ -1370,7 +1370,7 @@ servidor): idénticos a la VM salvo `audio_player_backend` y `gui_std`, que fall
 | SQLite | ✅ ver «SQLite en Titan» |
 | Audio | ✅ ver «Audio: decodificador y engine en Titan» |
 | **tokenize** (10 nativas) | ✅ ver «std::tokenize en Titan» (sin `Precompiled`, `UnicodeScripts` ni BPE con dropout) |
-| Borrar el Rust (`titan_vm`, `titan_stdlib`, …) | pendiente |
+| Borrar el Rust (`titan_vm`, `titan_stdlib`, …) | ✅ ver «Rust borrado» (se arranca desde una semilla de 650 KB) |
 | Página oficial con GitHub Pages | pendiente (después de lo anterior) |
 
 
@@ -1530,3 +1530,39 @@ kernel de MatMul eran ≈8 s. MatMul ≈17 ns por multiplicación-suma; Erf ≈7
 - Gemm no usa el kernel rápido (solo MatMul).
 - `opt.titan` activa los moves también para `std_onnx_engine`/`std_onnx_ops`. Punto fijo tras ese cambio:
   `titanc1 == titanc2 == titanc3`, SHA-256 `f4943da32549139149a6e8765887c42c3610da9073eeb4b7b6364c781492bc3d`.
+
+
+## Rust borrado
+
+**Qué se borró.** `crates/` (19 crates, 114 archivos `.rs`, ≈70 000 líneas), `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain.toml`, `.cargo/`, `make-zett-package.sh`, `verify_moon.py`, `verify_phase34.py`, los scripts de
+Android/Termux que compilaban Rust, y los flujos de GitHub Actions que usaban `cargo` (cross-platform, termux-*,
+update-cargo-lock, publish-linux-binary, ci-diag-annotations, diag-titan). `selfhost/gen_natives.sh` y
+`gen_codegen_tables.py` (leían el registro/código de Rust) también: `natives.titan` y `codegen_tables.titan` son
+ahora la fuente y se editan a mano. El Rust sigue en el historial: etiqueta local **`ultimo-con-rust`**
+(commit `5dbb238`).
+
+**Cómo se arranca ahora.** `bash selfhost/bootstrap.sh`:
+1. desempaqueta la **semilla** (`selfhost/semilla/titanc-linux-x86_64.gz`, 650 KB; 7,7 MB descomprimida; SHA-256
+   `f4943da3…bc3d`) — el compilador nativo x86-64 construido con la última VM de Rust;
+2. `selfhost/verify_fixpoint.sh`: semilla → titanc1 → titanc2 → titanc3, sin `PATH`, idénticos byte a byte;
+3. compila la CLI `selfhost/titan` con el resultado.
+Verificado desde cero con `PATH=/usr/bin:/bin` (sin `zett`): hash `f4943da32549139149a6e8765887c42c3610da9073eeb4b7b6364c781492bc3d`
+en las tres etapas, ≈3 min. Ver `selfhost/semilla/LEEME.md`.
+
+**Última pasada con la VM de Rust antes de borrarla** (VM de la rama `binaries`, de 2026-10-04, algo anterior a
+la del commit): muestra de 59 programas de `selfhost/tests/native` (1 de cada 6, sin redis/postgres/mysql ni los
+que dependen de pantalla/audio): **59 idénticos, 0 distintos**. `titan check projects/moon/src/main.titan`:
+17 archivos, 308 funciones, OK. Cobertura medida: 812/812.
+
+**Lo que se pierde, dicho claro.**
+- **Oráculo de pruebas:** la VM de Rust ya no está. Las pruebas diferenciales (`verify_*.sh`, `native/verify_native.sh`,
+  `tests/**`) quedan como registro; para repetirlas hay que construir la etiqueta `ultimo-con-rust` (ver
+  `selfhost/tests/LEEME.md`). Los tests ONNX comparan además con onnxruntime, que sí sigue sirviendo.
+- **Plataformas:** solo Linux x86-64 tiene compilador nativo empaquetado. macOS, Windows, ARM64/Termux (antes con
+  binarios de Rust en la release v1.0.0) no tienen empaquetado nuevo. El backend LLVM (`build_llvm.titan`) genera ARM64 y se
+  verificó en hardware real en CI; falta empaquetarlo (hace falta clang). Es lo siguiente para recuperar Termux.
+- **Flujos de GitHub Actions** (`ci.yml`, `check-moon.yml`): reescritos para el bootstrap sin Rust; **no se han
+  ejecutado en GitHub** desde aquí (sí sus comandos, a mano).
+- `zett run` como intérprete: `titan run` compila a nativo y ejecuta (no hay VM).
+- Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.

@@ -1,6 +1,6 @@
-// GENERADO por selfhost/gen_codegen_tables.py desde crates/titan_codegen/src/lib.rs.
-// No editar a mano. Llamadas que el generador traduce a una instrucción propia
-// de la VM, con la clave "nombre#número_de_argumentos".
+// Tabla de llamadas que el generador traduce a una instrucción propia de la VM, con la clave
+// "nombre#número_de_argumentos". Se generó desde el codegen de Rust (ver la etiqueta ultimo-con-rust);
+// desde que se borró el Rust, este fichero es la fuente y se edita a mano.
 fn cg_dedicated_table() -> map {
     let mut m = std::map::new()
     m = std::map::insert(m, "len#1", "Len")

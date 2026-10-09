@@ -1,6 +1,4 @@
-# Contexto de build de Docker.
-# La imagen compila TITAN desde las fuentes (`Cargo.toml`, `Cargo.lock` y
-# `crates/` sí entran) y copia `projects/moon/`; el resto no hace falta.
+# Contexto de build de Docker: la imagen construye Titan desde selfhost/ y copia projects/moon/.
 .git
 .github
 examples
@@ -9,11 +7,13 @@ stdlib
 scripts
 frontend/node_modules
 frontend/dist
-target
+selfhost/tests
+selfhost/titanc0
+selfhost/titanc1
+selfhost/titanc2
+selfhost/titanc3
+selfhost/titan
 *.log
 CHANGELOG.md
-make-zett-package.sh
-verify_phase34.py
-verify_moon.py
 INFORME_PROYECTOS.md
 MOON_ERRORES.md

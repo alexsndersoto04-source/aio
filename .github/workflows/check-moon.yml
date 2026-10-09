@@ -6,18 +6,13 @@ on:
     branches: [main]
 jobs:
   titan-check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      # Fase 42A: cpal necesita ALSA para compilar en Linux
-      - name: Instalar ALSA (audio Linux)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Compilar el backend Titan (zett check)
-        run: cargo run --quiet -p titan_cli -- check projects/moon/src/main.titan
+      - name: Construir Titan sin Rust (semilla + punto fijo)
+        run: bash selfhost/bootstrap.sh
+      - name: Compilar el backend Titan (titan check)
+        run: selfhost/titan check projects/moon/src/main.titan
   frontend-build:
     runs-on: ubuntu-latest
     defaults:

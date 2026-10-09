@@ -1,5 +1,6 @@
-// GENERADO por selfhost/gen_natives.sh desde `titan natives`. No editar a mano.
-// Una línea por nativa: "nombre Param,Param -> Resultado".
+// Tabla de firmas de las nativas std::* (nombre, parámetros, resultado): la usa el typechecker. Se generó
+// desde el registro de Rust (etiqueta ultimo-con-rust); desde que se borró el Rust es la fuente: una nativa
+// nueva se añade a mano aquí. Una línea por nativa: "nombre Param,Param -> Resultado".
 fn native_table() -> [string] {
     [
         "std::text::length String -> Int",
