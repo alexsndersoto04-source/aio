@@ -19,7 +19,7 @@
 //   active_tasks      tareas registradas (std_task.titan)
 //   optimize_level 2, fast_path_enabled true (iguales que la VM)
 //   benchmark, heap_dump: reales
-// Estado: globals + 3568 → bloque {+0 umbral del GC, +8 próximo id de enrutador HTTP, +16/+24/+32 estado de std::audio sim/player/engine, +64 estado de std::server, +72 estado de std::window (Wayland)}.
+// Estado: globals + 3568 → bloque {+0 umbral del GC, +8 próximo id de enrutador HTTP, +16/+24/+32 estado de std::audio sim/player/engine, +64 estado de std::server, +72 estado de std::window (Wayland), +80 bloque del depurador/DAP}.
 // No hay SpawnQuota: no se puede aplicar un tope de memoria a una tarea.
 
 fn rtm_state() -> int {

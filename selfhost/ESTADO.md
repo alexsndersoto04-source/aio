@@ -1605,7 +1605,7 @@ como alternativa vía `TITAN_CC`).
 - No está probado en un teléfono: el runner ARM64 es un servidor Linux, no Android. Termux usa el mismo núcleo, pero Android puede
   filtrar algunas llamadas al sistema; si algo falla en un dispositivo, hay que mirarlo ahí.
 - En ARM64 hace falta `clang` + `lld` (Termux: `pkg install clang`) para compilar programas; el paquete no lo trae.
-- `titan debug`/DAP: sus ranuras de estado (`globals+3600…3728`) caen en la zona de trabajo ARM64; sin probar en ARM64.
+- `titan debug`/DAP: su estado vivía en `globals+3600…3728`, que en ARM64 es zona de trabajo del runtime. Se movió a un bloque propio (`rtm_state()+80`, `dbg_g()` en `std_debug.titan`). En x86-64: `selfhost/tests/debug/probar.sh` 40/40 con salida idéntica a la versión anterior y `selfhost/tests/dap/probar.py` 20/20. **Sigue sin probarse en ARM64.**
 - `std_audio_engine`, `gui`/ventanas, `fswatch`, Redis/Postgres/MySQL, TLS y `ws_*` no están en el diferencial (necesitan servicios o
   dispositivos externos): se compilan por LLVM, pero su paridad en ARM64 no está medida.
 - macOS y Windows: sin paquete (el runtime usa llamadas al sistema de Linux).

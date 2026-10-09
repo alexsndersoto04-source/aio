@@ -13,9 +13,9 @@
 // salen por una copia del stdout original. Las respuestas, eventos y errores son los de
 // crates/titan_dap/src/lib.rs (la parte común está en dap_core.titan).
 //
-// Ranuras de globales (ver std_debug.titan): +3648 salida pendiente (texto)  +3656 último marco
-// +3664 siguiente seq  +3672 entrada (bytes)  +3688 stdout original  +3696 lectura de la tubería
-// +3704 contador  +3712 activo (1 hasta `terminated`)  +3720 `disconnect` recibido  +3728 EOF.
+// Ranuras de globales (ver std_debug.titan): +48 salida pendiente (texto)  +56 último marco
+// +64 siguiente seq  +72 entrada (bytes)  +88 stdout original  +96 lectura de la tubería
+// +104 contador  +112 activo (1 hasta `terminated`)  +120 `disconnect` recibido  +128 EOF.
 // Prefijo `dap_`.
 
 fn dap_init() {
@@ -38,21 +38,21 @@ fn dap_init() {
     let saved = std::raw::syscall(32, 1, 0, 0, 0, 0, 0)
     std::raw::syscall(33, wr, 1, 0, 0, 0, 0)
     std::raw::syscall(3, wr, 0, 0, 0, 0, 0)
-    std::raw::store(g + 3688, saved)
-    std::raw::store(g + 3696, rd)
-    std::raw::store(g + 3704, 0)
-    std::raw::store(g + 3712, 1)
-    std::raw::store(g + 3720, 0)
-    std::raw::store(g + 3728, 0)
-    std::raw::store(g + 3656, 0)
-    dbg_put(3648, 5, dbg_slice("x", 0, 0))
-    dbg_put(3672, 6, std::encoding::utf8_encode(""))
+    std::raw::store(g + 88, saved)
+    std::raw::store(g + 96, rd)
+    std::raw::store(g + 104, 0)
+    std::raw::store(g + 112, 1)
+    std::raw::store(g + 120, 0)
+    std::raw::store(g + 128, 0)
+    std::raw::store(g + 56, 0)
+    dbg_put(48, 5, dbg_slice("x", 0, 0))
+    dbg_put(72, 6, std::encoding::utf8_encode(""))
 }
 
 // ------------------------------------------------------------ salida
 
 fn dap_write(bytes: any) {
-    let fd = std::raw::load(dbg_g() + 3688)
+    let fd = std::raw::load(dbg_g() + 88)
     if fd > 0 {
         rt_write_all(fd, std::raw::bits(bytes) + 16, rt_slen(bytes))
     }
@@ -60,8 +60,8 @@ fn dap_write(bytes: any) {
 
 fn dap_next_seq() -> int {
     let g = dbg_g()
-    let seq = std::raw::load(g + 3664)
-    std::raw::store(g + 3664, seq + 1)
+    let seq = std::raw::load(g + 64)
+    std::raw::store(g + 64, seq + 1)
     seq
 }
 
@@ -86,8 +86,8 @@ fn dap_fatal(message: any) {
 // Vuelca lo que el programa imprimió: un evento `output` por línea. `last`: también el resto sin salto.
 fn dap_drain_output(last: bool) {
     let g = dbg_g()
-    let rd = std::raw::load(g + 3696)
-    let mut pending = dbg_get(3648, 5)
+    let rd = std::raw::load(g + 96)
+    let mut pending = dbg_get(48, 5)
     if pending == nil {
         pending = ""
     }
@@ -113,9 +113,9 @@ fn dap_drain_output(last: bool) {
     let rest = parts[total - 1]
     if last && rt_slen(rest) > 0 {
         dap_event("output", dc_output_body("stdout", rest))
-        dbg_put(3648, 5, dbg_slice("x", 0, 0))
+        dbg_put(48, 5, dbg_slice("x", 0, 0))
     } else {
-        dbg_put(3648, 5, rest)
+        dbg_put(48, 5, rest)
     }
 }
 
@@ -145,11 +145,11 @@ fn dap_read_more(block: bool) -> int {
     }
     if n <= 0 {
         rt_free_block(buf)
-        std::raw::store(g + 3728, 1)
+        std::raw::store(g + 128, 1)
         return -1
     }
-    let inbuf = dbg_get(3672, 6)
-    dbg_put(3672, 6, std::bytes::concat(inbuf, rt_bytes_from(buf, n)))
+    let inbuf = dbg_get(72, 6)
+    dbg_put(72, 6, std::bytes::concat(inbuf, rt_bytes_from(buf, n)))
     rt_free_block(buf)
     n
 }
@@ -170,8 +170,8 @@ fn dap_decode(bytes: any) -> any {
 // [2, error], [3] fin del flujo. Mismas reglas que `read_message` de titan_dap.
 fn dap_parse() -> any {
     let g = dbg_g()
-    let eof = std::raw::load(g + 3728) != 0
-    let inbuf = dbg_get(3672, 6)
+    let eof = std::raw::load(g + 128) != 0
+    let inbuf = dbg_get(72, 6)
     let n = std::bytes::length(inbuf)
     let p = std::raw::bits(inbuf) + 16
     let mut pos = 0
@@ -231,7 +231,7 @@ fn dap_parse() -> any {
         return [0]
     }
     let body = std::bytes::slice(inbuf, pos, pos + length)
-    dbg_put(3672, 6, std::bytes::slice(inbuf, pos + length, n))
+    dbg_put(72, 6, std::bytes::slice(inbuf, pos + length, n))
     let text = dap_decode(body)
     if text == nil {
         return [2, "invalid DAP JSON: invalid UTF-8 in message body"]
@@ -369,17 +369,17 @@ fn dap_items(values: any) -> any {
 // Cambia el modo de ejecución como `command_mode` de titan_vm (la profundidad es la actual).
 fn dap_apply(command: string) {
     let g = dbg_g()
-    let depth = std::raw::load(g + 16) - 1
+    let depth = std::raw::load(std::raw::globals() + 16) - 1
     if command == "continue" {
-        std::raw::store(g + 3616, 0)
+        std::raw::store(g + 16, 0)
     } else if command == "next" {
-        std::raw::store(g + 3616, 2)
-        std::raw::store(g + 3624, depth)
+        std::raw::store(g + 16, 2)
+        std::raw::store(g + 24, depth)
     } else if command == "stepOut" {
-        std::raw::store(g + 3616, 3)
-        std::raw::store(g + 3624, depth)
+        std::raw::store(g + 16, 3)
+        std::raw::store(g + 24, depth)
     } else {
-        std::raw::store(g + 3616, 1)
+        std::raw::store(g + 16, 1)
     }
 }
 
@@ -431,7 +431,7 @@ fn dap_handle(req: any) -> int {
         request_seq = s
     }
     let args = dc_get(req, "arguments")
-    let active = std::raw::load(g + 3712) != 0
+    let active = std::raw::load(g + 112) != 0
     if command == "initialize" {
         dap_ok(request_seq, command, dc_capabilities())
         dap_event("initialized", dc_obj())
@@ -462,7 +462,7 @@ fn dap_handle(req: any) -> int {
         return 0
     }
     if command == "stackTrace" {
-        let frame = dbg_get(3656, 7)
+        let frame = dbg_get(56, 7)
         dap_ok(request_seq, command, dc_stack_trace(frame))
         return 0
     }
@@ -476,7 +476,7 @@ fn dap_handle(req: any) -> int {
             dap_fail(request_seq, command, "variablesReference is required")
             return 0
         }
-        let frame = dbg_get(3656, 7)
+        let frame = dbg_get(56, 7)
         let mut items = []
         if frame != nil {
             if reference == 100 {
@@ -510,7 +510,7 @@ fn dap_handle(req: any) -> int {
     if command == "terminate" || command == "disconnect" {
         dap_ok(request_seq, command, dc_obj())
         if command == "disconnect" {
-            std::raw::store(g + 3720, 1)
+            std::raw::store(g + 120, 1)
         }
         if active {
             dbg_terminated("execution terminated by debugger")
@@ -529,8 +529,8 @@ fn dap_handle(req: any) -> int {
 // Antes de cada instrucción: atiende lo que haya llegado, sin esperar.
 fn dap_poll(fid: int, ip: int, bp: int, sp: int) {
     let g = dbg_g()
-    let c = std::raw::load(g + 3704) + 1
-    std::raw::store(g + 3704, c)
+    let c = std::raw::load(g + 104) + 1
+    std::raw::store(g + 104, c)
     if (c & 31) != 0 {
         return
     }
@@ -550,7 +550,7 @@ fn dap_poll(fid: int, ip: int, bp: int, sp: int) {
 
 // Parada: emite `stopped` y atiende peticiones hasta que una reanude la ejecución.
 fn dap_stop(frame: any) {
-    dbg_put(3656, 7, frame)
+    dbg_put(56, 7, frame)
     dap_drain_output(false)
     dap_event("stopped", dc_stopped_body(frame[4]))
     loop {
@@ -573,19 +573,19 @@ fn dap_stop(frame: any) {
 // El programa terminó (error = nil) o falló.
 fn dap_terminated(error: any) {
     let g = dbg_g()
-    std::raw::store(g + 3712, 0)
+    std::raw::store(g + 112, 0)
     dap_drain_output(true)
     if error != nil {
         dap_event("output", dc_output_body("stderr", rt_concat(error, "\n")))
     }
     dap_event("terminated", dc_obj())
-    let old = std::raw::load(g + 3656)
+    let old = std::raw::load(g + 56)
     if old != 0 {
-        std::raw::store(g + 3656, 0)
+        std::raw::store(g + 56, 0)
         std::raw::release(7, old)
     }
     loop {
-        if std::raw::load(g + 3720) != 0 {
+        if std::raw::load(g + 120) != 0 {
             dbg_exit(0)
         }
         let r = dap_next(true)

@@ -16,19 +16,28 @@
 //   F|<id>|<nombre>|<locales>|<archivo>   una función; la línea siguiente es
 //   L|<l:c>,<l:c>,,...         posición de cada instrucción (vacío = sin posición)
 //
-// Ranuras de las variables globales (a partir de +3600):
-//   +3600 funciones [nombre, locales, archivo|nil, líneas, columnas]   (array)
-//   +3608 puntos de interrupción [tipo, a, b]                          (array)
-//   +3616 modo: 0 seguir, 1 paso adentro, 2 paso sobre, 3 paso afuera
-//   +3624 profundidad del modo        +3632 activo (0/1)    +3640 clase (0 cli, 1 dap)
-//   +3648 estado DAP (mapa)           +3656 último marco detenido (mapa) o 0
-//   +3664 siguiente `seq` DAP         +3672 buffer de entrada (bytes)     +3680 programa terminado (0/1)
+// Ranuras del bloque del depurador (dbg_g(), desplazamientos desde 0):
+//   +0 funciones [nombre, locales, archivo|nil, líneas, columnas]   (array)
+//   +8 puntos de interrupción [tipo, a, b]                          (array)
+//   +16 modo: 0 seguir, 1 paso adentro, 2 paso sobre, 3 paso afuera
+//   +24 profundidad del modo        +32 activo (0/1)    +40 clase (0 cli, 1 dap)
+//   +48 estado DAP (mapa)           +56 último marco detenido (mapa) o 0
+//   +64 siguiente `seq` DAP         +72 buffer de entrada (bytes)     +80 programa terminado (0/1)
 // Prefijo `dbg_` / `rt_dbg_`.
 
 // ------------------------------------------------------------ utilidades
 
+// El estado del depurador vive en un bloque propio (campo +80 de rtm_state()), no en las globales de
+// 4096 bytes: en ARM64 el final de esa zona (+3584..) es zona de trabajo del runtime. Los desplazamientos
+// de abajo son relativos a ese bloque (0…136).
 fn dbg_g() -> int {
-    std::raw::globals()
+    let s = rtm_state()
+    let mut b = std::raw::load(s + 80)
+    if b == 0 {
+        b = rt_alloc_zero(192)
+        std::raw::store(s + 80, b)
+    }
+    b
 }
 
 fn dbg_get(slot: int, tag: int) -> any {
@@ -149,10 +158,10 @@ fn dbg_parse_locs(text: any) -> any {
 
 fn rt_dbg_init(table: any) {
     let g = dbg_g()
-    if std::raw::load(g + 3632) != 0 {
+    if std::raw::load(g + 32) != 0 {
         return
     }
-    std::raw::store(g + 3632, 1)
+    std::raw::store(g + 32, 1)
     let lines = dbg_split(table, 10)
     let mut funcs = []
     let mut bps = []
@@ -190,13 +199,13 @@ fn rt_dbg_init(table: any) {
             funcs = std::array::push(funcs, [dbg_unescape(parts[2]), dbg_int(parts[3]), file, locs[0], locs[1]])
         }
     }
-    dbg_put(3600, 7, funcs)
-    dbg_put(3608, 7, bps)
-    std::raw::store(g + 3640, kind)
-    std::raw::store(g + 3664, seq)
-    std::raw::store(g + 3616, 0)
-    std::raw::store(g + 3624, 0)
-    std::raw::store(g + 3680, 0)
+    dbg_put(0, 7, funcs)
+    dbg_put(8, 7, bps)
+    std::raw::store(g + 40, kind)
+    std::raw::store(g + 64, seq)
+    std::raw::store(g + 16, 0)
+    std::raw::store(g + 24, 0)
+    std::raw::store(g + 80, 0)
     if kind == 1 {
         dap_init()
     }
@@ -210,7 +219,7 @@ fn rt_slice_byte(s: any, i: int) -> int {
 
 // Lo que la VM llamaría DebugFrame: [fid, nombre, archivo|nil, ip, profundidad, línea, columna, locales, pila].
 fn dbg_frame(fid: int, ip: int, bp: int, sp: int, depth: int) -> any {
-    let funcs = dbg_get(3600, 7)
+    let funcs = dbg_get(0, 7)
     let f = funcs[fid]
     let nlocals = f[1]
     let mut locals = []
@@ -241,12 +250,12 @@ fn dbg_frame(fid: int, ip: int, bp: int, sp: int, depth: int) -> any {
 }
 
 fn dbg_bp_hit(fid: int, ip: int) -> bool {
-    let bps = dbg_get(3608, 7)
+    let bps = dbg_get(8, 7)
     let n = rt_seq_len(bps)
     if n == 0 {
         return false
     }
-    let funcs = dbg_get(3600, 7)
+    let funcs = dbg_get(0, 7)
     let f = funcs[fid]
     let mut i = 0
     while i < n {
@@ -603,7 +612,7 @@ fn dbg_exit(code: int) {
 
 // El programa terminó (error = nil) o falló. Como `DebugEvent::Terminated`.
 fn dbg_terminated(error: any) {
-    if std::raw::load(dbg_g() + 3640) == 1 {
+    if std::raw::load(dbg_g() + 40) == 1 {
         dap_terminated(error)
         return
     }
@@ -620,7 +629,7 @@ fn rt_dbg_finish(v: any) {
 }
 
 fn rt_dbg_fatal(message: any) {
-    if std::raw::load(dbg_g() + 24) != 0 {
+    if std::raw::load(std::raw::globals() + 24) != 0 {
         std::raw::throw(message)
     }
     dbg_terminated(rt_flatten(message))
@@ -670,21 +679,21 @@ fn dbg_cli_stop(frame: any) {
         }
         let cmd = rt_trim(line)
         if rt_str_eq(cmd, "c") || rt_str_eq(cmd, "continue") {
-            std::raw::store(g + 3616, 0)
+            std::raw::store(g + 16, 0)
             return
         }
         if rt_str_eq(cmd, "s") || rt_str_eq(cmd, "step") {
-            std::raw::store(g + 3616, 1)
+            std::raw::store(g + 16, 1)
             return
         }
         if rt_str_eq(cmd, "n") || rt_str_eq(cmd, "next") {
-            std::raw::store(g + 3616, 2)
-            std::raw::store(g + 3624, frame[4])
+            std::raw::store(g + 16, 2)
+            std::raw::store(g + 24, frame[4])
             return
         }
         if rt_str_eq(cmd, "o") || rt_str_eq(cmd, "out") {
-            std::raw::store(g + 3616, 3)
-            std::raw::store(g + 3624, frame[4])
+            std::raw::store(g + 16, 3)
+            std::raw::store(g + 24, frame[4])
             return
         }
         if rt_str_eq(cmd, "q") || rt_str_eq(cmd, "quit") {
@@ -700,19 +709,19 @@ fn dbg_cli_stop(frame: any) {
 
 fn rt_dbg_hook(fid: int, ip: int, bp: int, sp: int, table: any) {
     let g = dbg_g()
-    let kind = std::raw::load(g + 3640)
+    let kind = std::raw::load(g + 40)
     if kind == 1 {
         dap_poll(fid, ip, bp, sp)
     }
-    let mode = std::raw::load(g + 3616)
-    let depth = std::raw::load(g + 16) - 1
+    let mode = std::raw::load(g + 16)
+    let depth = std::raw::load(std::raw::globals() + 16) - 1
     let mut stop = false
     if mode == 1 {
         stop = true
     } else if mode == 2 {
-        stop = depth <= std::raw::load(g + 3624)
+        stop = depth <= std::raw::load(g + 24)
     } else if mode == 3 {
-        stop = depth < std::raw::load(g + 3624)
+        stop = depth < std::raw::load(g + 24)
     } else {
         stop = dbg_bp_hit(fid, ip)
     }
