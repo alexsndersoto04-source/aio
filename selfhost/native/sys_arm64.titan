@@ -19,7 +19,8 @@
 // inventa un resultado.
 // Solo se compila para ARM64 (en x86-64 nadie la llama). Prefijo `sa_`.
 
-// Zona de trabajo propia en las globales (512 bytes libres al final).
+// Zona de trabajo propia en las globales (512 bytes libres al final). Ningún otro módulo puede guardar
+// estado en globals + 3584..4095: ppoll/epoll escriben aquí (el estado de std::server estuvo ahí y se corrompía).
 fn sa_scratch() -> int {
     std::raw::globals() + 3584
 }

@@ -19,14 +19,14 @@
 //   active_tasks      tareas registradas (std_task.titan)
 //   optimize_level 2, fast_path_enabled true (iguales que la VM)
 //   benchmark, heap_dump: reales
-// Estado: globals + 3568 → bloque {+0 umbral del GC, +8 próximo id de enrutador HTTP, +16/+24/+32 estado de std::audio sim/player/engine}.
+// Estado: globals + 3568 → bloque {+0 umbral del GC, +8 próximo id de enrutador HTTP, +16/+24/+32 estado de std::audio sim/player/engine, +64 estado de std::server, +72 estado de std::window (Wayland)}.
 // No hay SpawnQuota: no se puede aplicar un tope de memoria a una tarea.
 
 fn rtm_state() -> int {
     let g = std::raw::globals() + 3568
     let mut s = std::raw::load(g)
     if s == 0 {
-        s = rt_alloc_zero(64)
+        s = rt_alloc_zero(128)
         std::raw::store(s, 1048576)
         std::raw::store(s + 8, 1)
         std::raw::store(g, s)

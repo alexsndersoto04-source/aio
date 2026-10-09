@@ -54,13 +54,15 @@ const SV_POLL_MS: int = 5
 //   +64    servidores: 8 × {id, fd}
 //   +256   peticiones: 256 punteros a entrada (0 = libre)
 //   +2304  WebSockets: 64 punteros a entrada (0 = libre)
-const SV_OFF: int = 3592
+// El puntero al estado vive en rtm_state() + 64 (ver std_runtime.titan). Antes estaba en globals + 3592,
+// que en ARM64 es la zona de trabajo de rt_sys_arm64 (sa_scratch): ppoll escribía ahí el tiempo restante.
+const SV_OFF: int = 64
 const SV_SERV_BASE: int = 64
 const SV_REQ_BASE: int = 256
 const SV_WS_BASE: int = 2304
 
 fn sv_st() -> int {
-    let g = std::raw::globals() + SV_OFF
+    let g = rtm_state() + SV_OFF
     let mut s = std::raw::load(g)
     if s == 0 {
         s = rt_alloc_zero(4096)

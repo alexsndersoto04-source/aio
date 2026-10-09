@@ -65,7 +65,8 @@ const WN_EVENT_BUFFER_BYTES: int = 8192
 
 // The six logical std::window calls mirror window.rs: they manage real
 // process-local handles and queued resize events, without requiring a display.
-const WL_STATE_SLOT: int = 3552
+// Puntero al estado en rtm_state() + 72 (globals + 3552 es de las tareas, ver std_task.titan).
+const WL_STATE_SLOT: int = 72
 const WL_MAX_HANDLES: int = 64
 const WL_MAX_EVENTS: int = 1024
 const WL_MAX_TITLE_BYTES: int = 65536
@@ -1303,7 +1304,7 @@ fn x11_close_entry(entry: int) {
 }
 
 fn wl_state() -> int {
-    let slot = std::raw::globals() + WL_STATE_SLOT
+    let slot = rtm_state() + WL_STATE_SLOT
     let state = std::raw::load(slot)
     if state != 0 { return state }
     let created = rt_alloc_zero(24)

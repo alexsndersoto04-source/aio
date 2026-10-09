@@ -14,7 +14,7 @@ cd "$ROOT"
 modo="${1:-}"
 
 muestra() {
-  ls selfhost/tests/native/*.titan | grep -v "redis\|postgres\|mysql\|audio_player\|gui_std\|sqlite_conc\|window_\|clipboard\|http_serve\|servidor_\|tcp_\|ws_\|tls_\|wifi\|termux\|fswatch" | awk 'NR%4==0 || /tarea|canal|coleccion/'
+  ls selfhost/tests/native/*.titan | grep -v "redis\|postgres\|mysql\|audio_player\|gui_std\|sqlite_conc\|window_x11\|clipboard\|http_serve\|servidor_\|tcp_\|ws_\|tls_\|wifi\|termux\|fswatch" | awk 'NR%4==0 || /tarea|canal|coleccion|window_state|server_std/'
 }
 
 case "$modo" in
