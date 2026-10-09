@@ -82,12 +82,13 @@ jobs:
       - name: Diagnóstico procesos y servidor
         continue-on-error: true
         run: |
-          curl --version | head -1 || true
+          sudo apt-get install -y --no-install-recommends strace > /dev/null
+          selfhost/titan-arm compile selfhost/tests/diag/arm_proc.titan -o /tmp/arm_proc
           rc=0
-          timeout 300 selfhost/titan-arm run selfhost/tests/diag/arm_proc.titan > d.out 2> d.err || rc=$?
-          { echo "código $rc"; echo "--- stdout"; head -c 1500 d.out; echo "--- stderr"; head -c 1500 d.err; } > d.txt
+          timeout 120 strace -f -o /tmp/trace.txt /tmp/arm_proc > d.out 2> d.err || rc=$?
+          { echo "código $rc"; echo "--- stdout"; head -c 800 d.out; echo "--- stderr"; head -c 500 d.err; echo "--- strace (final)"; tail -n 45 /tmp/trace.txt | cut -c1-200; } > d.txt
           cat d.txt
-          msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' d.txt)
+          msg=$(head -c 9000 d.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
           echo "::notice title=diagnostico procesos y servidor::$msg"
       - name: Diferencial contra x86-64
         run: |
