@@ -1002,6 +1002,26 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
     if k == "ArraySortBy" {
         return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_sort_by", 2), next)
     }
+    // map/filter/fold/find/any/all como llamadas (`map(xs, f)`): las mismas rutinas del runtime que usa
+    // `xs.map(f)`; la pila trae [array, f] ([array, inicial, f] en fold).
+    if k == "ArrayMap" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_map", 2), next)
+    }
+    if k == "ArrayFilter" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_filter", 2), next)
+    }
+    if k == "ArrayFold" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_fold", 3), next)
+    }
+    if k == "ArrayFind" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_find", 2), next)
+    }
+    if k == "ArrayAny" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_any", 2), next)
+    }
+    if k == "ArrayAll" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_all", 2), next)
+    }
     if k == "Index" {
         return lv_index(b, ctx, id, d, next)
     }
@@ -1212,8 +1232,11 @@ fn lv_effect(op: Op) -> (int, int) {
     if k == "Dup" {
         return (1, 2)
     }
-    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Index" || k == "ArraySortBy" {
+    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Index" || k == "ArraySortBy" || k == "ArrayMap" || k == "ArrayFilter" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" {
         return (2, 1)
+    }
+    if k == "ArrayFold" {
+        return (3, 1)
     }
     if k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Try" {
         return (1, 1)
