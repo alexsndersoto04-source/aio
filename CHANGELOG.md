@@ -5,6 +5,20 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar
+
+- **Lenguaje:** la interpolación de textos acepta cualquier expresión (`"{a / 7}"`, `"{v[0]}"`, `"{p.x}"`,
+  `"{f(a + 1)}"`, `"{if c { 1 } else { 0 }}"`). Las llaves que no son una expresión (JSON, CSS, `{2,3}`, `${VAR}`)
+  siguen siendo texto, y las llaves deben pegarse a la expresión (`{ a }` o un bloque de código dentro del texto no se
+  tocan). Comparado con el compilador anterior sobre una muestra de 131 programas (incluidos el propio compilador y Moon):
+  mismo bytecode; no se comparó el repositorio entero. Documentado en `docs/SPEC.md` (sección 9) y
+  `docs/TITAN_SYNTAX.md`; prueba en `selfhost/tests/lenguaje/interpolacion.titan`.
+- **Zett:** el registro por defecto era `https://registry.titan-lang.org`, que no existe. Ahora es un registro de ficheros
+  dentro del repositorio (`registro/`, servido por GitHub; el índice admite rutas relativas). Se añade versiones con
+  `selfhost/registro_agregar.titan`. Pruebas: `selfhost/tests/pkg/registro/estatico.sh` (servidor HTTPS local) y un paso
+  del CI que lee `registro/` de verdad desde GitHub. Primer paquete: `hola-zett` (ejemplo). Hasta que `registro/` llegue a
+  `main`, la dirección por defecto no responde.
+
 ## v1.2.0 (2026-10) — Zett, el gestor de paquetes; arreglo del arranque por el PATH
 
 - **Zett:** `zett` es ahora el gestor de paquetes de Titan (`add`, `fetch`/`install`, `update`, `keygen`, `pack`, `publish`,

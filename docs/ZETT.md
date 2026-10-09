@@ -22,11 +22,12 @@ Termux (`selfhost/instalar-termux.sh`) lo deja en el `PATH`.
 | `zett update` | Vuelve a resolver y actualiza a las versiones más nuevas que permite el requisito |
 | `zett keygen <ruta>` | Genera una clave privada Ed25519 para firmar paquetes |
 | `zett pack --key K --output O` | Crea un paquete `.tpkg` determinista y firmado |
-| `zett publish --key K` | Empaqueta, firma y sube el paquete al registro |
+| `zett publish --key K` | Empaqueta, firma y sube el paquete a un registro con servidor (POST con `TITAN_REGISTRY_TOKEN`). Para el registro público de ficheros, ver más abajo |
 | `zett version` | Muestra la versión |
 
 Opciones comunes: `--project <carpeta>` (por defecto, la actual) y `--registry <URL>`
-(por defecto `https://registry.titan-lang.org`; debe ser HTTPS).
+(por defecto `https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro`, el
+registro público de este repositorio; debe ser HTTPS).
 
 ## Usar una dependencia
 
@@ -75,21 +76,56 @@ zett publish --key ~/.titan/mi-clave
   imprime y no puede estar dentro del proyecto.
 - `publish` lee la credencial solo de `TITAN_REGISTRY_TOKEN`.
 
+
+## El registro público (ficheros en GitHub)
+
+No hay un servidor aparte. El registro es la carpeta [`registro/`](../registro/) de este
+repositorio y GitHub la sirve como ficheros:
+
+```
+registro/v1/packages/<nombre>           índice JSON del paquete (lo que lee `zett fetch`)
+registro/archivos/<nombre>-<versión>.tpkg   el paquete firmado
+```
+
+Es como una biblioteca sin bibliotecario: cualquiera puede leer; para añadir un libro se
+propone un cambio al repositorio (pull request) y se revisa.
+
+**Publicar una versión** (desde la raíz del repositorio):
+
+```bash
+zett keygen ~/.titan/mi-clave                        # una sola vez; guarda la clave
+titan run selfhost/registro_agregar.titan ruta/al/paquete ~/.titan/mi-clave registro
+git add registro && git commit -m "registro: mi-paquete 0.1.0"   # y abre un pull request
+```
+
+El script empaqueta, firma con Ed25519 y escribe el archivo y el índice. Reglas: una
+versión publicada no se reescribe, y un paquete existente solo se amplía con la misma clave.
+El cliente comprueba el SHA-256 y la firma de cada archivo antes de instalarlo.
+
+**Usar otro registro de ficheros** (por ejemplo, tu propia rama o copia):
+
+```bash
+zett fetch --registry https://raw.githubusercontent.com/USUARIO/REPO/RAMA/registro
+```
+
 ## Qué está probado y qué no
 
 Probado de verdad (pruebas del repositorio, `selfhost/tests/pkg/`):
 - Resolución de versiones y SemVer, extracción segura, hashes y firmas.
 - `add`, `fetch`, `update` y `publish` contra un registro HTTPS **de prueba** que corre en
   la propia máquina (`selfhost/tests/pkg/registro/probar.sh`).
+- El registro estático (publicar con `registro_agregar.titan`, servir ficheros por HTTPS,
+  `fetch` con firma verificada, rechazo de un archivo alterado):
+  `selfhost/tests/pkg/registro/estatico.sh`.
 - `keygen` y `pack` (incluido que dos empaquetados salen idénticos) con el ejecutable
   `zett` del paquete.
 
 **Lo que no está probado ni existe en este repositorio:**
-- **No hay un servidor de registro dentro de este repositorio.** El cliente está
-  completo, pero necesita un registro que hable su protocolo (descrito en
-  [`PACKAGE_REGISTRY.md`](PACKAGE_REGISTRY.md)). La dirección por defecto,
-  `registry.titan-lang.org`, no se ha podido comprobar que exista; si no responde, indica
-  otro con `--registry`.
+- **No hay un servidor de registro con cuentas ni tokens.** El registro público es el
+  directorio `registro/` del repositorio, servido por GitHub como ficheros (ver abajo).
+  Mientras `registro/` no esté en la rama `main`, la dirección por defecto no responde;
+  hasta entonces usa `--registry` con la dirección de tu rama. El comando `zett publish`
+  (POST con token) solo sirve para un registro con servidor propio, no para este.
 - La rotación de claves y la política de propiedad de los paquetes dependen del
   registro, no del cliente.
 - En ARM64 (Termux) el gestor usa el mismo código que en x86-64, pero no se ha probado

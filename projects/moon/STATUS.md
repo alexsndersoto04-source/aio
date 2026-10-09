@@ -1,5 +1,9 @@
 # Moon — Estado actual del proyecto
 
+> **Informe histórico (septiembre de 2026).** Se escribió cuando el compilador era el prototipo en Rust; los nombres
+> `titan_stdlib`, `titan_vm`, etc. de este informe son los de ese prototipo. Hoy el compilador y el runtime están en
+> `selfhost/` (ver `selfhost/ESTADO.md`) y `titan check projects/moon/src/main.titan` es la comprobación vigente.
+
 > **Documento histórico.** Se escribió cuando Titan era un prototipo en Rust (herramientas `zett`, `cargo`, VM). Se conserva como registro; lo vigente y verificado está en [`selfhost/ESTADO.md`](../../selfhost/ESTADO.md).
 
 **Fecha:** 2026-08-26
@@ -41,7 +45,7 @@ Moon es ahora una **red social completa y real** (CERO SIMULACIÓN), escrita de 
 
 ### Verificaciones hechas (contra el runtime real)
 
-- ✅ **84 funciones `std::*`** usadas existen en `titan_stdlib/src/native.rs` / `titan_vm` (`std::postgres`, `std::server`, `std::image`, `std::email`, `std::jwt`, `std::password`, `std::router`, `std::metrics`, etc.) — cero inexistentes.
+- ✅ **84 funciones `std::*`** usadas existen en `selfhost/natives.titan` (`std::postgres`, `std::server`, `std::image`, `std::email`, `std::jwt`, `std::password`, `std::router`, `std::metrics`, etc.) — cero inexistentes.
 - ✅ **Aridad** de todas las funciones propias (script de parseo): OK.
 - ✅ **Firmas std::** verificadas una a una: `send_simple(host,port,user,pass,from,to,subject,body)`, `verify_hs256(token,secret,aud,iss)`, `respond_full(req,status,ct,headers,bytes)`, `parse_multipart(ct,body,max_parts,max_part)`, `pool(url,max,tls)`, `thumbnail(handle,w,h)`, `encode(handle,fmt)`…
 - ✅ **Tipos del driver Postgres**: solo BOOL/INT/FLOAT/TEXT/BYTEA/JSON/NULL; todas las columnas de fecha se castean con `::text` al leer (y se comparan desde SQL). Corregido `revoked_at` que faltaba.

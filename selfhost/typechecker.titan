@@ -2631,7 +2631,7 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
         return (mkt("String"), e)
     }
     if k == "template" {
-        return check_string_template(e, x.text)
+        return check_string_template(e, x)
     }
     if k == "char" {
         return (mkt("Char"), e)
@@ -3815,96 +3815,93 @@ fn is_global_constant_binding(e: Env, name: string) -> bool {
     false
 }
 
-fn check_string_template(e0: Env, template: string) -> (Ty, Env) {
+// Un grupo `{...}` de la gramática antigua: un local, una constante o una llamada `f(a, 1)`.
+// Devuelve (entorno, ¿diverge?).
+fn check_old_group(e0: Env, source: string) -> (Env, bool) {
     let mut e = e0
-    let chars = std::text::chars(template)
-    let n = len(chars)
-    let mut pos = 0
     let mut diverges = false
-    while true {
-        let mut open = -1
-        let mut i = pos
-        while i < n {
-            if chars[i] == '{' {
-                open = i
-                break
-            }
-            i += 1
-        }
-        if open < 0 {
-            break
-        }
-        let mut close = -1
-        i = open + 1
-        while i < n {
-            if chars[i] == '}' {
-                close = i
-                break
-            }
-            i += 1
-        }
-        if close < 0 {
-            e = err(e, m_invalid_interpolation(template))
-            break
-        }
-        let source = std::text::trim(std::text::substring(template, open + 1, close))
-        let open_call = find_sub(source, "(")
-        if open_call >= 0 {
-            if !std::text::ends_with(source, ")") {
+    let open_call = find_sub(source, "(")
+    if open_call >= 0 {
+        if !std::text::ends_with(source, ")") {
+            e = err(e, m_invalid_interpolation(source))
+        } else {
+            let name = std::text::trim(std::text::substring(source, 0, open_call))
+            let arguments = std::text::substring(source, open_call + 1, len(source) - 1)
+            if !is_template_path(name) {
                 e = err(e, m_invalid_interpolation(source))
             } else {
-                let name = std::text::trim(std::text::substring(source, 0, open_call))
-                let arguments = std::text::substring(source, open_call + 1, len(source) - 1)
-                if !is_template_path(name) {
-                    e = err(e, m_invalid_interpolation(source))
-                } else {
-                    let mut args = []
-                    let mut valid = true
-                    for raw in split_on(arguments, ',') {
-                        let argument = std::text::trim(raw)
-                        if argument == "" {
-                            continue
-                        }
-                        let (ok, value) = parse_i64_strict(argument)
-                        if ok {
-                            args = std::array::push(args, synth_node("int", "", value))
-                            continue
-                        }
-                        if is_template_path(argument) && is_local_binding(e, argument) {
-                            args = std::array::push(args, synth_node("ident", argument, nil))
-                            continue
-                        }
-                        valid = false
-                        e = err(e, m_invalid_interpolation(argument))
+                let mut args = []
+                let mut valid = true
+                for raw in split_on(arguments, ',') {
+                    let argument = std::text::trim(raw)
+                    if argument == "" {
+                        continue
                     }
-                    if valid {
-                        let exists = is_local_binding(e, name) || std::map::contains(e.cdecls, name) || std::map::contains(e.functions, name) || std::map::contains(e.variants, name) || std::map::contains(e.natives, name)
-                        if exists {
-                            let (result, e2) = check_call(e, synth_node("ident", name, nil), args)
-                            e = e2
-                            if resolve_alias(e, result).k == "Never" {
-                                diverges = true
-                            }
-                        } else {
-                            e = err(e, m_invalid_interpolation(source))
+                    let (ok, value) = parse_i64_strict(argument)
+                    if ok {
+                        args = std::array::push(args, synth_node("int", "", value))
+                        continue
+                    }
+                    if is_template_path(argument) && is_local_binding(e, argument) {
+                        args = std::array::push(args, synth_node("ident", argument, nil))
+                        continue
+                    }
+                    valid = false
+                    e = err(e, m_invalid_interpolation(argument))
+                }
+                if valid {
+                    let exists = is_local_binding(e, name) || std::map::contains(e.cdecls, name) || std::map::contains(e.functions, name) || std::map::contains(e.variants, name) || std::map::contains(e.natives, name)
+                    if exists {
+                        let (result, e2) = check_call(e, synth_node("ident", name, nil), args)
+                        e = e2
+                        if resolve_alias(e, result).k == "Never" {
+                            diverges = true
                         }
+                    } else {
+                        e = err(e, m_invalid_interpolation(source))
                     }
                 }
             }
-        } else if is_template_path(source) {
-            if is_local_binding(e, source) || std::map::contains(e.cdecls, source) {
-                let (result, e2) = check_expr(e, synth_node("ident", source, nil))
-                e = e2
-                if resolve_alias(e, result).k == "Never" {
-                    diverges = true
-                }
-            } else {
-                e = err(e, m_invalid_interpolation(source))
+        }
+    } else if is_template_path(source) {
+        if is_local_binding(e, source) || std::map::contains(e.cdecls, source) {
+            let (result, e2) = check_expr(e, synth_node("ident", source, nil))
+            e = e2
+            if resolve_alias(e, result).k == "Never" {
+                diverges = true
             }
         } else {
             e = err(e, m_invalid_interpolation(source))
         }
-        pos = close + 1
+    } else {
+        e = err(e, m_invalid_interpolation(source))
+    }
+    return (e, diverges)
+}
+
+// Texto con `{...}`: los segmentos los dejó listos el parser (ver template_segments en parser.titan).
+fn check_string_template(e0: Env, node) -> (Ty, Env) {
+    let mut e = e0
+    let mut diverges = false
+    for seg in node.list {
+        let k = seg.kind
+        if k == "told" {
+            let (e2, d) = check_old_group(e, seg.text)
+            e = e2
+            if d {
+                diverges = true
+            }
+        } else if k == "tnew" {
+            let (result, e2) = check_expr(e, seg.a)
+            e = e2
+            if resolve_alias(e, result).k == "Never" {
+                diverges = true
+            }
+        } else if k == "tbad" {
+            e = err(e, m_invalid_interpolation(seg.text))
+        } else if k == "topen" {
+            e = err(e, m_invalid_interpolation(node.text))
+        }
     }
     if diverges {
         return (mkt("Never"), e)

@@ -159,7 +159,7 @@ Si tienes Rust instalado:
 
 ```sh
 # desde el root del repo
-cargo run -q -p titan_cli -- check projects/moon/src/main.titan
+titan check projects/moon/src/main.titan
 ```
 
 `CHECK OK` = el backend parsea, tipa y genera bytecode sin errores.

@@ -569,16 +569,15 @@ match</code>, and the corresponding codegen errors <code>or-pattern bytecode</co
 <h2 id="9-strings-and-interpolation">9. Strings and interpolation</h2>
 <pre><code class="language-titan">print(<span class="s">&quot;fib({i}) = {fib(i)}&quot;</span>)
 </code></pre>
-<p>Interpolation uses a <strong>deliberately restricted grammar</strong>, unchanged in 1.0:</p>
-<ul>
-<li>a local binding, or</li>
-<li>a declared global constant, or</li>
-<li>a call whose callee is a name and whose arguments are local identifiers or integer literals.</li>
-</ul>
-<p>Arbitrary expressions, field access, indexing, and arithmetic inside <code>{ ... }</code> are rejected with
-<code>invalid string interpolation expression '...'</code>. Call resolution inside a template follows
-ordinary rules, including the priority of a local closure or callable constant over a static
-function or native of the same name.</p>
+<p>Inside <code>{ ... }</code> any Titan <strong>expression</strong> can be written: locals, constants, arithmetic, indexing, field
+access, calls with expression arguments, <code>if</code>, closures. A call whose callee is a plain name and whose
+arguments are local identifiers or integer literals (<code>{fib(i)}</code>) keeps its original resolution rules,
+including the priority of a local closure or callable constant over a static function or native of the
+same name; every other group is parsed and checked as an ordinary expression.</p>
+<p>A <code>{ ... }</code> whose content is not a whole expression stays literal text when the string has no valid group
+(JSON, CSS, <code>{2,3}</code>, <code>{}</code>); a lone number or string (<code>{3}</code>) and a group right after <code>$</code> (<code>${VAR-x}</code>) also stay
+literal. In a string that does interpolate, a group that is not an expression is reported as
+<code>invalid string interpolation expression '...'</code>. A double quote inside the braces must be escaped (<code>\"</code>).</p>
 <p>String concatenation with <code>+</code> accepts a string on either side and stringifies the other operand.</p>
 <hr />
 <h2 id="10-modules-imports-and-projects">10. Modules, imports, and projects</h2>
@@ -678,16 +677,16 @@ Each also exists in call form (<code>map(xs, f)</code>).</p>
   <code>std::runtime</code> (12).</li>
 </ul>
 <h3 id="132-the-native-registry">13.2 The native registry</h3>
-<p><code>crates/titan_stdlib/src/native.rs</code> declares <strong>758 unique native functions across 71 <code>std::*</code>
-namespaces</strong>, each with a fixed parameter list, a result type, and an optional required
+<p><code>selfhost/natives.titan</code> declares <strong>812 unique native functions across 73 <code>std::*</code>
+namespaces</strong> (their bodies are Titan code in <code>selfhost/native/</code>), each with a fixed parameter list, a result type, and an optional required
 capability. The compiler resolves qualified names through this registry and checks arity and
 parameter types <strong>before</strong> code generation. A native failure becomes a runtime error that names
 the function.</p>
 <p>Values crossing the native boundary are ints, floats, bools, chars, strings, bytes, arrays,
 tuples, maps, structs, and enums.</p>
-<p>The registry is verifiable without compiling Rust: <code>python3 verify_phase34.py</code> re-derives the
-table, checks for duplicate names, and validates every <code>std::*</code> call site in <code>examples/</code> and
-<code>stdlib/</code> against the declared arity.</p>
+<p>The registry is checked by the compiler itself (<code>titan check</code> validates every <code>std::*</code> call site against the
+declared arity and types) and by <code>bash selfhost/native/cobertura.sh -v</code>, which confirms that every declared
+function has a Titan body in the runtime.</p>
 <h3 id="133-capabilities">13.3 Capabilities</h3>
 <p>The VM carries five capability flags: <code>filesystem</code>, <code>process</code>, <code>network</code>, <code>environment</code>,
 <code>user_interface</code>. Each guarded native and intrinsic checks its flag at dispatch time and fails
@@ -903,8 +902,10 @@ distribution packages — plus two standalone protocol servers.</p>
 <p><code>pack</code> produces a deterministic archive together with its SHA-256 digest, the signing public
 key, and an Ed25519 signature. <code>fetch</code> verifies the signature before installing, and writes
 <code>Titan.lock</code>. <code>publish</code> uploads using the <code>TITAN_REGISTRY_TOKEN</code> environment variable.</p>
-<p>The registry host defaults to <code>https://registry.titan-lang.org</code>, which is a configurable default
-rather than an operated public service; every packaging operation except <code>publish</code>/<code>fetch</code>
+<p>The registry host defaults to <code>https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro</code>,
+a static registry (plain files under <code>registro/</code>, served by GitHub; <code>archive</code> in the index may be a
+path relative to the registry). Versions are added with <code>selfhost/registro_agregar.titan</code>, not with
+<code>titan publish</code> (which POSTs to a registry server). Every packaging operation except <code>fetch</code>
 against a remote works fully offline, and local path dependencies need no registry at all.</p>
 <h3 id="173-editor-and-debugger-protocols">17.3 Editor and debugger protocols</h3>
 <ul>
@@ -997,8 +998,8 @@ against a remote works fully offline, and local path dependencies need no regist
 </tr>
 <tr>
 <td>Strings</td>
-<td>Restricted interpolation grammar</td>
-<td><code>invalid string interpolation expression</code></td>
+<td>A double quote inside an interpolation must be escaped (<code>\"</code>)</td>
+<td>parse error</td>
 </tr>
 <tr>
 <td>Ranges</td>
@@ -1027,77 +1028,74 @@ against a remote works fully offline, and local path dependencies need no regist
 </tr>
 <tr>
 <td>Packages</td>
-<td>The default registry host <code>registry.titan-lang.org</code> is a CLI default; local packing, signing, verification and path dependencies work offline</td>
+<td>The default registry is the static <code>registro/</code> directory of the repository (served by GitHub); local packing, signing, verification and path dependencies work offline</td>
 <td>—</td>
 </tr>
 </tbody>
 </table></div>
 <hr />
 <h2 id="19-how-this-document-was-verified">19. How this document was verified</h2>
-<p>Every statement above was checked against the source tree at compiler version <code>1.0.0</code>:</p>
+<p>This document was first written and checked against the Rust prototype (compiler <code>1.0.0</code>). That code has been
+replaced by the compiler written in Titan, and the same components now live in these files:</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
-<th>Claim</th>
-<th>Source of truth</th>
+<th>Topic</th>
+<th>Where it lives today</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Tokens, keywords, comments, escapes</td>
-<td><code>crates/titan_lexer/src/lib.rs</code></td>
+<td><code>selfhost/lexer.titan</code></td>
 </tr>
 <tr>
-<td>Grammar, desugaring of <code>\|&gt;</code>, <code>&lt;=&gt;</code>, <code>#{}</code>, spread, destructuring</td>
-<td><code>crates/titan_parser/src/lib.rs</code></td>
+<td>Grammar, desugaring of <code>\|&gt;</code>, <code>&lt;=&gt;</code>, <code>#{}</code>, spread, destructuring, string templates</td>
+<td><code>selfhost/parser.titan</code></td>
 </tr>
 <tr>
 <td>Item and expression shapes</td>
-<td><code>crates/titan_ast/src/lib.rs</code>, <code>crates/titan_ast/src/expr.rs</code></td>
+<td><code>selfhost/ast.titan</code>, <code>selfhost/parser.titan</code></td>
 </tr>
 <tr>
 <td>Types, inference, exhaustiveness, every rejection</td>
-<td><code>crates/titan_typechecker/src/lib.rs</code> (<code>TypeError</code>, <code>UnsupportedFeature</code> sites)</td>
+<td><code>selfhost/typechecker.titan</code></td>
 </tr>
 <tr>
 <td>Opcodes, lowering, codegen rejections</td>
-<td><code>crates/titan_codegen/src/lib.rs</code> (<code>Op</code>, <code>CodegenError::Unsupported</code> sites)</td>
+<td><code>selfhost/codegen.titan</code>, <code>selfhost/bytecode.titan</code></td>
 </tr>
 <tr>
 <td>Container format, limits, validation</td>
-<td><code>crates/titan_codegen/src/artifact.rs</code></td>
+<td><code>selfhost/artifact.titan</code></td>
 </tr>
 <tr>
-<td>Runtime semantics, budgets, capabilities, concurrency</td>
-<td><code>crates/titan_vm/src/lib.rs</code> (<code>VmError</code>, <code>RuntimeCapabilities</code>, <code>make_range</code>)</td>
-</tr>
-<tr>
-<td>Collector behavior</td>
-<td><code>crates/titan_gc/src/lib.rs</code></td>
+<td>Runtime semantics, collector, concurrency</td>
+<td><code>selfhost/native/</code> (<code>runtime.titan</code>, <code>std_task.titan</code>, ...)</td>
 </tr>
 <tr>
 <td>Native registry contents</td>
-<td><code>crates/titan_stdlib/src/native.rs</code>, cross-checked with <code>verify_phase34.py</code></td>
+<td><code>selfhost/natives.titan</code></td>
 </tr>
 <tr>
 <td>WebAssembly subset and rejections</td>
-<td><code>crates/titan_wasm/src/lib.rs</code> (<code>WasmError</code>, <code>emit_operation</code>)</td>
+<td><code>selfhost/wasm.titan</code></td>
 </tr>
 <tr>
 <td>Project loading and imports</td>
-<td><code>crates/titan_pkg/src/project.rs</code></td>
+<td><code>selfhost/loader.titan</code></td>
 </tr>
 <tr>
 <td>CLI surface</td>
-<td><code>crates/titan_cli/src/main.rs</code></td>
+<td><code>selfhost/titan.titan</code></td>
 </tr>
 </tbody>
 </table></div>
-<p>Reproduce the checks with:</p>
-<pre><code class="language-bash">python3 verify_phase34.py                  # native table and call sites, no Rust build needed
-cargo test --workspace --all-targets       # 637 declared Rust tests
-cargo clippy --workspace --all-targets -- -D warnings
-</code></pre>
+<p>What is re-checked on every change (see <code>.github/workflows/ci.yml</code>): the compiler rebuilds itself and the three
+generations are byte-identical (<code>bash selfhost/bootstrap.sh</code>), every declared <code>std::*</code> function has a Titan body
+(<code>bash selfhost/native/cobertura.sh -v</code>), and the example programs type-check. Statements about behaviour that
+are not covered by those checks come from the prototype and may differ from today's compiler;
+<code>selfhost/ESTADO.md</code> is the current record.</p>
 <p>Related documents: <a href="arquitectura.html"><code>ARCHITECTURE.md</code></a> (compiler internals),
 <a href="sintaxis.html"><code>TITAN_SYNTAX.md</code></a> (practical guide with worked examples),
 <a href="stdlib.html"><code>STDLIB.md</code></a> (full native API), <a href="wasm.html"><code>WASM.md</code></a>,

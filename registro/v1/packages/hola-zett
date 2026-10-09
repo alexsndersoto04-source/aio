@@ -1,0 +1,13 @@
+{
+  "name": "hola-zett",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "archive": "archivos/hola-zett-0.1.0.tpkg",
+      "sha256": "ea1075fbf75f4b68a7e28951a66babba52536d151c3c3c52b20a436b32591f4c",
+      "signing_key": "psQJnu6+NQ0MFddz8hnaCEuf4oBUwsLKlyhfuwGwFRM=",
+      "signature": "NxEWwWM/kYvDiNMHAL5b8SILxzlrnXzMYWqt4Qmek+84iUjEquO90GIk6xgEieKucieE4wTTk2R5HinBAqKtDw==",
+      "dependencies": {}
+    }
+  ]
+}

@@ -1232,8 +1232,7 @@ enlace `zett → titan`; `selfhost/titan.titan`, `cl_zett`). Ofrece `add`, `fetc
 `version`; `titan add` etc. siguen funcionando igual. Probado: `selfhost/tests/pkg/registro/probar.sh` (40/40, contra un registro HTTPS
 local de prueba, con la CLI `titan`); con el ejecutable `zett` empaquetado se comprobaron a mano `version`, `help`, `add`, `keygen`,
 `pack` (dos empaquetados idénticos byte a byte), los mensajes de uso con el nombre `zett` y que `titan run` funciona invocado solo por
-el `PATH`. **No hay servidor de registro en el repositorio**; la dirección por defecto (`registry.titan-lang.org`) no se ha podido
-comprobar que exista. Sin probar en ARM64 real. Guía: `docs/ZETT.md`.
+el `PATH`. El registro público es ahora estático (`registro/` del repositorio, servido por GitHub; `selfhost/registro_agregar.titan` añade versiones; prueba local `selfhost/tests/pkg/registro/estatico.sh`); antes la dirección por defecto (`registry.titan-lang.org`) no existía. Sin probar en ARM64 real. Guía: `docs/ZETT.md`.
 
 **ARM de 32 bits no soportado.** Un Termux de 32 bits (`armv7l`/`armv8l`, ABIs `armeabi-v7a`) no puede usar los paquetes: solo hay generador de código para x86-64 y ARM64. El Zett anterior (Rust, paquete `.deb` `arm` de la rama `zett-repo`) sí era de 32 bits y ya no se reconstruye. Caso real: teléfono con `abilist` = `armeabi-v7a,armeabi`.
 
@@ -1278,8 +1277,7 @@ el compilador no importa el gestor, así que no cambia) y 26 programas del corpu
 
 Diferencias conocidas (no ocultas):
 1. Con manifiestos TOML inválidos 4 diagnósticos difieren del crate `toml` (el texto con línea/columna).
-2. El registro real (`registry.titan-lang.org`) no es accesible desde el sandbox: las pruebas de red usan el
-   registro local, no el real. Para el cliente Rust también valen solo los roots embebidos.
+2. El registro público (GitHub) no es accesible desde el sandbox: las pruebas de red locales usan un servidor HTTPS propio; la lectura real desde GitHub la comprueba el CI. Para el cliente Rust también valen solo los roots embebidos.
 3. Los `/tmp/titan-publish-*.tpkg` temporales quedan tras un error de `publish`, igual que en Rust.
 
 ## LSP en Titan (2026-10-08)

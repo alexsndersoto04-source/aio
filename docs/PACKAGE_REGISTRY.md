@@ -8,7 +8,7 @@ Guía de uso de este gestor, que se llama **Zett**: [`ZETT.md`](ZETT.md).
 
 `RegistryClient` requires an HTTPS base URL. It fetches `/v1/packages/{percent-encoded-name}`, parses version metadata, resolves the highest release matching a SemVer requirement, downloads a bounded archive, verifies lowercase/uppercase SHA-256, and writes it atomically into a content-addressed cache.
 
-Metadata records version, HTTPS archive URL, SHA-256 and dependency ranges. Registry/package-name mismatch, insecure initial/redirect URL, malformed metadata/ranges/hashes, non-200 status, body limits and checksum mismatches are errors.
+Metadata records version, archive URL (HTTPS, or a path relative to the registry base URL, which makes a plain directory of files a valid registry), SHA-256 and dependency ranges. Registry/package-name mismatch, insecure initial/redirect URL, malformed metadata/ranges/hashes, non-200 status, body limits and checksum mismatches are errors.
 
 Cache layout is `<cache>/<name>/<version>/<sha256>.tpkg`. Existing entries are rehashed before use. Temporary writes include process ID and are renamed only after verification, so interrupted downloads are never treated as packages.
 
@@ -23,3 +23,7 @@ CLI commands are `titan add <name> <range>`, `titan fetch [--offline]`, and `tit
 `titan keygen <path>` creates a 32-byte Ed25519 private seed with OS CSPRNG and mode 0600 on Unix, refusing overwrite. `titan pack --project . --key <outside-project> --output package.tpkg` creates deterministic tar/gzip metadata, excludes VCS/cache/build/locks, rejects symlinks/special files and refuses private keys/output inside the package tree. It prints only public key, SHA-256 and signature.
 
 `titan publish --key <path>` builds and signs in a temporary path, reads authentication only from `TITAN_REGISTRY_TOKEN`, and POSTs JSON to the HTTPS version endpoint with zero redirects. Tokens containing CR/LF are rejected and never printed. The payload includes archive Base64, digest, public key and signature; HTTP 409 is treated as publisher-key ownership conflict. Registry-server implementation and key-rotation policy remain deployment concerns.
+
+## Static registry (the default)
+
+The default registry is the `registro/` directory of this repository, served by GitHub as plain files (`registro/v1/packages/<name>` and `registro/archivos/<name>-<version>.tpkg`). There is no server and no `POST`: `selfhost/registro_agregar.titan PROJECT KEY REGISTRY_DIR` packs and signs a project and writes the archive plus the merged index; changes reach the registry through a pull request. The script refuses to rewrite a published version and refuses a different signing key for an existing package (the same two rules a server applies). Local test: `selfhost/tests/pkg/registro/estatico.sh`.

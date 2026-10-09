@@ -33,7 +33,7 @@ struct PkFail {
 }
 
 fn pk_default_registry() -> string {
-    "https://registry.titan-lang.org"
+    "https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro"
 }
 
 // ------------------------------------------------------------ utilidades
@@ -564,6 +564,7 @@ fn pk_build(root: string, key_path: string, output: string) -> Result {
     result = std::map::insert(result, "name", manifest.name)
     result = std::map::insert(result, "version", manifest.version)
     result = std::map::insert(result, "archive", output)
+    result = std::map::insert(result, "dependencies", manifest.deps)
     result = std::map::insert(result, "sha256", std::encoding::hex_encode(digest))
     result = std::map::insert(result, "signing_key", std::encoding::base64_encode(public))
     result = std::map::insert(result, "signature", std::encoding::base64_encode(signature))
@@ -1051,7 +1052,13 @@ fn pk_fetch_index(base: string, name: string) -> Result {
     }
     let mut releases = []
     for item in versions {
-        releases = std::array::push(releases, pk_release(item)?)
+        let mut release = pk_release(item)?
+        // Registro estático: «archive» puede ser una ruta relativa al registro.
+        let archive_url: string = std::map::get(release, "archive")
+        if !std::text::contains(archive_url, "://") {
+            release = std::map::insert(release, "archive", base + "/" + archive_url)
+        }
+        releases = std::array::push(releases, release)
     }
     if doc_name != name {
         return Result::Err("registry package name mismatch")
@@ -1558,10 +1565,10 @@ fn pk_help(command: string) -> string {
         return "Add a remote dependency requirement to Titan.toml\n\nUsage: titan add [OPTIONS] <PACKAGE> [REQUIREMENT]\n\nArguments:\n  <PACKAGE>      \n  [REQUIREMENT]  [default: *]\n\nOptions:\n      --project <PROJECT>  [default: .]\n  -h, --help               Print help"
     }
     if command == "fetch" {
-        return "Resolve, download, verify, and install remote dependencies\n\nUsage: titan fetch [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n      --offline              \n  -h, --help                 Print help"
+        return "Resolve, download, verify, and install remote dependencies\n\nUsage: titan fetch [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro]\n      --offline              \n  -h, --help                 Print help"
     }
     if command == "update" {
-        return "Re-resolve and update remote dependencies\n\nUsage: titan update [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n  -h, --help                 Print help"
+        return "Re-resolve and update remote dependencies\n\nUsage: titan update [OPTIONS]\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --registry <REGISTRY>  [default: https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro]\n  -h, --help                 Print help"
     }
     if command == "keygen" {
         return "Generate a private Ed25519 package signing key\n\nUsage: titan keygen <PATH>\n\nArguments:\n  <PATH>  \n\nOptions:\n  -h, --help  Print help"
@@ -1569,7 +1576,7 @@ fn pk_help(command: string) -> string {
     if command == "pack" {
         return "Build and sign a deterministic .tpkg archive\n\nUsage: titan pack [OPTIONS] --key <KEY> --output <OUTPUT>\n\nOptions:\n      --project <PROJECT>  [default: .]\n      --key <KEY>          \n      --output <OUTPUT>    \n  -h, --help               Print help"
     }
-    "Build, sign, and upload a package using TITAN_REGISTRY_TOKEN\n\nUsage: titan publish [OPTIONS] --key <KEY>\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --key <KEY>            \n      --registry <REGISTRY>  [default: https://registry.titan-lang.org]\n  -h, --help                 Print help"
+    "Build, sign, and upload a package using TITAN_REGISTRY_TOKEN\n\nUsage: titan publish [OPTIONS] --key <KEY>\n\nOptions:\n      --project <PROJECT>    [default: .]\n      --key <KEY>            \n      --registry <REGISTRY>  [default: https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro]\n  -h, --help                 Print help"
 }
 
 // Uso completo (con [OPTIONS]) y mínimo (solo lo obligatorio) por comando.

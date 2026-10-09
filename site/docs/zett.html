@@ -115,7 +115,7 @@ Con <code>zett</code> es más corto de escribir y deja claro que se trata de paq
 </tr>
 <tr>
 <td><code>zett publish --key K</code></td>
-<td>Empaqueta, firma y sube el paquete al registro</td>
+<td>Empaqueta, firma y sube el paquete a un registro con servidor (POST con <code>TITAN_REGISTRY_TOKEN</code>). Para el registro público de ficheros, ver más abajo</td>
 </tr>
 <tr>
 <td><code>zett version</code></td>
@@ -124,7 +124,8 @@ Con <code>zett</code> es más corto de escribir y deja claro que se trata de paq
 </tbody>
 </table></div>
 <p>Opciones comunes: <code>--project &lt;carpeta&gt;</code> (por defecto, la actual) y <code>--registry &lt;URL&gt;</code>
-(por defecto <code>https://registry.titan-lang.org</code>; debe ser HTTPS).</p>
+(por defecto <code>https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/registro</code>, el
+registro público de este repositorio; debe ser HTTPS).</p>
 <h2 id="usar-una-dependencia">Usar una dependencia</h2>
 <pre><code class="language-bash">cd mi_app
 zett add demo &quot;^1&quot;      # escribe [dependencies.demo] en Titan.toml
@@ -163,19 +164,41 @@ zett publish --key ~/.titan/mi-clave
   imprime y no puede estar dentro del proyecto.</li>
 <li><code>publish</code> lee la credencial solo de <code>TITAN_REGISTRY_TOKEN</code>.</li>
 </ul>
+<h2 id="el-registro-publico-ficheros-en-github">El registro público (ficheros en GitHub)</h2>
+<p>No hay un servidor aparte. El registro es la carpeta <a href="https://github.com/alexsndersoto04-source/aio/tree/main/registro"><code>registro/</code></a> de este
+repositorio y GitHub la sirve como ficheros:</p>
+<pre><code>registro/v1/packages/&lt;nombre&gt;           índice JSON del paquete (lo que lee `zett fetch`)
+registro/archivos/&lt;nombre&gt;-&lt;versión&gt;.tpkg   el paquete firmado
+</code></pre>
+<p>Es como una biblioteca sin bibliotecario: cualquiera puede leer; para añadir un libro se
+propone un cambio al repositorio (pull request) y se revisa.</p>
+<p><strong>Publicar una versión</strong> (desde la raíz del repositorio):</p>
+<pre><code class="language-bash">zett keygen ~/.titan/mi-clave                        # una sola vez; guarda la clave
+titan run selfhost/registro_agregar.titan ruta/al/paquete ~/.titan/mi-clave registro
+git add registro &amp;&amp; git commit -m &quot;registro: mi-paquete 0.1.0&quot;   # y abre un pull request
+</code></pre>
+<p>El script empaqueta, firma con Ed25519 y escribe el archivo y el índice. Reglas: una
+versión publicada no se reescribe, y un paquete existente solo se amplía con la misma clave.
+El cliente comprueba el SHA-256 y la firma de cada archivo antes de instalarlo.</p>
+<p><strong>Usar otro registro de ficheros</strong> (por ejemplo, tu propia rama o copia):</p>
+<pre><code class="language-bash">zett fetch --registry https://raw.githubusercontent.com/USUARIO/REPO/RAMA/registro
+</code></pre>
 <h2 id="que-esta-probado-y-que-no">Qué está probado y qué no</h2>
 <p>Probado de verdad (pruebas del repositorio, <code>selfhost/tests/pkg/</code>):
 - Resolución de versiones y SemVer, extracción segura, hashes y firmas.
 - <code>add</code>, <code>fetch</code>, <code>update</code> y <code>publish</code> contra un registro HTTPS <strong>de prueba</strong> que corre en
   la propia máquina (<code>selfhost/tests/pkg/registro/probar.sh</code>).
+- El registro estático (publicar con <code>registro_agregar.titan</code>, servir ficheros por HTTPS,
+  <code>fetch</code> con firma verificada, rechazo de un archivo alterado):
+  <code>selfhost/tests/pkg/registro/estatico.sh</code>.
 - <code>keygen</code> y <code>pack</code> (incluido que dos empaquetados salen idénticos) con el ejecutable
   <code>zett</code> del paquete.</p>
 <p><strong>Lo que no está probado ni existe en este repositorio:</strong>
-- <strong>No hay un servidor de registro dentro de este repositorio.</strong> El cliente está
-  completo, pero necesita un registro que hable su protocolo (descrito en
-  <a href="paquetes.html"><code>PACKAGE_REGISTRY.md</code></a>). La dirección por defecto,
-  <code>registry.titan-lang.org</code>, no se ha podido comprobar que exista; si no responde, indica
-  otro con <code>--registry</code>.
+- <strong>No hay un servidor de registro con cuentas ni tokens.</strong> El registro público es el
+  directorio <code>registro/</code> del repositorio, servido por GitHub como ficheros (ver abajo).
+  Mientras <code>registro/</code> no esté en la rama <code>main</code>, la dirección por defecto no responde;
+  hasta entonces usa <code>--registry</code> con la dirección de tu rama. El comando <code>zett publish</code>
+  (POST con token) solo sirve para un registro con servidor propio, no para este.
 - La rotación de claves y la política de propiedad de los paquetes dependen del
   registro, no del cliente.
 - En ARM64 (Termux) el gestor usa el mismo código que en x86-64, pero no se ha probado

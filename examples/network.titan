@@ -1,5 +1,5 @@
 // Demo Fase 3: red avanzada (HTTPS + DNS).
-// Ejecutar con:  cargo run -p titan_cli -- run examples/network.titan
+// Ejecutar con:  titan run examples/network.titan
 //
 // Necesita internet. Usa servicios públicos (Cloudflare DNS, httpbin.org).
 

@@ -230,41 +230,57 @@ match tag {
 
 ---
 
+## Números: `int` y `float` no se mezclan
+
+Titan no convierte un entero en decimal por su cuenta: `3 * 2.5`, `2.5 + 1` y `2 < 2.5` dan error de tipos
+(`invalid operands for Mul: Int and Float`). Se convierte de forma explícita:
+
+```titan
+let n = 3
+let f = std::math::to_float(n) * 2.5     // 7.5
+let k = std::math::to_int(f)             // 7 (trunca)
+```
+
+## Palabras reservadas
+
+`fn let mut if else match for while loop break continue in return struct enum trait impl mod import pub const unsafe
+spawn go true false nil self as extern type` no se pueden usar como nombres de variables, funciones ni campos
+(por ejemplo `let go = 1` es un error de sintaxis: `go` y `spawn` lanzan tareas). `as` y `unsafe` están reservadas
+sin gramática.
+
+---
+
 ## Interpolación de strings
 
-La gramática de interpolación es deliberadamente pequeña: admite un identificador local, una constante global declarada o una llamada nombrada cuyos argumentos sean identificadores locales o enteros literales. Las llamadas usan la misma resolución que fuera del string, por lo que una closure local o una constante invocable puede ser el destino.
+Dentro de `{...}` en un texto se puede escribir **cualquier expresión de Titan**: variables, aritmética, índices, campos, llamadas con expresiones, `if`, closures...
 
 ```titan
 const LIMIT: int = 20
+struct Punto { x: int, y: int }
 
 fn main() {
     let x = 42
     let arr = [1, 2, 3]
+    let p = Punto { x: 3, y: 4 }
     let siguiente = |value: int| value + 1
-    print("x = {x}")                       // "x = 42"
-    print("límite = {LIMIT}")               // "límite = 20"
-    print("arr = {arr}")                   // "arr = [1, 2, 3]"
-    print("siguiente = {siguiente(x)}")     // "siguiente = 43"
-    print("home: {std::dirs::home()}")     // llamadas también
+    print("x = {x}")                          // "x = 42"
+    print("límite = {LIMIT}")                  // "límite = 20"
+    print("suma = {x + 10}")                   // "suma = 52"
+    print("primero = {arr[0]} de {len(arr)}")  // "primero = 1 de 3"
+    print("punto = {p.x}, {p.y}")              // "punto = 3, 4"
+    print("siguiente = {siguiente(x + 1)}")    // "siguiente = 44"
+    print("home: {std::dirs::home()}")
 }
 ```
 
-Una expresión como `{x + 10}` todavía no pertenece a esa gramática. Debe calcularse primero en un local y luego interpolarse.
-
-Contenidos válidos entre `{...}`:
-- Identificadores locales (`x`, `foo`) y constantes globales declaradas (`LIMIT`)
-- Llamadas simples (`fn()`, `fn(arg)`, `std::dirs::home()`), con argumentos locales o enteros
-
-Contenidos NO válidos:
-- Aritmética: `{a + b * c}` → **NO soportada**
-- Acceso a campos o índices: `{user.name}`, `{arr[0]}` → **NO soportado**
-
-Si necesitás algo complejo, extraelo a una variable primero:
-
-```titan
-let total = a + b * c
-print("total: {total}")
-```
+Reglas:
+- Para escribir una comilla dentro de las llaves hay que escaparla: `"{std::text::uppercase(\"hola\")}"`.
+- Una llave cuyo contenido **no es una expresión completa** sigue siendo texto literal, siempre que el texto no tenga ningún grupo válido: JSON (`"{\"a\": 1}"`), CSS, `{2,3}` de una regex, `{}`. Un número o un texto suelto (`{3}`) también se queda literal.
+- Las llaves deben «pegarse» a la expresión: `{a / 7}` se interpola; `{ a / 7 }` (con espacio o salto de línea junto a la llave) se queda como texto. Así un texto con código dentro (`"fn main() {\n ... \n}"`) no se toca.
+- Una llave justo detrás de `$` (`${VAR-valor}` de shell o de JavaScript) no se interpola, salvo que sea un nombre simple (`${x}` sigue siendo `$` más el valor de `x`).
+- Si un texto tiene un grupo válido y otro que no lo es (`"{x} {a b}"`), el segundo da el error `invalid string interpolation expression`.
+- Para escribir una llave literal en un texto que sí interpola, arma el texto con `+`.
+- Los errores dentro de una interpolación se señalan en la línea y columna del texto original (la columna puede desviarse unos caracteres si el texto tiene escapes antes de la llave).
 
 ---
 
@@ -778,8 +794,8 @@ let n = std::collections::length(xs)
 // Y muchos más (regex, hash, url, jwt, crypto, http, sql, etc.)
 ```
 
-Consultar `crates/titan_stdlib/src/native.rs` para el registro
-completo (758 funciones nativas al momento actual).
+Consultar `selfhost/natives.titan` para el registro
+completo (812 funciones nativas) y [`STDLIB.md`](STDLIB.md).
 
 ---
 

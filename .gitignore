@@ -61,3 +61,5 @@ selfhost/native/.runtime-cache*.json
 selfhost/titan
 selfhost/build_c
 selfhost/tests/audio/fixtures/
+selfhost/titan_*
+selfhost/build_llvm

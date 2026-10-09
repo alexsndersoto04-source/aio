@@ -285,32 +285,46 @@ ambas ramas tienen que devolver lo mismo:</p>
 }
 </code></pre>
 <hr />
+<h2 id="numeros-int-y-float-no-se-mezclan">Números: <code>int</code> y <code>float</code> no se mezclan</h2>
+<p>Titan no convierte un entero en decimal por su cuenta: <code>3 * 2.5</code>, <code>2.5 + 1</code> y <code>2 &lt; 2.5</code> dan error de tipos
+(<code>invalid operands for Mul: Int and Float</code>). Se convierte de forma explícita:</p>
+<pre><code class="language-titan"><span class="k">let</span> n = <span class="n">3</span>
+<span class="k">let</span> f = std::math::to_float(n) * <span class="n">2.5</span>     <span class="c">// 7.5</span>
+<span class="k">let</span> k = std::math::to_int(f)             <span class="c">// 7 (trunca)</span>
+</code></pre>
+<h2 id="palabras-reservadas">Palabras reservadas</h2>
+<p><code>fn let mut if else match for while loop break continue in return struct enum trait impl mod import pub const unsafe
+spawn go true false nil self as extern type</code> no se pueden usar como nombres de variables, funciones ni campos
+(por ejemplo <code>let go = 1</code> es un error de sintaxis: <code>go</code> y <code>spawn</code> lanzan tareas). <code>as</code> y <code>unsafe</code> están reservadas
+sin gramática.</p>
+<hr />
 <h2 id="interpolacion-de-strings">Interpolación de strings</h2>
-<p>La gramática de interpolación es deliberadamente pequeña: admite un identificador local, una constante global declarada o una llamada nombrada cuyos argumentos sean identificadores locales o enteros literales. Las llamadas usan la misma resolución que fuera del string, por lo que una closure local o una constante invocable puede ser el destino.</p>
+<p>Dentro de <code>{...}</code> en un texto se puede escribir <strong>cualquier expresión de Titan</strong>: variables, aritmética, índices, campos, llamadas con expresiones, <code>if</code>, closures...</p>
 <pre><code class="language-titan"><span class="k">const</span> LIMIT: int = <span class="n">20</span>
+<span class="k">struct</span> Punto { x: int, y: int }
 
 <span class="k">fn</span> main() {
     <span class="k">let</span> x = <span class="n">42</span>
     <span class="k">let</span> arr = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+    <span class="k">let</span> p = Punto { x: <span class="n">3</span>, y: <span class="n">4</span> }
     <span class="k">let</span> siguiente = |value: int| value + <span class="n">1</span>
-    print(<span class="s">&quot;x = {x}&quot;</span>)                       <span class="c">// &quot;x = 42&quot;</span>
-    print(<span class="s">&quot;límite = {LIMIT}&quot;</span>)               <span class="c">// &quot;límite = 20&quot;</span>
-    print(<span class="s">&quot;arr = {arr}&quot;</span>)                   <span class="c">// &quot;arr = [1, 2, 3]&quot;</span>
-    print(<span class="s">&quot;siguiente = {siguiente(x)}&quot;</span>)     <span class="c">// &quot;siguiente = 43&quot;</span>
-    print(<span class="s">&quot;home: {std::dirs::home()}&quot;</span>)     <span class="c">// llamadas también</span>
+    print(<span class="s">&quot;x = {x}&quot;</span>)                          <span class="c">// &quot;x = 42&quot;</span>
+    print(<span class="s">&quot;límite = {LIMIT}&quot;</span>)                  <span class="c">// &quot;límite = 20&quot;</span>
+    print(<span class="s">&quot;suma = {x + 10}&quot;</span>)                   <span class="c">// &quot;suma = 52&quot;</span>
+    print(<span class="s">&quot;primero = {arr[0]} de {len(arr)}&quot;</span>)  <span class="c">// &quot;primero = 1 de 3&quot;</span>
+    print(<span class="s">&quot;punto = {p.x}, {p.y}&quot;</span>)              <span class="c">// &quot;punto = 3, 4&quot;</span>
+    print(<span class="s">&quot;siguiente = {siguiente(x + 1)}&quot;</span>)    <span class="c">// &quot;siguiente = 44&quot;</span>
+    print(<span class="s">&quot;home: {std::dirs::home()}&quot;</span>)
 }
 </code></pre>
-<p>Una expresión como <code>{x + 10}</code> todavía no pertenece a esa gramática. Debe calcularse primero en un local y luego interpolarse.</p>
-<p>Contenidos válidos entre <code>{...}</code>:
-- Identificadores locales (<code>x</code>, <code>foo</code>) y constantes globales declaradas (<code>LIMIT</code>)
-- Llamadas simples (<code>fn()</code>, <code>fn(arg)</code>, <code>std::dirs::home()</code>), con argumentos locales o enteros</p>
-<p>Contenidos NO válidos:
-- Aritmética: <code>{a + b * c}</code> → <strong>NO soportada</strong>
-- Acceso a campos o índices: <code>{user.name}</code>, <code>{arr[0]}</code> → <strong>NO soportado</strong></p>
-<p>Si necesitás algo complejo, extraelo a una variable primero:</p>
-<pre><code class="language-titan"><span class="k">let</span> total = a + b * c
-print(<span class="s">&quot;total: {total}&quot;</span>)
-</code></pre>
+<p>Reglas:
+- Para escribir una comilla dentro de las llaves hay que escaparla: <code>"{std::text::uppercase(\"hola\")}"</code>.
+- Una llave cuyo contenido <strong>no es una expresión completa</strong> sigue siendo texto literal, siempre que el texto no tenga ningún grupo válido: JSON (<code>"{\"a\": 1}"</code>), CSS, <code>{2,3}</code> de una regex, <code>{}</code>. Un número o un texto suelto (<code>{3}</code>) también se queda literal.
+- Las llaves deben «pegarse» a la expresión: <code>{a / 7}</code> se interpola; <code>{ a / 7 }</code> (con espacio o salto de línea junto a la llave) se queda como texto. Así un texto con código dentro (<code>"fn main() {\n ... \n}"</code>) no se toca.
+- Una llave justo detrás de <code>$</code> (<code>${VAR-valor}</code> de shell o de JavaScript) no se interpola, salvo que sea un nombre simple (<code>${x}</code> sigue siendo <code>$</code> más el valor de <code>x</code>).
+- Si un texto tiene un grupo válido y otro que no lo es (<code>"{x} {a b}"</code>), el segundo da el error <code>invalid string interpolation expression</code>.
+- Para escribir una llave literal en un texto que sí interpola, arma el texto con <code>+</code>.
+- Los errores dentro de una interpolación se señalan en la línea y columna del texto original (la columna puede desviarse unos caracteres si el texto tiene escapes antes de la llave).</p>
 <hr />
 <h2 id="anotaciones-de-tipo">Anotaciones de tipo</h2>
 <h3 id="aliases-nuevos-desde-v0160">Aliases nuevos desde v0.16.0</h3>
@@ -709,8 +723,8 @@ std::fs::write_text(<span class="s">&quot;/out.txt&quot;</span>, <span class="s"
 
 <span class="c">// Y muchos más (regex, hash, url, jwt, crypto, http, sql, etc.)</span>
 </code></pre>
-<p>Consultar <code>crates/titan_stdlib/src/native.rs</code> para el registro
-completo (758 funciones nativas al momento actual).</p>
+<p>Consultar <code>selfhost/natives.titan</code> para el registro
+completo (812 funciones nativas) y <a href="stdlib.html"><code>STDLIB.md</code></a>.</p>
 <hr />
 <h2 id="gotchas-conocidos-sin-fix">Gotchas conocidos sin fix</h2>
 <p>Estos son casos donde el parser/typechecker sigue siendo estricto y

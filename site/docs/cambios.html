@@ -75,6 +75,20 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
+<h2 id="sin-publicar">Sin publicar</h2>
+<ul>
+<li><strong>Lenguaje:</strong> la interpolación de textos acepta cualquier expresión (<code>"{a / 7}"</code>, <code>"{v[0]}"</code>, <code>"{p.x}"</code>,
+  <code>"{f(a + 1)}"</code>, <code>"{if c { 1 } else { 0 }}"</code>). Las llaves que no son una expresión (JSON, CSS, <code>{2,3}</code>, <code>${VAR}</code>)
+  siguen siendo texto, y las llaves deben pegarse a la expresión (<code>{ a }</code> o un bloque de código dentro del texto no se
+  tocan). Comparado con el compilador anterior sobre una muestra de 131 programas (incluidos el propio compilador y Moon):
+  mismo bytecode; no se comparó el repositorio entero. Documentado en <code>docs/SPEC.md</code> (sección 9) y
+  <code>docs/TITAN_SYNTAX.md</code>; prueba en <code>selfhost/tests/lenguaje/interpolacion.titan</code>.</li>
+<li><strong>Zett:</strong> el registro por defecto era <code>https://registry.titan-lang.org</code>, que no existe. Ahora es un registro de ficheros
+  dentro del repositorio (<code>registro/</code>, servido por GitHub; el índice admite rutas relativas). Se añade versiones con
+  <code>selfhost/registro_agregar.titan</code>. Pruebas: <code>selfhost/tests/pkg/registro/estatico.sh</code> (servidor HTTPS local) y un paso
+  del CI que lee <code>registro/</code> de verdad desde GitHub. Primer paquete: <code>hola-zett</code> (ejemplo). Hasta que <code>registro/</code> llegue a
+  <code>main</code>, la dirección por defecto no responde.</li>
+</ul>
 <h2 id="v120-2026-10-zett-el-gestor-de-paquetes-arreglo-del-arranque-por-el-path">v1.2.0 (2026-10) — Zett, el gestor de paquetes; arreglo del arranque por el PATH</h2>
 <ul>
 <li><strong>Zett:</strong> <code>zett</code> es ahora el gestor de paquetes de Titan (<code>add</code>, <code>fetch</code>/<code>install</code>, <code>update</code>, <code>keygen</code>, <code>pack</code>, <code>publish</code>,

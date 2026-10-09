@@ -32,6 +32,20 @@ jobs:
           printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
           test "$(selfhost/titan run /tmp/hola.titan)" = "respuesta 42"
 
+      - name: "Lenguaje: interpolación de expresiones {expr}"
+        run: selfhost/titan run selfhost/tests/lenguaje/interpolacion.titan
+
+      - name: "Registro de paquetes: publicar, servir por HTTPS y usar con fetch (servidor local)"
+        run: bash selfhost/tests/pkg/registro/estatico.sh
+
+      - name: "Registro público: leer de verdad desde GitHub (raw.githubusercontent.com)"
+        run: |
+          mkdir -p /tmp/app
+          printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2026"\n[dependencies.hola-zett]\nversion = "^0.1"\n' > /tmp/app/Titan.toml
+          # la dirección apunta al commit exacto que se está probando
+          selfhost/titan fetch --registry "https://raw.githubusercontent.com/${{ github.event.pull_request.head.repo.full_name || github.repository }}/${{ github.event.pull_request.head.sha || github.sha }}/registro" --project /tmp/app
+          test -f /tmp/app/.titan/packages/hola-zett/0.1.0/src/lib.titan
+
       - name: Guardar el compilador como artefacto
         uses: actions/upload-artifact@v4
         with:
