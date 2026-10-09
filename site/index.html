@@ -212,7 +212,7 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
   <p class="sub">Los programas son ejecutables estáticos: el runtime llama directamente al núcleo de Linux, sin biblioteca C. El estado de cada plataforma, sin adornos:</p>
   <div class="grid2 plat">
     <div class="card"><span class="badge ok">Probada</span><h3>Linux x86-64</h3><p>Compilador, herramienta <code>titan</code> y programas generados. Punto fijo del compilador verificado.</p></div>
-    <div class="card"><span class="badge ok">Probada en servidor ARM64</span><h3>Linux ARM64 · Termux</h3><p>La herramienta compila y ejecuta programas; 95 programas dieron salida idéntica a la de x86-64. Requiere <code>clang</code> y <code>lld</code>. No se ha probado en un teléfono Android.</p></div>
+    <div class="card"><span class="badge ok">Probada en servidor ARM64</span><h3>Linux ARM64 · Termux</h3><p>La herramienta compila y ejecuta programas; 95 programas dieron salida idéntica a la de x86-64. Requiere <code>clang</code> y <code>lld</code>. No se ha probado en un teléfono Android. Solo ARM de 64 bits: un Termux de 32 bits (<code>armv7l</code>, <code>armv8l</code>) no sirve.</p></div>
     <div class="card"><span class="badge ok">Disponible</span><h3>WebAssembly</h3><p><code>titan wasm</code> genera el módulo; DOM, eventos, <code>fetch</code>, Canvas 2D y WebGL2 funcionan con un host JavaScript.</p></div>
     <div class="card"><span class="badge plan">Previsto</span><h3>macOS y Windows</h3><p>Sin ejecutable por ahora: falta portar el runtime, que usa llamadas directas de Linux.</p></div>
   </div>
@@ -276,7 +276,7 @@ titan run</code></pre></div></div></div>
       </ul></div>
     <div class="card"><h3>Límites conocidos</h3>
       <ul class="lista">
-        <li><b>Plataformas:</b> sin ejecutable para macOS ni Windows; ARM64 sin probar en un teléfono.</li>
+        <li><b>Plataformas:</b> sin ejecutable para macOS ni Windows, ni para ARM de 32 bits; ARM64 sin probar en un teléfono.</li>
         <li><b>Permisos:</b> los ejecutables nativos no tienen sandbox; un programa puede leer archivos, lanzar procesos y usar la red.</li>
         <li><b>Lenguaje:</b> sin genéricos definidos por el usuario, referencias ni <code>break</code> con valor.</li>
         <li><b>Tareas:</b> fibras cooperativas, sin paralelismo entre núcleos; no se puede limitar la memoria por tarea.</li>

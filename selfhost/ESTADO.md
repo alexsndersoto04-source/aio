@@ -1235,6 +1235,8 @@ local de prueba, con la CLI `titan`); con el ejecutable `zett` empaquetado se co
 el `PATH`. **No hay servidor de registro en el repositorio**; la dirección por defecto (`registry.titan-lang.org`) no se ha podido
 comprobar que exista. Sin probar en ARM64 real. Guía: `docs/ZETT.md`.
 
+**ARM de 32 bits no soportado.** Un Termux de 32 bits (`armv7l`/`armv8l`, ABIs `armeabi-v7a`) no puede usar los paquetes: solo hay generador de código para x86-64 y ARM64. El Zett anterior (Rust, paquete `.deb` `arm` de la rama `zett-repo`) sí era de 32 bits y ya no se reconstruye. Caso real: teléfono con `abilist` = `armeabi-v7a,armeabi`.
+
 **Corrección (v1.2.0):** `titan` calculaba la ruta de `native/` a partir de `argv[0]`; invocado solo por nombre (`titan run x.titan`
 con el ejecutable en el `PATH`) fallaba con `std::path::canonical … No such file or directory`. Desde v1.2.0 usa `/proc/self/exe`.
 **La release v1.1.0 tiene ese fallo**: con ella, `titan run` por el `PATH` no funciona (con la ruta completa sí).

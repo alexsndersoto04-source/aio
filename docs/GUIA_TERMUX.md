@@ -8,6 +8,23 @@ Titan funciona en Linux ARM64. Termux usa el mismo núcleo Linux, así que el ej
 > Android.** Android puede filtrar algunas llamadas al sistema que un Linux normal permite; si algo falla en tu teléfono,
 > ese dato es justo lo que falta saber.
 
+## Antes de instalar: ¿tu Termux es de 64 bits?
+
+Titan solo tiene versión para **ARM de 64 bits** (`aarch64`). **No existe versión para ARM de 32 bits**
+(`armv7l`, `armv8l`): ahí el instalador se detiene con «esta máquina es armv8l».
+
+```sh
+uname -m                              # debe decir: aarch64
+getprop ro.product.cpu.abilist        # debe incluir: arm64-v8a
+```
+
+- Si dice `aarch64`, sigue con el paso 1.
+- Si dice `armv7l` o `armv8l` pero `abilist` incluye `arm64-v8a`: tu teléfono es de 64 bits y tienes el Termux de 32 bits;
+  instala el Termux de 64 bits (APK `arm64-v8a`, de F-Droid o del GitHub oficial de Termux). Desinstalar el Termux actual borra
+  sus datos: guarda antes lo que quieras conservar.
+- Si `abilist` solo trae `armeabi-v7a` y `armeabi`: tu teléfono es de 32 bits y **no puede ejecutar este Titan**. Soportarlo
+  exigiría un generador de código para ARM de 32 bits, que no existe.
+
 ## 1. Instalar
 
 Necesitas el paquete `titan-v1.2.0-linux-aarch64.tar.gz`. Lo fabrica el flujo `Linux ARM64 (Termux)` de GitHub Actions

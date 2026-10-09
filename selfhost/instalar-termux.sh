@@ -10,7 +10,12 @@
 # falla en tu dispositivo, abre un issue con la salida de `titan version` y `uname -a`.
 set -eu
 if [ "$(uname -m)" != "aarch64" ]; then
-  echo "este paquete es para ARM64 (aarch64); esta máquina es $(uname -m)" >&2
+  echo "este paquete es para ARM64 de 64 bits (aarch64); esta máquina es $(uname -m)" >&2
+  case "$(uname -m)" in
+    armv7l|armv8l|arm)
+      echo "Tu Termux es de 32 bits (ARM). Titan todavía no tiene versión para 32 bits." >&2
+      echo "Si tu teléfono admite 64 bits, instala el Termux de 64 bits (APK arm64-v8a); comprueba con: getprop ro.product.cpu.abilist" >&2 ;;
+  esac
   exit 2
 fi
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
