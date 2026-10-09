@@ -7,6 +7,7 @@ name: Linux ARM64 (Termux)
 on:
   push:
     branches: [ main, "arena/**" ]
+    tags: [ "v*" ]
   workflow_dispatch:
 
 jobs:
@@ -79,17 +80,11 @@ jobs:
         run: |
           printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
           test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
-      - name: Diagnóstico procesos y servidor
-        continue-on-error: true
+      - name: Procesos hijos y servidor HTTP en ARM64
         run: |
-          sudo apt-get install -y --no-install-recommends strace > /dev/null
-          selfhost/titan-arm compile selfhost/tests/diag/arm_proc.titan -o /tmp/arm_proc
-          rc=0
-          timeout 120 strace -f -o /tmp/trace.txt /tmp/arm_proc > d.out 2> d.err || rc=$?
-          { echo "código $rc"; echo "--- stdout"; head -c 800 d.out; echo "--- stderr"; head -c 500 d.err; echo "--- strace del proceso principal"; mp=$(head -1 /tmp/trace.txt | cut -d" " -f1); grep "^$mp " /tmp/trace.txt | tail -n 40 | cut -c1-170; } > d.txt
-          cat d.txt
-          msg=$(head -c 9000 d.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
-          echo "::notice title=diagnostico procesos y servidor::$msg"
+          selfhost/titan-arm run selfhost/tests/diag/arm_proc.titan > proc.out
+          grep -q "8 fin" proc.out
+          grep -q "200 OK" proc.out
       - name: Diferencial contra x86-64
         run: |
           bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout > generar.txt 2>&1
@@ -105,10 +100,39 @@ jobs:
           fi
           exit $rc
       - name: titan compilado por titan en ARM64 (informativo)
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          selfhost/titan-arm compile selfhost/titan.titan -o selfhost/titan-arm2
-          sha256sum titan-aarch64 selfhost/titan-arm2
-          cmp titan-aarch64 selfhost/titan-arm2 && echo "IGUALES: el compilado en ARM64 coincide con el cruzado"
+          rc=0
+          { time selfhost/titan-arm compile selfhost/titan.titan -o selfhost/titan-arm2; } > auto.txt 2>&1 || rc=$?
+          { echo "compilación nativa: código $rc"; sha256sum titan-aarch64 selfhost/titan-arm2; cmp titan-aarch64 selfhost/titan-arm2 && echo "IGUALES: coincide con el cruzado"; } >> auto.txt 2>&1 || true
+          cat auto.txt
+          msg=$(head -c 3000 auto.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          echo "::notice title=autocompilacion ARM64::$msg"
+          test $rc -eq 0
           cp selfhost/titan-arm2 selfhost/titan-arm
           test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
+
+  publicar:
+    name: publicar los paquetes (solo en etiquetas v*)
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [construir, probar]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paquetes
+          path: paquetes
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd paquetes
+          # Nombres fijos para que instalar-termux.sh encuentre siempre «latest/download/…».
+          cp titan-*-linux-aarch64.tar.gz titan-linux-aarch64.tar.gz
+          cp titan-*-linux-x86_64.tar.gz titan-linux-x86_64.tar.gz
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
+            --notes "Paquetes de Titan para Linux (x86-64 y ARM64/Termux). Descomprime y ejecuta ./titan (la carpeta native/ debe quedar junto al ejecutable). Ver LEEME.txt dentro del paquete." \
+            titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz
