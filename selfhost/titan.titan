@@ -4,7 +4,7 @@
 //   titan check [entrada]                 analiza y revisa tipos sin producir nada
 //   titan run [entrada] [args...]         compila a un ejecutable nativo temporal y lo ejecuta
 //   titan test [entrada]                  compila y ejecuta cada tests/**/*.titan
-//   titan compile [entrada] [-o salida] [--target x86_64|aarch64|armv7]   compila a un ejecutable nativo Linux (aarch64 y armv7 pasan por LLVM: necesitan clang)
+//   titan compile [entrada] [-o salida] [--target x86_64|aarch64]   compila a un ejecutable nativo Linux (aarch64 pasa por LLVM: necesita clang)
 //   titan wasm [entrada] [-o salida]      compila a WebAssembly con mapas de fuente
 //   titan bytecode <entrada>              imprime el bytecode (el que genera zett)
 //   titan version
@@ -215,7 +215,7 @@ fn cl_native(input: string, target: string) -> Result {
 fn cl_native_arch(input: string, target: string, arch: string) -> Result {
     let compiled = cl_compile(input)?
     let (project, g) = compiled
-    if arch == "aarch64" || arch == "armv7" {
+    if arch == "aarch64" {
         let parent = std::path::parent(target)
         if parent != "" {
             cl_mkdirs(parent)
@@ -274,7 +274,7 @@ fn cl_parse(args: array, label: string) -> ClArgs {
         let a = args[i]
         if a == "--target" {
             if i + 1 >= len(args) {
-                cl_fatal("error", "--target needs x86_64, aarch64 or armv7")
+                cl_fatal("error", "--target needs x86_64 or aarch64")
             }
             target = args[i + 1]
             i += 2
@@ -452,8 +452,8 @@ fn cl_compile_cmd(args: array) {
     }
     let mut arch = cl_host_arch()
     if parsed.target != "" {
-        if parsed.target != "x86_64" && parsed.target != "aarch64" && parsed.target != "armv7" {
-            cl_fatal("error", "--target must be x86_64, aarch64 or armv7, got '" + parsed.target + "'")
+        if parsed.target != "x86_64" && parsed.target != "aarch64" {
+            cl_fatal("error", "--target must be x86_64 or aarch64, got '" + parsed.target + "'")
         }
         arch = parsed.target
     }
@@ -734,7 +734,7 @@ fn cl_usage() {
     print("  check [input]                    parse and type-check without producing an artifact")
     print("  run [input] [args...]            compile to a temporary native executable and run it")
     print("  test [input]                     compile and run every .titan under tests/")
-    print("  compile [input] [-o output]      compile to a native Linux executable (--target x86_64|aarch64|armv7; aarch64 and armv7 need clang)")
+    print("  compile [input] [-o output]      compile to a native Linux executable (--target x86_64|aarch64; aarch64 needs clang)")
     print("  wasm [input] [-o output]         compile to WebAssembly plus source maps")
     print("  build [input] [-o output]        compile to an inspectable .tbc bytecode artifact")
     print("  exec [artifact.tbc]              compile an artifact to native code and run it")
