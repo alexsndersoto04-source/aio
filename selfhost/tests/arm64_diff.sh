@@ -6,7 +6,7 @@
 #   bash selfhost/tests/arm64_diff.sh comparar <dir-x86> <dir-arm64>
 #
 # Sin programas, usa una muestra determinista de selfhost/tests/native (1 de cada 4, sin los que necesitan
-# servidores, pantalla, audio real o red). Un programa que el backend LLVM rechaza («not supported by the native
+# servidores, pantalla, audio real o red) más todas las pruebas de tareas y canales. Un programa que el backend LLVM rechaza («not supported by the native
 # backend yet», p. ej. spawn/canales) se cuenta aparte como NO ADMITIDO: nunca como acierto.
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -14,7 +14,7 @@ cd "$ROOT"
 modo="${1:-}"
 
 muestra() {
-  ls selfhost/tests/native/*.titan | grep -v "redis\|postgres\|mysql\|audio_player\|gui_std\|sqlite_conc\|window_\|clipboard\|http_serve\|servidor_\|tcp_\|ws_\|tls_\|wifi\|termux\|fswatch" | awk 'NR%4==0'
+  ls selfhost/tests/native/*.titan | grep -v "redis\|postgres\|mysql\|audio_player\|gui_std\|sqlite_conc\|window_\|clipboard\|http_serve\|servidor_\|tcp_\|ws_\|tls_\|wifi\|termux\|fswatch" | awk 'NR%4==0 || /tarea|canal|coleccion/'
 }
 
 case "$modo" in

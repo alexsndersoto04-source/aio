@@ -79,16 +79,16 @@ jobs:
         run: |
           printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
           test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
-      - name: Diagnóstico server_std
+      - name: Diagnóstico procesos y servidor
         continue-on-error: true
         run: |
           curl --version | head -1 || true
           rc=0
-          timeout 300 selfhost/titan-arm run selfhost/tests/native/server_std.titan > d.out 2> d.err || rc=$?
+          timeout 300 selfhost/titan-arm run selfhost/tests/diag/arm_proc.titan > d.out 2> d.err || rc=$?
           { echo "código $rc"; echo "--- stdout"; head -c 1500 d.out; echo "--- stderr"; head -c 1500 d.err; } > d.txt
           cat d.txt
           msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' d.txt)
-          echo "::notice title=diagnostico server_std::$msg"
+          echo "::notice title=diagnostico procesos y servidor::$msg"
       - name: Diferencial contra x86-64
         run: |
           bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout > generar.txt 2>&1

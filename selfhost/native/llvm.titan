@@ -544,10 +544,9 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_e(b1, "  call void @lv_set_sysreg(i64 " + a0 + ", i64 " + a1 + ")")
         b1 = lv_put(b1, res, "0", "0")
     } else if name == "std::raw::fiber_switch" {
-        // Las tareas (spawn/join/canales) solo existen en el backend propio
-        // x86-64: aquí Spawn no se compila, nunca hay otra pila y esta
-        // instrucción no se alcanza. Si se alcanzase, trampa (no un valor falso).
-        b1 = lv_e(b1, "  call void @llvm.trap()")
+        // Cambio de pila entre fibras (tareas): lv_fiber_switch (ensamblador, ver lv_runtime_head)
+        // guarda los registros que conserva una llamada en la pila que abandona y entra en la otra.
+        b1 = lv_e(b1, "  call void @lv_fiber_switch(i64 " + a0 + ", i64 " + a1 + ")")
         b1 = lv_put(b1, res, "0", "0")
     } else if name == "std::raw::hvc" {
         // Llamada al firmware (PSCI): x0, x1 -> x0. Solo ARM64.
@@ -1004,6 +1003,35 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
     }
     // map/filter/fold/find/any/all como llamadas (`map(xs, f)`): las mismas rutinas del runtime que usa
     // `xs.map(f)`; la pila trae [array, f] ([array, inicial, f] en fold).
+    // Tareas y canales (fibras cooperativas, ver std_task.titan): las mismas rutinas del runtime que usa
+    // el backend propio.
+    if k == "Spawn" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_task_spawn", 1), next)
+    }
+    if k == "JoinTask" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_task_join", 1), next)
+    }
+    if k == "JoinTaskTimeout" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_task_join_timeout", 2), next)
+    }
+    if k == "CancelTask" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_task_cancel", 1), next)
+    }
+    if k == "NewChannel" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_chan_new", 1), next)
+    }
+    if k == "ChannelSend" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_chan_send", 2), next)
+    }
+    if k == "ChannelRecv" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_chan_recv", 1), next)
+    }
+    if k == "ChannelRecvTimeout" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_chan_recv_timeout", 2), next)
+    }
+    if k == "ChannelSelect" {
+        return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_chan_select", 2), next)
+    }
     if k == "ArrayMap" {
         return lv_br_to(lv_rt_top(b, ctx, id, d, "rt_m_map", 2), next)
     }
@@ -1232,11 +1260,14 @@ fn lv_effect(op: Op) -> (int, int) {
     if k == "Dup" {
         return (1, 2)
     }
-    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Index" || k == "ArraySortBy" || k == "ArrayMap" || k == "ArrayFilter" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" {
+    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Index" || k == "ArraySortBy" || k == "ArrayMap" || k == "ArrayFilter" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" || k == "JoinTaskTimeout" || k == "ChannelSend" || k == "ChannelRecvTimeout" || k == "ChannelSelect" {
         return (2, 1)
     }
     if k == "ArrayFold" {
         return (3, 1)
+    }
+    if k == "Spawn" || k == "JoinTask" || k == "CancelTask" || k == "NewChannel" || k == "ChannelRecv" {
+        return (1, 1)
     }
     if k == "Neg" || k == "BitNot" || k == "Not" || k == "ToString" || k == "Len" || k == "GetField" || k == "EnumIs" || k == "EnumPayload" || k == "Try" {
         return (1, 1)
@@ -1507,6 +1538,20 @@ fn lv_glue(ctx: LvCtx) -> array {
         sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stp x19, x20, [x0]", "  stp x21, x22, [x0, #16]", "  stp x23, x24, [x0, #32]", "  stp x25, x26, [x0, #48]", "  stp x27, x28, [x0, #64]", "  stp x29, x30, [x0, #80]", "  mov x2, sp", "  str x2, [x0, #96]", "  stp d8, d9, [x0, #104]", "  stp d10, d11, [x0, #120]", "  stp d12, d13, [x0, #136]", "  stp d14, d15, [x0, #152]", "  mov x0, #0", "  ret", ".globl t_longjmp", "t_longjmp:", "  ldp x19, x20, [x0]", "  ldp x21, x22, [x0, #16]", "  ldp x23, x24, [x0, #32]", "  ldp x25, x26, [x0, #48]", "  ldp x27, x28, [x0, #64]", "  ldp x29, x30, [x0, #80]", "  ldr x2, [x0, #96]", "  mov sp, x2", "  ldp d8, d9, [x0, #104]", "  ldp d10, d11, [x0, #120]", "  ldp d12, d13, [x0, #136]", "  ldp d14, d15, [x0, #152]", "  mov x0, #1", "  ret"]
     }
     for line in sj {
+        l = std::array::push(l, "module asm \"" + line + "\"")
+    }
+    // lv_fiber_switch(guardar, nuevo): cambia de pila (std::raw::fiber_switch). Una pila preparada por
+    // tk_prepare (std_task.titan) empieza con la palabra 0 y la dirección de entrada, igual que en el
+    // backend propio; una pila guardada aquí empieza con la marca 1 y los registros que conserva una
+    // llamada. La primera vez se salta a la entrada con una pila alineada.
+    l = std::array::push(l, "declare void @lv_fiber_switch(i64, i64)")
+    let mut fs = []
+    if ctx.target == "x86_64" {
+        fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  pushq %rbp", "  pushq %rbx", "  pushq %r12", "  pushq %r13", "  pushq %r14", "  pushq %r15", "  pushq $1", "  movq %rsp, (%rdi)", "  movq %rsi, %rsp", "  popq %rax", "  testq %rax, %rax", "  jz 1f", "  popq %r15", "  popq %r14", "  popq %r13", "  popq %r12", "  popq %rbx", "  popq %rbp", "  ret", "1:", "  xorl %ebp, %ebp", "  ret"]
+    } else {
+        fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  sub sp, sp, #176", "  stp x19, x20, [sp, #16]", "  stp x21, x22, [sp, #32]", "  stp x23, x24, [sp, #48]", "  stp x25, x26, [sp, #64]", "  stp x27, x28, [sp, #80]", "  stp x29, x30, [sp, #96]", "  stp d8, d9, [sp, #112]", "  stp d10, d11, [sp, #128]", "  stp d12, d13, [sp, #144]", "  stp d14, d15, [sp, #160]", "  mov x2, #1", "  str x2, [sp]", "  mov x2, sp", "  str x2, [x0]", "  ldr x2, [x1]", "  cbz x2, 1f", "  mov sp, x1", "  ldp x19, x20, [sp, #16]", "  ldp x21, x22, [sp, #32]", "  ldp x23, x24, [sp, #48]", "  ldp x25, x26, [sp, #64]", "  ldp x27, x28, [sp, #80]", "  ldp x29, x30, [sp, #96]", "  ldp d8, d9, [sp, #112]", "  ldp d10, d11, [sp, #128]", "  ldp d12, d13, [sp, #144]", "  ldp d14, d15, [sp, #160]", "  add sp, sp, #176", "  ret", "1:", "  ldr x19, [x1, #8]", "  add x2, x1, #16", "  and x2, x2, #-16", "  mov sp, x2", "  mov x29, xzr", "  mov x30, xzr", "  br x19"]
+    }
+    for line in fs {
         l = std::array::push(l, "module asm \"" + line + "\"")
     }
     if ctx.target == "x86_64" {
