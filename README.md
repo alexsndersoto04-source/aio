@@ -25,9 +25,8 @@ TITAN es más que un intérprete de ejemplos. El repositorio reúne un lenguaje,
 
 - **Lenguaje tipado:** funciones, closures, structs, enums, `match`, módulos, imports, constantes, aliases, arrays, mapas, pipelines, rangos, interpolación y manejo de `Option` / `Result`.
 - **Bytecode validado:** artefactos `.tbc` versionados con cabecera, CRC-32, límites de tamaño y validación de saltos, aridad, locales, capturas y llamadas nativas antes de ejecutar.
-- **VM segura:** errores tipados para overflow, división por cero, índices, pila, aridad, recursión, límites de instrucciones y permisos.
-- **Sandbox por capacidades:** `--sandbox` bloquea filesystem, procesos, red y environment sin desactivar las funciones puras.
-- **Runtime concurrente:** tareas sobre threads del host, `spawn`, `join`, cancelación cooperativa, canales acotados, timeouts y `select`.
+- **Ejecutables nativos:** `titan compile`/`titan run` generan código x86-64 directamente (backend propio) o vía LLVM (x86-64 y ARM64); los errores de ejecución (overflow, división por cero, índices, aridad…) se comunican con los mismos mensajes que definía la VM original.
+- **Runtime concurrente:** `spawn`, `join`, cancelación cooperativa, canales acotados, timeouts y `select`, sobre fibras cooperativas del runtime nativo.
 - **Runtime operativo:** cuotas de memoria por tarea, recolección manual, umbral de GC configurable, heap dump JSON, tareas activas, fast-paths enteros y benchmark integrado.
 - **WebAssembly real:** `titan wasm` emite módulos WASM con source maps, memoria lineal, strings UTF-8, arrays, mapas, structs, enums y control de flujo nativo.
 - **Navegador:** integración opcional con DOM, eventos, `fetch`, WebSocket, Canvas 2D, animación y WebGL2 mediante un host JavaScript real.
@@ -141,17 +140,17 @@ El runtime también incluye `spawn`, `join`, `join_timeout`, `cancel`, `channel`
 
 ## Biblioteca estándar
 
-La biblioteca estándar ofrece **797 funciones nativas registradas en 72 namespaces**. Las features opcionales se agrupan bajo `extras` y están activadas por defecto en la CLI de distribución.
+La biblioteca estándar ofrece **812 funciones en 72 namespaces `std::*`, todas con cuerpo escrito en Titan** (medido con `selfhost/native/cobertura.sh`). Las limitaciones de cada pieza están declaradas en `selfhost/ESTADO.md`.
 
 | Área | Incluye |
 |---|---|
 | Texto, datos y formatos | Unicode, regex, encoding, bytes, checksum, JSON, CSV, YAML, XML, URL, UUID, gzip/zstd y TAR/ZIP. |
 | Seguridad | SHA, SHA-3, BLAKE3, HMAC, ChaCha20-Poly1305, AES-GCM, Argon2id, bcrypt y JWT. |
-| Red | HTTP/HTTPS, TLS con rustls/WebPKI, DNS, SMTP, multipart, WebSocket, servidor HTTP y router. |
-| Datos | SQLite, PostgreSQL, MySQL, migraciones, pools, KV ACID mediante sled y Redis. |
+| Red | HTTP/HTTPS, TLS 1.2/1.3 propio con validación X.509, DNS, SMTP, multipart, WebSocket, servidor HTTP y router. |
+| Datos | SQLite (motor SQL propio), PostgreSQL, MySQL, migraciones, pools, KV y Redis. |
 | Sistema | Archivos, paths, procesos, señales POSIX, filesystem watcher, procfs, cache, métricas y variables de entorno. |
 | Terminal y multimedia | TUI, colores, teclado, readline, progreso, imágenes PNG/JPEG/WebP/BMP/GIF, QR, SVG charts y WAV. |
-| IA local | Tokenizers HuggingFace, ONNX por `tract-onnx`, BERT multi-input, embeddings y matemáticas vectoriales. |
+| IA local | Tokenizers HuggingFace, motor ONNX propio, BERT multi-input (modelos pequeños), embeddings y matemáticas vectoriales. |
 | UI y dispositivos | Motor 2D, GUI retenida con rasterizador software, ventanas live, entrada, lifecycle móvil y Termux:API. |
 | WebAssembly | Heap WASM, source maps, DOM, eventos, fetch, WebSocket, Canvas 2D, animación y WebGL2 mediante host web. |
 
@@ -161,7 +160,7 @@ Funciones con efectos se protegen mediante capacidades del runtime:
 Filesystem · Process · Network · Environment
 ```
 
-Por ejemplo, `titan run --sandbox programa.titan` conserva funciones puras de texto, JSON, math o colecciones, pero deniega operaciones de archivos, proceso, red y environment. Consulta la [referencia de stdlib](docs/STDLIB.md).
+La opción `--sandbox` pertenecía a la VM de Rust y **no existe** en los ejecutables nativos. Consulta la [referencia de stdlib](docs/STDLIB.md).
 
 ## Proyectos, paquetes y CLI
 
@@ -184,7 +183,6 @@ Comandos principales:
 titan new <directorio>                 Crear un proyecto
 titan check [archivo|proyecto]         Parsear y comprobar tipos
 titan run [archivo|proyecto]           Compilar y ejecutar
-titan run --sandbox [ruta]             Ejecutar sin capacidades de efectos
 titan build [archivo|proyecto]         Crear bytecode .tbc validado
 titan exec <archivo.tbc>               Validar y ejecutar bytecode existente
 titan wasm [archivo|proyecto]          Generar WebAssembly
