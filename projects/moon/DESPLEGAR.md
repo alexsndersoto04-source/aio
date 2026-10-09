@@ -134,3 +134,17 @@ En **Ajustes → Avisos → Avisos al teléfono → Activar**. No hay que config
 nada más: las llaves se crean solas en la base de datos. En iPhone hay que
 instalar antes Moon en la pantalla de inicio (Compartir → Añadir a pantalla de
 inicio) y activarlos desde ahí.
+
+## Cloudflare Workers (solo la web estática)
+
+`wrangler.jsonc` (en la raíz) sirve `projects/moon/frontend/dist`, que **no está en git**: hay que construirlo antes de
+desplegar. La interfaz se movió de `frontend/` a `projects/moon/frontend/`, así que en el panel de Cloudflare
+(Workers Builds → Settings) el comando de construcción debe ser:
+
+```bash
+npm --prefix projects/moon/frontend ci && npm --prefix projects/moon/frontend run build
+```
+
+y el de despliegue `npx wrangler deploy`. La variable `VITE_API_URL` debe apuntar a la API (ver arriba). Si el panel
+sigue usando la ruta antigua `frontend/`, la construcción falla. El panel de Cloudflare no es visible desde este
+repositorio: este apartado documenta lo que hay que configurar, no lo que está configurado.
