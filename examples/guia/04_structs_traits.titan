@@ -1,0 +1,30 @@
+trait Saludo {
+    fn nombre(self) -> string;
+    fn saludar(self) -> string {
+        "Hola, " + self.nombre() + "!"
+    }
+}
+
+struct Persona { nombre: string, edad: int }
+
+impl Persona {
+    fn nueva(nombre: string, edad: int) -> Persona {
+        Persona { nombre: nombre, edad: edad }
+    }
+    fn es_mayor(self) -> bool {
+        self.edad >= 18
+    }
+}
+
+impl Saludo for Persona {
+    fn nombre(self) -> string {
+        self.nombre
+    }
+}
+
+fn main() {
+    let p = Persona::nueva("Ana", 31)
+    print(p.saludar())
+    let mayor = p.es_mayor()
+    print("mayor de edad: {mayor}")
+}

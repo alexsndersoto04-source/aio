@@ -5,7 +5,7 @@
     <p class="lead">Tipos comprobados antes de ejecutar y ejecutables nativos para Linux (x86-64 y ARM64, incluido Termux), además de módulos WebAssembly. Incluye una biblioteca estándar amplia: texto, red, bases de datos, criptografía, audio, imágenes e inteligencia artificial local.</p>
     <div class="btns">
       <a class="btn primary" href="#instalar">Instalar</a>
-      <a class="btn" href="documentacion.html">Documentación</a>
+      <a class="btn" href="docs/guia-rapida.html">Guía rápida</a>
       <a class="btn" href="{{REPO}}/releases">Descargas</a>
     </div>
   </div>
@@ -58,7 +58,7 @@
       <div class="panel p4">{{EJ:servidor|servidor mínimo (respondió a dos peticiones curl reales)}}</div>
     </div>
   </div>
-  <p class="more">Más en la {{DOC:docs/TITAN_SYNTAX.md|referencia de sintaxis}}, en la <a href="docs/especificacion.html">especificación</a> y en los <a href="{{REPO}}/tree/main/examples">más de 50 ejemplos</a> del repositorio.</p>
+  <p class="more">¿Primera vez? Sigue la <a href="docs/guia-rapida.html">guía rápida</a>. Más en la <a href="docs/sintaxis.html">referencia de sintaxis</a>, en la <a href="docs/especificacion.html">especificación</a> y en los <a href="{{REPO}}/tree/main/examples">más de 50 ejemplos</a> del repositorio.</p>
 </div></section>
 
 <section id="biblioteca"><div class="wrap">
@@ -97,7 +97,7 @@
     <div><b class="cn"><code>titan build</code> · <code>exec</code></b><span>Escribe y ejecuta bytecode <code>.tbc</code> validado.</span></div>
   </div>
   <div class="grid2 sp">
-    <a class="card linkcard" href="{{REPO}}/tree/main/projects/moon"><h3>Moon — aplicación completa</h3><p>API web con base de datos, cuentas, subida de archivos y tiempo real, escrita en Titan y con interfaz web.</p></a>
+    <a class="card linkcard" href="{{REPO}}/tree/main/projects/moon"><h3>Moon — una red social completa</h3><p>Cuentas, publicaciones, mensajes en tiempo real y moderación, sobre PostgreSQL. Incluye el backend escrito en Titan (17 módulos que pasan <code>titan check</code>) y una interfaz web en React.</p></a>
     <a class="card linkcard" href="{{REPO}}/tree/main/examples"><h3>Más de 50 ejemplos</h3><p>Lenguaje, servidor web, bases de datos, criptografía, tokenizador, ONNX, gráficos y terminal.</p></a>
   </div>
 </div></section>
@@ -118,7 +118,7 @@
 <section id="instalar" class="alt"><div class="wrap">
   <p class="eyebrow">Instalación</p>
   <h2>Construir Titan desde las fuentes</h2>
-  <p class="sub">Solo hacen falta <code>bash</code> y <code>gzip</code>. Los paquetes ya compilados para Linux x86-64 y ARM64 se publican en <a href="{{REPO}}/releases">Releases</a> a partir de la versión 1.1; las versiones 1.0.x de esa página son del prototipo antiguo en Rust.</p>
+  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 se publican en <a href="{{REPO}}/releases">Releases</a> a partir de la versión 1.1; las versiones 1.0.x de esa página son del prototipo antiguo en Rust.</p>
   <div class="steps">
     <div class="step"><div class="step-h"><span class="stepn">1</span><h3>Construir</h3><p>Tarda unos 2–3 minutos.</p></div>
       <div class="step-b">{{COD:Linux x86-64|git clone https://github.com/alexsndersoto04-source/aio.git\ncd aio\nbash selfhost/bootstrap.sh\nselfhost/titan version}}</div></div>
@@ -184,6 +184,7 @@
   <h2>Guías y referencias</h2>
   <div class="doccols">
     <div><h4>Empezar</h4>
+      <a href="docs/guia-rapida.html">Guía rápida</a>
       <a href="docs/termux.html">Titan en Termux</a>
       <a href="docs/proyectos.html">Proyectos, módulos y tests</a>
       <a href="docs/arquitectura.html">Arquitectura</a></div>

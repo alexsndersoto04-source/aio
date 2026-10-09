@@ -26,7 +26,7 @@ código fuente (.titan)
 
 ## Instalación
 
-Titan se construye desde las fuentes con `bash` y `gzip`. El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
+Titan se construye desde las fuentes en **Linux x86-64**, con `bash` y `gzip` (en ARM64 se usa el paquete ya compilado; ver más abajo). El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
 
 ```bash
 git clone https://github.com/alexsndersoto04-source/aio.git
@@ -73,6 +73,8 @@ titan run hola.titan
 ```
 
 Para crear un proyecto: `titan new mi_app && cd mi_app && titan run`.
+
+¿Primera vez con Titan? La [**guía rápida**](docs/GUIA_RAPIDA.md) recorre el lenguaje en 20 minutos con programas que se ejecutan y su salida real (están en [`examples/guia/`](examples/guia)).
 
 ## Biblioteca estándar
 
@@ -145,7 +147,7 @@ titan run examples/webserver.titan
 titan run examples/tokenizer.titan
 ```
 
-[`projects/moon`](projects/moon) es una aplicación completa (API web con base de datos, cuentas, subida de archivos, ≈4 700 líneas de Titan).
+[`projects/moon`](projects/moon) es Moon, una red social completa: cuentas, publicaciones, mensajes en tiempo real y moderación, sobre PostgreSQL. Incluye el backend escrito en Titan (17 módulos que pasan `titan check`; la CI lo comprueba) y una interfaz web en React. El servidor que se prueba de punta a punta en su carpeta es el de Node (`projects/moon/server`); ver [`projects/moon/LEEME.md`](projects/moon/LEEME.md).
 
 ## Desarrollo y validación
 
@@ -159,6 +161,11 @@ Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementac
 
 ## Documentación
 
+Índice completo, ordenado por objetivo: [`docs/README.md`](docs/README.md). También está publicada, con menú y buscador, en la [página oficial](https://alexsndersoto04-source.github.io/aio/).
+
+- [Guía rápida (20 minutos)](docs/GUIA_RAPIDA.md)
+- [Mapa de `selfhost/` (cómo está hecho y cómo se construye)](selfhost/README.md)
+- [Ejemplos](examples/README.md)
 - [Estado verificado y limitaciones](selfhost/ESTADO.md)
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Especificación del lenguaje](docs/SPEC.md) y [sintaxis](docs/TITAN_SYNTAX.md)
@@ -172,6 +179,10 @@ Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementac
 - [LSP](docs/LSP.md), [DAP](docs/DAP.md) y [depurador](docs/DEBUGGER.md)
 - [Guía de Termux](docs/GUIA_TERMUX.md)
 - [Historial de cambios](CHANGELOG.md)
+
+## Colaborar
+
+Las reglas, las comprobaciones antes de proponer un cambio y cómo se abre un Pull Request están en [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Licencia
 

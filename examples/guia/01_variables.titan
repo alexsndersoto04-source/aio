@@ -1,0 +1,8 @@
+fn main() {
+    let nombre = "Titan"
+    let mut contador = 0
+    contador += 1
+    let pi = 3.14159
+    let activo = true
+    print("{nombre} {contador} {pi} {activo}")
+}

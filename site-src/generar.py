@@ -23,6 +23,7 @@ os.makedirs(os.path.join(SALIDA, "docs"), exist_ok=True)
 # (archivo en el repositorio, nombre de la página, título del menú, descripción)
 GRUPOS = [
     ("Empezar", [
+        ("docs/GUIA_RAPIDA.md", "guia-rapida", "Guía rápida", "Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan."),
         ("docs/GUIA_TERMUX.md", "termux", "Titan en Termux", "Instalar y usar Titan en Android (ARM64)."),
         ("docs/PROJECTS.md", "proyectos", "Proyectos, módulos y tests", "Estructura de un proyecto, Titan.toml, imports y pruebas."),
         ("docs/ARCHITECTURE.md", "arquitectura", "Arquitectura", "Etapas del compilador y generadores de código."),
