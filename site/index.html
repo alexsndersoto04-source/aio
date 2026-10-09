@@ -8,24 +8,21 @@
 <meta property="og:title" content="Titan — lenguaje de programación">
 <meta property="og:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
 <meta property="og:type" content="website">
-<meta name="color-scheme" content="light dark">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
-<header class="top"><div class="wrap">
-  <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="26" height="26">TITAN</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="index.html#lenguaje">Lenguaje</a>
     <a href="index.html#instalar">Instalación</a>
     <a href="index.html#plataformas">Plataformas</a>
-    <a href="biblioteca.html">Biblioteca estándar</a>
-    <a href="index.html#herramientas">Herramientas</a>
-    <a href="index.html#limites">Límites</a>
-    <a href="index.html#documentacion">Documentación</a>
+    <a href="biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="documentacion.html" data-a="docs">Documentación</a>
     <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
-    <a href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
 <main id="contenido">
@@ -40,9 +37,9 @@
     </div>
   </div>
   <div class="hero-code">
-    <div class="code"><div class="cap">hola.titan</div><pre><code>fn main() {
-    print(&quot;Hola desde Titan&quot;)
-}</code></pre><pre class="out"><code>Hola desde Titan</code></pre></div>
+    <div class="code"><div class="cap">hola.titan</div><pre><code><span class="k">fn</span> main() {
+    print(<span class="s">&quot;Hola desde Titan&quot;</span>)
+}</code></pre><div class="salida-et">Salida</div><pre class="out"><code>Hola desde Titan</code></pre></div>
     <p class="hero-cmd">Se ejecuta con <code>titan run hola.titan</code></p>
   </div>
 </div>
@@ -61,36 +58,36 @@
 
   <div class="grid2">
     <div>
-      <div class="code"><div class="cap">enums, match y manejo de errores</div><pre><code>enum Forma {
-    Circulo(float),
-    Cuadrado(float),
+      <div class="code"><div class="cap">enums, match y manejo de errores</div><pre><code><span class="k">enum</span> Forma {
+    <span class="t">Circulo</span>(float),
+    <span class="t">Cuadrado</span>(float),
     Vacio,
 }
 
-fn area(f: Forma) -&gt; float {
-    match f {
-        Forma::Circulo(r) =&gt; 3.14159 * r * r,
-        Forma::Cuadrado(l) =&gt; l * l,
-        Forma::Vacio =&gt; 0.0,
+<span class="k">fn</span> area(f: Forma) -&gt; float {
+    <span class="k">match</span> f {
+        <span class="t">Forma</span>::<span class="t">Circulo</span>(r) =&gt; <span class="n">3.14159</span> * r * r,
+        <span class="t">Forma</span>::<span class="t">Cuadrado</span>(l) =&gt; l * l,
+        <span class="t">Forma</span>::Vacio =&gt; <span class="n">0.0</span>,
     }
 }
 
-fn dividir(a: int, b: int) -&gt; Result {
-    if b == 0 {
-        return Result::Err(&quot;división por cero&quot;)
+<span class="k">fn</span> dividir(a: int, b: int) -&gt; Result {
+    <span class="k">if</span> b == <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">Result</span>::<span class="t">Err</span>(<span class="s">&quot;división por cero&quot;</span>)
     }
-    Result::Ok(a / b)
+    <span class="t">Result</span>::<span class="t">Ok</span>(a / b)
 }
 
-fn main() {
-    let formas = [Forma::Circulo(2.0), Forma::Cuadrado(3.0), Forma::Vacio]
-    let areas = formas.map(|f| area(f))
-    print(&quot;áreas: {areas}&quot;)
-    match dividir(10, 0) {
-        Result::Ok(v) =&gt; print(&quot;resultado {v}&quot;),
-        Result::Err(e) =&gt; print(&quot;error: {e}&quot;),
+<span class="k">fn</span> main() {
+    <span class="k">let</span> formas = [<span class="t">Forma</span>::<span class="t">Circulo</span>(<span class="n">2.0</span>), <span class="t">Forma</span>::<span class="t">Cuadrado</span>(<span class="n">3.0</span>), <span class="t">Forma</span>::Vacio]
+    <span class="k">let</span> areas = formas.map(|f| area(f))
+    print(<span class="s">&quot;áreas: {areas}&quot;</span>)
+    <span class="k">match</span> dividir(<span class="n">10</span>, <span class="n">0</span>) {
+        <span class="t">Result</span>::<span class="t">Ok</span>(v) =&gt; print(<span class="s">&quot;resultado {v}&quot;</span>),
+        <span class="t">Result</span>::<span class="t">Err</span>(e) =&gt; print(<span class="s">&quot;error: {e}&quot;</span>),
     }
-}</code></pre><pre class="out"><code>áreas: [12.56636, 9, 0]
+}</code></pre><div class="salida-et">Salida</div><pre class="out"><code>áreas: [12.56636, 9, 0]
 error: división por cero</code></pre></div>
     </div>
     <div>
@@ -111,27 +108,27 @@ error: división por cero</code></pre></div>
   <h3>Concurrencia</h3>
   <p>Tareas con <code>spawn</code> y <code>join</code>, canales con capacidad, <code>select</code> y esperas con tiempo límite. Las tareas son fibras cooperativas del runtime, no hilos del sistema: avanzan cuando una se bloquea o cede, y el runtime avisa si todas quedan bloqueadas para siempre (deadlock).</p>
   <div class="grid2">
-    <div class="code"><div class="cap">spawn, canales y join</div><pre><code>fn productor(tx: Sender, n: int) -&gt; int {
-    let mut i = 1
-    while i &lt;= n {
+    <div class="code"><div class="cap">spawn, canales y join</div><pre><code><span class="k">fn</span> productor(tx: Sender, n: int) -&gt; int {
+    <span class="k">let</span> <span class="k">mut</span> i = <span class="n">1</span>
+    <span class="k">while</span> i &lt;= n {
         send(tx, i * i)
-        i += 1
+        i += <span class="n">1</span>
     }
     n
 }
 
-fn main() {
-    let (tx, rx) = channel(2)
-    let tarea = spawn || { productor(tx, 5) }
-    let mut suma = 0
-    let mut k = 0
-    while k &lt; 5 {
+<span class="k">fn</span> main() {
+    <span class="k">let</span> (tx, rx) = channel(<span class="n">2</span>)
+    <span class="k">let</span> tarea = <span class="k">spawn</span> || { productor(tx, <span class="n">5</span>) }
+    <span class="k">let</span> <span class="k">mut</span> suma = <span class="n">0</span>
+    <span class="k">let</span> <span class="k">mut</span> k = <span class="n">0</span>
+    <span class="k">while</span> k &lt; <span class="n">5</span> {
         suma += recv(rx)
-        k += 1
+        k += <span class="n">1</span>
     }
-    print(&quot;suma de cuadrados = {suma}&quot;)
-    print(&quot;la tarea envió {join(tarea)} valores&quot;)
-}</code></pre><pre class="out"><code>suma de cuadrados = 55
+    print(<span class="s">&quot;suma de cuadrados = {suma}&quot;</span>)
+    print(<span class="s">&quot;la tarea envió {join(tarea)} valores&quot;</span>)
+}</code></pre><div class="salida-et">Salida</div><pre class="out"><code>suma de cuadrados = 55
 la tarea envió 5 valores</code></pre></div>
     <div>
       <h3 style="margin-top:0">Comprobaciones al compilar</h3>
@@ -141,32 +138,32 @@ la tarea envió 5 valores</code></pre></div>
   </div>
 
   <h3>Biblioteca estándar en pocas líneas</h3>
-  <div class="code"><div class="cap">JSON, codificación y hash</div><pre><code>fn main() {
-    let doc = std::json::parse(&quot;{\&quot;nombre\&quot;: \&quot;Titan\&quot;, \&quot;version\&quot;: 1}&quot;)
+  <div class="code"><div class="cap">JSON, codificación y hash</div><pre><code><span class="k">fn</span> main() {
+    <span class="k">let</span> doc = std::json::parse(<span class="s">&quot;{\&quot;nombre\&quot;: \&quot;Titan\&quot;, \&quot;version\&quot;: 1}&quot;</span>)
     print(doc.nombre)
-    let datos = std::encoding::utf8_encode(&quot;hola&quot;)
-    print(&quot;base64 = {std::encoding::base64_encode(datos)}&quot;)
-    print(&quot;sha256 = {std::hash::sha256(datos)}&quot;)
-}</code></pre><pre class="out"><code>Titan
+    <span class="k">let</span> datos = std::encoding::utf8_encode(<span class="s">&quot;hola&quot;</span>)
+    print(<span class="s">&quot;base64 = {std::encoding::base64_encode(datos)}&quot;</span>)
+    print(<span class="s">&quot;sha256 = {std::hash::sha256(datos)}&quot;</span>)
+}</code></pre><div class="salida-et">Salida</div><pre class="out"><code>Titan
 base64 = aG9sYQ==
 sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code></pre></div>
 
   <h3>Servidor HTTP</h3>
   <p>Este programa se ejecutó y respondió a dos peticiones <code>curl</code> reales.</p>
-  <div class="code"><div class="cap">servidor mínimo</div><pre><code>fn main() {
-    let servidor = std::server::start(&quot;127.0.0.1:8099&quot;)
-    print(&quot;escuchando en {std::server::local_addr(servidor)}&quot;)
-    let mut atendidas = 0
-    while atendidas &lt; 2 {
-        let peticion = std::server::accept(servidor, 30000)
-        if peticion &gt;= 0 {
-            let ruta = std::server::path(peticion)
-            std::server::respond(peticion, 200, &quot;hola desde Titan, ruta {ruta}&quot;)
-            atendidas += 1
+  <div class="code"><div class="cap">servidor mínimo</div><pre><code><span class="k">fn</span> main() {
+    <span class="k">let</span> servidor = std::server::start(<span class="s">&quot;127.0.0.1:8099&quot;</span>)
+    print(<span class="s">&quot;escuchando en {std::server::local_addr(servidor)}&quot;</span>)
+    <span class="k">let</span> <span class="k">mut</span> atendidas = <span class="n">0</span>
+    <span class="k">while</span> atendidas &lt; <span class="n">2</span> {
+        <span class="k">let</span> peticion = std::server::accept(servidor, <span class="n">30000</span>)
+        <span class="k">if</span> peticion &gt;= <span class="n">0</span> {
+            <span class="k">let</span> ruta = std::server::path(peticion)
+            std::server::respond(peticion, <span class="n">200</span>, <span class="s">&quot;hola desde Titan, ruta {ruta}&quot;</span>)
+            atendidas += <span class="n">1</span>
         }
     }
     std::server::stop(servidor)
-}</code></pre><pre class="out"><code>escuchando en 127.0.0.1:8099
+}</code></pre><div class="salida-et">Salida</div><pre class="out"><code>escuchando en 127.0.0.1:8099
 (curl /uno)  hola desde Titan, ruta /uno
 (curl /dos)  hola desde Titan, ruta /dos</code></pre></div>
 </div></section>
@@ -281,17 +278,19 @@ titan run</code></pre></div>
 
 <section id="documentacion"><div class="wrap">
   <h2>Documentación</h2>
+  <p class="sub">Guías y referencias, generadas desde la carpeta <code>docs/</code> del repositorio.</p>
   <div class="grid3">
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/README.md">README</a></h3><p>Resumen del proyecto, instalación y comandos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/SPEC.md">Especificación</a></h3><p>Definición del lenguaje y de sus reglas de tipos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/TITAN_SYNTAX.md">Sintaxis</a></h3><p>Referencia de la sintaxis con ejemplos.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/STDLIB.md">Biblioteca estándar</a></h3><p>Todos los espacios de nombres con su contenido.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/CONCURRENCY.md">Concurrencia</a></h3><p>Tareas, canales, select y tiempos límite.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/ARCHITECTURE.md">Arquitectura</a></h3><p>Etapas del compilador y generadores de código.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_TERMUX.md">Guía de Termux</a></h3><p>Instalación y uso en Android.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/WASM.md">WebAssembly</a></h3><p>Módulos, memoria y host JavaScript.</p></div>
-    <div class="card"><h3><a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado verificado</a></h3><p>Qué se probó, cómo y qué falta.</p></div>
+    <a class="card linkcard" href="docs/termux.html"><h3>Titan en Termux</h3><p>Instalar y usar Titan en Android (ARM64).</p></a>
+    <a class="card linkcard" href="docs/sintaxis.html"><h3>Referencia de sintaxis</h3><p>Todas las construcciones del lenguaje con ejemplos.</p></a>
+    <a class="card linkcard" href="docs/especificacion.html"><h3>Especificación</h3><p>Definición del lenguaje y de sus reglas de tipos.</p></a>
+    <a class="card linkcard" href="docs/stdlib.html"><h3>Biblioteca estándar</h3><p>Los 73 espacios de nombres y sus funciones.</p></a>
+    <a class="card linkcard" href="docs/concurrencia.html"><h3>Tareas y canales</h3><p>spawn, join, canales, select y tiempos límite.</p></a>
+    <a class="card linkcard" href="docs/arquitectura.html"><h3>Arquitectura</h3><p>Etapas del compilador y generadores de código.</p></a>
+    <a class="card linkcard" href="docs/proyectos.html"><h3>Proyectos y módulos</h3><p>Titan.toml, imports y pruebas.</p></a>
+    <a class="card linkcard" href="docs/wasm.html"><h3>WebAssembly</h3><p>Módulos, memoria y host JavaScript.</p></a>
+    <a class="card linkcard" href="docs/estado.html"><h3>Estado verificado</h3><p>Qué se probó, cómo y qué falta.</p></a>
   </div>
+  <p style="margin-top:18px"><a href="documentacion.html">Ver todo el índice de documentación →</a></p>
 </div></section>
 
 <section id="origen"><div class="wrap">
@@ -300,16 +299,27 @@ titan run</code></pre></div>
 </div></section>
 </main>
 <footer><div class="wrap">
-  <div class="foot-links">
-    <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/CHANGELOG.md">Historial de cambios</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Estado verificado</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="documentacion.html">Índice</a>
+      <a href="biblioteca.html">Biblioteca estándar</a>
+      <a href="docs/estado.html">Estado verificado</a>
+      <a href="docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
   </div>
-  <p>Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
 </div></footer>
 </body>
 </html>

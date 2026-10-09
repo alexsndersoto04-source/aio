@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentación — Titan</title>
+<meta name="description" content="Guías y referencias del lenguaje Titan.">
+<meta property="og:title" content="Documentación — Titan">
+<meta property="og:description" content="Guías y referencias del lenguaje Titan.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="index.html#lenguaje">Lenguaje</a>
+    <a href="index.html#instalar">Instalación</a>
+    <a href="index.html#plataformas">Plataformas</a>
+    <a href="biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home on" href="documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="docs/termux.html">Titan en Termux</a></li>
+<li><a href="docs/proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="docs/arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="docs/sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="docs/especificacion.html">Especificación</a></li>
+<li><a href="docs/concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="docs/stdlib.html">Visión general</a></li>
+<li><a href="docs/extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="docs/red.html">Red y HTTP</a></li>
+<li><a href="docs/cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="docs/tls.html">TLS</a></li>
+<li><a href="docs/websocket.html">WebSocket</a></li>
+<li><a href="docs/base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="docs/sqlite.html">SQLite</a></li>
+<li><a href="docs/postgresql.html">PostgreSQL</a></li>
+<li><a href="docs/mysql.html">MySQL</a></li>
+<li><a href="docs/multipart.html">Subida de archivos</a></li>
+<li><a href="docs/servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="docs/metricas.html">Métricas</a></li>
+<li><a href="docs/audio.html">Audio</a></li>
+<li><a href="docs/motor-de-audio.html">Motor de audio</a></li>
+<li><a href="docs/wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="docs/lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="docs/dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="docs/depurador.html">Depurador</a></li>
+<li><a href="docs/paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="docs/estado.html">Estado verificado</a></li>
+<li><a href="docs/cambios.html">Historial de cambios</a></li>
+<li><a href="docs/validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><h1>Documentación</h1>
+<p class="sub">Guías y referencias de Titan. Las páginas se generan desde la carpeta <code>docs/</code> del repositorio. Algunas se escribieron para el prototipo en Rust y lo indican al principio: la lista de lo que está probado y lo que no está en «Estado verificado».</p>
+<h2>Empezar</h2><div class="doclist">
+<a class="docitem" href="docs/termux.html"><b>Titan en Termux</b><span>Instalar y usar Titan en Android (ARM64).</span></a>
+<a class="docitem" href="docs/proyectos.html"><b>Proyectos, módulos y tests</b><span>Estructura de un proyecto, Titan.toml, imports y pruebas.</span></a>
+<a class="docitem" href="docs/arquitectura.html"><b>Arquitectura</b><span>Etapas del compilador y generadores de código.</span></a>
+</div>
+<h2>Lenguaje</h2><div class="doclist">
+<a class="docitem" href="docs/sintaxis.html"><b>Referencia de sintaxis</b><span>Todas las construcciones del lenguaje con ejemplos.</span></a>
+<a class="docitem" href="docs/especificacion.html"><b>Especificación</b><span>Definición formal del lenguaje y de sus reglas de tipos (en inglés).</span></a>
+<a class="docitem" href="docs/concurrencia.html"><b>Tareas y canales</b><span>spawn, join, canales, select y tiempos límite.</span></a>
+</div>
+<h2>Biblioteca estándar</h2><div class="doclist">
+<a class="docitem" href="docs/stdlib.html"><b>Visión general</b><span>Los 73 espacios de nombres y sus 812 funciones.</span></a>
+<a class="docitem" href="docs/extras.html"><b>Regex, uuid, hash y más</b><span>Módulos de uso general.</span></a>
+<a class="docitem" href="docs/red.html"><b>Red y HTTP</b><span>Sockets, servidor HTTP, enrutador y respuestas.</span></a>
+<a class="docitem" href="docs/cliente-http.html"><b>Cliente HTTP/HTTPS</b><span>std::http::request.</span></a>
+<a class="docitem" href="docs/tls.html"><b>TLS</b><span>Conexiones seguras y credenciales de servidor.</span></a>
+<a class="docitem" href="docs/websocket.html"><b>WebSocket</b><span>Cliente, servidor y decodificador de mensajes.</span></a>
+<a class="docitem" href="docs/base-de-datos.html"><b>API común de bases de datos</b><span>std::db y pools.</span></a>
+<a class="docitem" href="docs/sqlite.html"><b>SQLite</b><span>Motor SQL propio, migraciones y límites.</span></a>
+<a class="docitem" href="docs/postgresql.html"><b>PostgreSQL</b><span>Conexión, consultas y TLS.</span></a>
+<a class="docitem" href="docs/mysql.html"><b>MySQL</b><span>Conexión, consultas y transacciones.</span></a>
+<a class="docitem" href="docs/multipart.html"><b>Subida de archivos</b><span>Formularios multipart.</span></a>
+<a class="docitem" href="docs/servidor.html"><b>Ciclo de vida del servidor</b><span>Arranque, parada y presión de carga.</span></a>
+<a class="docitem" href="docs/metricas.html"><b>Métricas</b><span>Contadores, gauges e histogramas.</span></a>
+<a class="docitem" href="docs/audio.html"><b>Audio</b><span>WAV, etiquetas, biblioteca y síntesis.</span></a>
+<a class="docitem" href="docs/motor-de-audio.html"><b>Motor de audio</b><span>Decodificación y reproducción.</span></a>
+<a class="docitem" href="docs/wasm.html"><b>WebAssembly</b><span>Backend WASM, memoria y host JavaScript.</span></a>
+</div>
+<h2>Herramientas</h2><div class="doclist">
+<a class="docitem" href="docs/lsp.html"><b>Servidor de lenguaje (LSP)</b><span>Diagnósticos, símbolos y renombrado en editores.</span></a>
+<a class="docitem" href="docs/dap.html"><b>Adaptador de depuración (DAP)</b><span>Depuración desde editores.</span></a>
+<a class="docitem" href="docs/depurador.html"><b>Depurador</b><span>Información de depuración y depurador interactivo.</span></a>
+<a class="docitem" href="docs/paquetes.html"><b>Paquetes</b><span>Registro remoto, firmas y dependencias.</span></a>
+</div>
+<h2>Estado del proyecto</h2><div class="doclist">
+<a class="docitem" href="docs/estado.html"><b>Estado verificado</b><span>Qué se probó, cómo, y cada limitación conocida.</span></a>
+<a class="docitem" href="docs/cambios.html"><b>Historial de cambios</b><span>Cambios por versión.</span></a>
+<a class="docitem" href="docs/validacion.html"><b>Registro de validación (histórico)</b><span>Pruebas de la etapa en Rust.</span></a>
+</div>
+</article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="documentacion.html">Índice</a>
+      <a href="biblioteca.html">Biblioteca estándar</a>
+      <a href="docs/estado.html">Estado verificado</a>
+      <a href="docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

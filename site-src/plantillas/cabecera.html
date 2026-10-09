@@ -8,24 +8,21 @@
 <meta property="og:title" content="{{TITULO}}">
 <meta property="og:description" content="{{DESC}}">
 <meta property="og:type" content="website">
-<meta name="color-scheme" content="light dark">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css">
+<link rel="icon" href="{{BASE}}favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{BASE}}style.css">
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
-<header class="top"><div class="wrap">
-  <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="26" height="26">TITAN</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="{{BASE}}index.html"><img src="{{BASE}}favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
-    <a href="index.html#lenguaje">Lenguaje</a>
-    <a href="index.html#instalar">Instalación</a>
-    <a href="index.html#plataformas">Plataformas</a>
-    <a href="biblioteca.html">Biblioteca estándar</a>
-    <a href="index.html#herramientas">Herramientas</a>
-    <a href="index.html#limites">Límites</a>
-    <a href="index.html#documentacion">Documentación</a>
+    <a href="{{BASE}}index.html#lenguaje">Lenguaje</a>
+    <a href="{{BASE}}index.html#instalar">Instalación</a>
+    <a href="{{BASE}}index.html#plataformas">Plataformas</a>
+    <a href="{{BASE}}biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="{{BASE}}documentacion.html" data-a="docs">Documentación</a>
     <a href="{{REPO}}/releases">Descargas</a>
-    <a href="{{REPO}}">GitHub</a>
+    <a class="gh" href="{{REPO}}">GitHub</a>
   </nav>
 </div></header>
 <main id="contenido">

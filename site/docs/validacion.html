@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registro de validación (histórico) — Documentación de Titan</title>
+<meta name="description" content="Pruebas de la etapa en Rust.">
+<meta property="og:title" content="Registro de validación (histórico) — Documentación de Titan">
+<meta property="og:description" content="Pruebas de la etapa en Rust.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html" class="on">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Estado del proyecto</p><blockquote>
+<p>Registro histórico. Hasta octubre de 2026 estas validaciones se hicieron contra el prototipo escrito en Rust (<code>zett</code>, VM).
+Para el estado actual (compilador nativo en Titan, Linux x86-64 y ARM64) ver <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<h1 id="registro-visible-de-validacion">Registro visible de validación</h1>
+<p>Este documento registra evidencia comprobable. Un cambio no se marca como
+validado solamente porque el código parezca correcto: debe tener pruebas y una
+ejecución externa en GitHub Actions. Las pruebas físicas en el Redmi se anotan
+por separado porque CI no puede sustituir un teléfono real.</p>
+<h2 id="reglas-para-tests-que-dependen-del-reloj">Reglas para tests que dependen del reloj</h2>
+<p>Esta sección existe porque la matriz <code>cross-platform</code> se puso en rojo varias
+veces sin que hubiera ninguna regresión: el código estaba bien y el margen de
+tiempo no. Un test intermitente no es un test débil, es un test que miente, y
+enseña al equipo a ignorar el rojo. Las reglas son cuatro:</p>
+<ol>
+<li>
+<p><strong>Si el test comprueba que algo <em>sucede</em>, el plazo debe ser generoso.</strong>
+   Segundos, no milisegundos. Una máquina lenta solo puede costar tiempo, nunca
+   provocar un fallo falso. Los plazos cortos no hacen la suite más rápida en el
+   camino feliz: solo se agotan cuando algo va mal.</p>
+</li>
+<li>
+<p><strong>Si el test comprueba que algo <em>expira</em>, el sueño se deriva de la constante
+   que se está probando</strong>, nunca de un número escrito a mano. Ejemplo real:
+   <code>server_mod::stalled_request_body_...</code> duerme <code>IO_DEADLINE + 500ms</code>. Así, si
+   mañana cambia la constante, el test se ajusta solo y no se desincroniza.</p>
+</li>
+<li>
+<p><strong>No se afirma nada sobre el tiempo de reloj</strong> salvo que la propiedad bajo
+   prueba <em>sea</em> la duración. Un <code>assert!(elapsed &lt; 250ms)</code> mide qué tan rápida
+   es la máquina, no si el código es correcto. Cuando esa afirmación es
+   imprescindible, el test se restringe a Linux y el comentario dice por qué.</p>
+</li>
+<li>
+<p><strong>Se prefiere una relación exacta a un rango plausible.</strong> <code>fps</code> es el inverso
+   redondeado de <code>dt</code>: afirmar <code>fps == (1.0/dt).round()</code> es determinista y
+   comprueba la lógica real; afirmar <code>1 &lt;= fps &lt;= 1000</code> es una apuesta sobre la
+   velocidad del host.</p>
+</li>
+</ol>
+<p>Para esperas hay que usar una fecha límite de reloj (<code>Instant::now() + 15s</code>) en
+lugar de un número fijo de reintentos: <code>for _ in 0..200 { sleep(5ms) }</code> parece
+un bucle de espera, pero en realidad es un presupuesto de un segundo escrito de
+forma que nadie lo nota al leerlo.</p>
+<p>Antes de dar por bueno un cambio en esta zona: <code>scripts/flaky-check.sh -n 30</code>
+repite los grupos sensibles al tiempo y reporta el nombre exacto de lo que
+falle. Ejecutado en un teléfono con Termux es más exigente que cualquier runner
+de GitHub, incluido macOS.</p>
+<h2 id="estado-actual">Estado actual</h2>
+<ul>
+<li>Rama de trabajo: <code>arena/019ff232-aio</code></li>
+<li>Commit funcional validado: <code>1875e3a2b0d7386c5027f4e5f46909f5800e97e9</code></li>
+<li>Alcance: cierre de la fase 2 de sandbox y seguridad; capacidades, aislamiento,
+  cuotas y cleanup por runtime para tareas, canales, red, bases de datos,
+  procesos, colecciones y recursos stdlib; servidor HTTP/WebSocket acotado,
+  KV/sled, Redis, ONNX y generación PDF real; checks Android ARM de 32 y 64 bits</li>
+<li>Fecha: 2026-08-12</li>
+</ul>
+<h3 id="evidencia-automatizada-mas-reciente">Evidencia automatizada más reciente</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Comprobación</th>
+<th style="text-align: right;">Resultado</th>
+<th>Evidencia</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Formato completo, <code>cargo fmt --check</code></td>
+<td style="text-align: right;">Aprobado, sin fallo oculto</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a></td>
+</tr>
+<tr>
+<td><code>cargo check</code> con características normales</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a></td>
+</tr>
+<tr>
+<td>Tests del workspace, todos los targets</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a></td>
+</tr>
+<tr>
+<td><code>cargo check --no-default-features</code></td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a></td>
+</tr>
+<tr>
+<td>Cross-check Android AArch64</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a></td>
+</tr>
+<tr>
+<td>AArch64 con compiladores reales de Android NDK y warnings estrictos</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369">Termux ARM 31633367369</a></td>
+</tr>
+<tr>
+<td>Compilación y enlace Android/Bionic ARMv7</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369">Termux ARM 31633367369</a></td>
+</tr>
+<tr>
+<td>ELF32 ARM y paquete Debian <code>Architecture: arm</code></td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369">Termux ARM 31633367369</a></td>
+</tr>
+<tr>
+<td>Artefacto <code>zett-termux-arm-81</code>, 26.718.677 bytes</td>
+<td style="text-align: right;">Aprobado</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369">Termux ARM 31633367369</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>Los fallos advisory registrados ya fueron corregidos:</p>
+<ul>
+<li>Se aplicó el <code>rustfmt</code> estable de CI a los 106 archivos Rust que no cumplían
+  el formato. El verificador Phase 34 se hizo compatible con macros formateadas
+  en varias líneas y volvió a confirmar 758 nativas únicas y 837 llamadas.</li>
+<li>AArch64 ahora encuentra automáticamente clang, clang++, <code>llvm-ar</code> y
+  <code>llvm-ranlib</code> del Android NDK. Además, la ruta oficial ejecuta un segundo
+  check AArch64 real con NDK, <code>--all-targets</code>, lockfile y warnings tratados como
+  errores antes de construir el paquete ARMv7.</li>
+<li>Las modificaciones posteriores de red, procesos y colecciones introdujeron
+  nuevas diferencias de <code>rustfmt</code>. El workflow histórico las dejó pasar porque
+  ese paso conserva <code>continue-on-error</code>. El commit <code>819f4c9</code> aplicó exactamente
+  el formato señalado por Rust estable; CI 31558196407 y la ejecución final
+  31558531732 no tienen la anotación de fallo advisory y aprueban el formato.</li>
+</ul>
+<p>El workflow ARMv7 oficial usa Android NDK y <code>armv7-linux-androideabi</code>. Además de
+compilar y enlazar, comprueba con <code>readelf</code> que el binario sea ELF32/ARM,
+verifica los metadatos del <code>.deb</code>, extrae el paquete y compara byte por byte el
+ejecutable empaquetado con el ejecutable construido.</p>
+<h3 id="aislamiento-de-estado-mutable-por-vm">Aislamiento de estado mutable por VM</h3>
+<p>El commit validado elimina el estado compartido entre VMs en audio, juego, GUI,
+input, portapapeles/notificaciones, ciclo de vida móvil y métricas. También
+separa los cuatro emuladores freestanding (plataforma, CPU, memoria y MMIO), los
+contadores de señales y los límites de frecuencia HTTP. Las métricas creadas
+internamente por el dispatcher HTTP reciben de forma explícita el identificador
+del runtime correcto; no caen en el runtime global por defecto.</p>
+<p>Las regresiones crean dos dominios de runtime simultáneos y comprueban que el
+segundo no puede leer handles, clicks, teclas, coordenadas, texto, eventos,
+métricas, registros MMIO, mapas de páginas ni fallos de CPU del primero. Luego
+reinician y limpian selectivamente el segundo y demuestran que el estado del
+primero sigue intacto. Señales y rate limits tienen pruebas específicas de
+consumo y cleanup independientes.</p>
+<p>El asignador freestanding ya no crea un <code>Vec</code> proporcional a toda la memoria
+física simulada. Usa asignación dispersa O(1) y valida overflow de direcciones.
+Una regresión inicializa una región modelada de 1 TiB, asigna dos frames y
+comprueba el conteo sin reservar cientos de millones de entradas host.</p>
+<p>Evidencia externa:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376">CI 31555029376</a>: formato, checks normales y sin características por defecto, todos
+  los tests y cross-check AArch64 aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202">Termux ARM 31555029202</a>: AArch64 NDK estricto, build ARMv7, verificación, paquete y artefacto
+  aprobados.</li>
+</ul>
+<h3 id="primera-capa-de-cuotas-por-runtime">Primera capa de cuotas por runtime</h3>
+<p>Las tareas ya no pueden crear hilos del sistema sin límite. Cada runtime admite
+por defecto 256 tareas pendientes de <code>join</code>; el embedder puede reducir esa
+cantidad mediante <code>with_task_limit</code>. La reserva se realiza bajo el mismo lock
+que el registro, antes de crear el hilo, por lo que dos tareas concurrentes no
+pueden saltarse la cuota. Un <code>join</code> libera el slot. Los hijos heredan los límites
+de instrucciones, profundidad, memoria y GC del padre, y <code>spawn_quota</code> solo
+puede reducir la memoria disponible, nunca elevar el límite del padre.</p>
+<p>Los canales tienen un máximo predeterminado de 1.024 por runtime y su capacidad
+individual se rechaza antes de reservar memoria si supera 65.536 mensajes.
+También se añadieron límites finitos para el estado nativo aislado:</p>
+<ul>
+<li>256 buffers de audio, ondas de hasta 60 segundos y cinco minutos de muestras
+  acumuladas;</li>
+<li>1.024 widgets y 64 KiB por texto GUI;</li>
+<li>256 teclas simultáneas y 32 puntos táctiles;</li>
+<li>portapapeles de 1 MiB, 256 notificaciones y 1.024 eventos móviles;</li>
+<li>4.096 métricas y 4.096 claves de rate limit por runtime;</li>
+<li>1.024 handlers de syscall freestanding;</li>
+<li>16.384 frames host activos, mappings de página y registros MMIO;</li>
+<li>256 regiones MMIO y 256 KiB de salida UART.</li>
+</ul>
+<p>Las regresiones llenan cada cuota, comprueban el rechazo de una entrada extra y,
+donde existe una operación de liberación o reset, demuestran que el slot vuelve
+a estar disponible. Los límites se aplican antes de construir vectores grandes,
+crear hilos o insertar nuevas entradas.</p>
+<p>Evidencia externa de este bloque:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555029376">CI 31555029376</a>: formato, checks, tests, no-default-features y AArch64 aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555029202">Termux ARM 31555029202</a>: check NDK estricto, build ARMv7, verificación, paquete y artefacto aprobados.</li>
+</ul>
+<h3 id="cuotas-de-red-y-bases-de-datos">Cuotas de red y bases de datos</h3>
+<p>El commit <code>c21517c</code> añade dos contadores atómicos compartidos por todas las
+tareas de una VM. El límite predeterminado es de 1.024 handles de red y 256
+handles de base de datos. Quien integra la VM puede reducirlos con
+<code>with_network_handle_limit</code> y <code>with_database_handle_limit</code>.</p>
+<p>La cuota de red cubre listeners y streams TCP, routers HTTP, configuraciones y
+streams TLS, decoders y conexiones WebSocket, y controles de servidor. La cuota
+de datos cubre conexiones directas, pools y conexiones adquiridas de SQLite,
+PostgreSQL y MySQL. Además, el tamaño solicitado para cualquiera de esos pools
+queda limitado específicamente a 64 conexiones; ya no reutiliza el techo
+genérico de 67.108.864.</p>
+<p>Cada operación reserva su slot antes de abrir un socket, aceptar una conexión,
+realizar un handshake o abrir/adquirir una base de datos. El permiso RAII
+deshace automáticamente la reserva si la operación falla. El cierre o retirada
+del registro libera el slot. Convertir un stream TCP/TLS existente en WebSocket
+transfiere el mismo slot, en vez de cobrar dos handles por un único transporte.</p>
+<p>Las regresiones verificadas por CI demuestran:</p>
+<ol>
+<li>saturación y recuperación del permiso, además de una carrera de 32 hilos en
+   la que un límite de cuatro nunca admite un quinto;</li>
+<li>rechazo del segundo router con límite uno y reutilización después de cerrar
+   un listener TCP local;</li>
+<li>rechazo de la segunda base SQLite en memoria y reutilización después de
+   cerrar la primera;</li>
+<li>rechazo de un pool de 65 conexiones con el máximo específico de 64;</li>
+<li>un eco WebSocket real sobre listener y streams locales con límite tres, lo
+   que prueba que las conversiones TCP a WebSocket no cuentan dos veces.</li>
+</ol>
+<p>Evidencia externa de este bloque:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555988990">CI 31555988990</a>: checks normal y <code>--no-default-features</code>, todos los tests y
+  cross-check AArch64 aprobados. Su paso advisory de formato sí reportó
+  diferencias; el formato completo quedó aprobado posteriormente en
+  <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558196407">CI 31558196407</a>.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555989007">Termux ARM 31555989007</a>: check AArch64 NDK estricto, compilación y enlace Android/Bionic
+  ARMv7, verificaciones del ELF y paquete, y subida del artefacto aprobados.</li>
+</ul>
+<p>No fue necesario levantar servicios externos para estas regresiones: se usaron
+sockets loopback y SQLite en memoria. PostgreSQL y MySQL sí compilaron en las
+rutas host, AArch64 y ARMv7, pero este bloque no afirma haber conectado contra
+servidores reales de esas dos bases.</p>
+<p>La ejecución intermedia <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31555890863">CI 31555890863</a> detectó un error de ownership en el código de la nueva prueba
+concurrente; el cross-check AArch64 sí había pasado, mientras el paso advisory
+de formato también reportó diferencias. El commit <code>c21517c</code> corrigió el test y
+la ejecución funcional posterior aprobó checks y tests; <code>819f4c9</code> cerró después
+el formato pendiente.
+La ejecución intermedia no se cuenta como validación verde.</p>
+<h3 id="procesos-externos-con-memoria-y-concurrencia-acotadas">Procesos externos con memoria y concurrencia acotadas</h3>
+<p>El commit <code>3b046e3</code> conecta una cuota común de 32 procesos hijo por runtime. La
+cuota incluye ejecuciones sincrónicas, <code>run_timeout</code>, procesos background y
+cada hijo que compone un pipeline. La reserva se realiza antes de <code>spawn</code> y un
+permiso RAII la devuelve tras <code>wait</code>, error de creación o cleanup. Un handle
+background terminado continúa ocupando su slot hasta que se recolecta con
+<code>spawn_wait</code>, evitando acumular zombies y resultados abandonados.</p>
+<p>También se aplican estos límites antes o durante la operación:</p>
+<ul>
+<li>64 KiB para comando y argumentos;</li>
+<li>8 MiB para la entrada enviada por stdin;</li>
+<li>4 MiB combinados entre stdout y stderr;</li>
+<li>ocho comandos por pipeline.</li>
+</ul>
+<p>La salida ya no se recoge con vectores que crecen hasta agotar la memoria. Dos
+lectores concurrentes comparten el presupuesto de 4 MiB; cuando se llena,
+continúan drenando y descartan el exceso para que el hijo no quede bloqueado por
+un pipe lleno. <code>run_with_input</code> escribe stdin en paralelo con esos lectores.
+Los pipelines drenan el stderr de todos los procesos intermedios mientras leen
+el stdout final. Los procesos background empiezan a drenar inmediatamente, no
+solo cuando alguien llama posteriormente a <code>spawn_wait</code>.</p>
+<p>Las regresiones ejecutan procesos reales y comprueban:</p>
+<ol>
+<li>stdin, stdout y stderr simultáneos de 128 KiB, mayores que un pipe típico,
+   sin interbloqueo;</li>
+<li>stderr intermedio de 128 KiB en un pipeline, conservando además su stdout;</li>
+<li>un proceso background que produce 128 KiB termina antes de <code>spawn_wait</code>;</li>
+<li>salida de 4 MiB más un byte rechazada como <code>ResourceLimit</code>;</li>
+<li>rechazo previo de comandos, entradas y pipelines sobredimensionados;</li>
+<li>saturación de los 32 permisos, liberación y reutilización;</li>
+<li>cleanup de runtime que mata, espera y elimina un <code>sleep</code> background real.</li>
+</ol>
+<p>Evidencia externa de este bloque:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31557012296">CI 31557012296</a>: checks normal y sin features por defecto, todos los tests y
+  cross-check AArch64 aprobados. Su formato advisory reportó diferencias que
+  quedaron corregidas y aprobadas en
+  <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558196407">CI 31558196407</a>.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31557012301">Termux ARM 31557012301</a>: check NDK estricto, build y enlace Android/Bionic ARMv7,
+  verificaciones, paquete y artefacto aprobados.</li>
+</ul>
+<p>La ejecución intermedia <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31556925627">CI 31556925627</a> señaló que un inspector usado solo por tests seguía compilándose
+en producción y activaba <code>dead_code</code> bajo warnings estrictos. El commit
+<code>3b046e3</code> lo restringió a tests y la ejecución final aprobó. Esa ejecución
+intermedia no se cuenta como validación verde.</p>
+<h3 id="colecciones-persistentes-con-cuotas-y-aritmetica-segura">Colecciones persistentes con cuotas y aritmética segura</h3>
+<p>El commit <code>5d16dda</code> conecta una cuota común por runtime para set, deque, cola de
+prioridad, mapa ordenado, contador y grafo. Los máximos predeterminados son:</p>
+<ul>
+<li>256 handles entre las seis familias;</li>
+<li>65.536 entradas agregadas;</li>
+<li>4.096 entradas dentro de un único handle;</li>
+<li>16 MiB de strings y JSON serializado;</li>
+<li>64 KiB por elemento.</li>
+</ul>
+<p>Cada constructor y mutación reserva antes de insertar. Una reserva que falla no
+modifica el registro ni consume cuota; retirar elementos, reemplazar un JSON
+por otro menor y destruir handles devuelven entradas y bytes. El cleanup del
+runtime elimina tanto los registros como la contabilidad residual. El mapa
+ordenado mide JSON mediante un escritor contador acotado, sin construir una
+segunda copia serializada potencialmente grande solo para conocer su tamaño.</p>
+<p>También se cerraron errores aritméticos y algorítmicos: la cola mínima rechaza
+<code>i64::MIN</code> en vez de desbordar al negarlo, la secuencia estable y los contadores
+usan operaciones comprobadas, y el total del contador se calcula en <code>i128</code>
+antes de convertirlo. Los grafos rechazan pesos negativos porque el camino más
+corto usa Dijkstra. La detección de ciclos dirigida ahora es iterativa, por lo
+que una cadena profunda controlada por un programa TITAN no depende de la pila
+nativa de Rust.</p>
+<p>Las regresiones ejecutadas por CI demuestran:</p>
+<ol>
+<li>saturación compartida de los 256 handles, recuperación tras liberar uno y
+   cleanup completo;</li>
+<li>rechazo y reutilización del límite de 4.096 entradas por handle;</li>
+<li>llenado exacto de los 16 MiB, rechazo del siguiente elemento y recuperación
+   después de retirar uno;</li>
+<li>atomicidad y recuperación de la cuota agregada de entradas;</li>
+<li>devolución de bytes al extraer de deque y cola, reemplazar/retirar del mapa,
+   y destruir las demás estructuras;</li>
+<li>rechazo de elementos sobredimensionados, overflows de prioridad, valor y
+   total, y pesos negativos;</li>
+<li>detección de un ciclo al final de una cadena dirigida de 1.500 nodos sin DFS
+   recursiva.</li>
+</ol>
+<p>Evidencia externa de este bloque:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732">CI 31558531732</a>: formato completo, checks con características normales y sin
+  características por defecto, todos los tests y cross-check AArch64
+  aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725">Termux ARM 31558531725</a>: check AArch64 con NDK obligatorio, compilación y enlace
+  Android/Bionic ARMv7, verificación ELF32/ARM, paquete y artefacto aprobados.</li>
+</ul>
+<p>La ejecución funcional original <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31557774013">CI 31557774013</a> ya aprobaba compilación y las regresiones de colecciones, pero su
+paso de formato era advisory y reportó diferencias. No se presenta ese paso
+como verde: <code>819f4c9</code> aplicó el formato y la ejecución final anterior lo aprobó.</p>
+<p>Estas pruebas no requieren servicios externos ni una instalación física. El
+candidato quedó validado y empaquetado por GitHub Actions, pero aún no se ha
+ejecutado en el Redmi 9C; esa prueba se agrupará con el siguiente milestone.</p>
+<h3 id="estado-de-juego-acotado-y-validado">Estado de juego acotado y validado</h3>
+<p>Los commits <code>f3e300f</code> y <code>e31bb4d</code> cierran el crecimiento controlable de
+<code>std::game</code>. Sigue existiendo como máximo un estado por runtime, pero ahora el
+título se rechaza antes de copiarlo si supera 64 KiB. El ancho y alto deben ser
+positivos y no superar 16.384. <code>step</code>, <code>fps</code> y <code>shutdown</code> ya no crean un estado
+vacío por el solo hecho de consultar un runtime que nunca inicializó el motor.
+Al apagar, el título se sustituye por un string vacío para liberar también su
+capacidad reservada, y se reinician tiempo, frames y FPS.</p>
+<p>La colisión AABB conserva los puntos de tamaño cero ya soportados, pero rechaza
+tamaños negativos, NaN, infinitos y sumas geométricas que desborden a infinito.
+Las regresiones verifican esos bordes, el límite exacto de título y dimensión,
+el rechazo previo sin crear estado, la liberación del título y el cleanup del
+runtime.</p>
+<p>Evidencia externa:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558531732">CI 31558531732</a>: formato, checks, 281 tests de stdlib —incluidas las nuevas
+  regresiones de juego—, el resto del workspace, no-default-features y AArch64
+  aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558531725">Termux ARM 31558531725</a>: AArch64 NDK estricto, build Android/Bionic ARMv7, ELF, paquete y
+  artefacto aprobados.</li>
+</ul>
+<p>La ejecución intermedia <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31558364517">CI 31558364517</a> encontró que una prueba antigua todavía esperaba que <code>shutdown</code>
+creara implícitamente un estado en un segundo runtime. Las 16 pruebas directas
+de juego pasaron, pero esa regresión de integración falló; <code>e31bb4d</code> actualizó
+la expectativa y el conteo de cleanup, y la ejecución final aprobó. El run
+intermedio no se cuenta como verde.</p>
+<h3 id="senales-watchers-progreso-routers-y-ventanas-acotados">Señales, watchers, progreso, routers y ventanas acotados</h3>
+<p>El commit <code>7c25b23</code> cierra el crecimiento sin límite de varios registros nativos
+ligeros y de sus colas. Todos los máximos se aplican por runtime antes de crear
+o insertar el recurso:</p>
+<ul>
+<li>señales: los ocho tipos admitidos siguen teniendo un único dispatcher real
+  por señal de proceso, pero el contador pendiente ahora se satura en
+  <code>usize::MAX</code> en vez de volver a cero por overflow;</li>
+<li>filesystem watchers: 32 watchers activos entre operaciones persistentes y
+  <code>watch_once</code>, paths de 16 KiB, timeout máximo de 24 horas, 1.024 eventos
+  pendientes y descripción de evento de 64 KiB;</li>
+<li>progreso: 64 barras o spinners y mensajes de 4 KiB;</li>
+<li>routers: 64 handles, 4.096 rutas y 1 MiB por router, además de 8 MiB entre
+  todos los routers del runtime; patrón de 8 KiB y valor/path de 64 KiB;</li>
+<li>ventanas virtuales: 64 handles, 1.024 eventos por ventana, título de 64 KiB y
+  dimensiones entre 1 y 16.384;</li>
+<li>ventanas reales: 16 handles, 1.024 eventos por ventana, título de 4 KiB,
+  dimensión máxima de 4.096 y 16.777.216 píxeles agregados por runtime.</li>
+</ul>
+<p>Los watchers usan ahora un canal sincronizado de capacidad fija. Cuando el
+backend del sistema operativo produce eventos más rápido que el programa, se
+descarta el exceso en vez de hacer crecer memoria. <code>next_event</code> clona solamente
+la referencia a su receptor y libera el lock del registro antes de esperar, así
+que una espera larga no impide cerrar, limpiar ni crear otros watchers. El
+permiso RAII se devuelve al fallar la creación, cerrar el handle, terminar
+<code>watch_once</code> o limpiar el runtime.</p>
+<p>Las ventanas reales conservan el requisito de vivir en el hilo del sistema
+operativo que las creó, pero su permiso y su presupuesto de píxeles son globales
+al runtime: abrir ventanas desde tareas en hilos distintos no multiplica la
+cuota. Las colas virtuales y reales dejan de crecer al alcanzar 1.024 eventos;
+un cierre real conserva prioridad para que <code>CloseRequested</code> no se pierda. Cerrar
+una ventana virtual elimina el handle inmediatamente y recupera su slot.</p>
+<p>Todos los generadores de handles modificados usan incremento comprobado. El
+puente de la VM propaga los errores de creación de progreso, router y ventana,
+y convierte handles y dimensiones con <code>try_from</code>; enteros negativos o mayores
+que <code>u32</code> ya no se transforman silenciosamente mediante <code>as</code>.</p>
+<p>Las regresiones ejecutadas por CI demuestran:</p>
+<ol>
+<li>saturación y recuperación de handles de progreso, routers, ventanas
+   virtuales, ventanas reales y watchers;</li>
+<li>rechazo de mensajes, títulos, paths, timeouts y dimensiones
+   sobredimensionados, y truncado seguro de descripciones al límite exacto;</li>
+<li>límite de 4.096 rutas, 1 MiB por router y 8 MiB agregado, sin cargar bytes por
+   una inserción rechazada;</li>
+<li>llenado y drenaje de una cola virtual de 1.024 eventos, y conservación del
+   cierre prioritario en la cola real;</li>
+<li>saturación del contador de señales sin wrap;</li>
+<li>rechazo desde la VM de anchos y handles negativos o fuera de rango;</li>
+<li>cleanup que libera todos los slots del runtime usado por cada prueba.</li>
+</ol>
+<p>Evidencia externa de este bloque:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31559566600">CI 31559566600</a>: <code>cargo fmt --check</code>, checks con características normales y sin
+  características por defecto, todos los tests del workspace y cross-check
+  AArch64 aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31559566583">Termux ARM 31559566583</a>: check AArch64 con Android NDK y warnings estrictos, compilación y
+  enlace Android/Bionic ARMv7, verificación ELF32/ARM, paquete Debian y subida
+  del artefacto aprobados.</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>No hizo falta una validación física para probar estas cuotas y rechazos. La
+ventana real continúa respaldada por la prueba física X11 ya registrada, pero
+este commit no afirma haber repetido esa ceremonia en el Redmi. El paquete
+producido se reserva para una validación física agrupada del próximo milestone.</p>
+<h3 id="imagenes-decodificadas-y-transformaciones-con-memoria-acotada">Imágenes decodificadas y transformaciones con memoria acotada</h3>
+<p>Los commits <code>82ea1ab</code> y <code>57b2b84</code> endurecen el registro de imágenes y todas las
+operaciones que pueden decodificar, copiar o producir píxeles. Cada runtime
+admite como máximo:</p>
+<ul>
+<li>64 handles de imagen;</li>
+<li>8.192 píxeles de ancho o alto y 64 MiB decodificados por imagen;</li>
+<li>128 MiB decodificados entre todas sus imágenes persistentes;</li>
+<li>32 MiB de entrada codificada y 64 MiB de salida codificada;</li>
+<li>cuatro operaciones simultáneas y 128 MiB de presupuesto transitorio. Una
+  operación que reserva el máximo de 64 MiB permite, por tanto, como máximo dos
+  transformaciones pesadas simultáneas.</li>
+</ul>
+<p><code>load</code> y <code>load_bytes</code> configuran los límites del decodificador de <code>image</code> antes
+de leer los píxeles, y vuelven a medir el buffer decodificado exacto antes de
+insertarlo. <code>encode</code> ya no escribe en un <code>Vec</code> libre: usa un writer con <code>Write +
+Seek</code> que devuelve error antes de cruzar 64 MiB. Los paths se rechazan por
+encima de 16 KiB.</p>
+<p>El registro guarda cada <code>DynamicImage</code> detrás de <code>Arc</code>. Una transformación puede
+liberar el lock global y trabajar sin clonar todo el origen. El resultado sigue
+cubierto por un permiso RAII transitorio hasta que la inserción termina o falla.
+Cerrar o limpiar devuelve inmediatamente handles y bytes persistentes; cualquier
+error devuelve también el permiso transitorio.</p>
+<p>Se validan dimensiones positivas antes de reservar. Los recortes comprueban
+sumas de coordenadas y bordes antes de llamar al codec, y <code>blur</code> rechaza NaN,
+infinito, negativos y sigma mayor que 100. En el puente VM, <code>from_rgba</code> dejó de
+convertir enteros mediante <code>as</code>, y brillo dejó de convertir silenciosamente un
+entero fuera de <code>i32</code> en cero.</p>
+<p>Las regresiones ejecutadas externamente demuestran:</p>
+<ol>
+<li>saturación de 64 handles, rechazo del siguiente, liberación de uno,
+   reutilización y cleanup completo;</li>
+<li>rechazo de dimensiones, recortes y sigma inválidos;</li>
+<li>rechazo en el borde de 128 MiB persistentes sin insertar el resultado;</li>
+<li>saturación independiente del número de operaciones y del presupuesto
+   transitorio, con recuperación RAII;</li>
+<li>writer codificado que conserva exactamente el límite y falla antes del byte
+   siguiente;</li>
+<li>carga, resize, transformaciones y encode PNG reales conservando las pruebas
+   funcionales existentes.</li>
+</ol>
+<p>Evidencia externa:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31560352682">CI 31560352682</a>: formato con Rust 1.97, checks normal y sin características por
+  defecto, todos los tests del workspace y AArch64 aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31560352721">Termux ARM 31560352721</a>: check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto aprobados.</li>
+</ul>
+<p>La ejecución intermedia <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31560187616">CI 31560187616</a> aprobó compilación, tests y AArch64, pero el paso advisory de formato
+detectó cambios exigidos por el <code>rustfmt</code> estable recién actualizado a Rust
+1.97. El commit <code>57b2b84</code> aplicó exactamente ese diff, incluidos los archivos
+del bloque ligero anterior, y la ejecución final aprobó formato. El run
+intermedio no se presenta como completamente verde.</p>
+<p>No se necesita una prueba física para estos límites. Los codecs y las rutas
+ARMv7 sí quedaron compilados dentro del binario Android/Bionic; este bloque no
+afirma que el Redmi haya decodificado manualmente cada formato.</p>
+<h3 id="tokenizadores-y-encodings-con-entradas-y-salidas-acotadas">Tokenizadores y encodings con entradas y salidas acotadas</h3>
+<p>El commit <code>14268e2</code> limita tanto los modelos HuggingFace persistentes como las
+operaciones de tokenización. Cada runtime admite:</p>
+<ul>
+<li>16 handles de tokenizer;</li>
+<li>16 MiB de JSON por modelo y 64 MiB de fuentes JSON agregadas;</li>
+<li>vocabularios de hasta 262.144 entradas y tokens de vocabulario de hasta 256
+  bytes;</li>
+<li>textos individuales de 64 KiB;</li>
+<li>batches de 64 textos y 256 KiB agregados;</li>
+<li>131.072 tokens por encoding, 262.144 por batch, 8 MiB de strings de tokens por
+  encoding y 16 MiB por batch;</li>
+<li>padding entre 1 y 65.536 tokens;</li>
+<li>131.072 ids por decode y 1 MiB de texto decodificado;</li>
+<li>dos operaciones pesadas simultáneas.</li>
+</ul>
+<p><code>load</code> ya no usa una lectura de archivo que crece hasta EOF. Lee como máximo el
+límite más un byte, rechaza el exceso y valida UTF-8 antes de parsear. Tanto
+<code>load</code> como <code>from_json</code> hacen una comprobación previa de capacidad y repiten la
+comprobación bajo el lock al insertar, cerrando carreras entre tareas. Los IDs
+usan incremento comprobado.</p>
+<p>El tokenizer persistente se guarda en <code>Arc</code>. Encode, batch y decode clonan solo
+esa referencia y liberan el registro global antes del trabajo costoso, por lo
+que una tokenización lenta no bloquea close ni el cleanup de otros handles. Un
+permiso RAII limita la concurrencia y se devuelve también ante errores.</p>
+<p>Antes de copiar un encoding hacia la VM se miden cantidad de tokens y bytes de
+sus strings. <code>encode_padded</code> rechaza longitud cero —que antes podía llegar a
+<code>max_length - 1</code>— y cualquier padding mayor al máximo. Los batches validan
+cantidad y bytes antes de activar el paralelismo interno del tokenizer. Decode,
+<code>token_to_id</code> e <code>id_to_token</code> tienen límites de entrada y salida propios.</p>
+<p>Las regresiones verificadas por CI usan un tokenizer WordLevel real y prueban:</p>
+<ol>
+<li>creación de 16 modelos, rechazo del siguiente, recuperación de un slot y
+   cleanup completo;</li>
+<li>encode con padding real y longitud exacta;</li>
+<li>rechazo de longitud de padding cero, texto y batch sobredimensionados;</li>
+<li>límites agregado de fuentes y vocabulario;</li>
+<li>saturación y recuperación de los dos permisos de operación;</li>
+<li>conservación de las pruebas opcionales para tokenizadores HuggingFace
+   externos.</li>
+</ol>
+<p>Evidencia externa:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31560961245">CI 31560961245</a>: formato, checks normal y sin características por defecto, todos los
+  tests del workspace y AArch64 aprobados.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31560961244">Termux ARM 31560961244</a>: NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto aprobados.</li>
+</ul>
+<p>La contabilidad persistente usa los bytes del JSON, no intenta fingir una medida
+exacta de las estructuras internas del crate <code>tokenizers</code>. Ese posible factor
+de expansión queda además acotado por vocabulario, longitud de token, handles y
+concurrencia. No se ejecutó un modelo HuggingFace externo en este run; la prueba
+funcional integrada usa un modelo WordLevel pequeño y real, sin simulación.</p>
+<p>No hace falta validación física individual para este bloque. El código sí quedó
+compilado y enlazado dentro del binario Android/Bionic ARMv7.</p>
+<h3 id="modelos-onnx-e-inferencia-con-cuotas-por-runtime">Modelos ONNX e inferencia con cuotas por runtime</h3>
+<p>Los commits <code>788720b</code> y <code>f0b8f61</code> sustituyen el registro ONNX sin límites por
+un registro aislado y acotado. Cada runtime admite como máximo:</p>
+<ul>
+<li>cuatro modelos;</li>
+<li>256 MiB por archivo principal y 512 MiB agregados de fuentes persistentes;</li>
+<li>paths de 16 KiB;</li>
+<li>65.536 nodos, ocho entradas y 32 salidas por modelo;</li>
+<li>rango ocho, 4.194.304 por dimensión y 4.194.304 elementos por tensor;</li>
+<li>64 MiB agregados de entrada por inferencia;</li>
+<li>4.194.304 elementos y 64 MiB agregados de salida de ancho fijo;</li>
+<li>una carga o inferencia pesada simultánea.</li>
+</ul>
+<p>La carga adquiere primero un permiso RAII, abre una sola vez el archivo, exige
+que sea regular y mide ese mismo descriptor. Tract recibe un <code>Read::take</code>
+limitado al tamaño inspeccionado mediante <code>model_for_read</code>; ya no se vuelve a
+abrir el path con <code>model_for_path</code>. La capacidad se comprueba antes de parsear y
+otra vez bajo el lock al insertar. Los IDs usan incremento comprobado.</p>
+<p>El modelo persistente queda en <code>Arc&lt;Mutex&lt;_&gt;&gt;</code>. El lock global solo sirve para
+buscar o modificar handles, no permanece tomado durante optimización ni
+inferencia. <code>close</code> y cleanup devuelven el slot y los bytes de fuente, y los
+handles continúan siendo privados del runtime que los creó.</p>
+<p>Antes de optimizar se limitan entradas, salidas y nodos. Antes de insertar se
+repiten esos límites sobre el grafo ejecutable y se inspeccionan formas, tipos y
+presupuestos estáticos. Las rutas <code>run_f32</code>, <code>run_ids</code>, BERT de dos y tres
+entradas y pooling usan productos y conversiones comprobados. Después de
+<code>tract::run</code>, todas las salidas se validan por cantidad, rango, dimensión,
+elementos y bytes antes de copiar la primera hacia la VM. Tensores String/Blob,
+cuyo contenido no puede acotarse por <code>size_of</code>, se rechazan.</p>
+<p>El puente VM rechaza arrays de forma antes de convertir más de ocho elementos,
+valida longitudes y bytes antes de duplicar arrays <code>Value</code> en buffers f32/i64,
+y rechaza NaN, infinito y valores f64 que no caben en f32.</p>
+<p>Las regresiones verificadas por CI prueban:</p>
+<ol>
+<li>cuatro modelos ejecutables de identidad hechos con tract real, rechazo del
+   quinto, inferencia f32 real, <code>close</code>, reemplazo, aislamiento y cleanup;</li>
+<li>rangos, dimensiones, productos, bytes de entrada, longitudes y salidas
+   adversariales;</li>
+<li>saturación y recuperación del permiso de operación;</li>
+<li>rechazo de directorios, de un archivo sparse de 256 MiB más un byte y de un
+   protobuf ONNX malformado, sin filtrar el permiso ni insertar un handle;</li>
+<li>conservación del test opt-in que permite cargar un <code>.onnx</code> externo válido.</li>
+</ol>
+<p>Evidencia externa final para <code>f0b8f61882b57305906d9c97c2aceb080344765c</code>:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31561938930">CI 31561938930</a>: <code>cargo fmt --check</code>, checks con características normales y sin
+  características por defecto, todos los tests del workspace y cross-check
+  AArch64 aprobaron.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31561938779">Termux ARM 31561938779</a>: check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete Debian y artefacto
+  <code>zett-termux-arm-61</code> aprobaron.</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>La primera ejecución funcional, <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31561809762">CI 31561809762</a>, detectó que <code>TDim::to_i64</code> devuelve <code>Result</code> y no <code>Option</code> en
+tract 0.21.14; por eso no se cuenta como verde. <code>f0b8f61</code> corrigió esa
+conversión, añadió el límite de nodos y aplicó exactamente el formato exigido
+por Rust 1.97. El Termux correspondiente a aquella revisión también falló y no
+se usa como evidencia.</p>
+<p>Límites declarados, sin fingir más cobertura: la contabilidad persistente mide
+bytes del archivo ONNX principal, no el heap exacto del plan optimizado. Una
+salida dinámica solo puede medirse después de que tract la produjo, aunque se
+rechaza antes de expandirla a valores TITAN. La ruta acotada no resuelve pesos
+ONNX guardados en archivos externos, para no abrir datos laterales fuera de la
+cuota. Tampoco hay todavía cancelación segura de una operación nativa tract que
+se quede computando; la cuota impide otra operación ONNX simultánea en ese
+runtime, pero no es un timeout.</p>
+<p>CI ejecutó inferencia real sobre un grafo tract construido en memoria y ejercitó
+el parser con entrada malformada; no se suministró un <code>.onnx</code> válido de terceros
+automáticamente. El test opt-in sigue disponible para eso. No hace falta una
+prueba física individual: el módulo completo quedó compilado y enlazado en el
+ELF Android/Bionic ARMv7, y el paquete se reserva para el siguiente milestone
+físico agrupado.</p>
+<h3 id="kvsled-con-handles-memoria-y-crecimiento-logico-acotados">KV/sled con handles, memoria y crecimiento lógico acotados</h3>
+<p>Los commits <code>acdeeac</code>, <code>dd9eacb</code>, <code>4033708</code> y <code>b807666</code> reemplazan el
+registro sled global y sin cuotas por estados de base compartidos, aislados por
+runtime y con contabilidad persistente. Cada runtime admite como máximo:</p>
+<ul>
+<li>ocho bases de datos y 32 handles de árboles;</li>
+<li>256 MiB y 524.288 entradas lógicas entre todas sus bases;</li>
+<li>cuatro operaciones KV simultáneas.</li>
+</ul>
+<p>Cada base admite:</p>
+<ul>
+<li>un path de 16 KiB y cache sled configurado a 16 MiB;</li>
+<li>64 árboles nombrados, con nombres de hasta 1 KiB;</li>
+<li>128 MiB y 262.144 entradas lógicas entre el árbol principal y los nombrados;</li>
+<li>claves de 64 KiB y valores de 8 MiB;</li>
+<li>listados de hasta 65.536 claves UTF-8 y 8 MiB de strings agregados.</li>
+</ul>
+<p><code>open</code> reserva el slot antes de tocar el filesystem, abre sled con cache
+explícita y recorre de forma incremental el árbol principal y todos los árboles
+existentes. Rechaza una base preexistente si cualquiera de sus claves, valores,
+árboles, bytes o entradas ya excede los límites. Solo después reserva la cuota
+agregada e inserta el handle mediante un ID con incremento comprobado. Una
+apertura fallida devuelve tanto la reserva del handle como la operación.</p>
+<p>Cada base usa <code>Arc&lt;DatabaseState&gt;</code> y un mutex propio para serializar mutaciones
+y su contabilidad. El registro global se libera antes de <code>get</code>, iteraciones,
+flush, escrituras o compare-and-swap; una base lenta ya no bloquea el I/O de
+otras bases o runtimes. Reservas separadas cierran la carrera entre aperturas
+concurrentes y el último slot disponible.</p>
+<p>Insert, overwrite, remove, clear y compare-and-swap actualizan exactamente los
+bytes <code>clave + valor</code> y las entradas del árbol, la base y el runtime. Un
+crecimiento se reserva antes de escribir y se revierte si sled falla o el CAS
+pierde. Una reducción se descuenta solo después del éxito. La misma ruta cubre
+árboles nombrados. <code>keys</code> ya no ignora errores de iteración de sled y valida el
+presupuesto antes de construir el array de salida.</p>
+<p><code>close</code> retira primero la base y todos sus handles de árboles, marca el estado
+cerrado, espera cualquier mutación ya iniciada y hace flush. Un árbol ya no
+queda vivo durante todo el proceso después de cerrar su base padre. Cleanup
+realiza la misma invalidación por runtime y un flush de mejor esfuerzo. El
+puente VM también dejó de convertir sin comprobación el contador de bytes de
+<code>flush</code> a <code>i64</code>.</p>
+<p>Las regresiones ejecutadas por CI verifican:</p>
+<ol>
+<li>persistencia real después de flush, cierre y reapertura de sled;</li>
+<li>insert, overwrite, get, remove y CAS reales;</li>
+<li>aislamiento de árboles y su invalidación al cerrar la base padre;</li>
+<li>saturación de ocho bases y 32 árboles, rechazo del siguiente, reemplazo de
+   una base cerrada y cleanup;</li>
+<li>saturación y recuperación de cuatro permisos de operación;</li>
+<li>contabilidad exacta al crecer, reducir y borrar datos del árbol principal y
+   uno nombrado;</li>
+<li>rechazo durante <code>open</code> de una base sled real que ya contiene un valor de más
+   de 8 MiB.</li>
+</ol>
+<p>Evidencia externa final para <code>b8076664d85357fa0127f2204429caebe130fe6c</code>:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31563194128">CI 31563194128</a>: formato sin anotaciones ocultas de fallo, checks normal y sin
+  características por defecto, todos los tests del workspace y AArch64
+  aprobaron.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31563194228">Termux ARM 31563194228</a>: check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y artefacto <code>zett-termux-arm-66</code> aprobaron.</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>Las ejecuciones intermedias no se ocultan: <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31562783972">CI 31562783972</a> encontró cuatro argumentos de test omitidos y el diff inicial de
+rustfmt. Más tarde <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31563012653">CI 31563012653</a> aprobó compilación y tests, pero una anotación reveló que el paso advisory de
+formato aún pedía dos cambios; por eso tampoco se usa como validación final. El
+commit <code>b807666</code> aplicó ese diff y el run final solo conserva las advertencias de
+Node.js 20 de actions de terceros.</p>
+<p>Límites declarados: la cuota persistente mide bytes lógicos de claves y valores,
+no el tamaño físico exacto del log, índices o archivos temporales de compactación
+de sled. Por ello protege la cantidad de datos aceptada y la cache, pero no
+promete que el directorio ocupe exactamente 128 MiB. Abrir una base existente
+requiere recorrerla hasta medirla o encontrar el primer exceso, y una operación
+sled bloqueada en el filesystem todavía no tiene timeout seguro.</p>
+<p>No hace falta validación física individual. Las rutas sled y sus regresiones
+corrieron en Linux, y el módulo completo quedó compilado y enlazado dentro del
+ELF Android/Bionic ARMv7. El paquete se reserva para el siguiente milestone
+físico agrupado.</p>
+<h3 id="redisresp2-con-red-respuestas-y-ciclo-de-vida-acotados">Redis/RESP2 con red, respuestas y ciclo de vida acotados</h3>
+<p>Los commits <code>e37f146</code>, <code>1ee1f57</code>, <code>ffd323a</code>, <code>f024ac8</code> y <code>1af829b</code>
+sustituyen la conexión bloqueante del crate <code>redis</code> bajo un mutex global por
+un cliente RESP2 acotado sobre sockets TCP reales. El crate <code>redis 0.27.6</code>
+continúa parseando y decodificando de forma segura la URL, usuario, contraseña
+y base; TITAN realiza directamente el intercambio RESP2 para poder rechazar una
+longitud hostil <strong>antes</strong> de reservar el cuerpo anunciado.</p>
+<p>Cada runtime admite como máximo:</p>
+<ul>
+<li>ocho conexiones Redis publicadas;</li>
+<li>cuatro operaciones Redis simultáneas;</li>
+<li>dos resoluciones DNS activas, con un techo adicional de 16 en todo el proceso.</li>
+</ul>
+<p>Los límites por petición y respuesta son:</p>
+<ul>
+<li>URL de 16 KiB, claves/campos/patrones de 64 KiB y valores de 8 MiB;</li>
+<li>comando <code>raw</code> de 64 KiB, 32 argumentos y petición RESP completa de 9 MiB;</li>
+<li>8 MiB de payload y 9 MiB de bytes de protocolo por respuesta;</li>
+<li>65.536 nodos RESP, profundidad 16 y líneas de cabecera de 64 KiB;</li>
+<li>65.536 elementos y 8 MiB acumulados al devolver colecciones;</li>
+<li>256 páginas <code>SCAN</code>, solicitadas en lotes indicativos de 256.</li>
+</ul>
+<p>Una operación normal tiene un deadline total de cinco segundos; cada intento de
+conexión usa como máximo tres segundos sin superar ese deadline. Escritura,
+lectura, autenticación, selección de base y las páginas sucesivas de <code>SCAN</code>
+comparten el presupuesto total correspondiente. Como la biblioteca estándar no
+ofrece timeout para <code>ToSocketAddrs</code>, los nombres se resuelven en workers
+separados que conservan su permiso hasta terminar. Así una resolución del SO
+atascada no retiene a la VM ni permite acumular más de dos hilos por runtime o
+16 globales.</p>
+<p>El registro global solo se toma para reservar, publicar, buscar o retirar un
+handle. El socket vive en un <code>Arc&lt;Mutex&lt;_&gt;&gt;</code> por conexión; nunca se hace I/O
+bajo el registro global. Una segunda llamada simultánea al mismo handle recibe
+un error <code>busy</code>, mientras otras conexiones y runtimes continúan. Los IDs usan
+incremento comprobado y una reserva previa evita sobrepasar el último slot. Si
+cleanup ocurre durante <code>connect</code>, invalida también la reserva para impedir que
+la conexión aparezca después de destruir su runtime.</p>
+<p>Toda conexión configura timeouts de lectura y escritura. Un timeout, error de
+transporte, respuesta incompleta, prefijo RESP3, cabecera inválida, profundidad,
+elementos o bytes excesivos marca el transporte como roto, lo retira del
+registro y cierra el socket: nunca se reutiliza una conexión desincronizada. Un
+error normal <code>-ERR</code> del servidor sí queda tipado y la conexión sigue utilizable
+porque esa respuesta se consumió completa.</p>
+<p><code>connect</code> ejecuta de verdad <code>AUTH</code> —con usuario cuando corresponde— y <code>SELECT</code>
+antes de publicar el handle. Una URL que solicita RESP3 se rechaza. Esta build
+no habilita TLS en <code>redis</code>, por lo que <code>rediss://</code> y sockets Unix se rechazan en
+vez de fingir soporte; la superficie validada es <code>redis://</code> RESP2 sobre TCP.</p>
+<p>La API histórica <code>keys</code> ya no envía <code>KEYS</code>: recorre páginas <code>SCAN</code>, valida
+cursor, elementos y bytes, y elimina duplicados permitidos por SCAN. <code>LRANGE</code>
+consulta primero <code>LLEN</code>, normaliza índices negativos y envía un intervalo fijo
+de como máximo 65.536 entradas, por lo que una mutación concurrente no puede
+agrandar la respuesta solicitada. <code>GET</code>, <code>HGETALL</code> y todas las demás respuestas
+pasan por el mismo decoder acotado.</p>
+<p><code>raw</code> conserva la separación histórica por espacios, pero ya no acepta cualquier
+comando. Solo permite una lista explícita de comandos de una respuesta. Rechaza
+suscripciones, variantes bloqueantes, <code>MULTI</code>, cambios de protocolo/sesión,
+<code>CLIENT</code>, scripts, administración y comandos desconocidos que podrían bloquear
+o desincronizar el transporte. Su salida escapada también se detiene en 8 MiB.</p>
+<p>Las 18 regresiones del módulo incluyen 17 casos deterministas con servidores
+TCP loopback reales y un caso de interoperabilidad externo opt-in. Verifican:</p>
+<ol>
+<li>codificación y respuestas RESP2 de wrappers de strings, listas y hashes;</li>
+<li><code>AUTH</code>, <code>SELECT</code>, errores normales y reutilización posterior del socket;</li>
+<li><code>SCAN</code> multipágina sin <code>KEYS</code>, deduplicación y <code>LRANGE</code> fijo;</li>
+<li>ejecución de un <code>raw</code> permitido y rechazo de comandos bloqueantes,
+   stateful, scripts o desconocidos;</li>
+<li>DNS real de <code>localhost</code> y devolución de su permiso;</li>
+<li>rechazo previo a la asignación de un bulk mayor de 8 MiB, un agregado con
+   demasiados nodos, profundidad excesiva, CRLF malformado y RESP3;</li>
+<li>timeout de un peer que no responde y cierre obligatorio del handle;</li>
+<li>que un peer lento no bloquea el registro ni otra conexión rápida;</li>
+<li>aislamiento entre runtimes, cleanup del socket, cuotas recuperables y la
+   carrera cleanup/reserva durante <code>connect</code>.</li>
+</ol>
+<p>Estos peers de prueba no sustituyen la implementación: son servidores TCP que
+leen los comandos RESP enviados por el cliente de producción y contestan bytes
+reales, incluidos casos adversariales difíciles de pedir a un Redis normal. El
+test opt-in <code>TITAN_REDIS_TEST_URL</code> se conserva, pero este run no recibió una
+instancia Redis externa; por tanto no se afirma una prueba contra una versión
+concreta del servidor Redis.</p>
+<p>Evidencia externa final para <code>1af829becaf931a90d3756967a1601f3f6f6b9b6</code>:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31565041845">CI 31565041845</a>: formato, check normal, las 18 regresiones Redis dentro de todos
+  los tests del workspace, no-default-features y AArch64 aprobaron. Las
+  annotations finales solo contienen la advertencia externa de Node.js 20.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31565041835">Termux ARM 31565041835</a>: check NDK estricto, compilación y enlace
+  Android/Bionic ARMv7, verificación ELF32/ARM, paquete y upload aprobaron;
+  produjo <code>zett-termux-arm-72</code> de 25.286.749 bytes.</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>Los fallos intermedios permanecen visibles. <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31564268476">CI 31564268476</a> y <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31564268480">Termux ARM 31564268480</a> detectaron un import <code>BufRead</code> no usado y el primer diff de rustfmt;
+no cuentan como verdes. <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31564766319">CI 31564766319</a> y <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31564905958">CI 31564905958</a> aprobaron compilación y tests, pero las annotations revelaron dos y una
+diferencias de formato, respectivamente. <code>1af829b</code> aplicó el último resultado
+de Rust 1.97 y cerró el fallo advisory.</p>
+<p>Límites declarados: RESP2/TCP no ofrece confidencialidad; para un servidor
+remoto debe usarse una red protegida o túnel externo hasta que la build integre
+un transporte <code>rediss://</code> acotado. El deadline sí devuelve el control a la VM
+durante DNS, pero la API del SO no permite cancelar el worker ya iniciado; las
+cuotas de dos y 16 limitan ese residuo. <code>SCAN</code> puede ser no atómico frente a
+mutaciones del servidor, aunque la memoria, rondas y duración del cliente sí
+quedan acotadas.</p>
+<p>No hace falta validación física individual para este bloque. El cliente quedó
+compilado y enlazado dentro del ELF Android/Bionic ARMv7; una instalación en el
+Redmi se agrupará con el siguiente milestone físico.</p>
+<h3 id="servidor-httpwebsocket-real-acotado-y-aislado">Servidor HTTP/WebSocket real, acotado y aislado</h3>
+<p>Los commits <code>a323391</code> y <code>4b71994</code> sustituyen <code>tiny_http</code> por un backend propio
+sobre <code>std::net</code>. La razón no fue cosmética: <code>tiny_http 0.12</code> acumulaba líneas y
+cabeceras antes de entregar la petición y no exponía el socket aceptado para
+fijar deadlines a tiempo. Aplicar límites después de <code>recv</code> habría sido una
+protección tardía. La dependencia y sus paquetes exclusivos también fueron
+retirados de <code>Cargo.toml</code> y <code>Cargo.lock</code>; el producto continúa siendo un solo
+binario.</p>
+<p>Antes de publicar un handle, el parser HTTP/1.1 limita:</p>
+<ul>
+<li>64 KiB de cabecera completa, 128 cabeceras, target de 16 KiB, nombre de 256
+  bytes y valor de 8 KiB;</li>
+<li>exactamente un <code>Host</code> no vacío en HTTP/1.1;</li>
+<li>un único <code>Content-Length</code> decimal o <code>Transfer-Encoding: chunked</code>, nunca ambos;</li>
+<li>cuerpos fijos o chunked de hasta 8 MiB, líneas chunk de 1 KiB y 32 trailers;</li>
+<li>deadline total de 5 segundos para cabeceras y, en producción, 30 segundos para
+  cada lectura o escritura completa. El timeout solicitado a <code>accept</code> también
+  está limitado a 30 segundos.</li>
+</ul>
+<p>Las cuotas por runtime son ocho listeners, 256 peticiones pendientes, 64
+WebSockets, 16 MiB de metadatos de peticiones y ocho operaciones concurrentes.
+Las reservas se realizan bajo el mismo registro antes de aceptar o publicar el
+recurso; el asignador de IDs usa suma comprobada. Listeners, peticiones y
+WebSockets llevan ownership de runtime y locks propios. El registro global solo
+se usa para localizar o retirar un <code>Arc</code>: nunca permanece tomado durante red,
+espera, parser ni cierre. Cleanup retira primero los recursos y después usa
+clones de los sockets para interrumpir I/O bloqueado sin afectar otra VM; una
+reserva concurrente no puede revivir un runtime ya limpiado.</p>
+<p>Las respuestas validan status, content type y cabeceras antes de consumir la
+petición. Se rechazan CR/LF, nombres inválidos, framing reservado y cuerpos de
+más de 8 MiB. Cada conexión HTTP procesa una petición y responde con
+<code>Connection: close</code>, decisión deliberada que elimina ambigüedad de pipelining en
+esta superficie de bajo nivel.</p>
+<p>El upgrade WebSocket valida GET/HTTP/1.1, tokens <code>Connection</code>/<code>Upgrade</code>, versión
+13 y una clave base64 de 16 bytes. Conserva bytes de frames que llegaron junto
+con el handshake. Los frames se procesan con el codec RFC 6455 ya integrado:
+mask obligatorio del cliente, control frames, fragmentación, ping/pong, UTF-8,
+códigos de cierre válidos y máximo configurable con techo de 4 MiB. Enviar,
+recibir y cerrar operan sobre locks por conexión, no sobre el registro global.</p>
+<p>Ocho regresiones loopback reales comprueban HTTP con metadatos/cuerpo/respuesta,
+chunked y trailers, upgrade y frame WebSocket enmascarado, framing ambiguo,
+límites de cabeceras/cuerpo/respuesta, deadlines totales, ausencia de lock global
+mientras un cliente se estanca, ownership entre dos runtimes, cleanup,
+reservas en vuelo y recuperación de cuotas. En el primer run del backend,
+<a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31632116052">CI 31632116052</a>, las ocho regresiones de servidor, formato, compilación y AArch64
+aprobaron; el run quedó rojo únicamente porque una prueba nueva de metadatos de
+capacidades usó dos nombres WebSocket inexistentes. El nombre se corrigió sin
+ocultar ese fallo. <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31632346274">CI 31632346274</a> aprobó formato, check, todos los tests, no-default-features y
+AArch64 con el backend final y sin <code>tiny_http</code>. <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31632346324">Termux ARM 31632346324</a> compiló y enlazó el mismo código para Android/Bionic ARMv7.</p>
+<p>Límites declarados: este listener es HTTP plano; TLS debe terminar en el backend
+TLS del producto o en un reverse proxy. No ofrece keep-alive, HTTP/2,
+compresión WebSocket ni negociación de subprotocolos en esta API. No se afirma
+resistencia a una saturación del backlog del sistema operativo anterior a
+<code>accept</code>; sí se acotan los recursos una vez aceptados. No hace falta validación
+física aislada para este bloque: protocolo, sockets y frames se ejercitaron en
+loopback real, y las dos arquitecturas Android compilaron dentro del binario. Se
+reserva la instalación en el Redmi para el candidato agrupado del milestone.</p>
+<h3 id="barrido-transversal-final-de-sandbox-y-handles">Barrido transversal final de sandbox y handles</h3>
+<p>El commit <code>1875e3a2b0d7386c5027f4e5f46909f5800e97e9</code> cerró el barrido posterior al
+servidor:</p>
+<ul>
+<li>las 23 nativas <code>std::server::*</code> exigen <code>Network</code>, incluidas consultas de
+  metadatos y cierre; las 21 de Redis también;</li>
+<li>las 17 operaciones KV/sled y las cuatro de watchers exigen <code>Filesystem</code>, no
+  solo <code>open</code>; las siete barras de progreso exigen <code>UserInterface</code> porque
+  escriben en el terminal;</li>
+<li>una regresión de la VM demuestra que handles enteros forjados no permiten
+  saltarse esas capacidades: el rechazo ocurre antes de buscar el recurso;</li>
+<li>IDs de runtimes, tareas, canales, sockets, TLS, WebSockets, routers, bases de
+  datos, pools, request IDs, procesos, colecciones y temporales PDF dejaron de
+  usar incremento con wrap. Al agotarse fallan cerrados; los contadores de
+  estadísticas saturan en vez de volver a cero;</li>
+<li>handles de audio y GUI ya no vuelven a 1 tras <code>shutdown</code>, por lo que un handle
+  viejo no puede convertirse en alias de un objeto creado después del reinicio;</li>
+<li>PID, señal, estado de salida y cantidad de <code>most_common</code> usan conversiones
+  comprobadas en la VM en vez de casts que envolvían valores negativos o
+  demasiado grandes;</li>
+<li>procesos en background usan <code>Arc&lt;Mutex&lt;Option&lt;_&gt;&gt;&gt;</code> por recurso. <code>poll</code>,
+  <code>kill</code>, PID, espera y cleanup sueltan el registro global antes de tocar el
+  proceso del sistema operativo; cleanup mata y recolecta fuera del registro.</li>
+</ul>
+<p>La revisión de registros duraderos confirmó cleanup para estado UI/móvil/audio,
+emuladores, métricas, señales, rate limits, watchers, ventanas, KV, Redis,
+imágenes, tokenizadores, ONNX, PDF, progreso, routers, servidor, procesos y las
+seis familias de colecciones. Las estructuras internas de red y bases de datos
+de la VM viven dentro de <code>RuntimeState</code>; este estado se destruye únicamente
+cuando root y todas las tareas han soltado su <code>Arc</code>. Por eso una operación de una
+tarea en vuelo impide que el cleanup de su runtime empiece, además de la barrera
+<code>shutting_down</code> que impide crear tareas hijas durante cierre.</p>
+<p>Evidencia final:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367279">CI 31633367279</a>: todos los pasos individuales aprobaron, incluidos formato,
+  check normal, workspace tests, no-default-features y AArch64;</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31633367369">Termux ARM 31633367369</a>: check NDK estricto, build/enlace Android/Bionic ARMv7,
+  ELF32/ARM, paquete y upload aprobaron;</li>
+<li>artefacto <code>zett-termux-arm-81</code>, id <code>9156036875</code>, 26.718.677 bytes, digest
+  <code>sha256:28cee74a0bdb810bd7b2ccd12c075ab65b65a84d92284bec1cacef517cd21cd5</code>;</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>Con esta evidencia queda cerrada la fase 2 de sandbox y seguridad. Esto no
+convierte automáticamente las fases restantes en terminadas: el siguiente
+bloque es la fase 3, typechecker y reglas del lenguaje.</p>
+<h3 id="pdf-real-con-memoria-ownership-y-publicacion-acotados">PDF real con memoria, ownership y publicación acotados</h3>
+<p>Los commits <code>6c54c9b</code>, <code>64a508c</code> y <code>0d10e16</code> reemplazan el registro PDF sin
+cuotas por un modelo de dibujo propio y acotado. La característica <code>pdf_mod</code>
+ya forma parte de <code>extras</code>, por lo que las nueve nativas <code>std::pdf::*</code> quedan
+compiladas y conectadas por defecto dentro del único binario final.</p>
+<p><code>printpdf 0.7.0</code> representa un documento vivo con <code>Rc</code> y <code>Weak&lt;RefCell&lt;_&gt;&gt;</code>;
+esos tipos no son <code>Send</code> y no pueden compartirse de forma segura entre tareas.
+Por eso el registro global de TITAN <strong>no almacena ningún objeto de printpdf</strong>.
+Conserva solamente páginas y comandos de texto, color, línea y rectángulo bajo
+un lock individual por documento. Al guardar, copia una instantánea consistente,
+suelta todos los locks y construye localmente el documento real. Otros handles
+y runtimes pueden seguir avanzando durante la serialización y el I/O.</p>
+<p>Los límites persistentes son:</p>
+<ul>
+<li>ocho documentos por runtime;</li>
+<li>256 páginas por documento y 512 por runtime;</li>
+<li>16.000 comandos por documento y 32.000 por runtime;</li>
+<li>8 MiB lógicos por documento y 16 MiB por runtime;</li>
+<li>coste fijo de 1.024 bytes por documento, 512 por página y 512 por comando,
+  además de los strings, para que miles de elementos vacíos también consuman
+  cuota;</li>
+<li>título y nombre de capa de 4 KiB, texto de 256 KiB por comando y path de
+  salida de 16 KiB.</li>
+</ul>
+<p>Cada runtime admite cuatro operaciones PDF simultáneas y una sola serialización;
+además hay un máximo global de dos serializaciones para acotar los buffers del
+backend entre VMs. Un PDF serializado no puede superar 64 MiB. <code>printpdf</code>
+construye internamente todo el archivo en un <code>Vec&lt;u8&gt;</code> antes de devolverlo, así
+que el límite final se comprueba antes de publicar el archivo, mientras las
+cuotas de páginas, comandos, strings y bytes lógicos acotan la entrada que puede
+provocar esa asignación. No se afirma que el backend haga streaming: esa sería
+una propiedad falsa de esta versión de printpdf.</p>
+<p>Toda entrada numérica se valida antes de convertir <code>f64</code> de TITAN a los <code>f32</code>
+que usa <code>Mm</code>: no se admiten <code>NaN</code> ni infinitos. Las páginas quedan entre 1 y
+5.000 mm, las coordenadas dentro de +/-10.000 mm, las fuentes entre 0,1 y 1.000
+puntos, los trazos entre 0,01 y 1.000 puntos y RGB entre 0 y 1. Rectángulos
+requieren dimensiones positivas y extremos dentro del rango. Páginas, capas e
+índices inválidos devuelven errores tipados sin consumir cuota.</p>
+<p>La fuente integrada es Helvetica con <code>WinAnsiEncoding</code>. Los caracteres
+representables —incluidos acentos españoles— se conservan; controles, saltos de
+línea y caracteres no representables como emoji se rechazan explícitamente en
+vez de permitir que printpdf los descarte en silencio. Los rectángulos se
+materializan como polígonos reales con relleno y contorno; texto, colores y
+líneas usan las operaciones reales de la capa PDF.</p>
+<p><code>save</code> serializa una instantánea y solo después crea un temporal exclusivo en el
+mismo directorio, escribe todos los bytes, ejecuta <code>flush</code> y <code>sync_all</code>, y lo
+publica mediante <code>rename</code>. Cualquier error elimina el temporal y no trunca el
+destino antes de tener un PDF completo. El registro global nunca permanece
+tomado durante serialización ni filesystem. <code>close</code> y cleanup retiran el handle,
+marcan el estado cerrado y devuelven páginas, comandos y bytes; una reserva de
+creación que estaba en vuelo no puede revivir el runtime después del cleanup.</p>
+<p>Las diez regresiones del módulo y la regresión adicional del dispatcher VM
+verifican:</p>
+<ol>
+<li>un archivo con dos páginas, texto, color, línea y rectángulo, reabierto
+   estructuralmente con <code>printpdf::lopdf</code>;</li>
+<li>validación de números no finitos, rangos, texto WinAnsi, páginas y capas;</li>
+<li>saturación y recuperación de handles, páginas, comandos, bytes, operaciones
+   y slots de serialización por runtime y globales;</li>
+<li>aislamiento de ownership, cleanup y la carrera cleanup/reserva;</li>
+<li>reemplazo atómico, preservación ante un path fallido y eliminación del
+   temporal;</li>
+<li>paso real por las nueve nativas de la VM, incluido rechazo de <code>save</code> sin la
+   capacidad de filesystem y generación correcta al concederla.</li>
+</ol>
+<p>Evidencia externa final para <code>0d10e162f936d7f71bba2be0134f35d3b276161e</code>:</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31566525679">CI 31566525679</a>: <code>cargo fmt --check</code>, check normal, todos los tests —incluidas
+  las once regresiones PDF—, no-default-features y AArch64 aprobaron. Las únicas
+  annotations son avisos externos sobre Node.js 20.</li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31566525670">Termux ARM 31566525670</a>: check NDK estricto, compilación y enlace Android/Bionic ARMv7,
+  verificación ELF32/ARM, paquete y upload aprobaron; produjo
+  <code>zett-termux-arm-76</code> de 26.849.784 bytes, digest de artifact
+  <code>sha256:a7fa3fcdd58ce65dafd455128008401d2117c3bb65683b8eaf6abb597590073d</code>.</li>
+<li><code>verify_phase34.py</code>: 758 nativas únicas, 837 llamadas verificadas y 110 brazos
+  Phase 34 conectados.</li>
+</ul>
+<p>El primer run <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31566175798">CI 31566175798</a> compiló correctamente el backend, aprobó formato y AArch64, y
+nueve de las diez regresiones PDF, pero falló porque el test exigía un salto de
+línea concreto después de <code>%%EOF</code>. El archivo ya se reabría correctamente; el
+commit <code>64a508c</code> retiró esa suposición textual y mantuvo la validación
+estructural. <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31566327093">CI 31566327093</a> quedó verde antes de añadir la prueba adicional del dispatcher. El fallo
+intermedio se conserva y no se cuenta como validación aprobada.</p>
+<p>Límites declarados: esta superficie usa una fuente integrada WinAnsi y no
+soporta aún tipografías Unicode externas, imágenes, cifrado ni firmas PDF. El
+límite de 64 MiB se comprueba al recibir el <code>Vec</code> de printpdf; las cuotas lógicas
+y los dos slots globales son la defensa que acota el trabajo previo porque esta
+versión del backend no ofrece serialización streaming. <code>rename</code> sustituye
+atómicamente un destino existente en Linux y Android; en plataformas donde el
+SO no permite reemplazar con <code>rename</code>, la operación falla conservando el archivo
+anterior.</p>
+<p>No hace falta una validación física individual para este bloque: el PDF se creó
+y reabrió realmente en CI, toda la ruta quedó compilada y enlazada dentro del
+ELF Android/Bionic ARMv7, y el paquete se reserva para el próximo milestone
+físico agrupado.</p>
+<h3 id="que-prueban-las-regresiones-de-limpieza-de-recursos">Qué prueban las regresiones de limpieza de recursos</h3>
+<ol>
+<li>Al destruir el último estado de un runtime, sus handles de colecciones dejan
+   de existir.</li>
+<li>La limpieza no borra handles pertenecientes a otra VM viva.</li>
+<li>Al destruir la VM principal, una tarea no unida que ejecuta un bucle infinito
+   recibe cancelación.</li>
+<li>Después de que la tarea observa la cancelación, el estado compartido del
+   runtime se destruye; la prueba falla si queda retenido.</li>
+<li>Existe una barrera de apagado para impedir que una tarea cree otra tarea
+   después de que haya comenzado la destrucción del runtime.</li>
+</ol>
+<p>La limpieza está conectada a los registros aislados de UI/móvil/audio,
+métricas, señales, emuladores freestanding, límites HTTP, ventanas, KV/sled,
+watchers, Redis, imágenes, tokenizadores, ONNX, PDF, barras de progreso,
+routers, servidores HTTP, solicitudes pendientes, WebSockets, procesos en
+segundo plano y las seis familias de colecciones. La ruta de procesos mata y
+recolecta al hijo; KV intenta vaciar escrituras antes de cerrar; las ventanas
+reales se liberan en el mismo hilo que las creó.</p>
+<h3 id="limites-de-esta-validacion">Límites de esta validación</h3>
+<ul>
+<li>Las cuotas de tareas, canales, red, bases de datos, procesos externos,
+  colecciones, PDF, HTTP/WebSocket y los recursos ligeros descritos arriba ya
+  están conectadas. La fase 2 queda cerrada para ese alcance; los límites de
+  memoria y concurrencia propios de fases posteriores siguen auditándose en sus
+  bloques correspondientes.</li>
+<li>CI prueba directamente la destrucción con handles de colecciones, tareas,
+  tokenizadores, planes ONNX de tract, bases/árboles sled, sockets Redis loopback
+  y documentos PDF. Las demás rutas de limpieza compilan y son revisadas por
+  Rust. Este run no conecta un Redis externo ni carga un <code>.onnx</code> válido de
+  terceros.</li>
+<li>Los comandos de formato y del antiguo job AArch64 ya pasan, pero sus dos
+  líneas <code>continue-on-error</code> permanecen en el workflow hasta aplicar desde
+  GitHub web la plantilla corregida <code>docs/CI_WORKFLOW_TEMPLATE.yml</code>. La GitHub
+  App de Arena no tiene permiso para modificar <code>.github/workflows</code>.</li>
+<li>Una ejecución intermedia de tests, <a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31552230343">CI 31552230343</a>,
+  falló de forma transitoria. No se reprodujo en las dos ejecuciones siguientes,
+  incluida la ejecución final sin instrumentación temporal. Se conserva como
+  señal para la auditoría de concurrencia; no se oculta ni se contabiliza como
+  una validación aprobada.</li>
+<li>El candidato de este commit todavía no se ha instalado en el Redmi 9C. No se
+  requiere instalar cada cambio interno; habrá una prueba física agrupada al
+  cerrar un milestone importante.</li>
+<li>Un resultado verde no significa que TITAN 1.0 esté terminado. Solo valida el
+  commit y el alcance descrito aquí.</li>
+<li>El workflow histórico <code>android-apk - NEON FRACTURE (FIXED)</code> no forma parte de
+  la validación oficial y sus resultados se ignoran.</li>
+</ul>
+<h2 id="bloque-de-capacidades">Bloque de capacidades</h2>
+<p>El commit <code>ca7e3e7</code> protege terminal, readline, información de
+procesos/directorios, señales y detectores del entorno, incluida la exigencia
+combinada de filesystem e interfaz de usuario para el historial persistente de
+readline.</p>
+<ul>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31548478710">CI 31548478710</a></li>
+<li><a href="https://github.com/alexsndersoto04-source/aio/actions/runs/31548478652">Termux ARM 31548478652</a></li>
+</ul>
+<h2 id="ceremonia-para-candidatos-fisicos">Ceremonia para candidatos físicos</h2>
+<p>Cuando se cierre un milestone:</p>
+<ol>
+<li>Se elige un commit que tenga CI y Termux ARM verdes.</li>
+<li>Se descarga el <code>.deb</code> producido por ese run, junto con <code>SHA256SUMS</code>.</li>
+<li>En el Redmi se verifica el hash y la arquitectura del paquete.</li>
+<li>El paquete nuevo sustituye al anterior; no se mantienen instalaciones por
+   fase.</li>
+<li>Se ejecuta <code>test-termux-release.sh</code> y los casos manuales específicos del
+   milestone.</li>
+<li>Se registra aquí el commit, paquete, comandos y resultado observado.</li>
+</ol>
+<p>Hasta completar esos seis pasos, el estado se describe como <strong>validado en CI y
+empaquetado para ARMv7</strong>, no como <strong>validado físicamente en el Redmi</strong>.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/VALIDATION.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

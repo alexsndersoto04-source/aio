@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visión general — Documentación de Titan</title>
+<meta name="description" content="Los 73 espacios de nombres y sus 812 funciones.">
+<meta property="og:title" content="Visión general — Documentación de Titan">
+<meta property="og:description" content="Los 73 espacios de nombres y sus 812 funciones.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html" class="on">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="biblioteca-estandar">Biblioteca estándar</h1>
+<p>Las funciones <code>std::*</code> están escritas en Titan (cuerpos en <code>selfhost/native/</code>) y se compilan junto con el programa; no hay
+código de otro lenguaje ni bibliotecas externas. La tabla de firmas es <code>selfhost/natives.titan</code> (la consulta el typechecker).
+Hoy son <strong>812 funciones en 73 espacios de nombres</strong>. Cuántas tienen cuerpo en Titan se mide con
+<code>bash selfhost/native/cobertura.sh -v</code>.</p>
+<p>Además de estas, <code>std::sqlite</code>, <code>std::postgres</code>, <code>std::mysql</code>, <code>std::db</code>, <code>std::tls</code>, <code>std::runtime</code> y parte de <code>std::ws</code>, <code>std::net</code>,
+<code>std::http</code> y <code>std::server</code> se compilan a instrucciones propias del bytecode (<code>selfhost/codegen_tables.titan</code>).</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Espacio de nombres</th>
+<th>Funciones</th>
+<th>Contenido</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>std::archive</code></td>
+<td>5</td>
+<td>TAR y ZIP (leer y escribir)</td>
+</tr>
+<tr>
+<td><code>std::array</code></td>
+<td>7</td>
+<td>operaciones sobre arrays</td>
+</tr>
+<tr>
+<td><code>std::audio</code></td>
+<td>62</td>
+<td>WAV, decodificación (WAV, FLAC, Ogg Vorbis), etiquetas, biblioteca, síntesis y motor de reproducción</td>
+</tr>
+<tr>
+<td><code>std::bytes</code></td>
+<td>7</td>
+<td>lector/escritor binario con límites</td>
+</tr>
+<tr>
+<td><code>std::checksum</code></td>
+<td>3</td>
+<td>FNV-1a, CRC-32, comparación en tiempo constante</td>
+</tr>
+<tr>
+<td><code>std::clipboard</code></td>
+<td>2</td>
+<td>portapapeles (Termux/Linux)</td>
+</tr>
+<tr>
+<td><code>std::collections</code></td>
+<td>57</td>
+<td>listas, conjuntos, agrupar, particionar, ventanas…</td>
+</tr>
+<tr>
+<td><code>std::compress</code></td>
+<td>8</td>
+<td>gzip, zlib, deflate y zstd (comprimir y descomprimir)</td>
+</tr>
+<tr>
+<td><code>std::crypto</code></td>
+<td>13</td>
+<td>ChaCha20-Poly1305, AES-GCM, Argon2id, bcrypt</td>
+</tr>
+<tr>
+<td><code>std::csv</code></td>
+<td>2</td>
+<td>CSV con comillas</td>
+</tr>
+<tr>
+<td><code>std::datetime</code></td>
+<td>49</td>
+<td>fechas, zonas horarias, formatos RFC 3339/2822</td>
+</tr>
+<tr>
+<td><code>std::dirs</code></td>
+<td>18</td>
+<td>carpetas del usuario (home, config, caché…)</td>
+</tr>
+<tr>
+<td><code>std::dns</code></td>
+<td>7</td>
+<td>consultas DNS</td>
+</tr>
+<tr>
+<td><code>std::email</code></td>
+<td>3</td>
+<td>SMTP</td>
+</tr>
+<tr>
+<td><code>std::encoding</code></td>
+<td>8</td>
+<td>hex, Base64, UTF-8, porcentaje</td>
+</tr>
+<tr>
+<td><code>std::env</code></td>
+<td>3</td>
+<td>variables de entorno</td>
+</tr>
+<tr>
+<td><code>std::freestanding</code></td>
+<td>6</td>
+<td>programas sin sistema operativo (aarch64-none)</td>
+</tr>
+<tr>
+<td><code>std::freestanding_cpu</code></td>
+<td>7</td>
+<td>CPU en modo sin sistema operativo</td>
+</tr>
+<tr>
+<td><code>std::freestanding_memory</code></td>
+<td>7</td>
+<td>memoria en modo sin sistema operativo</td>
+</tr>
+<tr>
+<td><code>std::freestanding_mmio</code></td>
+<td>7</td>
+<td>MMIO en modo sin sistema operativo</td>
+</tr>
+<tr>
+<td><code>std::fs</code></td>
+<td>18</td>
+<td>archivos y carpetas</td>
+</tr>
+<tr>
+<td><code>std::fswatch</code></td>
+<td>4</td>
+<td>vigilar cambios en archivos</td>
+</tr>
+<tr>
+<td><code>std::game</code></td>
+<td>5</td>
+<td>bucle de juego 2D y colisiones</td>
+</tr>
+<tr>
+<td><code>std::gui</code></td>
+<td>11</td>
+<td>árbol de widgets y rasterizador por software</td>
+</tr>
+<tr>
+<td><code>std::hash</code></td>
+<td>11</td>
+<td>SHA-2, SHA-3, BLAKE3, HMAC</td>
+</tr>
+<tr>
+<td><code>std::http</code></td>
+<td>13</td>
+<td>cliente HTTP/HTTPS</td>
+</tr>
+<tr>
+<td><code>std::http_full</code></td>
+<td>4</td>
+<td>HTTP (funciones extendidas)</td>
+</tr>
+<tr>
+<td><code>std::image</code></td>
+<td>21</td>
+<td>PNG, JPEG, WebP, BMP, GIF (leer y escribir)</td>
+</tr>
+<tr>
+<td><code>std::input</code></td>
+<td>8</td>
+<td>estado de teclado, ratón y táctil</td>
+</tr>
+<tr>
+<td><code>std::io</code></td>
+<td>2</td>
+<td>lectura limitada de texto/bytes</td>
+</tr>
+<tr>
+<td><code>std::json</code></td>
+<td>6</td>
+<td>JSON (parse, pretty, pointer, merge patch)</td>
+</tr>
+<tr>
+<td><code>std::jwt</code></td>
+<td>5</td>
+<td>JWT</td>
+</tr>
+<tr>
+<td><code>std::kv</code></td>
+<td>17</td>
+<td>almacén clave-valor</td>
+</tr>
+<tr>
+<td><code>std::map</code></td>
+<td>9</td>
+<td>mapas</td>
+</tr>
+<tr>
+<td><code>std::math</code></td>
+<td>14</td>
+<td>funciones matemáticas</td>
+</tr>
+<tr>
+<td><code>std::metrics</code></td>
+<td>8</td>
+<td>contadores, gauges, histogramas</td>
+</tr>
+<tr>
+<td><code>std::mobile</code></td>
+<td>3</td>
+<td>ciclo de vida de apps móviles</td>
+</tr>
+<tr>
+<td><code>std::net</code></td>
+<td>1</td>
+<td>TCP</td>
+</tr>
+<tr>
+<td><code>std::notify</code></td>
+<td>1</td>
+<td>notificaciones</td>
+</tr>
+<tr>
+<td><code>std::onnx</code></td>
+<td>14</td>
+<td>motor ONNX propio (BERT y modelos pequeños)</td>
+</tr>
+<tr>
+<td><code>std::password</code></td>
+<td>4</td>
+<td>hash y verificación de contraseñas</td>
+</tr>
+<tr>
+<td><code>std::path</code></td>
+<td>8</td>
+<td>rutas</td>
+</tr>
+<tr>
+<td><code>std::pdf</code></td>
+<td>9</td>
+<td>generar PDF</td>
+</tr>
+<tr>
+<td><code>std::plot</code></td>
+<td>5</td>
+<td>gráficos SVG</td>
+</tr>
+<tr>
+<td><code>std::process</code></td>
+<td>23</td>
+<td>procesos hijos, pipes, tiempo límite</td>
+</tr>
+<tr>
+<td><code>std::procfs</code></td>
+<td>18</td>
+<td>información del sistema (/proc)</td>
+</tr>
+<tr>
+<td><code>std::progress</code></td>
+<td>7</td>
+<td>barras de progreso</td>
+</tr>
+<tr>
+<td><code>std::qrcode</code></td>
+<td>5</td>
+<td>códigos QR</td>
+</tr>
+<tr>
+<td><code>std::random</code></td>
+<td>8</td>
+<td>aleatorios y generadores deterministas</td>
+</tr>
+<tr>
+<td><code>std::readline</code></td>
+<td>4</td>
+<td>línea de comandos con historial</td>
+</tr>
+<tr>
+<td><code>std::redis</code></td>
+<td>21</td>
+<td>cliente Redis</td>
+</tr>
+<tr>
+<td><code>std::regex</code></td>
+<td>7</td>
+<td>expresiones regulares</td>
+</tr>
+<tr>
+<td><code>std::router</code></td>
+<td>5</td>
+<td>enrutador de rutas HTTP</td>
+</tr>
+<tr>
+<td><code>std::server</code></td>
+<td>23</td>
+<td>servidor HTTP</td>
+</tr>
+<tr>
+<td><code>std::signals</code></td>
+<td>3</td>
+<td>señales POSIX</td>
+</tr>
+<tr>
+<td><code>std::stats</code></td>
+<td>5</td>
+<td>estadística</td>
+</tr>
+<tr>
+<td><code>std::term</code></td>
+<td>15</td>
+<td>terminal (colores, teclas, TUI)</td>
+</tr>
+<tr>
+<td><code>std::termux</code></td>
+<td>23</td>
+<td>Termux:API</td>
+</tr>
+<tr>
+<td><code>std::testing</code></td>
+<td>2</td>
+<td>aserciones</td>
+</tr>
+<tr>
+<td><code>std::text</code></td>
+<td>28</td>
+<td>texto y Unicode</td>
+</tr>
+<tr>
+<td><code>std::time</code></td>
+<td>3</td>
+<td>tiempo y pausas</td>
+</tr>
+<tr>
+<td><code>std::tokenize</code></td>
+<td>10</td>
+<td>tokenizadores estilo HuggingFace</td>
+</tr>
+<tr>
+<td><code>std::try</code></td>
+<td>1</td>
+<td><code>std::try::catch</code></td>
+</tr>
+<tr>
+<td><code>std::url</code></td>
+<td>10</td>
+<td>URLs</td>
+</tr>
+<tr>
+<td><code>std::uuid</code></td>
+<td>5</td>
+<td>UUID v4 y v7</td>
+</tr>
+<tr>
+<td><code>std::vector</code></td>
+<td>8</td>
+<td>vectores numéricos</td>
+</tr>
+<tr>
+<td><code>std::wasm</code></td>
+<td>14</td>
+<td>WebAssembly: memoria y source maps</td>
+</tr>
+<tr>
+<td><code>std::web</code></td>
+<td>53</td>
+<td>navegador: DOM, eventos, fetch, WebSocket, Canvas 2D, WebGL2 (solo con host JS)</td>
+</tr>
+<tr>
+<td><code>std::wifi</code></td>
+<td>4</td>
+<td>Wi-Fi (Termux)</td>
+</tr>
+<tr>
+<td><code>std::window</code></td>
+<td>12</td>
+<td>ventanas</td>
+</tr>
+<tr>
+<td><code>std::ws</code></td>
+<td>6</td>
+<td>WebSocket</td>
+</tr>
+<tr>
+<td><code>std::xml</code></td>
+<td>4</td>
+<td>XML</td>
+</tr>
+<tr>
+<td><code>std::yaml</code></td>
+<td>3</td>
+<td>YAML</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="cosas-que-hay-que-saber">Cosas que hay que saber</h2>
+<ul>
+<li>Las limitaciones concretas de cada pieza (qué formatos no se soportan, qué cosas no se han probado en dispositivos) están en
+  <a href="estado.html"><code>selfhost/ESTADO.md</code></a>. Algunos ejemplos: SQLite no tiene FTS, RTREE ni <code>ATTACH</code>; el audio no decodifica
+  MP3/AAC/Opus; <code>std::web</code> solo funciona con un host JavaScript (WebAssembly en el navegador).</li>
+<li><strong>No hay sandbox ni sistema de permisos</strong> en los ejecutables nativos: un programa Titan puede usar archivos, procesos y red
+  como cualquier otro programa. La opción <code>--sandbox</code> pertenecía al prototipo en Rust y ya no existe.</li>
+<li><code>std::checksum</code> no es criptografía. Para contraseñas, firmas y autenticación hay <code>std::crypto</code>, <code>std::hash</code>, <code>std::password</code> y <code>std::jwt</code>.</li>
+<li>El texto cuenta valores escalares Unicode, no grupos de caracteres percibidos por el usuario.</li>
+</ul>
+<h2 id="llamarlas-desde-titan">Llamarlas desde Titan</h2>
+<pre><code class="language-titan"><span class="k">fn</span> main() {
+    <span class="k">let</span> codificado = std::encoding::base64_encode(std::encoding::utf8_encode(<span class="s">&quot;Titan&quot;</span>))
+    <span class="k">let</span> doc = std::json::parse(<span class="s">&quot;{\&quot;respuesta\&quot;:42}&quot;</span>)
+    print(std::text::uppercase(codificado))
+    print(doc.respuesta)
+}
+</code></pre>
+<p>Los resultados que no son números ni textos son <code>bytes</code> y <code>map</code>; los campos de un mapa se leen con la sintaxis <code>resultado.campo</code>.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/STDLIB.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebSocket — Documentación de Titan</title>
+<meta name="description" content="Cliente, servidor y decodificador de mensajes.">
+<meta property="og:title" content="WebSocket — Documentación de Titan">
+<meta property="og:description" content="Cliente, servidor y decodificador de mensajes.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html" class="on">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="titan-websockets">TITAN WebSockets</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p>TITAN implements the RFC 6455 handshake and frame codec. <code>accept_key</code> validates that the client nonce decodes to exactly 16 bytes and computes the standard SHA-1/GUID response. <code>upgrade_response</code> emits a complete 101 response with an optional validated subprotocol.</p>
+<p><code>std::ws::encode(opcode, payload, masked)</code> builds minimally encoded frames. Client masking keys come from the operating system CSPRNG through <code>getrandom</code>; server frames remain unmasked. <code>std::ws::parse(bytes, require_mask, max_payload)</code> incrementally returns <code>Option</code>, unmasks payloads, reports consumed bytes, and enforces payload limits.</p>
+<p>The codec rejects RSV bits without negotiated extensions, reserved opcodes, non-minimal lengths, invalid 64-bit lengths, masking-policy violations, fragmented/oversized control frames, one-byte close payloads, and invalid UTF-8 text frames. Supported opcodes are continuation, text, binary, close, ping, and pong.</p>
+<p><code>validate_upgrade(request, selected_protocol)</code> requires GET HTTP/1.1, Upgrade/Connection tokens, version 13, a valid key, and verifies that any selected subprotocol was offered before returning the 101 bytes. <code>validate_accept(raw_response, client_key)</code> requires a unique set of critical response headers and constant expected accept value before a client attaches its transport.</p>
+<p><code>std::ws::decoder(maximum)</code>, <code>decoder_push(decoder, bytes)</code>, and <code>decoder_next(decoder, require_mask)</code> expose a stateful VM-managed decoder. It reassembles fragmented text/binary messages across arbitrary network reads, allows ping/pong/close control frames between fragments, validates final UTF-8, tracks accumulated payload limits, validates close code/reason, and rejects unexpected continuations or interleaved data messages.</p>
+<p>Messages are returned as maps with type-specific <code>text</code>, <code>data</code>, <code>code</code>, and <code>reason</code> fields. The decoder handle is share-safe but not JSON serializable.</p>
+<h2 id="high-level-connection">High-level connection</h2>
+<p><code>attach_tcp(stream, server_side, maximum)</code> and <code>attach_tls(...)</code> transfer ownership of an existing transport into a WebSocket handle. <code>send_text</code>, <code>send_binary</code>, <code>receive</code>, and <code>close</code> provide message-level I/O. Client frames use secure random masking; server frames do not. Receive automatically answers ping with pong, preserves fragmented-message state, and mirrors a peer close before returning it. Close is idempotent, validates code/reason, removes the handle, and releases the underlying transport.</p>
+<p>Transport locks are separate from decoder state so a blocking receive does not hold the global registry lock. The same connection object works over plain TCP or over TLS (Titan's own TLS implementation).</p>
+<h2 id="high-level-client">High-level client</h2>
+<p><code>std::ws::connect(url, protocol, maximum)</code> accepts <code>ws://</code> and <code>wss://</code> URLs (including bracketed IPv6), applies default ports, generates a 16-byte CSPRNG nonce, performs the HTTP Upgrade, validates status/critical headers/accept key/subprotocol, preserves any frame bytes read with the handshake, and returns a connected WebSocket. Userinfo, fragments, control characters, invalid ports and unrequested subprotocols are rejected before attach.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/WEBSOCKET.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

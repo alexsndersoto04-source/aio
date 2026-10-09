@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor de audio — Documentación de Titan</title>
+<meta name="description" content="Decodificación y reproducción.">
+<meta property="og:title" content="Motor de audio — Documentación de Titan">
+<meta property="og:description" content="Decodificación y reproducción.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html" class="on">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="motor-de-audio-nativo-stdaudioengine_-fase-42a">Motor de audio nativo — <code>std::audio::engine_*</code> (Fase 42A)</h1>
+<p>Titan decodifica <strong>WAV/PCM/ADPCM, FLAC y Ogg Vorbis</strong> con decodificadores escritos en Titan
+(<code>selfhost/native/std_audio_decode.titan</code>, <code>std_audio_ogg.titan</code>, <code>std_audio_vorbis.titan</code>) y envía el PCM al reproductor
+del sistema (<code>pw-cat</code>, <code>paplay</code>, <code>aplay</code>, <code>mpv</code>, <code>ffplay</code>) por una tubería. <strong>No decodifica MP3, Opus, AAC, AIFF ni CAF</strong>, y la
+salida a dispositivo no se ha probado en hardware real (la salida a archivo <code>TITAN_AUDIO_SINK=file:&lt;ruta&gt;</code> sí). Ver
+«Audio: decodificador y engine en Titan» en <code>selfhost/ESTADO.md</code>.</p>
+<pre><code> tu .titan → engine_play() → decodificador en Titan → resample/EQ/crossfade
+          → reproductor del sistema → bocinas
+</code></pre>
+<h2 id="cuando-usar-que">Cuándo usar qué</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>API</th>
+<th>Qué es</th>
+<th>Funciona en</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>std::audio::tags/duration/scan_library/cover</code> (Fase 41)</td>
+<td>Metadatos y biblioteca</td>
+<td>Todos lados</td>
+</tr>
+<tr>
+<td><code>std::audio::player_*</code> (Fase 41)</td>
+<td>Controla mpv/afplay/etc del sistema</td>
+<td>Donde haya reproductor instalado</td>
+</tr>
+<tr>
+<td><strong><code>std::audio::engine_*</code> (Fase 42A)</strong></td>
+<td><strong>Titan decodifica y suena</strong></td>
+<td>Linux/Win/mac con bocinas; decode headless en CI; decode+cola en Android</td>
+</tr>
+</tbody>
+</table></div>
+<p>Regla: todo lo nuevo usa <code>engine_*</code>. <code>player_*</code> queda como respaldo para
+máquinas donde quieras delegar (o sin bocinas pero con mpv + <code>ao=null</code>).</p>
+<h2 id="transporte">Transporte</h2>
+<pre><code class="language-titan">print(std::audio::engine_play(<span class="s">&quot;/musica/a.mp3&quot;</span>))  <span class="c">// &quot;playing ... via hifi-engine&quot;</span>
+print(std::audio::engine_state())                <span class="c">// &quot;playing&quot; | &quot;paused&quot; | &quot;idle&quot;</span>
+print(std::audio::engine_position())             <span class="c">// segundos; -1.0 si idle</span>
+print(std::audio::engine_duration())             <span class="c">// segundos; 0.0 si se ignora</span>
+print(std::audio::engine_seek(<span class="n">42.0</span>))             <span class="c">// seek exacto a nivel de muestra</span>
+print(std::audio::engine_pause())
+print(std::audio::engine_resume())
+print(std::audio::engine_stop())
+print(std::audio::engine_device())               <span class="c">// &quot;Built-in Audio&quot; o &quot;&quot; sin salida</span>
+</code></pre>
+<p><code>engine_play</code> falla rápido y tipado: archivo inexistente, archivo no
+decodificable o máquina sin salida (<code>NoDevice</code> en CI/headless) devuelven
+<code>Result::Err</code> en vez de colgar o fingir.</p>
+<h2 id="cola-gapless-crossfade-historial">Cola gapless + crossfade + historial</h2>
+<pre><code class="language-titan">print(std::audio::engine_queue_add(<span class="s">&quot;/musica/b.mp3&quot;</span>))  <span class="c">// funciona antes del play</span>
+print(std::audio::engine_queue_add(<span class="s">&quot;/musica/c.flac&quot;</span>))
+print(std::audio::engine_queue_list())                <span class="c">// Array de rutas</span>
+print(std::audio::engine_next())                      <span class="c">// salta; al final: stop</span>
+print(std::audio::engine_prev())                      <span class="c">// &gt;3 s: reinicia; si no: atrás</span>
+print(std::audio::engine_queue_clear())
+<span class="k">let</span> actual = std::audio::engine_current()             <span class="c">// {path, codec, position_secs, duration_secs, state, queue_len}</span>
+</code></pre>
+<ul>
+<li><strong>Gapless</strong> (defecto): la pista siguiente se abre en cuanto la actual
+  termina, sin hueco y sin clic.</li>
+<li><strong>Crossfade</strong> (<code>engine_set_crossfade(2.0)</code>): los últimos N segundos se
+  mezclan muestra a muestra con la cabeza de la siguiente. <code>0.0</code> lo apaga.</li>
+<li><strong>Sin gapless</strong> (<code>engine_set_gapless(false)</code>): se insertan 250 ms de
+  silencio entre pistas.</li>
+<li>El <strong>historial</strong> (200 pistas) alimenta <code>engine_prev</code>; <code>engine_play</code>
+  conserva la cola y manda la saliente al historial.</li>
+</ul>
+<h2 id="ajustes-sobreviven-entre-pistas-y-sesiones">Ajustes (sobreviven entre pistas y sesiones)</h2>
+<pre><code class="language-titan">print(std::audio::engine_set_volume(<span class="n">70</span>))      <span class="c">// 0..100, true si quedó</span>
+print(std::audio::engine_set_crossfade(<span class="n">2.0</span>))  <span class="c">// 0.0..12.0 segundos</span>
+print(std::audio::engine_set_gapless(<span class="k">true</span>))   <span class="c">// booleano</span>
+print(std::audio::engine_set_eq(<span class="n">3</span>, <span class="n">0</span>, -<span class="n">2</span>))    <span class="c">// graves/medios/agudos, -12..12 dB</span>
+<span class="k">let</span> st = std::audio::engine_status()          <span class="c">// todo junto para la UI de ajustes</span>
+print(st.volume)          <span class="c">// 70</span>
+print(st.crossfade_secs)  <span class="c">// 2.0</span>
+print(st.gapless)         <span class="c">// true</span>
+print(st.eq[<span class="n">0</span>])           <span class="c">// 3 (graves)</span>
+</code></pre>
+<p>El EQ es lowshelf 250 Hz + peaking 1 kHz + highshelf 4 kHz (RBJ); en
+<code>[0,0,0]</code> el camino es bit-transparente. Volumen y EQ se aplican antes
+de la salida con clamp de seguridad (el EQ no puede romper el conversor).</p>
+<p><code>engine_status</code> devuelve el mapa completo para pintar la pantalla de
+ajustes y el ahora-suena: <code>state, path, codec, position_secs,
+duration_secs, sample_rate, channels, volume, crossfade_secs, gapless,
+eq[3], queue_len, device</code>.</p>
+<h2 id="visualizador">Visualizador</h2>
+<pre><code class="language-titan"><span class="k">let</span> barras = std::audio::engine_levels()  <span class="c">// Array de 32 Floats 0.0..1.0</span>
+print(std::collections::length(barras))   <span class="c">// 32</span>
+</code></pre>
+<p>32 bandas logarítmicas de 60 Hz a 16 kHz, calculadas sobre el mono de lo
+que está sonando (post-volumen y post-EQ). En idle devuelve ceros: la UI
+lo sondea sin manejar errores.</p>
+<h2 id="chequeo-headless-ci-contenedores-android">Chequeo headless (CI, contenedores, Android)</h2>
+<pre><code class="language-titan"><span class="k">let</span> rep = std::audio::engine_decode(<span class="s">&quot;/musica/a.mp3&quot;</span>)
+print(rep.codec)          <span class="c">// &quot;mp3&quot;</span>
+print(rep.duration_secs)  <span class="c">// cabecera o medida</span>
+print(rep.sample_rate)    <span class="c">// 44100</span>
+print(rep.channels)       <span class="c">// 2</span>
+print(rep.verified_secs)  <span class="c">// segundos realmente decodificados (tope 5 s)</span>
+print(rep.peak)           <span class="c">// pico 0.0..1.0 del tramo verificado</span>
+</code></pre>
+<p>No necesita bocinas ni abre hilos de salida: es lo que corre en CI y lo
+que usará la caché de streaming de Telegram (Fase 43).</p>
+<h2 id="como-funciona-por-dentro-resumen-honesto">Cómo funciona por dentro (resumen honesto)</h2>
+<ul>
+<li>Un hilo decodifica por adelantado a un anillo de ~8 s; el callback de
+  <code>cpal</code> solo copia (nada pesado en tiempo real).</li>
+<li>Todo se remuestrea a la tasa del dispositivo (lineal) y se adapta a sus
+  canales (mono↔estéreo); el seek reposiciona contador y decodificador.</li>
+<li>Límites: cola 500, historial 200, decode acotado por segundos, archivos
+  podridos se saltan (una pista rota no mata la sesión).</li>
+<li>Linux necesita <code>libasound2-dev</code> para compilar (la CI lo instala);
+  macOS/Windows no necesitan nada. Android compila decode+cola+ajustes;
+  la salida la pone el shell de la app (Fase 42B).</li>
+</ul>
+<h2 id="ejemplo-completo">Ejemplo completo</h2>
+<p><code>examples/reproductor_hifi.titan</code> — genera dos tonos, verifica decode
+headless, ajusta volumen/crossfade/EQ, encola y reproduce con niveles:</p>
+<pre><code class="language-bash">titan run examples/reproductor_hifi.titan
+</code></pre><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/AUDIO_ENGINE.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

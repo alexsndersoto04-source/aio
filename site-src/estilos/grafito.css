@@ -1,0 +1,19 @@
+/* Variante «grafito»: portada en bloque oscuro sobrio; el resto, igual de claro */
+:root{
+  --acc:#1e40af;
+  --hero-bg:#0f172a;--hero-text:#f8fafc;--hero-muted:#cbd5e1;
+}
+.hero{border-bottom:0}
+.hero .btn{background:transparent;color:#f8fafc;border-color:#334155}
+.hero .btn:hover{border-color:#94a3b8}
+.hero .btn.primary{background:#f8fafc;color:#0f172a;border-color:#f8fafc}
+.hero .facts,.hero .fact+.fact{border-color:#1e293b}
+.hero .code{border-color:#334155;background:#0b1220}
+.hero .hero-cmd code{background:#1e293b;color:#e2e8f0}
+header.top{background:#0f172a;border-bottom:1px solid #1e293b}
+header.top .brand{color:#f8fafc}
+header.top nav.main a{color:#94a3b8}
+header.top nav.main a:hover,header.top nav.main a[aria-current]{color:#f8fafc}
+header.top nav.main a[aria-current]{border-bottom-color:#f8fafc}
+header.top nav.main a.gh{color:#f8fafc;border-color:#334155}
+header.top .brand img{filter:invert(1) hue-rotate(180deg)}

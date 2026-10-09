@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebAssembly — Documentación de Titan</title>
+<meta name="description" content="Backend WASM, memoria y host JavaScript.">
+<meta property="og:title" content="WebAssembly — Documentación de Titan">
+<meta property="og:description" content="Backend WASM, memoria y host JavaScript.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html" class="on">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="titan-webassembly-backend">TITAN WebAssembly Backend</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p><code>titan wasm &lt;project&gt;</code> emits a real WebAssembly module with exported <code>main</code> and named functions. The backend lowers integer/bool/nil constants, locals, arithmetic, signed division/remainder, logical and bitwise operations, comparisons, direct calls and returns to Wasm instructions.</p>
+<p>Titan's bytecode control-flow graph is validated with a work-list stack analysis. Straight-line functions are emitted directly with no program-counter local, dispatch loop, comparisons, or branch table. Canonical <code>if</code>/<code>else</code> regions are recognized recursively from their forward conditional/join jumps and lowered to nested native Wasm <code>if</code>/<code>else</code> constructs, with branch values retained in statically assigned locals. Canonical <code>while</code> loops are recognized from a forward false-exit and a final backward edge, then lowered to native outer <code>block</code> + inner <code>loop</code> + <code>br_if</code>; nested direct <code>if</code> and loops are recursively supported. Reachable jumps to the active loop header/end become depth-correct <code>br</code> instructions, so conditional <code>continue</code> and <code>break</code> inside nested direct <code>if</code> regions no longer force dispatch. Unreachable synthetic join jumps are omitted while their absence is reflected in source metadata. Arbitrary cross-region CFGs retain the O(1) <code>br_table</code> fallback. This supports <code>if</code>/<code>else</code>, lazy boolean expressions, <code>while</code>, <code>loop</code>, <code>break</code>, and <code>continue</code> without embedding or calling the Titan VM. Invalid branch targets, stack underflow, inconsistent merge heights, bad locals/calls, and declared stack-limit violations produce compilation errors. Generated bytes, including forward branches and backward loops, are validated in tests with <code>wasmparser</code>.</p>
+<p>UTF-8 string literals are stored in an exported Wasm 32-bit linear memory. A string value uses an <code>i64</code> ABI handle: the low 32 bits are the byte pointer and the high 32 bits are the byte length, so JavaScript can decode it without copying through the Titan VM. Four bytes immediately before the payload store the Unicode scalar count; Titan <code>len(string)</code> loads that count and therefore preserves Titan/VM Unicode semantics rather than returning UTF-8 bytes. Memory sizing is calculated from the complete string table, overflows are rejected, and invalid string-table references fail compilation.</p>
+<p>Modules using single-argument <code>print</code>/<code>println</code> now import the real host function <code>titan.print: (i64) -&gt; ()</code>. Modules without printing remain import-free. Function indexes and exports are relocated automatically when the import is present, including calls between Titan functions. A browser or JavaScript host can interpret the raw <code>i64</code> as a number or decode it as the string handle described above. Multi-argument printing is rejected until typed host-value metadata is available.</p>
+<p>String <code>+</code> is lowered to an internal Wasm concatenation function when bytecode data-flow proves both operands are strings. The helper uses a mutable bump-heap pointer, grows linear memory on demand, checks address overflow and <code>memory.grow</code> failure, copies both UTF-8 payloads with <code>memory.copy</code>, combines Unicode scalar counts, and returns a new ABI handle. A local type-flow analysis tracks strings through locals, duplication, branches and chained concatenations while leaving numeric <code>+</code> as <code>i64.add</code>; ambiguous mixed values are rejected rather than guessed. The allocator intentionally does not reclaim individual strings yet.</p>
+<p>The browser backend recognizes <code>std::web::query_exists</code>, <code>set_text</code>, <code>set_html</code>, <code>set_attribute</code>, <code>add_class</code>, <code>remove_class</code>, <code>focus</code>, and <code>set_title</code>. Only imports actually referenced by bytecode are emitted, in deterministic order, and all defined-function indexes are relocated by the exact import count. String arguments use the same checked ABI handles; setters return Titan <code>nil</code>, while <code>query_exists</code> returns an <code>i64</code> boolean. On the native VM these functions fail with a clear browser-host-required error instead of pretending to manipulate a DOM. <code>set_html</code> deliberately exposes raw <code>innerHTML</code>; applications must not pass untrusted markup.</p>
+<p>DOM events use <code>std::web::listen(selector, event_name, handler_export) -&gt; Int</code> and <code>std::web::unlisten(id) -&gt; Bool</code>. The browser host installs a real <code>addEventListener</code>, retains its callback by numeric subscription ID, and invokes the named exported zero-argument Titan function when the event fires. <code>unlisten</code> calls <code>removeEventListener</code> with the original callback and releases the host record. Handler lookup and execution failures are reported to the browser console without corrupting the Wasm instance.</p>
+<p>During a handler, <code>std::web::event_type</code>, <code>event_value</code>, <code>event_key</code>, <code>event_target_id</code>, <code>event_checked</code>, <code>event_x</code>, and <code>event_y</code> expose the active DOM event. String values travel host-to-Wasm through the exported <code>__titan_alloc_string(byte_length, scalar_length)</code> ABI. The JavaScript adapter UTF-8 encodes the value, invokes the reentrant checked allocator, refreshes its memory view after possible <code>memory.grow</code>, writes the payload, and returns the normal Titan string handle. Event context is restored in <code>finally</code>, so nested dispatch cannot leak the wrong event. Outside a handler, string accessors return empty strings and numeric/boolean accessors return zero.</p>
+<p>Asynchronous GET requests use <code>std::web::fetch(url, maximum_bytes, timeout_ms, handler_export) -&gt; Int</code>. Configurable requests use <code>std::web::request(method, url, headers_json, body, maximum_bytes, timeout_ms, handler_export) -&gt; Int</code>; header JSON must be an object of string values, CR/LF injection is rejected, methods are token-validated, and GET/HEAD bodies are forbidden. <code>std::web::fetch_cancel(id) -&gt; Bool</code> aborts and suppresses its callback. Responses are streamed with a hard byte limit rather than buffered without bounds. The host uses <code>AbortController</code> for cancellation/timeouts, retains HTTP status/final URL/body/error/normalized headers in a scoped callback context, and invokes the exported zero-argument Titan handler after completion. That handler reads <code>fetch_ok</code>, <code>fetch_status</code>, <code>fetch_body</code>, <code>fetch_url</code>, <code>fetch_error</code>, and <code>fetch_headers</code> (JSON). HTTP error statuses still expose their status/body; transport errors and timeouts use status zero. Browser CORS and forbidden-header policy remain enforced.</p>
+<p>A complete host adapter and page live under <code>examples/browser/</code>. Build and serve it with:</p>
+<pre><code class="language-bash">titan wasm examples/browser/main.titan --output examples/browser/program.wasm
+cd examples/browser
+python3 -m http.server 8080
+</code></pre>
+<p>Then open <code>http://localhost:8080</code>. Browsers generally forbid loading Wasm from <code>file://</code>, so an HTTP server is required.</p>
+<p>Browser WebSockets use <code>std::web::ws_connect(url, protocols_json, maximum_message_bytes, on_open, on_message, on_error, on_close) -&gt; Int</code>, plus <code>ws_send(id, text) -&gt; Bool</code> and <code>ws_close(id, code, reason) -&gt; Bool</code>. Separate callbacks avoid comparing erased string handles to determine event type. Within callbacks, <code>ws_id</code>, <code>ws_message</code>, <code>ws_protocol</code>, <code>ws_close_code</code>, <code>ws_close_reason</code>, <code>ws_was_clean</code>, and <code>ws_error</code> expose scoped state. The host validates protocol arrays, tracks sockets by ID, limits incoming/outgoing UTF-8 bytes, applies <code>bufferedAmount</code> backpressure, handles text and binary frames as UTF-8 strings, reports transport/size/type failures, enforces browser close-code/reason constraints, and releases records on close. The browser controls TLS, origin, proxy and certificate policy.</p>
+<pre><code class="language-titan"><span class="k">fn</span> socket_open() {
+    std::web::ws_send(std::web::ws_id(), <span class="s">&quot;hello from TITAN&quot;</span>);
+    <span class="n">0</span>
+}
+<span class="k">fn</span> socket_message() { println(std::web::ws_message()); <span class="n">0</span> }
+<span class="k">fn</span> socket_error() { println(std::web::ws_error()); <span class="n">0</span> }
+<span class="k">fn</span> socket_close() { println(std::web::ws_close_reason()); <span class="n">0</span> }
+<span class="k">fn</span> main() {
+    std::web::ws_connect(<span class="s">&quot;wss://example.com/socket&quot;</span>, <span class="s">&quot;[]&quot;</span>, <span class="n">65536</span>,
+        <span class="s">&quot;socket_open&quot;</span>, <span class="s">&quot;socket_message&quot;</span>, <span class="s">&quot;socket_error&quot;</span>, <span class="s">&quot;socket_close&quot;</span>)
+}
+</code></pre>
+<p>Canvas 2D drawing uses <code>std::web::canvas_resize</code>, <code>canvas_clear</code>, <code>canvas_fill_rect</code>, <code>canvas_stroke_rect</code>, <code>canvas_line</code>, and <code>canvas_text</code>. Selectors must resolve to <code>HTMLCanvasElement</code>; missing 2D contexts trap with explicit host errors. Dimensions, coordinates and line widths are range-checked before conversion from the <code>i64</code> ABI. Every draw operation brackets mutable context state with <code>save</code>/<code>restore</code>, resize is capped at 16384 pixels per axis and 67108864 total pixels, while line width is capped at 10000.</p>
+<p>Animation uses <code>std::web::animation_start(handler_export) -&gt; Int</code> and <code>animation_cancel(id) -&gt; Bool</code>. Each active subscription owns one <code>requestAnimationFrame</code> chain, so callbacks cannot accumulate faster than browser frames. Inside the exported zero-argument handler, <code>frame_id</code>, <code>frame_time_ms</code>, <code>frame_delta_ms</code>, and <code>frame_count</code> expose scoped integer timing. Cancellation from inside the handler is safe; hidden tabs inherit browser throttling; a trapping handler is logged and automatically removed to prevent an error loop. The browser example animates Canvas using the high-resolution frame timestamp.</p>
+<p>Every module embeds a versioned <code>titan.source_map</code> custom section and <code>titan wasm</code> writes the expanded logical metadata as <code>&lt;output&gt;.wasm.map.json</code>. CLI source paths are made project-relative when possible. The backend inserts semantic no-op markers at each reachable Titan instruction, finishes the binary, reparses function bodies with <code>wasmparser</code>, and records each marker's absolute Wasm byte offset. The logical map therefore contains import relocation, Titan/Wasm function indexes, operation names, byte spans, lines, columns, and exact generated offsets.</p>
+<p>The CLI also emits a standard source-map-v3 file at <code>&lt;output&gt;.wasm.map</code>. Its single generated line uses absolute Wasm offsets as generated columns and Base64-VLQ segments for source, zero-based line/column, and function-name deltas. Source text is embedded through <code>sourcesContent</code>, so developer tools do not depend on the output directory mirroring the project tree. A URI-percent-encoded <code>sourceMappingURL</code> custom section containing the sidecar filename is appended to the final module, allowing compatible browser developer tools to discover it. Tests validate marker counts, offsets, VLQ encoding, both custom sections, and import-shifted function indexes.</p>
+<p>WebGL2 pipelines expose <code>std::web::webgl_supported(selector) -&gt; Bool</code> and use <code>std::web::webgl_create(selector, vertex_shader, fragment_shader, vertices_json, indices_json) -&gt; Int</code>, <code>webgl_uniform_f32(scene, name, numerator, denominator) -&gt; Bool</code>, <code>webgl_draw(scene, clear_color_json) -&gt; Bool</code>, and <code>webgl_delete(scene) -&gt; Bool</code>. Creation compiles and links GLSL ES 3 shaders with full driver logs, requires a vec2 <code>a_position</code> attribute, caps each shader at 1 MiB, validates finite Float32 vertex/index JSON with hard limits, uploads Float32/Uint16 buffers into a VAO, and retains explicit GPU resources by scene ID. Drawing checks context loss, sets viewport/clear color, issues indexed triangles, and reports GL errors. Uniform ratios preserve fractional values despite the current integer Wasm ABI. Deletion releases buffers, VAO and program. The browser example draws a real GPU triangle.</p>
+<p>Numeric/scalar arrays and tuples live in managed linear memory. <code>NewArray</code>/<code>NewTuple</code> reserve a checked descriptor plus contiguous 8-byte ABI slots through the shared growable allocator; handles remain <code>i64</code>, <code>len</code> reads the logical element count, and <code>Index</code> performs signed-negative and unsigned upper-bound checks before <code>i64.load</code>. Elements may also be string or nested collection handles because slots preserve the full scalar ABI.</p>
+<p>Persistent operations include <code>std::array::set</code>, <code>push</code>, <code>pop</code>, half-open <code>slice</code>, and <code>concat(left, right)</code>. Concat validates combined memory32 capacity, allocates one exact payload, then performs two ordered <code>memory.copy</code> operations; empty inputs are valid and both originals remain unchanged. Slice validates <code>0 &lt;= start &lt;= end &lt;= len</code>. VM and Wasm semantics match for all operations and preserve nested/string handles. Individual reclamation is not implemented yet.</p>
+<p>The managed heap exposes telemetry/limits plus manual checkpoints and nested LIFO scopes. <code>heap_scope_begin() -&gt; Int</code> allocates an internal record containing its checkpoint and parent; <code>heap_scope_end(token) -&gt; Bool</code> succeeds only for the current top scope, bulk-zeroes/reclaims that scope, restores its parent, and updates telemetry. Ending an outer token before its inner scope safely returns false without changing memory. A raw successful <code>heap_restore</code> clears the scope stack because its records may have been reclaimed. Handles created inside an ended scope become invalid and must not escape. Peak/reset counters remain observable. This is deterministic stack-region reclamation, not tracing GC.</p>
+<p>Portable bytecode preserves legacy collection/enum tags and adds recursive <code>ArrayOf(T)</code>, <code>TupleOf(...)</code>, and <code>EnumOf(name, generics)</code> metadata. Type conversion records generic arguments such as <code>Option&lt;Point&gt;</code> and <code>Result&lt;[int], Error&gt;</code>; Wasm propagates them through parameters/direct returns. Enum construction captures the concrete payload kind, while <code>EnumPayload</code> recovers it, enabling chains such as <code>make_option()[payload].field</code> without guessed layouts. Variant-specific payload maps now distinguish built-ins: <code>Option::Some</code> selects generic 0, while <code>Result::Ok</code>/<code>Result::Err</code> select generics 0/1. Enum construction records its concrete variant payload; match lowering's preceding <code>EnumIs</code> refines <code>EnumPayload</code>, so <code>Result&lt;int, Error&gt;::Err</code> can safely expose <code>Error</code> fields across calls. Unknown/custom multi-generic mappings remain conservative rather than guessed. All additions remain serde/backward-compatible. Managed maps (<code>std::map</code>) support <code>new</code>, O(1) <code>length</code>, copy-on-write insertion/replacement (<code>insert_new</code>, <code>insert</code>), collision-safe lookup (<code>contains</code>, <code>get</code>), persistent <code>std::map::remove</code>, and managed <code>std::map::keys(map) -&gt; Array</code> and <code>std::map::values(map) -&gt; Array</code>. Removal scans hash candidates plus UTF-8 content, returns the original unchanged when absent, or allocates exactly <code>(count-1)*24</code> bytes and performs prefix/suffix <code>memory.copy</code> around the removed record. Inputs and aliases remain unchanged; distinct hash collisions continue scanning. Missing get returns Nil. <code>keys</code> and <code>values</code> allocate checked managed arrays of length <code>entry_count</code> (<code>8 bytes</code> per slot) and copy string key handles (<code>offset +8</code>) or value payloads (<code>offset +16</code>) without mutating the original map.</p>
+<p>Type metadata <code>BytecodeType::Map</code> and <code>BytecodeType::MapOf(key_type, value_type)</code> (<code>MapOf(String, T)</code>) is fully integrated into the Wasm stack analysis (<code>ValueKind::Map(Some(Box::new(T)))</code>). When a map is passed as a parameter or returned across calls, its exact value type (<code>T</code>) is preserved. Native operations (<code>std::map::get</code>, <code>values</code>) propagate this metadata statically, allowing safe chains such as <code>std::map::get(map, "item").field</code>. Furthermore, <code>ValueKind::Struct</code> captures field-specific types (<code>BTreeMap&lt;String, ValueKind&gt;</code>), so maps nested within Structs (<code>struct.map_field</code>), Arrays (<code>array[index]</code>), or Enums (<code>variant_payload</code>) maintain full type safety across host boundaries. Managed maps interoperate directly with browser DOM host calls (<code>query_exists</code>, <code>set_text</code>, <code>listen</code>, <code>request</code>), enabling fully integrated browser applications with stateful Wasm memory. Tracing reclamation remains pending; heap limits, telemetry and scopes apply.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/WASM.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

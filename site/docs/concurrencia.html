@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tareas y canales — Documentación de Titan</title>
+<meta name="description" content="spawn, join, canales, select y tiempos límite.">
+<meta property="og:title" content="Tareas y canales — Documentación de Titan">
+<meta property="og:description" content="spawn, join, canales, select y tiempos límite.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html" class="on">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Lenguaje</p><h1 id="tareas-y-canales">Tareas y canales</h1>
+<p>Los ejecutables nativos de Titan ejecutan las tareas como <strong>fibras cooperativas</strong>: cada tarea tiene su propia pila (32 MiB
+reservados con <code>mmap</code>, con página de guarda) y todas corren en el mismo hilo del sistema. El cambio de una a otra es real
+(cambio de pila en ensamblador, para x86-64 y para ARM64). No hay paralelismo entre tareas.</p>
+<pre><code class="language-titan"><span class="k">fn</span> trabajo(n: int) -&gt; int {
+    n * <span class="n">2</span>
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> t = <span class="k">spawn</span> || { trabajo(<span class="n">21</span>) }
+    print(join(t))          <span class="c">// 42</span>
+}
+</code></pre>
+<h2 id="canales">Canales</h2>
+<p><code>channel(capacidad)</code> devuelve <code>(Sender, Receiver)</code>. Capacidad 0 es un encuentro (el emisor espera a que alguien reciba).</p>
+<pre><code class="language-titan"><span class="k">fn</span> productor(tx: Sender, n: int) -&gt; int {
+    <span class="k">let</span> <span class="k">mut</span> i = <span class="n">0</span>
+    <span class="k">while</span> i &lt; n {
+        send(tx, i * <span class="n">10</span>)
+        i += <span class="n">1</span>
+    }
+    n
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> (tx, rx) = channel(<span class="n">2</span>)
+    <span class="k">let</span> t = <span class="k">spawn</span> || { productor(tx, <span class="n">5</span>) }
+    <span class="k">let</span> <span class="k">mut</span> k = <span class="n">0</span>
+    <span class="k">while</span> k &lt; <span class="n">5</span> {
+        print(recv(rx))
+        k += <span class="n">1</span>
+    }
+    print(join(t))
+}
+</code></pre>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Función</th>
+<th>Qué hace</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spawn \|\| { ... }</code></td>
+<td>Crea una tarea y devuelve su handle. La tarea no empieza hasta que el hilo principal (u otra tarea) se bloquea.</td>
+</tr>
+<tr>
+<td><code>join(t)</code></td>
+<td>Espera el resultado; propaga el error de la tarea. Solo se puede llamar una vez por tarea.</td>
+</tr>
+<tr>
+<td><code>join_timeout(t, ms)</code></td>
+<td><code>Some(resultado)</code> o <code>None</code> si vence el plazo.</td>
+</tr>
+<tr>
+<td><code>cancel(t)</code></td>
+<td>Marca la tarea como cancelada; se observa cuando arranca o vuelve de un punto de cesión. <code>join</code> da <code>task cancelled</code>.</td>
+</tr>
+<tr>
+<td><code>channel(n)</code>, <code>send</code>, <code>recv</code>, <code>recv_timeout(rx, ms)</code></td>
+<td>Canales acotados.</td>
+</tr>
+<tr>
+<td><code>select([rx1, rx2], ms)</code></td>
+<td><code>Some((índice, valor))</code> del primero que esté listo, o <code>None</code> al vencer.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="cuando-se-cede-el-control">Cuándo se cede el control</h2>
+<p>Otra tarea solo se ejecuta cuando la actual se bloquea: <code>join</code>, <code>join_timeout</code>, <code>recv</code>, <code>recv_timeout</code>, <code>select</code>, <code>send</code> con
+el canal lleno (o sin capacidad) y <code>std::time::sleep_ms</code>. <strong>Una tarea que calcula sin bloquearse nunca cede</strong>: el resto no avanza
+hasta que ella termine o se bloquee. Las lecturas bloqueantes de red, archivos o stdin tampoco ceden.</p>
+<p>Si todas las tareas están bloqueadas y ninguna tiene plazo, el programa termina con
+<code>RUNTIME ERROR: deadlock: every task is blocked and none can ever wake up</code> (código 1). Al terminar <code>main</code>, las tareas pendientes
+no se ejecutan ni se esperan.</p>
+<h2 id="limites">Límites</h2>
+<ul>
+<li>256 tareas, 1024 canales, capacidad máxima 65536.</li>
+<li>Sin paralelismo: para aprovechar varios núcleos hay que lanzar procesos (<code>std::process</code>).</li>
+<li><code>std::runtime::spawn_quota</code> (tope de memoria por tarea) no existe en los ejecutables nativos.</li>
+</ul>
+<h2 id="inspeccion-del-runtime-stdruntime">Inspección del runtime (<code>std::runtime</code>)</h2>
+<ul>
+<li><code>allocated_bytes()</code> bytes reales del montón en uso; <code>gc_live_count()</code> = <code>allocated_bytes / 64</code>.</li>
+<li>El runtime usa <strong>conteo de referencias</strong>, no hay recolector: <code>gc_collect()</code> devuelve 0, <code>gc_set_threshold(n)</code> solo guarda el valor
+  y <code>memory_limit()</code> devuelve <code>-1</code> (sin tope).</li>
+<li><code>active_tasks()</code> tareas registradas; <code>heap_dump(ruta)</code> escribe un JSON con esas cifras; <code>benchmark(n, || { ... })</code> mide un cierre
+  (<code>iterations</code>, <code>total_ms</code>, <code>ns_per_op</code>, <code>ops_per_sec</code>).</li>
+</ul>
+<p>Pruebas: <code>selfhost/tests/native/tareas_*.titan</code> y <code>error_tarea_*</code>/<code>error_canal_*</code>; se comparan con el backend x86-64 y con LLVM/ARM64
+(<code>selfhost/tests/arm64_diff.sh</code>).</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/CONCURRENCY.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

@@ -1,0 +1,1130 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Especificación — Documentación de Titan</title>
+<meta name="description" content="Definición formal del lenguaje y de sus reglas de tipos (en inglés).">
+<meta property="og:title" content="Especificación — Documentación de Titan">
+<meta property="og:description" content="Definición formal del lenguaje y de sus reglas de tipos (en inglés).">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../favicon.svg" alt="" width="24" height="24"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html" class="on">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Lenguaje</p><h1 id="titan-language-specification">Titan Language Specification</h1>
+<p><strong>Document version:</strong> 1.0 — 2026-08-21
+<strong>Applies to:</strong> TITAN / Zett compiler <code>1.0.0</code>. Written when the reference implementation was a bytecode VM; the language semantics
+it describes are what the native backends (x86-64, LLVM) implement. Where it says "VM", read "the program at run time".
+Language features listed as unsupported may differ from today's compiler: <code>selfhost/ESTADO.md</code> is the current record.
+<strong>Canonical source extension:</strong> <code>.titan</code>
+<strong>Compiled artifact:</strong> <code>TITAN-BYTECODE 1</code> container (<code>.tbc</code>)</p>
+<hr />
+<h2 id="0-scope-and-reading-conventions">0. Scope and reading conventions</h2>
+<p>This document describes the language <strong>as the current implementation accepts it</strong>. It is
+descriptive, not aspirational: every construct listed as supported is executable today, and
+every construct that is parsed but refused is listed explicitly, together with the diagnostic
+the compiler emits.</p>
+<p>Three status labels are used throughout:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Label</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Supported</strong></td>
+<td>Parsed, type-checked, lowered to bytecode, and executable in the VM.</td>
+</tr>
+<tr>
+<td><strong>Parsed, rejected</strong></td>
+<td>The grammar accepts the syntax so that tooling can read it, but the typechecker or code generator refuses it with a specific error. Nothing is silently miscompiled.</td>
+</tr>
+<tr>
+<td><strong>Not in the grammar</strong></td>
+<td>The parser fails. The token may exist in the lexer, but no production consumes it.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Section <a href="#18-consolidated-list-of-current-limitations">§18</a> consolidates every limitation in one
+table. Section <a href="#19-how-this-document-was-verified">§19</a> records how each claim was checked
+against the source tree.</p>
+<p>Two backends exist and they do <strong>not</strong> accept the same programs. Unless a section says
+otherwise, its contents describe the bytecode VM. The WebAssembly backend and its narrower
+subset are specified in <a href="#16-webassembly-backend">§16</a>.</p>
+<hr />
+<h2 id="1-program-structure-and-entry-point">1. Program structure and entry point</h2>
+<p>A program is a sequence of declarations. Execution begins at <code>fn main()</code>.</p>
+<pre><code class="language-titan"><span class="k">const</span> LIMIT: int = <span class="n">20</span>
+
+<span class="k">fn</span> main() {
+    print(<span class="s">&quot;limit={LIMIT}&quot;</span>)
+}
+</code></pre>
+<p>Rules enforced by the implementation:</p>
+<ul>
+<li><code>main</code> must take <strong>zero parameters</strong>. A parameter list is rejected at semantic time
+  (<code>entry point 'main' must take no parameters, but N were declared</code>) and again in code
+  generation, because the runtime always invokes the entry point with no arguments.</li>
+<li>All declarations from all loaded files enter <strong>one flat executable namespace</strong>. Duplicate
+  names are rejected (<code>duplicate function 'name'</code>) rather than shadowed.</li>
+<li>Top-level item kinds: <code>fn</code>, <code>struct</code>, <code>enum</code>, <code>trait</code>, <code>impl</code>, <code>mod</code>, <code>import</code>, <code>const</code>,
+  <code>type</code>.</li>
+</ul>
+<hr />
+<h2 id="2-lexical-structure">2. Lexical structure</h2>
+<h3 id="21-identifiers-comments-literals">2.1 Identifiers, comments, literals</h3>
+<ul>
+<li>Identifiers begin with a Unicode alphabetic character, followed by Unicode alphanumerics or <code>_</code>.</li>
+<li><code>//</code> starts a line comment. <code>/* ... */</code> block comments <strong>nest</strong>; an unterminated block comment
+  is a lexical error.</li>
+<li>String escapes: <code>\n</code>, <code>\r</code>, <code>\t</code>, <code>\0</code>, <code>\"</code>, <code>\'</code>, <code>\\</code>. Any other escape is a lexical error.</li>
+<li>Integer literals accept <code>_</code> separators (<code>1_000_000</code>).</li>
+<li>Character literals are single Unicode scalars: <code>'a'</code>.</li>
+<li>Statements are separated by newlines or <code>;</code>.</li>
+</ul>
+<h3 id="22-operators-and-punctuation">2.2 Operators and punctuation</h3>
+<pre><code>+  -  *  /  %       &amp;  |  ^  ~  !
++= -= *= /= %=      == != &lt;= &gt;= &lt; &gt;
+&amp;&amp; ||               ::  =  .  ,  :  ;  _
+-&gt;  =&gt;  ?           ..  ..=
+|&gt;  &lt;=&gt;             #{  (  )  {  }  [  ]
+</code></pre>
+<p><code>|&gt;</code> is the pipeline operator and <code>&lt;=&gt;</code> is the three-way comparison operator; both are
+described in <a href="#43-pipeline-and-three-way-comparison">§4.3</a>. <code>#{</code> opens a map literal
+(<a href="#74-maps">§7.4</a>).</p>
+<h3 id="23-keywords">2.3 Keywords</h3>
+<p><strong>Active:</strong> <code>let</code> <code>mut</code> <code>fn</code> <code>return</code> <code>if</code> <code>else</code> <code>match</code> <code>for</code> <code>while</code> <code>loop</code> <code>break</code>
+<code>continue</code> <code>in</code> <code>struct</code> <code>enum</code> <code>trait</code> <code>impl</code> <code>mod</code> <code>import</code> <code>const</code> <code>spawn</code> <code>go</code> <code>true</code>
+<code>false</code> <code>nil</code> <code>self</code> <code>type</code> <code>pub</code> <code>extern</code>.</p>
+<ul>
+<li><code>go</code> is an accepted synonym of <code>spawn</code>.</li>
+<li><code>pub</code> is accepted and ignored: there is a single executable namespace, so no visibility
+  distinction is applied yet.</li>
+<li><code>extern</code> parses, but an <code>extern fn</code> has no runtime linkage and is rejected
+  (<code>extern function 'name' without runtime linkage</code>).</li>
+</ul>
+<p><strong>Reserved tokens with no production:</strong> <code>as</code>, <code>unsafe</code>. The lexer produces them, but no grammar
+rule consumes them, so any use is a parse error. They are reserved for future casts and unsafe
+blocks.</p>
+<hr />
+<h2 id="3-types">3. Types</h2>
+<h3 id="31-built-in-type-names">3.1 Built-in type names</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Written as</th>
+<th>Internal type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>int</code>, <code>i32</code>, <code>i64</code>, <code>u64</code>, <code>usize</code></td>
+<td><code>Int</code></td>
+<td>All map to the VM's signed 64-bit integer today. The width in the name is documentation, not a guarantee.</td>
+</tr>
+<tr>
+<td><code>float</code>, <code>f32</code>, <code>f64</code></td>
+<td><code>Float</code></td>
+<td>All map to IEEE-754 binary64.</td>
+</tr>
+<tr>
+<td><code>bool</code></td>
+<td><code>Bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>char</code></td>
+<td><code>Char</code></td>
+<td>Unicode scalar value.</td>
+</tr>
+<tr>
+<td><code>string</code>, <code>str</code></td>
+<td><code>String</code></td>
+<td>UTF-8.</td>
+</tr>
+<tr>
+<td><code>[T]</code></td>
+<td><code>Array(T)</code></td>
+<td>Slice syntax is the array type.</td>
+</tr>
+<tr>
+<td><code>Array&lt;T&gt;</code>, <code>Vec&lt;T&gt;</code></td>
+<td><code>Array(T)</code></td>
+<td>The only named types that accept a type argument.</td>
+</tr>
+<tr>
+<td><code>array</code></td>
+<td><code>Array(any)</code></td>
+<td>Convenience alias for a heterogeneous array.</td>
+</tr>
+<tr>
+<td><code>map</code></td>
+<td><code>Named("map")</code></td>
+<td>String-keyed map; see <a href="#74-maps">§7.4</a>.</td>
+</tr>
+<tr>
+<td><code>any</code></td>
+<td><code>Unknown</code></td>
+<td>Dynamic escape hatch; compatible with every type.</td>
+</tr>
+<tr>
+<td><code>(A, B)</code></td>
+<td><code>Tuple</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>fn(A) -&gt; B</code></td>
+<td><code>Function</code></td>
+<td>Type of closures and named functions used as values.</td>
+</tr>
+<tr>
+<td><code>Option</code>, <code>Result</code></td>
+<td>prelude enums</td>
+<td>See <a href="#11-option-result-and-the--operator">§11</a>.</td>
+</tr>
+<tr>
+<td><code>Name</code></td>
+<td><code>Named</code></td>
+<td>User struct, enum, or handle type.</td>
+</tr>
+<tr>
+<td><code>nil</code></td>
+<td><code>Nil</code></td>
+<td>Runtime absence value; compatible with unit positions.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Runtime handle types produced by intrinsics (<code>TcpListener</code>, <code>TcpStream</code>, <code>TlsStream</code>,
+<code>HttpRouter</code>, <code>Sender</code>, <code>Receiver</code>, <code>Task</code>, database handles, and similar) are opaque named
+types. They can be passed to the intrinsics that accept them and stored in locals; they have no
+fields and no user-visible representation.</p>
+<p>Integer arithmetic is <strong>checked</strong>: overflow, division by zero, and out-of-range indexing are
+structured runtime errors, never silent wraparound or undefined behavior.</p>
+<h3 id="32-generics">3.2 Generics</h3>
+<p>Titan is <strong>monomorphic</strong>. Exactly one parameterized shape exists: <code>Array&lt;T&gt;</code> / <code>Vec&lt;T&gt;</code>, which
+take one argument. Every other named type must be written with zero type arguments; writing
+<code>Option&lt;int&gt;</code> or <code>Map&lt;K, V&gt;</code> is rejected with
+<code>type 'Name' expects 0 type arguments, found N</code>.</p>
+<p>This is deliberate. Accepting and discarding type arguments would advertise generic guarantees
+the checker does not enforce. User-defined generic functions and generic structs are <strong>not in
+the grammar</strong>.</p>
+<h3 id="33-type-aliases">3.3 Type aliases</h3>
+<pre><code class="language-titan"><span class="k">type</span> UserId = string
+<span class="k">type</span> Score  = int
+</code></pre>
+<p>Aliases are resolved before compatibility checks and cost nothing at runtime. Recursive aliases
+are rejected (<code>type alias 'T' is recursive</code>). Aliases of <strong>function types</strong>
+(<code>type Handler = fn(int) -&gt; string</code>) are not accepted by the type parser.</p>
+<h3 id="34-type-forms-that-are-parsed-and-rejected">3.4 Type forms that are parsed and rejected</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Diagnostic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&amp;T</code>, <code>&amp;mut T</code></td>
+<td><code>unsupported language feature: reference types</code></td>
+</tr>
+<tr>
+<td><code>[T; N]</code> (fixed size)</td>
+<td><code>unsupported language feature: fixed-size array types</code></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="4-variables-operators-precedence">4. Variables, operators, precedence</h2>
+<h3 id="41-bindings-and-assignment">4.1 Bindings and assignment</h3>
+<pre><code class="language-titan"><span class="k">let</span> value: int = <span class="n">10</span>          <span class="c">// immutable</span>
+<span class="k">let</span> <span class="k">mut</span> total = <span class="n">0</span>            <span class="c">// mutable</span>
+total += <span class="n">2</span>
+total = total * <span class="n">3</span>
+</code></pre>
+<p>Type annotations are optional where inference succeeds. Assignment rules enforced by codegen:</p>
+<ul>
+<li>The target must be a <strong>local variable of the current function</strong>
+  (<code>assignment target must currently be a variable</code>).</li>
+<li>The local must be declared <code>mut</code> and must not be a closure capture
+  (<code>assignment to immutable or captured local 'name'</code>).</li>
+<li>Fields, array elements, and map entries are <strong>not</strong> assignable through <code>=</code>. Use the
+  corresponding standard-library call (for example <code>std::array::set</code>, <code>std::map::insert</code>),
+  which returns an updated value.</li>
+</ul>
+<p>Compound assignment supports <code>+= -= *= /= %=</code>.</p>
+<h3 id="42-precedence">4.2 Precedence</h3>
+<p>From tightest to loosest binding:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Operators</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9</td>
+<td><code>*</code> <code>/</code> <code>%</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>+</code> <code>-</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code> <code>&lt;=&gt;</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>==</code> <code>!=</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>&amp;</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>^</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>\|</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>&amp;&amp;</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>\|\|</code></td>
+</tr>
+<tr>
+<td>—</td>
+<td>ranges <code>..</code> <code>..=</code>, then assignment, then <code>\|&gt;</code> (loosest)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Unary operators <code>-</code>, <code>!</code>, <code>~</code> bind tighter than any binary operator. <code>&amp;&amp;</code> and <code>||</code> short-circuit.</p>
+<h3 id="43-pipeline-and-three-way-comparison">4.3 Pipeline and three-way comparison</h3>
+<p>Both operators are <strong>pure syntactic sugar expanded by the parser</strong>. No opcode, VM change, or
+runtime cost is involved.</p>
+<pre><code class="language-titan">x |&gt; f              <span class="c">//  f(x)</span>
+x |&gt; f(a, b)        <span class="c">//  f(x, a, b)   — the piped value is always the FIRST argument</span>
+a &lt;=&gt; b             <span class="c">//  -1 if a &lt; b, 0 if equal, 1 if a &gt; b</span>
+</code></pre>
+<p><code>|&gt;</code> has the loosest precedence, so <code>x + 1 |&gt; print</code> groups as <code>(x + 1) |&gt; print</code>, and it is
+left-associative, so pipelines chain. The right operand must be an identifier or a call.</p>
+<p><code>&lt;=&gt;</code> expands to an <code>if</code>/<code>else</code> chain over temporaries, so each side is evaluated <strong>exactly
+once</strong>. It is designed for <code>sort_by</code> comparators.</p>
+<hr />
+<h2 id="5-control-flow">5. Control flow</h2>
+<pre><code class="language-titan"><span class="k">if</span> condition { ... } <span class="k">else</span> { ... }
+<span class="k">while</span> condition { ... }
+<span class="k">loop</span> { ... }
+<span class="k">for</span> item <span class="k">in</span> collection { ... }
+<span class="k">match</span> value { ... }
+</code></pre>
+<ul>
+<li><code>if</code> is an expression; both branches must produce compatible types when the value is used.</li>
+<li><code>break</code> and <code>continue</code> are legal only inside loops (<code>break/continue used outside a loop</code>).</li>
+<li><strong><code>break</code> with a value is parsed and rejected</strong> (<code>unsupported language feature: values carried
+  by break</code>). <code>loop</code> therefore cannot yield a value; use a mutable local.</li>
+<li><code>return</code> is checked against the declared return type. A function that can finish without
+  returning its declared type is rejected (<code>function 'f' can finish without returning T</code>), as
+  are inconsistent return types across paths.</li>
+</ul>
+<h3 id="51-iterable-receivers-of-for">5.1 Iterable receivers of <code>for</code></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Receiver</th>
+<th>Item type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[T]</code></td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td><code>string</code></td>
+<td><code>char</code></td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td><code>int</code></td>
+</tr>
+<tr>
+<td>tuple</td>
+<td>the common type of its elements</td>
+</tr>
+<tr>
+<td>range (<code>a..b</code>, <code>a..=b</code>)</td>
+<td><code>int</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Anything else is rejected (<code>value of type T is not iterable</code>). Maps are not directly iterable;
+iterate <code>std::map::keys(m)</code> (or <code>std::map::values(m)</code>) and read entries with
+<code>std::map::get(m, key)</code>.</p>
+<h3 id="52-ranges">5.2 Ranges</h3>
+<p><code>a..b</code> and <code>a..=b</code> are <strong>materialized eagerly into an array of integers</strong> by the VM. This is
+observable and bounded: a range longer than <strong>1,000,000 elements</strong> fails with
+<code>range exceeds the one-million element safety limit</code>. Ranges are not lazy iterators and are not
+first-class range objects.</p>
+<hr />
+<h2 id="6-functions-closures-recursion">6. Functions, closures, recursion</h2>
+<pre><code class="language-titan"><span class="k">fn</span> fib(n: int) -&gt; int {
+    <span class="k">if</span> n &lt;= <span class="n">1</span> { <span class="k">return</span> n }
+    fib(n - <span class="n">1</span>) + fib(n - <span class="n">2</span>)
+}
+</code></pre>
+<ul>
+<li>The last expression of a block is its value; <code>return</code> is optional.</li>
+<li>Calls are arity-checked at compile time and again in the VM.</li>
+<li>Recursion is bounded by a call-depth limit (default <strong>4096</strong> frames,
+  <code>call depth limit exceeded</code>) and by a total instruction budget (default <strong>10,000,000</strong>,
+  <code>instruction limit exceeded</code>). Both are configurable when embedding the VM.</li>
+</ul>
+<h3 id="61-closures">6.1 Closures</h3>
+<pre><code class="language-titan"><span class="k">let</span> offset = <span class="n">10</span>
+<span class="k">let</span> add = |value: int| -&gt; int value + offset
+print(add(<span class="n">5</span>))
+</code></pre>
+<p>Closures capture visible lexical bindings <strong>by value</strong>, in deterministic name order. Captured
+locals are read-only inside the closure. Named functions are also first-class values and can be
+stored, passed, and returned.</p>
+<p><strong>Exception:</strong> the compiler's built-in operations (<code>print</code>, <code>len</code>, <code>map</code>, <code>filter</code>, <code>fold</code>,
+<code>sort_by</code>, <code>find</code>, <code>any</code>, <code>all</code>, and the concurrency and intrinsic families of
+<a href="#131-built-in-and-intrinsic-call-surface">§13.1</a>) exist only as direct-call bytecode
+operations. Referring to one as a value is rejected
+(<code>unsupported language feature: built-in function values ('map')</code>).</p>
+<h3 id="62-function-declaration-forms-that-are-parsed-and-rejected">6.2 Function declaration forms that are parsed and rejected</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Diagnostic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default parameter values</td>
+<td><code>default parameter 'f::p'</code></td>
+</tr>
+<tr>
+<td><code>extern fn</code></td>
+<td><code>extern function 'f' without runtime linkage</code></td>
+</tr>
+<tr>
+<td>A body-less <code>fn</code> outside a <code>trait</code></td>
+<td><code>bodyless function 'f' outside a trait declaration</code></td>
+</tr>
+<tr>
+<td>Declarations nested inside a block</td>
+<td><code>nested declarations are not executable yet</code></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="7-aggregate-values">7. Aggregate values</h2>
+<h3 id="71-structs">7.1 Structs</h3>
+<pre><code class="language-titan"><span class="k">struct</span> Point { x: int, y: int }
+<span class="k">let</span> point = Point { x: <span class="n">2</span>, y: <span class="n">3</span> }
+print(point.x)
+</code></pre>
+<p>Struct literals are validated for missing, unknown, and duplicated fields.</p>
+<h3 id="72-enums">7.2 Enums</h3>
+<pre><code class="language-titan"><span class="k">enum</span> Maybe { None, <span class="t">Some</span>(int) }
+<span class="k">let</span> value = <span class="t">Maybe</span>::<span class="t">Some</span>(<span class="n">42</span>)
+</code></pre>
+<p>A variant carries <strong>zero or one</strong> payload value. Multi-payload variants
+(<code>Variant(int, string)</code>) are not in the grammar; use a tuple or a struct as the single payload.</p>
+<h3 id="73-tuples-and-arrays">7.3 Tuples and arrays</h3>
+<pre><code class="language-titan"><span class="k">let</span> pair = (<span class="n">1</span>, <span class="s">&quot;one&quot;</span>)
+<span class="k">let</span> numbers = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+<span class="k">let</span> combined = [..numbers, <span class="n">99</span>, ..more]     <span class="c">// spread</span>
+</code></pre>
+<p>The spread form <code>..expr</code> inside an array literal is expanded by the parser into
+<code>std::array::concat</code> calls. Arrays may be heterogeneous; the checker tracks a mixed-element type
+that satisfies <code>any</code>/<code>[any]</code> but does not silently satisfy <code>[int]</code> or <code>[string]</code>.</p>
+<h3 id="74-maps">7.4 Maps</h3>
+<pre><code class="language-titan"><span class="k">let</span> config = #{<span class="s">&quot;host&quot;</span>: <span class="s">&quot;0.0.0.0&quot;</span>, <span class="s">&quot;port&quot;</span>: <span class="n">8080</span>}
+<span class="k">let</span> m = std::map::new()
+<span class="k">let</span> m = std::map::insert(m, <span class="s">&quot;key&quot;</span>, value)
+print(config.host)
+</code></pre>
+<p><code>#{ ... }</code> is expanded by the parser into <code>std::map::new()</code> plus <code>std::map::insert</code> calls. Keys
+are strings. Field-access syntax works on maps as well as structs: at runtime, <code>x.field</code> reads a
+struct field <strong>or</strong> a map entry, and a missing key raises <code>unknown field 'name'</code>.</p>
+<p>Maps are values, not references. <code>std::map::insert</code> returns a new map; it does not mutate in
+place.</p>
+<hr />
+<h2 id="8-pattern-matching">8. Pattern matching</h2>
+<p>Patterns appear in three positions, and the supported set is <strong>not</strong> the same in each.</p>
+<h3 id="81-let-and-for-destructuring-fully-supported">8.1 <code>let</code> and <code>for</code> destructuring — fully supported</h3>
+<pre><code class="language-titan"><span class="k">let</span> (a, b) = pair
+<span class="k">let</span> Point { x, y } = point
+<span class="k">let</span> Point { x: cx, y: cy } = point       <span class="c">// rename</span>
+<span class="k">let</span> (a, _) = pair                        <span class="c">// wildcard</span>
+<span class="k">let</span> (a, (b, c)) = nested                 <span class="c">// recursive</span>
+<span class="k">for</span> (a, b) <span class="k">in</span> pairs { ... }              <span class="c">// array of tuples</span>
+<span class="k">for</span> Product { title, price } <span class="k">in</span> inventory { ... }
+</code></pre>
+<p>These are expanded <strong>by the parser</strong> into a temporary plus one ordinary <code>let</code> per bound name.
+The VM never sees a pattern, which is why nesting, renaming, and wildcards all work here.</p>
+<h3 id="82-match-arms-restricted">8.2 <code>match</code> arms — restricted</h3>
+<pre><code class="language-titan"><span class="k">match</span> value {
+    <span class="t">Maybe</span>::<span class="t">Some</span>(n) =&gt; n,
+    <span class="t">Maybe</span>::None    =&gt; <span class="n">0</span>,
+}
+
+<span class="k">match</span> code {
+    <span class="n">200</span> =&gt; <span class="s">&quot;ok&quot;</span>,
+    n <span class="k">if</span> n &gt;= <span class="n">500</span> =&gt; <span class="s">&quot;server error&quot;</span>,
+    _ =&gt; <span class="s">&quot;other&quot;</span>,
+}
+</code></pre>
+<p>Supported arm patterns: wildcard <code>_</code>, an identifier binding, a literal, an enum variant without
+payload, and an enum variant whose inner pattern is an identifier or <code>_</code>. Guards (<code>if cond</code>) are
+supported.</p>
+<p>Rejected in <code>match</code> (<code>unsupported language feature: or-patterns and nested destructuring in
+match</code>, and the corresponding codegen errors <code>or-pattern bytecode</code>,
+<code>destructuring pattern bytecode</code>, <code>nested enum destructuring pattern</code>):</p>
+<ul>
+<li>or-patterns <code>A | B</code></li>
+<li>tuple patterns <code>(a, b)</code></li>
+<li>struct patterns <code>Point { x, y }</code></li>
+<li>an enum payload pattern that is itself a tuple, struct, literal, or nested enum</li>
+</ul>
+<h3 id="83-exhaustiveness">8.3 Exhaustiveness</h3>
+<ul>
+<li>A <code>match</code> over a <code>bool</code> must cover <code>true</code> and <code>false</code> or provide a catch-all.</li>
+<li>A <code>match</code> over a declared enum must cover every variant or provide a catch-all; the error
+  names the missing ones (<code>non-exhaustive match for enum 'E'; missing ["None"]</code>).</li>
+<li>Arms that can never be reached are reported (<code>match arm N has an unreachable pattern</code>).</li>
+</ul>
+<hr />
+<h2 id="9-strings-and-interpolation">9. Strings and interpolation</h2>
+<pre><code class="language-titan">print(<span class="s">&quot;fib({i}) = {fib(i)}&quot;</span>)
+</code></pre>
+<p>Interpolation uses a <strong>deliberately restricted grammar</strong>, unchanged in 1.0:</p>
+<ul>
+<li>a local binding, or</li>
+<li>a declared global constant, or</li>
+<li>a call whose callee is a name and whose arguments are local identifiers or integer literals.</li>
+</ul>
+<p>Arbitrary expressions, field access, indexing, and arithmetic inside <code>{ ... }</code> are rejected with
+<code>invalid string interpolation expression '...'</code>. Call resolution inside a template follows
+ordinary rules, including the priority of a local closure or callable constant over a static
+function or native of the same name.</p>
+<p>String concatenation with <code>+</code> accepts a string on either side and stringifies the other operand.</p>
+<hr />
+<h2 id="10-modules-imports-and-projects">10. Modules, imports, and projects</h2>
+<h3 id="101-declaration-and-import-syntax">10.1 Declaration and import syntax</h3>
+<pre><code class="language-titan">mod geometry { ... }
+<span class="k">import</span> geometry::Point
+<span class="k">import</span> std::async
+</code></pre>
+<p>Import resolution, performed by the project loader:</p>
+<ul>
+<li><code>a::b</code> resolves to <code>a/b.titan</code> or <code>a/b/mod.titan</code>, relative to the source root.</li>
+<li>Local path dependencies declared in <code>Titan.toml</code> are resolved as additional roots. Remote
+  dependencies must be fetched first; a dependency without a resolvable path fails with
+  <code>dependency 'name' must specify a local path in this compiler version</code>.</li>
+<li><code>import std::x</code> additionally searches the installed Titan-level standard library
+  (<code>$ZETT_STDLIB_DIR</code>, <code>&lt;prefix&gt;/share/zett/stdlib</code>, or <code>stdlib/</code> next to the executable). Parts
+  of the standard library are written in Titan itself; <code>std::async</code> is the current example.</li>
+<li>Every path is canonicalized, loaded once, and constrained to an authorized source root
+  (<code>import 'x' resolves outside source root ...</code>). Import cycles are detected and reported with
+  the full chain.</li>
+</ul>
+<p><code>mod</code> blocks group declarations for readability. Their items are collected into the same single
+executable namespace as everything else — module paths are not yet a namespacing mechanism, so
+two functions with the same name in different modules collide.</p>
+<h3 id="102-project-layout">10.2 Project layout</h3>
+<pre><code>Titan.toml          manifest: name, version, dependencies
+Titan.lock          generated lockfile
+src/main.titan      default entry point
+tests/*.titan       test programs discovered by `titan test`
+</code></pre>
+<p><code>titan test</code> compiles and runs every <code>.titan</code> file under <code>tests/</code>, reporting one line per file
+and exiting non-zero on any failure. Assertions come from <code>std::testing::assert</code> and
+<code>std::testing::assert_eq</code>; there is no separate test-function attribute.</p>
+<hr />
+<h2 id="11-option-result-and-the-operator">11. <code>Option</code>, <code>Result</code>, and the <code>?</code> operator</h2>
+<p>The prelude provides <code>Option::None</code>, <code>Option::Some(value)</code>, <code>Result::Ok(value)</code>, and
+<code>Result::Err(error)</code>.</p>
+<p>Postfix <code>?</code> unwraps <code>Some</code>/<code>Ok</code>. On <code>None</code>/<code>Err</code> it <strong>returns that value immediately from the
+current function</strong>. Applying <code>?</code> to anything else is a runtime type error
+(<code>operator ? requires Result or Option</code>) and is flagged by the checker
+(<code>operator ? requires an Option or Result value</code>).</p>
+<h3 id="111-errors-as-values">11.1 Errors as values</h3>
+<p><code>std::try::catch(callable)</code> calls a closure under the <code>TryCall</code> operation: any runtime failure —
+native error, type mismatch, index out of bounds, arithmetic error — is captured and returned as
+<code>Result::Err(string)</code>, while success returns <code>Result::Ok(value)</code>. This is the mechanism that
+makes failures inspectable from Titan code instead of terminating the program.</p>
+<hr />
+<h2 id="12-traits-impl-and-methods">12. Traits, <code>impl</code>, and methods</h2>
+<pre><code class="language-titan"><span class="k">trait</span> Greetable {
+    <span class="k">fn</span> name(self) -&gt; string;                       <span class="c">// required</span>
+    <span class="k">fn</span> greet(self) -&gt; string {                     <span class="c">// default body</span>
+        <span class="s">&quot;Hola, &quot;</span> + self.name() + <span class="s">&quot;!&quot;</span>
+    }
+}
+
+<span class="k">struct</span> Person { first: string }
+
+<span class="k">impl</span> Greetable <span class="k">for</span> Person {
+    <span class="k">fn</span> name(self) -&gt; string { self.first }
+}
+</code></pre>
+<p>Supported:</p>
+<ul>
+<li>Traits with required methods and <strong>default method bodies</strong>. A default body may call other
+  methods through <code>self</code>, including other defaults.</li>
+<li><code>impl Trait for Type</code> and inherent <code>impl Type</code> blocks.</li>
+<li>Method-call syntax <code>receiver.method(args)</code>, dispatched dynamically by the VM
+  (<code>CallMethod</code>). A declared struct method takes priority over a built-in collection method of
+  the same name.</li>
+<li>Missing required methods are a compile error; an extra method not declared by the trait is
+  rejected (<code>method 'm' is not declared by trait 'T'</code>), as is a signature mismatch.</li>
+</ul>
+<p>Constraints:</p>
+<ul>
+<li><strong><code>impl</code> targets must be declared structs</strong> (<code>impl target 'X' is not a declared struct</code>).
+  There are no impls on enums, primitives, or aliases.</li>
+<li>A trait default method <strong>must declare an explicit return type</strong>
+  (<code>trait default method 'T::m' without an explicit return type</code>).</li>
+<li>There are no trait objects, no generic bounds, and no static dispatch tables: a method is
+  resolved at runtime from the receiver's struct name.</li>
+</ul>
+<h3 id="121-built-in-methods-on-collections">12.1 Built-in methods on collections</h3>
+<p>When no user method matches, these intrinsic methods are available:
+<code>len()</code>, <code>map(f)</code>, <code>filter(f)</code>, <code>fold(init, f)</code>, <code>sort_by(cmp)</code>, <code>find(f)</code>, <code>any(f)</code>, <code>all(f)</code>.
+Each also exists in call form (<code>map(xs, f)</code>).</p>
+<hr />
+<h2 id="13-standard-library-and-the-capability-model">13. Standard library and the capability model</h2>
+<h3 id="131-built-in-and-intrinsic-call-surface">13.1 Built-in and intrinsic call surface</h3>
+<p>The compiler knows <strong>122 signatures</strong> that are not registry natives:</p>
+<ul>
+<li>18 global built-ins: <code>print</code>, <code>println</code>, <code>len</code>, <code>map</code>, <code>filter</code>, <code>fold</code>, <code>sort_by</code>, <code>find</code>,
+  <code>any</code>, <code>all</code>, <code>join</code>, <code>join_timeout</code>, <code>cancel</code>, <code>channel</code>, <code>send</code>, <code>recv</code>, <code>recv_timeout</code>,
+  <code>select</code>.</li>
+<li>104 qualified intrinsics lowered to dedicated opcodes rather than a generic native call:
+  <code>std::net</code> (8), <code>std::tls</code> (6), <code>std::ws</code> (10), <code>std::http</code> (7), <code>std::server</code> (6),
+  <code>std::sqlite</code> (16), <code>std::postgres</code> (16), <code>std::mysql</code> (15), <code>std::db</code> (8),
+  <code>std::runtime</code> (12).</li>
+</ul>
+<h3 id="132-the-native-registry">13.2 The native registry</h3>
+<p><code>crates/titan_stdlib/src/native.rs</code> declares <strong>758 unique native functions across 71 <code>std::*</code>
+namespaces</strong>, each with a fixed parameter list, a result type, and an optional required
+capability. The compiler resolves qualified names through this registry and checks arity and
+parameter types <strong>before</strong> code generation. A native failure becomes a runtime error that names
+the function.</p>
+<p>Values crossing the native boundary are ints, floats, bools, chars, strings, bytes, arrays,
+tuples, maps, structs, and enums.</p>
+<p>The registry is verifiable without compiling Rust: <code>python3 verify_phase34.py</code> re-derives the
+table, checks for duplicate names, and validates every <code>std::*</code> call site in <code>examples/</code> and
+<code>stdlib/</code> against the declared arity.</p>
+<h3 id="133-capabilities">13.3 Capabilities</h3>
+<p>The VM carries five capability flags: <code>filesystem</code>, <code>process</code>, <code>network</code>, <code>environment</code>,
+<code>user_interface</code>. Each guarded native and intrinsic checks its flag at dispatch time and fails
+with <code>native function 'f' requires capability 'C'</code> when it is denied.</p>
+<p><code>titan run --sandbox</code> (also available on <code>exec</code> and <code>debug</code>) clears all five. Pure computation —
+text, encoding, JSON, collections, math, statistics — keeps working; anything touching the
+outside world does not.</p>
+<h3 id="134-modules-that-are-simulations-not-os-integration">13.4 Modules that are simulations, not OS integration</h3>
+<p>Two families are in-process <strong>emulators</strong> and are documented as such so their names are not
+mistaken for hardware or platform bindings:</p>
+<ul>
+<li><code>std::freestanding</code>, <code>std::freestanding_cpu</code>, <code>std::freestanding_memory</code>,
+  <code>std::freestanding_mmio</code> — a bare-metal <em>model</em>: frame allocator, page mapping, exception
+  table, and MMIO registers kept in host data structures. They generate linker scripts and
+  startup assembly as text; they do not execute privileged instructions.</li>
+<li><code>std::mobile</code> — an application-lifecycle state machine (<code>Running</code>, <code>Paused</code>, <code>Stopped</code>,
+  <code>Destroyed</code>) with an event history. It is not bound to the Android activity lifecycle.</li>
+</ul>
+<p>Actual Android integration is <code>std::termux::*</code>, which shells out to the <code>termux-api</code> commands.</p>
+<hr />
+<h2 id="14-execution-model">14. Execution model</h2>
+<h3 id="141-compilation-pipeline">14.1 Compilation pipeline</h3>
+<pre><code>source (.titan)
+   → lexer → parser → AST
+   → typechecker → code generator
+   → bytecode module ──► TITAN-BYTECODE 1 container (.tbc) ──► Titan VM
+                     └─► WebAssembly module (.wasm + source maps)
+</code></pre>
+<h3 id="142-bytecode-container">14.2 Bytecode container</h3>
+<p><code>titan build</code> emits a portable container:</p>
+<ul>
+<li>17-byte magic header <code>TITAN-BYTECODE 1\n</code></li>
+<li>an envelope recording <code>format_version</code> (currently <code>1</code>), the producing <code>compiler_version</code>, a
+  <strong>CRC-32</strong> of the module payload, and the module itself as JSON</li>
+</ul>
+<p><code>titan exec</code> validates before anything enters the VM: container size (≤ 64 MiB), function count
+(≤ 100,000), instruction count (≤ 10,000,000), string-table size (≤ 1,000,000), then every jump
+target, local index, string index, call target, arity, closure capture, and native signature.
+A checksum mismatch or an unsupported format version is refused. Malformed artifacts never
+execute.</p>
+<h3 id="143-runtime-guarantees">14.3 Runtime guarantees</h3>
+<p>The VM is a stack machine with isolated locals per call frame, no pointer instructions, and no
+<code>unsafe</code> execution path. Failures are structured values, not panics:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Errors</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Arithmetic</td>
+<td><code>division by zero</code>, <code>integer overflow</code></td>
+</tr>
+<tr>
+<td>Memory / bounds</td>
+<td><code>index out of bounds</code>, <code>unknown field</code>, <code>stack underflow</code>, <code>invalid local</code></td>
+</tr>
+<tr>
+<td>Contracts</td>
+<td>arity mismatch, <code>type error</code>, <code>invalid function index</code></td>
+</tr>
+<tr>
+<td>Budgets</td>
+<td><code>instruction limit exceeded</code>, <code>call depth limit exceeded</code>, <code>task memory limit exceeded</code>, <code>runtime &lt;resource&gt; limit exceeded</code></td>
+</tr>
+<tr>
+<td>Security</td>
+<td><code>native function 'f' requires capability 'C'</code></td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td><code>unknown or already joined task</code>, <code>task panicked</code>, <code>task cancelled</code>, <code>unknown channel</code>, <code>channel disconnected</code>, <code>invalid timeout</code></td>
+</tr>
+<tr>
+<td>Tooling</td>
+<td><code>execution terminated by debugger</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Default budgets: 10,000,000 instructions, 4,096 call frames, 1,024 network handles, 256 database
+handles, 64 connections per pool, 1,024 channels, 65,536 slots per channel.</p>
+<h3 id="144-memory-and-garbage-collection">14.4 Memory and garbage collection</h3>
+<p><code>titan_gc</code> implements deterministic mark-and-sweep bookkeeping over runtime allocations, with a
+configurable threshold (default 1 MiB) that triggers a collection on allocation. Programs can
+introspect and control it through <code>std::runtime</code>: <code>allocated_bytes</code>, <code>memory_limit</code>,
+<code>gc_live_count</code>, <code>gc_collect</code>, <code>gc_threshold</code>, <code>gc_set_threshold</code>, <code>active_tasks</code>,
+<code>heap_dump(path)</code> (JSON), <code>optimize_level</code>, <code>fast_path_enabled</code>, <code>benchmark</code>.</p>
+<hr />
+<h2 id="15-concurrency">15. Concurrency</h2>
+<pre><code class="language-titan"><span class="k">let</span> task = <span class="k">spawn</span> || { work() }        <span class="c">// `go` is a synonym</span>
+<span class="k">let</span> result = join(task)
+
+<span class="k">let</span> (tx, rx) = channel(<span class="n">16</span>)
+send(tx, value)
+<span class="k">let</span> received = recv(rx)
+</code></pre>
+<ul>
+<li><code>spawn</code> / <code>go</code> take a <strong>zero-argument closure</strong> and run it on a real host thread. Passing a
+  closure with parameters is an arity error; passing a non-closure is a type error.</li>
+<li><code>join(task)</code>, <code>join_timeout(task, ms)</code>, <code>cancel(task)</code> — cancellation is cooperative.</li>
+<li><code>channel(capacity)</code> creates a bounded channel (capacity ≤ 65,536); <code>send</code>, <code>recv</code>,
+  <code>recv_timeout(rx, ms)</code>, and <code>select(receivers, ms)</code> return <code>Option</code> where a timeout is
+  possible.</li>
+<li><code>std::runtime::spawn_quota(closure, bytes)</code> spawns a task with its <strong>own memory budget</strong>;
+  exceeding it fails that task with <code>task memory limit exceeded</code> instead of destabilizing the
+  process.</li>
+</ul>
+<p>Tasks do not share mutable state: values are passed by value through channels and captures.</p>
+<hr />
+<h2 id="16-webassembly-backend">16. WebAssembly backend</h2>
+<p><code>titan wasm &lt;project&gt;</code> emits a <strong>self-contained WebAssembly module</strong> — not a wrapper around the
+VM — plus two source maps: a Titan-specific one in the custom section <code>titan.source_map</code>, and a
+standard source map referenced by a <code>sourceMappingURL</code> custom section, so browser devtools can
+step through <code>.titan</code> sources.</p>
+<p>The backend implements its own runtime inside linear memory: a bump heap with checkpoints and
+scopes, UTF-8 strings, arrays, string-keyed hash maps, structs, and enums, all emitted as raw
+WebAssembly. Titan's control-flow graph, including backward branches, is reproduced with a
+structured dispatch loop, so arbitrary validated bytecode compiles without relying on the host.
+The emitter validates operand-stack balance, jump targets, local indices, and call arity while
+generating code.</p>
+<h3 id="161-supported-in-webassembly">16.1 Supported in WebAssembly</h3>
+<p>Integer and float arithmetic and comparisons, bitwise operators, locals, branches and loops,
+calls and returns, string literals and concatenation, <code>len</code>, arrays, tuples, structs, enums
+(construction, tag tests, payload extraction), indexing, <code>std::array::{push, pop, set, slice,
+concat}</code>, <code>std::map::{new, insert, insert_new, get, contains, remove, keys, values, length}</code>,
+<code>std::text::{equals, hash64}</code>, <code>std::time::unix_millis</code>, the <code>std::wasm::heap_*</code> introspection
+API, and <code>print</code> with exactly one argument routed to the host.</p>
+<p>Browser integration is provided by host imports declared by the module and implemented in
+JavaScript (<code>examples/browser/host.js</code>): the <code>std::web::*</code> family covering DOM manipulation,
+events, <code>fetch</code>, WebSocket, Canvas 2D, animation frames, and WebGL2.</p>
+<h3 id="162-rejected-by-the-webassembly-backend">16.2 Rejected by the WebAssembly backend</h3>
+<p>Every rejection is an explicit diagnostic naming the function and the operation:</p>
+<ul>
+<li><strong>Ranges</strong> — <code>start..end</code> / <code>start..=end</code> are not lowered yet, so <code>for i in 0..n</code> does not
+  compile to WebAssembly. Use a <code>while</code> loop with a counter.</li>
+<li>Closures and the higher-order array operations (<code>map</code>, <code>filter</code>, <code>fold</code>, <code>sort_by</code>, <code>find</code>,
+  <code>any</code>, <code>all</code>), <code>TryCall</code>, and dynamic method dispatch.</li>
+<li>Concurrency (<code>spawn</code>, channels, <code>select</code>) and every task operation.</li>
+<li>All host-facing intrinsic families: filesystem, process, TCP, TLS, WebSocket, HTTP server,
+  SQLite, PostgreSQL, MySQL, <code>std::db</code>, <code>std::runtime</code>.</li>
+<li>Any registry native not in the browser host list above (<code>CallNative(std::x::y)</code>).</li>
+<li>String indexing, and collections or structs whose size exceeds WebAssembly's 32-bit memory.</li>
+</ul>
+<p>In short: the WebAssembly target is a <strong>compute-and-browser</strong> target, not a systems target.</p>
+<hr />
+<h2 id="17-tooling-surface">17. Tooling surface</h2>
+<p>The reference implementation ships one binary — <code>titan</code> when built from source, <code>zett</code> in
+distribution packages — plus two standalone protocol servers.</p>
+<h3 id="171-commands">17.1 Commands</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run &lt;input&gt; [--sandbox] [args…]</code></td>
+<td>Compile and execute a file or project</td>
+</tr>
+<tr>
+<td><code>check &lt;input&gt;</code></td>
+<td>Parse and type-check only; reports files and function count</td>
+</tr>
+<tr>
+<td><code>build &lt;input&gt; [-o out.tbc]</code></td>
+<td>Emit the bytecode container and list every function with its op and local counts</td>
+</tr>
+<tr>
+<td><code>exec &lt;file.tbc&gt; [--sandbox]</code></td>
+<td>Validate and execute an existing artifact</td>
+</tr>
+<tr>
+<td><code>wasm &lt;input&gt; [-o out.wasm]</code></td>
+<td>Emit a WebAssembly module plus both source maps</td>
+</tr>
+<tr>
+<td><code>debug &lt;input&gt; [-b file:line…] [--sandbox]</code></td>
+<td>Interactive debugger; breakpoints resolve to source lines</td>
+</tr>
+<tr>
+<td><code>test &lt;input&gt; [--sandbox]</code></td>
+<td>Run every <code>.titan</code> file under <code>tests/</code></td>
+</tr>
+<tr>
+<td><code>repl</code></td>
+<td>Read-eval-print loop; each line is wrapped in a synthetic <code>fn main</code></td>
+</tr>
+<tr>
+<td><code>new &lt;path&gt;</code></td>
+<td>Create <code>Titan.toml</code> and <code>src/main.titan</code></td>
+</tr>
+<tr>
+<td><code>add</code>, <code>fetch</code>, <code>update</code></td>
+<td>Declare, resolve, download, and verify dependencies</td>
+</tr>
+<tr>
+<td><code>keygen</code>, <code>pack</code>, <code>publish</code></td>
+<td>Ed25519 key generation, deterministic signed <code>.tpkg</code>, upload</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>Print version details</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>--sandbox</code> on <code>run</code>, <code>exec</code>, and <code>debug</code> applies the capability restrictions of
+<a href="#133-capabilities">§13.3</a>.</p>
+<h3 id="172-packages">17.2 Packages</h3>
+<p><code>pack</code> produces a deterministic archive together with its SHA-256 digest, the signing public
+key, and an Ed25519 signature. <code>fetch</code> verifies the signature before installing, and writes
+<code>Titan.lock</code>. <code>publish</code> uploads using the <code>TITAN_REGISTRY_TOKEN</code> environment variable.</p>
+<p>The registry host defaults to <code>https://registry.titan-lang.org</code>, which is a configurable default
+rather than an operated public service; every packaging operation except <code>publish</code>/<code>fetch</code>
+against a remote works fully offline, and local path dependencies need no registry at all.</p>
+<h3 id="173-editor-and-debugger-protocols">17.3 Editor and debugger protocols</h3>
+<ul>
+<li><code>titan-lsp</code> — a stdio Language Server providing diagnostics on open and change, completion,
+  signature help, hover, go-to-definition, references, rename, document and workspace symbols,
+  and semantic tokens.</li>
+<li><code>titan-dap</code> — a stdio Debug Adapter supporting <code>launch</code>, <code>setBreakpoints</code>, <code>stackTrace</code>,
+  <code>scopes</code>, <code>variables</code>, <code>continue</code>, <code>next</code>, <code>stepIn</code>, <code>stepOut</code>, <code>pause</code>, and <code>terminate</code>.</li>
+</ul>
+<hr />
+<h2 id="18-consolidated-list-of-current-limitations">18. Consolidated list of current limitations</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Limitation</th>
+<th>Diagnostic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generics</td>
+<td>Only <code>Array&lt;T&gt;</code> / <code>Vec&lt;T&gt;</code> are parameterized; no user generics</td>
+<td><code>type 'N' expects 0 type arguments, found K</code></td>
+</tr>
+<tr>
+<td>Namespaces</td>
+<td>One flat executable namespace; <code>mod</code> does not scope names; <code>pub</code> is ignored</td>
+<td><code>duplicate function 'f'</code></td>
+</tr>
+<tr>
+<td>References</td>
+<td><code>&amp;T</code>, <code>&amp;mut T</code>, <code>*x</code>, <code>&amp;x</code></td>
+<td><code>references and dereferencing</code></td>
+</tr>
+<tr>
+<td>Arrays</td>
+<td>Fixed-size array types <code>[T; N]</code></td>
+<td><code>fixed-size array types</code></td>
+</tr>
+<tr>
+<td>Loops</td>
+<td><code>break value</code></td>
+<td><code>values carried by break</code></td>
+</tr>
+<tr>
+<td><code>match</code></td>
+<td>or-patterns, tuple patterns, struct patterns, nested enum payload patterns</td>
+<td><code>or-patterns and nested destructuring in match</code></td>
+</tr>
+<tr>
+<td>Functions</td>
+<td>Default parameter values</td>
+<td><code>default parameter 'f::p'</code></td>
+</tr>
+<tr>
+<td>Functions</td>
+<td><code>extern fn</code> has no linkage</td>
+<td><code>extern function 'f' without runtime linkage</code></td>
+</tr>
+<tr>
+<td>Functions</td>
+<td>Declarations nested inside a block</td>
+<td><code>nested declarations are not executable yet</code></td>
+</tr>
+<tr>
+<td>Values</td>
+<td>Built-ins (<code>map</code>, <code>print</code>, …) used as values</td>
+<td><code>built-in function values ('map')</code></td>
+</tr>
+<tr>
+<td>Traits</td>
+<td><code>impl</code> only on declared structs; no trait objects, no bounds</td>
+<td><code>impl target 'X' is not a declared struct</code></td>
+</tr>
+<tr>
+<td>Traits</td>
+<td>Default methods need an explicit return type</td>
+<td><code>trait default method 'T::m' without an explicit return type</code></td>
+</tr>
+<tr>
+<td>Aliases</td>
+<td>No function-type aliases</td>
+<td>parse error</td>
+</tr>
+<tr>
+<td>Assignment</td>
+<td>Only to mutable, non-captured locals; no field/index assignment</td>
+<td><code>assignment target must currently be a variable</code></td>
+</tr>
+<tr>
+<td>Strings</td>
+<td>Restricted interpolation grammar</td>
+<td><code>invalid string interpolation expression</code></td>
+</tr>
+<tr>
+<td>Ranges</td>
+<td>Eagerly materialized, capped at 1,000,000 elements</td>
+<td><code>range exceeds the one-million element safety limit</code></td>
+</tr>
+<tr>
+<td>Entry point</td>
+<td><code>main</code> takes no parameters</td>
+<td><code>entry point 'main' must take no parameters</code></td>
+</tr>
+<tr>
+<td>Keywords</td>
+<td><code>as</code> and <code>unsafe</code> are reserved with no grammar</td>
+<td>parse error</td>
+</tr>
+<tr>
+<td>WebAssembly</td>
+<td>See <a href="#162-rejected-by-the-webassembly-backend">§16.2</a></td>
+<td><code>unsupported WebAssembly operation: …</code></td>
+</tr>
+<tr>
+<td>Stdlib</td>
+<td><code>std::freestanding*</code> and <code>std::mobile</code> are in-process simulations</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Packages</td>
+<td>The default registry host <code>registry.titan-lang.org</code> is a CLI default; local packing, signing, verification and path dependencies work offline</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="19-how-this-document-was-verified">19. How this document was verified</h2>
+<p>Every statement above was checked against the source tree at compiler version <code>1.0.0</code>:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Source of truth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tokens, keywords, comments, escapes</td>
+<td><code>crates/titan_lexer/src/lib.rs</code></td>
+</tr>
+<tr>
+<td>Grammar, desugaring of <code>\|&gt;</code>, <code>&lt;=&gt;</code>, <code>#{}</code>, spread, destructuring</td>
+<td><code>crates/titan_parser/src/lib.rs</code></td>
+</tr>
+<tr>
+<td>Item and expression shapes</td>
+<td><code>crates/titan_ast/src/lib.rs</code>, <code>crates/titan_ast/src/expr.rs</code></td>
+</tr>
+<tr>
+<td>Types, inference, exhaustiveness, every rejection</td>
+<td><code>crates/titan_typechecker/src/lib.rs</code> (<code>TypeError</code>, <code>UnsupportedFeature</code> sites)</td>
+</tr>
+<tr>
+<td>Opcodes, lowering, codegen rejections</td>
+<td><code>crates/titan_codegen/src/lib.rs</code> (<code>Op</code>, <code>CodegenError::Unsupported</code> sites)</td>
+</tr>
+<tr>
+<td>Container format, limits, validation</td>
+<td><code>crates/titan_codegen/src/artifact.rs</code></td>
+</tr>
+<tr>
+<td>Runtime semantics, budgets, capabilities, concurrency</td>
+<td><code>crates/titan_vm/src/lib.rs</code> (<code>VmError</code>, <code>RuntimeCapabilities</code>, <code>make_range</code>)</td>
+</tr>
+<tr>
+<td>Collector behavior</td>
+<td><code>crates/titan_gc/src/lib.rs</code></td>
+</tr>
+<tr>
+<td>Native registry contents</td>
+<td><code>crates/titan_stdlib/src/native.rs</code>, cross-checked with <code>verify_phase34.py</code></td>
+</tr>
+<tr>
+<td>WebAssembly subset and rejections</td>
+<td><code>crates/titan_wasm/src/lib.rs</code> (<code>WasmError</code>, <code>emit_operation</code>)</td>
+</tr>
+<tr>
+<td>Project loading and imports</td>
+<td><code>crates/titan_pkg/src/project.rs</code></td>
+</tr>
+<tr>
+<td>CLI surface</td>
+<td><code>crates/titan_cli/src/main.rs</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Reproduce the checks with:</p>
+<pre><code class="language-bash">python3 verify_phase34.py                  # native table and call sites, no Rust build needed
+cargo test --workspace --all-targets       # 637 declared Rust tests
+cargo clippy --workspace --all-targets -- -D warnings
+</code></pre>
+<p>Related documents: <a href="arquitectura.html"><code>ARCHITECTURE.md</code></a> (compiler internals),
+<a href="sintaxis.html"><code>TITAN_SYNTAX.md</code></a> (practical guide with worked examples),
+<a href="stdlib.html"><code>STDLIB.md</code></a> (full native API), <a href="wasm.html"><code>WASM.md</code></a>,
+<a href="concurrencia.html"><code>CONCURRENCY.md</code></a>, <a href="proyectos.html"><code>PROJECTS.md</code></a>,
+<a href="validacion.html"><code>VALIDATION.md</code></a> (verification log).</p>
+<p>When the implementation and this document disagree, the implementation is correct and this
+document is a bug. Report it as such.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/SPEC.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div><h4>Titan</h4><p>Lenguaje de programación compilado y con tipos comprobados. Licencia MIT.</p></div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>
