@@ -17,11 +17,11 @@
   <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -75,8 +75,32 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
-<h2 id="sin-publicar">Sin publicar</h2>
+<h2 id="122-2026-10-10">1.2.2 — 2026-10-10</h2>
 <ul>
+<li><strong>Errores:</strong> las posiciones de los errores dentro de <code>main</code> ya no caen en <code>1:1</code> (citaban el inicio
+  de la función): todos citan la línea real (fallita 4).</li>
+<li><strong>Errores:</strong> los errores de declaración (tipo desconocido en una firma, función duplicada…) citan
+  el archivo donde están escritos, no el de la última función del programa (fallita 5). Ejemplo:
+  <code>selfhost/tests/codegen/decl_wrong_file/</code> ahora dice <code>dup.titan:5:1</code>, que es la verdad.</li>
+<li><strong>Errores:</strong> <code>titan check</code>/<code>run</code> (y <code>zett</code>, que es un enlace a la CLI) imprimen cada error UNA
+  sola vez; antes lo imprimían dos (fallita 6). Pruebas: <code>selfhost/tests/errores/</code>.</li>
+<li>El oráculo congelado <code>zett</code> (Rust) conserva estos tres defectos: son divergencias deliberadas a
+  favor de la verdad; la paridad diferencial se mantiene para lo demás.</li>
+</ul>
+<h2 id="121-2026-10-10">1.2.1 — 2026-10-10</h2>
+<ul>
+<li><strong>Teléfonos (Termux de 32 bits):</strong> <code>titan</code> detectaba mal la arquitectura y generaba un binario de PC
+  (<code>ENOEXEC: std::process::run_timeout</code>) en teléfonos como el Redmi 9C, donde <code>uname -m</code> dice <code>armv8l</code>
+  pero el binario aarch64 sí corre. Ahora el compilador detecta la arquitectura desde su propio ELF
+  (y si no, de <code>uname</code>, aceptando <code>armv8l</code>/<code>armv7l</code>/<code>armv6l</code>), con la decisión pura en
+  <code>cli_util::cl_arch_from</code>. El instalador de Termux ya no rechaza a ciegas esas máquinas: comprueba de
+  verdad si el binario arranca. Pruebas: <code>selfhost/prueba_arreglos.titan</code>.</li>
+<li><strong>Lenguaje:</strong> el valor del cuerpo de un <code>for</code>/<code>while</code>/<code>loop</code> se tipa en posición de sentencia (se
+  descarta): un <code>if</code> con ramas de tipos distintos como última expresión ya no da "type mismatch", y una
+  asignación al final de una rama de <code>if</code> en esas posiciones vale <code>()</code> (antes: "expected Nil, found
+  Array"). En posición de valor nada cambia: las ramas siguen teniendo que tener el mismo tipo y
+  <code>let y = (x = 5)</code> sigue valiendo el valor asignado. Pruebas: <code>selfhost/prueba_arreglos.titan</code> y
+  <code>selfhost/tests/arreglos/</code>.</li>
 <li><strong>Lenguaje:</strong> la interpolación de textos acepta cualquier expresión (<code>"{a / 7}"</code>, <code>"{v[0]}"</code>, <code>"{p.x}"</code>,
   <code>"{f(a + 1)}"</code>, <code>"{if c { 1 } else { 0 }}"</code>). Las llaves que no son una expresión (JSON, CSS, <code>{2,3}</code>, <code>${VAR}</code>)
   siguen siendo texto, y las llaves deben pegarse a la expresión (<code>{ a }</code> o un bloque de código dentro del texto no se

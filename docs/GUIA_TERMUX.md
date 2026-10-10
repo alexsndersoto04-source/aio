@@ -30,10 +30,9 @@ getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
 
 ## 1. Instalar
 
-Necesitas el paquete `titan-v1.2.0-linux-aarch64.tar.gz`. Lo fabrica el flujo `Linux ARM64 (Termux)` de GitHub Actions
-(artefacto `paquetes` de la ejecución; también se publica como release cuando se crea una etiqueta `v*`).
+Necesitas el paquete `titan-linux-aarch64.tar.gz` de la última versión publicada en [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) (generado y verificado por el flujo `Linux ARM64 (Termux)` de GitHub Actions).
 
-Con la release publicada:
+Con la release publicada (descarga e instalación automática):
 
 ```sh
 pkg install -y curl
@@ -41,13 +40,13 @@ curl -fLO https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/self
 bash instalar-termux.sh
 ```
 
-Con un paquete que ya descargaste (por ejemplo el artefacto de Actions):
+Con un paquete que ya descargaste localmente:
 
 ```sh
-bash selfhost/instalar-termux.sh /ruta/a/titan-v1.2.0-linux-aarch64.tar.gz
+bash selfhost/instalar-termux.sh /ruta/a/titan-linux-aarch64.tar.gz
 ```
 
-Desde la versión 1.2.0 el paquete trae también `zett`, el gestor de paquetes (ver [`ZETT.md`](ZETT.md)); el script lo deja en el `PATH` junto a `titan`.
+El paquete incluye también `zett`, el gestor de paquetes (ver [`ZETT.md`](ZETT.md)); el script lo deja en el `PATH` junto a `titan`.
 
 El script instala `clang` (Titan en ARM64 genera LLVM IR y llama a `clang`/`lld` para producir el ejecutable) y deja `titan`
 en `$PREFIX/bin`. Comprueba:
