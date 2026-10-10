@@ -22,7 +22,18 @@ lines=0
 failed=()
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# Divergencias deliberadas con el oráculo congelado `zett` (2026-10-10): el
+# typechecker escrito en Titan corrige defectos que el `zett` en Rust aún
+# reproduce (asignación en posición de sentencia = (), if con ramas de tipos
+# distintos en cola de un bucle). En esos archivos la verdad es el SPEC, no el
+# oráculo: se verifican con `bash selfhost/tests/arreglos/probar.sh`.
+DELIBERADAS=" selfhost/prueba_arreglos.titan "
+
 for f in "${FILES[@]}"; do
+  case "$DELIBERADAS" in
+    *" $f "*) continue ;;
+  esac
   "$ZETT" typecheck "$f" > "$tmp/rust.txt" 2>&1
   "$ZETT" run selfhost/check.titan "$f" > "$tmp/titan.txt" 2>&1
   if cmp -s "$tmp/rust.txt" "$tmp/titan.txt"; then

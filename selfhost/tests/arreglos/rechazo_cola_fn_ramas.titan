@@ -1,0 +1,15 @@
+// DEBE SEGUIR FALLANDO: una cola de función (con o sin anotación) es posición
+// de valor — la última expresión es el valor de retorno o el candidato para
+// inferirlo — y las ramas de un if en posición de valor tienen que tener el
+// mismo tipo. Este archivo protege la regla uniforme (el arreglo de los
+// bucles no la toca). Esperado:
+//   type mismatch: expected Int, found String
+
+fn f(cond: bool) {
+    if cond { 1 } else { "a" }
+}
+
+fn main() {
+    f(true)
+    print("ok")
+}

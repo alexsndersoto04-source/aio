@@ -44,7 +44,9 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 
 ### ARM64 y Termux
 
-> **Solo ARM de 64 bits.** Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`; `getprop ro.product.cpu.abilist` sin `arm64-v8a`) no puede usar este Titan: no existe versión para ARM de 32 bits. Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
+> **ARM de 64 bits.** No existe versión para ARM de 32 bits. Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`) en un
+> teléfono con núcleo de 64 bits **sí puede usar este Titan** (el binario aarch64 corre; caso probado: Redmi 9C). El instalador
+> lo comprueba de verdad al final. Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
 
 El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.2.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 

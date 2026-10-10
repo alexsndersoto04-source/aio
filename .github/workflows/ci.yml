@@ -35,6 +35,9 @@ jobs:
       - name: "Lenguaje: interpolación de expresiones {expr}"
         run: selfhost/titan run selfhost/tests/lenguaje/interpolacion.titan
 
+      - name: "Arreglos 2026-10-10: tipos de bucles, asignación en posición de sentencia y arquitectura"
+        run: bash selfhost/tests/arreglos/probar.sh
+
       - name: "Registro de paquetes: publicar, servir por HTTPS y usar con fetch (servidor local)"
         run: bash selfhost/tests/pkg/registro/estatico.sh
 

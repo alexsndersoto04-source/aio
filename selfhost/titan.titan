@@ -188,21 +188,45 @@ fn cl_runtime_path() -> string {
     std::path::join(std::path::join(here, "native"), "runtime.titan")
 }
 
-// Arquitectura de esta máquina: "aarch64" (ARM64) o "x86_64".
+// Arquitectura de esta máquina: "aarch64" (ARM64) o "x86_64". Primero mira el
+// ELF del propio ejecutable (lo más fiable: si este binario corre, otro de su
+// arquitectura corre también — un Termux de 32 bits sobre un núcleo de 64 bits
+// contesta `armv8l` con `uname` y aun así corre el binario aarch64). Después
+// `uname -m`. La decisión pura vive en cli_util::cl_arch_from, con pruebas.
+fn cl_elf_machine(path: string) -> int {
+    let r = std::try::catch(|| {
+        std::fs::read_bytes(path)
+    })
+    match r {
+        Result::Ok(b) => {
+            if std::bytes::length(b) >= 20 {
+                let head = std::bytes::to_array(std::bytes::slice(b, 0, 20))
+                if head[0] == 127 && head[1] == 69 && head[2] == 76 && head[3] == 70 {
+                    return head[18] + head[19] * 256
+                }
+            }
+        },
+        _ => {},
+    }
+    -1
+}
+
 fn cl_host_arch() -> string {
+    let mut machine = cl_elf_machine("/proc/self/exe")
+    if machine < 0 {
+        machine = cl_elf_machine(cl_program())
+    }
+    let mut out = ""
     let r = std::try::catch(|| {
         std::process::run_timeout("uname", ["-m"], 5000)
     })
     match r {
         Result::Ok(m) => {
-            let out = std::encoding::utf8_decode(std::map::get(m, "stdout"))
-            if std::text::starts_with(out, "aarch64") || std::text::starts_with(out, "arm64") {
-                return "aarch64"
-            }
-            "x86_64"
+            out = std::encoding::utf8_decode(std::map::get(m, "stdout"))
         },
-        _ => "x86_64",
+        _ => {},
     }
+    cl_arch_from(machine, out)
 }
 
 // Compila `input` a un ejecutable nativo en `target` para la arquitectura de esta máquina.

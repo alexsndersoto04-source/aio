@@ -1,0 +1,126 @@
+// Pruebas de los arreglos del 2026-10-10 (ver selfhost/ESTADO.md):
+//
+//   1. `if` con ramas de tipos distintos como última expresión del cuerpo de
+//      un for/while/loop (antes: "type mismatch"; el valor del cuerpo se
+//      descarta, así que se tipa en posición de sentencia). Incluye el caso
+//      documentado «asignación al final de una rama if» (antes: "type
+//      mismatch: expected Nil, found Array(Int)").
+//   2. Una asignación en posición de sentencia vale ().
+//   3. Lo que NO cambió (guardas):
+//      - `let y = (x = 5)` sigue dando y == 5 (asignación como valor).
+//      - `fn f() -> int { x = 5 }` sigue devolviendo 5 (asignación como cola
+//        de función es el valor de retorno).
+//   4. Detección de arquitectura (cli_util::cl_arch_from): un Termux de 32
+//      bits sobre un núcleo de 64 bits (Redmi 9C) contesta `armv8l` con
+//      `uname` y aun así el binario aarch64 corre.
+//
+// Nota: este archivo usa a propósito los casos que el oráculo congelado
+// `zett` rechaza (aún tiene los defectos); por eso no entra en la comparación
+// diferencial de verify_typechecker.sh. Sale con código 0 si todo coincide;
+// si no, imprime lo que falló y sale con 1.
+
+import cli_util
+
+fn saludo() {
+    let _ = 1
+}
+
+// Guarda: asignación como cola de función es el valor de retorno.
+fn cola_valor() -> int {
+    let mut x = 1
+    x = 5
+}
+
+fn comprobar(nombre: string, obtenido: string, esperado: string) -> int {
+    if obtenido == esperado {
+        return 0
+    }
+    println("FALLO " + nombre + ": se esperaba [" + esperado + "] y salió [" + obtenido + "]")
+    1
+}
+
+fn main() {
+    let mut fallos = 0
+    let mut s = ""
+    let cond = true
+
+    // Arreglo 1: if con ramas de tipos distintos como cola de un for.
+    for i in 0..3 {
+        if i == 0 {
+            s = s + "a"
+        } else {
+            s = s + "b"
+        }
+        if i == 0 { 1 } else { "texto" }
+    }
+    fallos += comprobar("for con if de ramas distintas", s, "abb")
+
+    // Lo mismo en while y loop (sus colas también se descartan).
+    let mut n = 0
+    while n < 2 {
+        n += 1
+        if n == 0 { 1 } else { "x" }
+    }
+    let mut m = 0
+    loop {
+        m += 1
+        if m >= 2 {
+            break
+        }
+        if m == 0 { 1 } else { "x" }
+    }
+    fallos += comprobar("while y loop con if de ramas distintas", "{n} {m}", "2 2")
+
+    // Arreglo 1b (el caso de la documentación): asignación al final de una
+    // rama de if, como cola del cuerpo de un for (antes: "expected Nil, found
+    // Array(Int)"). Los dos caminos corren.
+    for i in 0..2 {
+        if cond {
+            saludo()
+        } else {
+            s = "no"
+        }
+    }
+    let mut y = 0
+    for i in 0..2 {
+        if !cond {
+            saludo()
+        } else {
+            y = 7
+        }
+    }
+    fallos += comprobar("asignación al final de rama de if", "{s} {y}", "abb 7")
+
+    // Arreglo 2: asignación en posición de sentencia vale () — un match con
+    // brazos de tipos distintos también vale como sentencia.
+    let mut x = 0
+    match 1 {
+        0 => { x = 1 },
+        _ => { saludo() },
+    }
+    fallos += comprobar("match como sentencia con brazos distintos", "{x}", "0")
+
+    // Guarda: asignación en posición de valor conserva el valor asignado.
+    let mut z = 1
+    let w = (z = 5)
+    fallos += comprobar("asignación como valor", "{w} {z}", "5 5")
+    fallos += comprobar("asignación como cola de función", "{cola_valor()}", "5")
+
+    // Arreglo 3: la decisión de arquitectura pura.
+    fallos += comprobar("elf aarch64", cl_arch_from(183, "armv8l"), "aarch64")
+    fallos += comprobar("elf aarch64 sin uname", cl_arch_from(183, ""), "aarch64")
+    fallos += comprobar("elf x86_64", cl_arch_from(62, "x86_64"), "x86_64")
+    fallos += comprobar("elf x86_64 con uname raro", cl_arch_from(62, "loquesea"), "x86_64")
+    fallos += comprobar("uname armv8l sin elf", cl_arch_from(-1, "armv8l\n"), "aarch64")
+    fallos += comprobar("uname armv7l sin elf", cl_arch_from(-1, "armv7l"), "aarch64")
+    fallos += comprobar("uname armv6l sin elf", cl_arch_from(-1, "armv6l"), "aarch64")
+    fallos += comprobar("uname aarch64", cl_arch_from(-1, "aarch64"), "aarch64")
+    fallos += comprobar("uname arm64", cl_arch_from(-1, "arm64"), "aarch64")
+    fallos += comprobar("uname x86_64", cl_arch_from(-1, "x86_64"), "x86_64")
+    fallos += comprobar("uname vacio", cl_arch_from(-1, ""), "x86_64")
+
+    if fallos == 0 {
+        println("arreglos: todo bien")
+    }
+    std::process::exit(fallos)
+}

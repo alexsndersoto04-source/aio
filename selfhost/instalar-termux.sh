@@ -10,13 +10,18 @@
 # falla en tu dispositivo, abre un issue con la salida de `titan version` y `uname -a`.
 set -eu
 if [ "$(uname -m)" != "aarch64" ]; then
-  echo "este paquete es para ARM64 de 64 bits (aarch64); esta máquina es $(uname -m)" >&2
   case "$(uname -m)" in
     armv7l|armv8l|arm)
-      echo "Tu Termux es de 32 bits (ARM). Titan todavía no tiene versión para 32 bits." >&2
-      echo "Si tu teléfono admite 64 bits, instala el Termux de 64 bits (APK arm64-v8a); comprueba con: getprop ro.product.cpu.abilist" >&2 ;;
+      # Termux de 32 bits. En teléfonos con núcleo de 64 bits el binario
+      # aarch64 corre igual (caso probado: Redmi 9C, 2026-10-10). No
+      # rechazamos a ciegas: el final de este script ejecuta `titan version`
+      # y esa es la prueba de verdad.
+      echo "aviso: esta máquina dice $(uname -m) (Termux de 32 bits) y el paquete es para ARM de 64 bits." >&2
+      echo "En teléfonos con núcleo de 64 bits el binario aarch64 sí corre; seguimos y lo comprobamos al final." >&2 ;;
+    *)
+      echo "este paquete es para ARM64 de 64 bits (aarch64); esta máquina es $(uname -m)" >&2
+      exit 2 ;;
   esac
-  exit 2
 fi
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 URL="${1:-https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz}"
@@ -32,7 +37,12 @@ mv "$tmp"/titan-* "$PREFIX/opt/titan"
 ln -sf "$PREFIX/opt/titan/titan" "$PREFIX/bin/titan"
 # zett (el gestor de paquetes) viene en el paquete como un enlace a titan; los paquetes antiguos no lo traen.
 if [ -e "$PREFIX/opt/titan/zett" ]; then ln -sf "$PREFIX/opt/titan/zett" "$PREFIX/bin/zett"; fi
-titan version
+if ! titan version; then
+  echo "el binario aarch64 no arranca en esta máquina (¿«Exec format error»?): el núcleo no ejecuta binarios de 64 bits." >&2
+  echo "Si tu teléfono admite 64 bits, instala el Termux de 64 bits (APK arm64-v8a). Si no, no hay versión posible:" >&2
+  echo "Titan no tiene generador de código para ARM de 32 bits." >&2
+  exit 2
+fi
 if command -v zett > /dev/null 2>&1; then zett version; fi
 echo "listo. Prueba: printf 'fn main() {\n    println(\"hola desde Termux\")\n}\n' > hola.titan && titan run hola.titan"
 echo "(la primera compilación tarda más: genera una caché del runtime junto al ejecutable)"

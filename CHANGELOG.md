@@ -7,6 +7,18 @@
 
 ## Sin publicar
 
+- **Teléfonos (Termux de 32 bits):** `titan` detectaba mal la arquitectura y generaba un binario de PC
+  (`ENOEXEC: std::process::run_timeout`) en teléfonos como el Redmi 9C, donde `uname -m` dice `armv8l`
+  pero el binario aarch64 sí corre. Ahora el compilador detecta la arquitectura desde su propio ELF
+  (y si no, de `uname`, aceptando `armv8l`/`armv7l`/`armv6l`), con la decisión pura en
+  `cli_util::cl_arch_from`. El instalador de Termux ya no rechaza a ciegas esas máquinas: comprueba de
+  verdad si el binario arranca. Pruebas: `selfhost/prueba_arreglos.titan`.
+- **Lenguaje:** el valor del cuerpo de un `for`/`while`/`loop` se tipa en posición de sentencia (se
+  descarta): un `if` con ramas de tipos distintos como última expresión ya no da "type mismatch", y una
+  asignación al final de una rama de `if` en esas posiciones vale `()` (antes: "expected Nil, found
+  Array"). En posición de valor nada cambia: las ramas siguen teniendo que tener el mismo tipo y
+  `let y = (x = 5)` sigue valiendo el valor asignado. Pruebas: `selfhost/prueba_arreglos.titan` y
+  `selfhost/tests/arreglos/`.
 - **Lenguaje:** la interpolación de textos acepta cualquier expresión (`"{a / 7}"`, `"{v[0]}"`, `"{p.x}"`,
   `"{f(a + 1)}"`, `"{if c { 1 } else { 0 }}"`). Las llaves que no son una expresión (JSON, CSS, `{2,3}`, `${VAR}`)
   siguen siendo texto, y las llaves deben pegarse a la expresión (`{ a }` o un bloque de código dentro del texto no se

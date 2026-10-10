@@ -1,0 +1,24 @@
+// DEBE SEGUIR FALLANDO: el arreglo del caso «asignación al final de una rama
+// if» aplica donde el valor del if se descarta (cuerpos de for/while/loop y
+// sentencias sueltas). En una cola de función el valor es el retorno (o el
+// candidato para inferirlo): ahí la regla es uniforme y las ramas tienen que
+// tener el mismo tipo, igual que con `if c { 1 } else { "a" }`. Esperado:
+//   type mismatch: expected Nil, found Array(Int)
+
+fn g() {
+    print("")
+}
+
+fn f(cond: bool) {
+    let mut x = [1, 2]
+    if cond {
+        g()
+    } else {
+        x = [3]
+    }
+}
+
+fn main() {
+    f(true)
+    print("ok")
+}

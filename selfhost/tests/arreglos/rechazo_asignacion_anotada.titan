@@ -1,0 +1,9 @@
+// DEBE SEGUIR FALLANDO: una asignación en posición de valor conserva el valor
+// asignado, y aquí el valor no cumple la anotación. Esperado:
+//   type mismatch: expected String, found Int
+
+fn main() {
+    let mut x = 1
+    let y: string = (x = 5)
+    print("{y}")
+}
