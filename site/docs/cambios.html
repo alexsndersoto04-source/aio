@@ -75,14 +75,18 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
-<h2 id="122-2026-10-10">1.2.2 — 2026-10-10</h2>
+<h2 id="130-2026-10-10">1.3.0 — 2026-10-10</h2>
 <ul>
 <li><strong>Lenguaje (Genéricos <code>&lt;T&gt;</code>):</strong> soporte completo para genéricos definidos por el usuario en structs (<code>struct Par&lt;A, B&gt;</code>),
   enums (<code>enum Quizas&lt;T&gt;</code>), alias de tipo (<code>type Lista&lt;T&gt; = [T]</code>), funciones (<code>fn id&lt;T&gt;(x: T) -&gt; T</code>), bloques <code>impl&lt;T&gt;</code>,
   inferencia automática de tipos por argumentos y sintaxis turbofish (<code>::&lt;T&gt;</code>). Pruebas: <code>selfhost/tests/genericos/probar.sh</code>
   y <code>examples/genericos.titan</code>.</li>
+<li><strong>Semilla actualizada (<code>selfhost/semilla/</code>):</strong> actualizada al nuevo punto fijo <code>titanc3</code> con soporte nativo de genéricos <code>&lt;T&gt;</code>.</li>
 <li><strong>Sitio web y documentación:</strong> sección de descargas habilitada para ambas arquitecturas (<code>Linux x86-64</code> y <code>Linux ARM64 / Termux</code>)
   y actualización integral de <code>CONTRIBUTING.md</code>, <code>GUIA_RAPIDA.md</code>, <code>TITAN_SYNTAX.md</code> y <code>SPEC.md</code>.</li>
+</ul>
+<h2 id="122-2026-10-10">1.2.2 — 2026-10-10</h2>
+<ul>
 <li><strong>Errores:</strong> las posiciones de los errores dentro de <code>main</code> ya no caen en <code>1:1</code> (citaban el inicio
   de la función): todos citan la línea real (fallita 4).</li>
 <li><strong>Errores:</strong> los errores de declaración (tipo desconocido en una firma, función duplicada…) citan

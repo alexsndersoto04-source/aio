@@ -5,14 +5,18 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
-## 1.2.2 — 2026-10-10
+## 1.3.0 — 2026-10-10
 
 - **Lenguaje (Genéricos `<T>`):** soporte completo para genéricos definidos por el usuario en structs (`struct Par<A, B>`),
   enums (`enum Quizas<T>`), alias de tipo (`type Lista<T> = [T]`), funciones (`fn id<T>(x: T) -> T`), bloques `impl<T>`,
   inferencia automática de tipos por argumentos y sintaxis turbofish (`::<T>`). Pruebas: `selfhost/tests/genericos/probar.sh`
   y `examples/genericos.titan`.
+- **Semilla actualizada (`selfhost/semilla/`):** actualizada al nuevo punto fijo `titanc3` con soporte nativo de genéricos `<T>`.
 - **Sitio web y documentación:** sección de descargas habilitada para ambas arquitecturas (`Linux x86-64` y `Linux ARM64 / Termux`)
   y actualización integral de `CONTRIBUTING.md`, `GUIA_RAPIDA.md`, `TITAN_SYNTAX.md` y `SPEC.md`.
+
+## 1.2.2 — 2026-10-10
+
 - **Errores:** las posiciones de los errores dentro de `main` ya no caen en `1:1` (citaban el inicio
   de la función): todos citan la línea real (fallita 4).
 - **Errores:** los errores de declaración (tipo desconocido en una firma, función duplicada…) citan

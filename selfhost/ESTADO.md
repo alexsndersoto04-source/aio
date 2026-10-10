@@ -725,7 +725,7 @@ lo que antes eran programas sueltos:
 | `titan exec [artefacto.tbc]` | decodifica y valida el `.tbc`, lo compila a nativo (temporal) y lo ejecuta | `zett exec` (que usa la VM) |
 | `titan wasm [entrada] [-o salida]` | WebAssembly + mapas de fuente | `zett wasm` |
 | `titan bytecode <entrada>` | volcado del bytecode | `zett bytecode` |
-| `titan version` | `TITAN Language Compiler v1.2.2` | `zett version` |
+| `titan version` | `TITAN Language Compiler v1.3.0` | `zett version` |
 | `titan add/fetch/update/keygen/pack/publish` | gestor de paquetes (ver «Gestor de paquetes en Titan») | los mismos de `zett` |
 
 Los errores salen por stderr con el formato de Rust (`ETIQUETA: causa` aplanada, el
