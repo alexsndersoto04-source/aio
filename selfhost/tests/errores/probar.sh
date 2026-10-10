@@ -59,6 +59,9 @@ out=$("$TITAN" check selfhost/tests/errores/sin_duplicar.titan 2>&1) && {
   echo "FALLO: sin_duplicar.titan tenía que rechazarse" >&2
   fail=1
 }
+# Sin las líneas ::error de GitHub Actions (protocolo de anotación, con el
+# mensaje aplanado): lo que ve el usuario son las demás líneas.
+out=$(printf '%s\n' "$out" | grep -v "^::error")
 n=$(printf '%s\n' "$out" | grep -c "unknown type 'TipoRaro'")
 if [ "$n" -ne 1 ]; then
   echo "FALLO: «unknown type» aparece $n veces (debe ser 1)" >&2
