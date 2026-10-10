@@ -12,8 +12,13 @@ arch="$2"
 mkdir -p "${3:-.}"
 out="$(readlink -f "${3:-.}")"
 case "$arch" in x86_64|aarch64) ;; *) echo "arquitectura: x86_64 o aarch64" >&2; exit 2 ;; esac
-ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo v1.2.0)" | head -1 || true)"
-[ -n "$ver" ] || ver=v1.2.0
+# La versión sale del propio ejecutable; si no puede ejecutarse (paquete
+# cruzado de otra arquitectura) se lee del código fuente — nunca un valor fijo
+# (antes el respaldo decía v1.2.0 y el paquete de aarch64 salía mal nombrado).
+src_ver="$(sed -n '/fn cl_version/,/^}/p' "$ROOT/selfhost/titan.titan" | grep -o '"[0-9][0-9.]*"' | head -1 | tr -d '"')"
+[ -n "$src_ver" ] || src_ver="0.0.0"
+ver="$(grep -o 'v[0-9][0-9.]*' <<< "$("$exe" version 2> /dev/null || echo "v$src_ver")" | head -1 || true)"
+[ -n "$ver" ] || ver="v$src_ver"
 name="titan-$ver-linux-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
