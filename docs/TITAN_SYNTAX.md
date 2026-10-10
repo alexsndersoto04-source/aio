@@ -250,6 +250,55 @@ sin gramática.
 
 ---
 
+## Genéricos definidos por el usuario (`<T>`)
+
+Titan permite parametrizar tipos y funciones mediante parámetros genéricos `<T, U>`:
+
+```titan
+// Struct genérico
+struct Par<A, B> {
+    primero: A,
+    segundo: B,
+}
+
+// Enum genérico
+enum Quizas<T> {
+    Valor(T),
+    Nada,
+}
+
+// Alias de tipo genérico
+type Lista<T> = [T]
+
+// Función genérica (con inferencia automática o turbofish ::<T>)
+fn identidad<T>(x: T) -> T {
+    x
+}
+
+// Métodos genéricos con impl<T>
+struct Caja<T> { valor: T }
+
+impl<T> Caja<T> {
+    fn nueva(v: T) -> Caja<T> {
+        Caja { valor: v }
+    }
+    fn obtener(self) -> T {
+        self.valor
+    }
+}
+
+fn main() {
+    let n = identidad(42)
+    let texto = identidad::<string>("Titan")
+    let c = Caja::nueva(Par { primero: n, segundo: texto })
+    print("{c.obtener().primero} - {c.obtener().segundo}")
+}
+```
+
+Ejemplo completo verificable: `examples/genericos.titan`.
+
+---
+
 ## Interpolación de strings
 
 Dentro de `{...}` en un texto se puede escribir **cualquier expresión de Titan**: variables, aritmética, índices, campos, llamadas con expresiones, `if`, closures...
@@ -869,6 +918,7 @@ Ver el directorio `examples/` — cada `.titan` demuestra un patrón
 funcional distinto:
 
 - `hello.titan`, `fibonacci.titan`     — básicos
+- `genericos.titan`                    — structs, enums, funciones e `impl<T>` genéricos
 - `extras.titan`, `formats.titan`      — regex, hash, yaml, xml, etc.
 - `network.titan`, `security.titan`    — HTTPS, DNS, JWT, crypto
 - `android.titan`, `tui.titan`         — Termux hardware + TUI

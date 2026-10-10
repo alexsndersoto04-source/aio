@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guía rápida — Documentación de Titan</title>
 <meta name="description" content="Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/guia-rapida.html">
 <meta property="og:title" content="Guía rápida — Documentación de Titan">
 <meta property="og:description" content="Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/guia-rapida.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Guía rápida — Documentación de Titan">
+<meta name="twitter:description" content="Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -93,9 +122,8 @@ construido desde este repositorio).</p>
 <li><code>let</code> crea una variable que <strong>no</strong> cambia; <code>let mut</code> crea una que sí.</li>
 <li>Los tipos básicos son <code>int</code>, <code>float</code>, <code>string</code> y <code>bool</code>. El compilador los
   deduce, pero se pueden escribir: <code>let n: int = 3</code>.</li>
-<li>Dentro de un texto, <code>{nombre}</code> inserta el valor de una variable. Solo admite
-  nombres de variables, no expresiones como <code>{a.b}</code> ni llamadas: calcula el valor
-  en una variable antes.</li>
+<li>Dentro de un texto, <code>{...}</code> inserta el valor de una variable o de cualquier
+  expresión (<code>"{nombre}"</code>, <code>"{contador + 1}"</code>, <code>"{p.x}"</code>, <code>"{factorial(5)}"</code>).</li>
 <li>Un <code>int</code> no se convierte solo en <code>float</code>: <code>1 + 0.5</code> es un error de tipos.</li>
 </ul>
 <h2 id="2-funciones-condiciones-y-bucles">2. Funciones, condiciones y bucles</h2>
@@ -357,14 +385,14 @@ version = &quot;^1&quot;
 </tr>
 </tbody>
 </table></div>
-<h2 id="trampas-frecuentes">Trampas frecuentes</h2>
+<h2 id="consideraciones-importantes">Consideraciones importantes</h2>
 <ul>
-<li><code>go</code>, <code>first</code> y <code>last</code> dan problemas como nombres de variable: usa otros.</li>
-<li>No hay conversión automática de <code>int</code> a <code>float</code>.</li>
-<li>Un <code>match</code> sobre un <code>Result</code> necesita cubrir <code>Ok</code> y <code>Err</code> (o <code>_</code>).</li>
-<li><code>"{a.b}"</code> no se evalúa dentro de un texto: guarda el valor en una variable.</li>
-<li>No hay genéricos definidos por el usuario ni referencias (<code>&amp;T</code>).</li>
-<li>Los límites conocidos de cada pieza están en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</li>
+<li><strong>Tipado numérico estricto:</strong> No hay conversión implícita entre <code>int</code> y <code>float</code> (<code>1 + 0.5</code> se rechaza en compilación).</li>
+<li><strong>Exhaustividad en <code>match</code>:</strong> Un <code>match</code> sobre <code>Result</code> u <code>Option</code> debe cubrir todas las variantes (<code>Ok</code>/<code>Err</code>, <code>Some</code>/<code>None</code>) o incluir un comodín (<code>_</code>).</li>
+<li><strong>Interpolación de textos:</strong> Dentro de <code>"{...}"</code> se puede evaluar cualquier expresión de Titan (<code>"{a + 1}"</code>, <code>"{p.x}"</code>, <code>"{f(x)}"</code>), cuidando que las llaves vayan pegadas a la expresión.</li>
+<li><strong>Genéricos <code>&lt;T&gt;</code>:</strong> Puedes definir funciones, <code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code> e <code>impl&lt;T&gt;</code> parametrizados por tipo (ver <code>examples/genericos.titan</code>).</li>
+<li><strong>Palabras reservadas:</strong> <code>go</code> es palabra reservada (alias de <code>spawn</code>), por lo que no debe usarse como identificador de variable.</li>
+<li>El estado detallado de cada módulo está documentado en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</li>
 </ul><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_RAPIDA.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">
   <div class="foot-cols">

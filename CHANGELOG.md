@@ -5,6 +5,16 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## 1.3.0 — 2026-10-10
+
+- **Lenguaje (Genéricos `<T>`):** soporte completo para genéricos definidos por el usuario en structs (`struct Par<A, B>`),
+  enums (`enum Quizas<T>`), alias de tipo (`type Lista<T> = [T]`), funciones (`fn id<T>(x: T) -> T`), bloques `impl<T>`,
+  inferencia automática de tipos por argumentos y sintaxis turbofish (`::<T>`). Pruebas: `selfhost/tests/genericos/probar.sh`
+  y `examples/genericos.titan`.
+- **Semilla actualizada (`selfhost/semilla/`):** actualizada al nuevo punto fijo `titanc3` con soporte nativo de genéricos `<T>`.
+- **Sitio web y documentación:** sección de descargas habilitada para ambas arquitecturas (`Linux x86-64` y `Linux ARM64 / Termux`)
+  y actualización integral de `CONTRIBUTING.md`, `GUIA_RAPIDA.md`, `TITAN_SYNTAX.md` y `SPEC.md`.
+
 ## 1.2.2 — 2026-10-10
 
 - **Errores:** las posiciones de los errores dentro de `main` ya no caen en `1:1` (citaban el inicio
@@ -66,6 +76,10 @@
   compartía con las tareas.
 - Eliminado: `std::audio::cloud_*` (dependía de bibliotecas de Rust), `--sandbox`, `spawn_quota`.
 - macOS y Windows: sin paquete por ahora.
+
+---
+
+> **Historial de la etapa anterior (prototipo en Rust):** Las entradas siguientes corresponden a la numeración interna del prototipo original en Rust antes de la reescritura completa en Titan (`v1.1.0`).
 
 ## 1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (`std::audio::cloud_*`) ☁️
 

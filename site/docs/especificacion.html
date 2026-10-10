@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Especificación — Documentación de Titan</title>
 <meta name="description" content="Definición formal del lenguaje y de sus reglas de tipos (en inglés).">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/especificacion.html">
 <meta property="og:title" content="Especificación — Documentación de Titan">
 <meta property="og:description" content="Definición formal del lenguaje y de sus reglas de tipos (en inglés).">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/especificacion.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Especificación — Documentación de Titan">
+<meta name="twitter:description" content="Definición formal del lenguaje y de sus reglas de tipos (en inglés).">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Definición formal del lenguaje y de sus reglas de tipos (en inglés)."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -847,8 +876,12 @@ distribution packages — plus two standalone protocol servers.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>run &lt;input&gt; [--sandbox] [args…]</code></td>
+<td><code>run &lt;input&gt; [args…]</code></td>
 <td>Compile and execute a file or project</td>
+</tr>
+<tr>
+<td><code>compile &lt;input&gt; [-o out] [--target x86_64\|aarch64]</code></td>
+<td>Compile a program into a standalone native executable</td>
 </tr>
 <tr>
 <td><code>check &lt;input&gt;</code></td>
@@ -859,7 +892,7 @@ distribution packages — plus two standalone protocol servers.</p>
 <td>Emit the bytecode container and list every function with its op and local counts</td>
 </tr>
 <tr>
-<td><code>exec &lt;file.tbc&gt; [--sandbox]</code></td>
+<td><code>exec &lt;file.tbc&gt;</code></td>
 <td>Validate and execute an existing artifact</td>
 </tr>
 <tr>
@@ -867,11 +900,11 @@ distribution packages — plus two standalone protocol servers.</p>
 <td>Emit a WebAssembly module plus both source maps</td>
 </tr>
 <tr>
-<td><code>debug &lt;input&gt; [-b file:line…] [--sandbox]</code></td>
+<td><code>debug &lt;input&gt; [-b file:line…]</code></td>
 <td>Interactive debugger; breakpoints resolve to source lines</td>
 </tr>
 <tr>
-<td><code>test &lt;input&gt; [--sandbox]</code></td>
+<td><code>test &lt;input&gt;</code></td>
 <td>Run every <code>.titan</code> file under <code>tests/</code></td>
 </tr>
 <tr>
@@ -896,8 +929,6 @@ distribution packages — plus two standalone protocol servers.</p>
 </tr>
 </tbody>
 </table></div>
-<p><code>--sandbox</code> on <code>run</code>, <code>exec</code>, and <code>debug</code> applies the capability restrictions of
-<a href="#133-capabilities">§13.3</a>.</p>
 <h3 id="172-packages">17.2 Packages</h3>
 <p><code>pack</code> produces a deterministic archive together with its SHA-256 digest, the signing public
 key, and an Ed25519 signature. <code>fetch</code> verifies the signature before installing, and writes
@@ -928,8 +959,8 @@ against a remote works fully offline, and local path dependencies need no regist
 <tbody>
 <tr>
 <td>Generics</td>
-<td>Only <code>Array&lt;T&gt;</code> / <code>Vec&lt;T&gt;</code> are parameterized; no user generics</td>
-<td><code>type 'N' expects 0 type arguments, found K</code></td>
+<td>User-defined generics (<code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code>, <code>fn&lt;T&gt;</code>, <code>impl&lt;T&gt;</code>) are supported without trait bounds</td>
+<td><code>type 'N' expects M type arguments, found K</code></td>
 </tr>
 <tr>
 <td>Namespaces</td>

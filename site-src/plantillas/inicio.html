@@ -4,9 +4,9 @@
     <h1>Titan — lenguaje de programación</h1>
     <p class="lead">Tipos comprobados antes de ejecutar y ejecutables nativos para Linux (x86-64 y ARM64, incluido Termux), además de módulos WebAssembly. Incluye una biblioteca estándar amplia: texto, red, bases de datos, criptografía, audio, imágenes e inteligencia artificial local.</p>
     <div class="btns">
-      <a class="btn primary" href="#instalar">Instalar</a>
+      <a class="btn primary" href="#descargas">Descargar Titan</a>
+      <a class="btn" href="#instalar">Compilar desde fuentes</a>
       <a class="btn" href="docs/guia-rapida.html">Guía rápida</a>
-      <a class="btn" href="{{REPO}}/releases">Descargas</a>
     </div>
   </div>
   <div class="hero-code">
@@ -17,7 +17,7 @@
 <div class="wrap">
   <div class="facts">
     <div class="fact"><b>812</b><span>funciones en la biblioteca estándar, en 73 espacios de nombres</span></div>
-    <div class="fact"><b>2</b><span>plataformas con ejecutable probado: Linux x86-64 y Linux ARM64</span></div>
+    <div class="fact"><b>2</b><span>arquitecturas Linux con descarga directa: x86-64 y ARM64 (aarch64)</span></div>
     <div class="fact"><b>3</b><span>generadores de código: x86-64 propio, LLVM y WebAssembly</span></div>
     <div class="fact"><b>MIT</b><span>licencia de código abierto, repositorio público en GitHub</span></div>
   </div>
@@ -28,7 +28,7 @@
   <h2>Lo esencial de Titan</h2>
   <div class="feat">
     <div class="feat-i"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
-      <h3>Tipado estático</h3><p>El comprobador de tipos rechaza variables inexistentes, tipos incompatibles, argumentos de más o de menos y <code>match</code> no exhaustivos antes de generar nada.</p></div>
+      <h3>Tipado estático y genéricos</h3><p>El comprobador de tipos valida funciones, structs, enums y genéricos <code>&lt;T&gt;</code>, rechaza tipos incompatibles y exige <code>match</code> exhaustivos antes de generar código.</p></div>
     <div class="feat-i"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
       <h3>Ejecutables nativos</h3><p>Genera código de máquina: x86-64 con generador propio, o x86-64 y ARM64 mediante LLVM. Sin máquina virtual al ejecutar.</p></div>
     <div class="feat-i"><svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h10"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/></svg>
@@ -45,7 +45,7 @@
 <section id="lenguaje" class="alt"><div class="wrap">
   <p class="eyebrow">El lenguaje</p>
   <h2>Cuatro programas reales</h2>
-  <p class="sub">Sintaxis con llaves y los elementos habituales: <code>struct</code>, <code>enum</code> con datos, <code>impl</code>, <code>trait</code>, closures, <code>match</code>, <code>Option</code>, <code>Result</code> y el operador <code>?</code>. Cada ejemplo se ejecutó con el compilador y la salida mostrada es la real.</p>
+  <p class="sub">Sintaxis con llaves y los elementos habituales: <code>struct</code>, <code>enum</code> con datos, genéricos <code>&lt;T&gt;</code>, <code>impl</code>, <code>trait</code>, closures, <code>match</code>, <code>Option</code>, <code>Result</code> y el operador <code>?</code>. Cada ejemplo se ejecutó con el compilador y la salida mostrada es la real.</p>
   <div class="tabs">
     <input type="radio" name="t" id="t1" checked><input type="radio" name="t" id="t2"><input type="radio" name="t" id="t3"><input type="radio" name="t" id="t4">
     <div class="tab-labels">
@@ -105,20 +105,49 @@
 <section id="plataformas"><div class="wrap">
   <p class="eyebrow">Plataformas</p>
   <h2>Ejecutables nativos para Linux</h2>
-  <p class="sub">Los programas son ejecutables estáticos: el runtime llama directamente al núcleo de Linux, sin biblioteca C. El estado de cada plataforma, sin adornos:</p>
+  <p class="sub">Los programas son ejecutables estáticos: el runtime llama directamente al núcleo de Linux, sin biblioteca C. Ambas arquitecturas principales de Linux cuentan con paquetes precompilados listos para descargar:</p>
   <div class="grid2 plat">
-    <div class="card"><span class="badge ok">Probada</span><h3>Linux x86-64</h3><p>Compilador, herramienta <code>titan</code> y programas generados. Punto fijo del compilador verificado.</p></div>
-    <div class="card"><span class="badge ok">Probada en servidor ARM64</span><h3>Linux ARM64 · Termux</h3><p>La herramienta compila y ejecuta programas; 95 programas dieron salida idéntica a la de x86-64. Requiere <code>clang</code> y <code>lld</code>. No se ha probado en un teléfono Android. Solo ARM de 64 bits: un Termux de 32 bits (<code>armv7l</code>, <code>armv8l</code>) no sirve.</p></div>
+    <div class="card"><span class="badge ok">Probada · x86_64</span><h3>Linux x86-64</h3><p>Compilador nativo, herramienta <code>titan</code>, gestor de paquetes <code>zett</code> y programas generados sin dependencias externas. Punto fijo del compilador verificado.</p></div>
+    <div class="card"><span class="badge ok">Probada · aarch64</span><h3>Linux ARM64 · Termux</h3><p>Paquete nativo de 64 bits (<code>aarch64</code>) para servidores ARM64 y Android (Termux). Compila y ejecuta programas mediante LLVM (requiere <code>clang</code> y <code>lld</code>); 95 programas verificados con salida idéntica a x86-64.</p></div>
     <div class="card"><span class="badge ok">Disponible</span><h3>WebAssembly</h3><p><code>titan wasm</code> genera el módulo; DOM, eventos, <code>fetch</code>, Canvas 2D y WebGL2 funcionan con un host JavaScript.</p></div>
     <div class="card"><span class="badge plan">Previsto</span><h3>macOS y Windows</h3><p>Sin ejecutable por ahora: falta portar el runtime, que usa llamadas directas de Linux.</p></div>
   </div>
-  <p class="more">Desde x86-64 se puede compilar para ARM64 con LLVM: <code>titan compile programa.titan --target aarch64</code>.</p>
+  <p class="more">Desde x86-64 también se puede hacer compilación cruzada para ARM64 con LLVM: <code>titan compile programa.titan --target aarch64</code>.</p>
 </div></section>
 
-<section id="instalar" class="alt"><div class="wrap">
-  <p class="eyebrow">Instalación</p>
+<section id="descargas" class="alt"><div class="wrap">
+  <p class="eyebrow">Descargas oficiales</p>
+  <h2>Paquetes precompilados para Linux (x86-64 y ARM64)</h2>
+  <p class="sub">Descarga directamente el paquete compilado para tu arquitectura. Cada paquete incluye el ejecutable <code>titan</code>, el enlace a <code>zett</code> (gestor de paquetes) y la carpeta <code>native/</code> con el runtime y la biblioteca estándar.</p>
+  <div class="grid2 plat">
+    <div class="card">
+      <span class="badge ok">Linux x86-64 (64 bits)</span>
+      <h3>PC, estaciones de trabajo y servidores x86-64</h3>
+      <p>Ejecutable estático con generador nativo x86-64 integrado. No requiere compilador C ni dependencias adicionales para compilar y ejecutar programas.</p>
+      <div class="btns sp" style="margin-bottom:16px">
+        <a class="btn primary" href="{{REPO}}/releases/latest/download/titan-linux-x86_64.tar.gz">Descargar Linux x86-64 (.tar.gz)</a>
+      </div>
+      {{COD:Instalación directa en Linux x86-64|curl -fLO https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz\ntar -xzf titan-linux-x86_64.tar.gz\nmkdir -p ~/.local/bin\nln -sf "$PWD"/titan-*-linux-x86_64/titan ~/.local/bin/titan\nln -sf "$PWD"/titan-*-linux-x86_64/zett ~/.local/bin/zett\ntitan version}}
+    </div>
+    <div class="card">
+      <span class="badge ok">Linux ARM64 / aarch64 (64 bits)</span>
+      <h3>Servidores ARM64 y Android (Termux)</h3>
+      <p>Ejecutable nativo para procesadores ARM de 64 bits (<code>aarch64</code>). Utiliza LLVM para generar ejecutables nativos, por lo que requiere tener instalados <code>clang</code> y <code>lld</code>.</p>
+      <div class="btns sp" style="margin-bottom:16px">
+        <a class="btn primary" href="{{REPO}}/releases/latest/download/titan-linux-aarch64.tar.gz">Descargar Linux ARM64 (.tar.gz)</a>
+        <a class="btn" href="docs/termux.html">Guía de Termux</a>
+      </div>
+      {{COD:Instalación automática en Android (Termux)|pkg install -y curl\ncurl -fLO https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/selfhost/instalar-termux.sh\nbash instalar-termux.sh\ntitan version}}
+      {{COD:Instalación manual en servidor Linux ARM64|curl -fLO https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz\ntar -xzf titan-linux-aarch64.tar.gz\nmkdir -p ~/.local/bin\nln -sf "$PWD"/titan-*-linux-aarch64/titan ~/.local/bin/titan\nln -sf "$PWD"/titan-*-linux-aarch64/zett ~/.local/bin/zett\ntitan version}}
+    </div>
+  </div>
+  <p class="more">Verificación de integridad: <a href="{{REPO}}/releases/latest/download/SHA256SUMS.txt">Descargar <code>SHA256SUMS.txt</code></a> · <a href="{{REPO}}/releases/latest">Ver notas de la última versión en GitHub Releases →</a></p>
+</div></section>
+
+<section id="instalar"><div class="wrap">
+  <p class="eyebrow">Instalación desde código fuente</p>
   <h2>Construir Titan desde las fuentes</h2>
-  <p class="sub">En Linux x86-64 solo hacen falta <code>bash</code> y <code>gzip</code> (en ARM64 se usa el paquete ya compilado). Los paquetes ya compilados para Linux x86-64 y ARM64 están en <a href="{{REPO}}/releases/latest">Releases</a>: desde la versión 1.1.0 se construyen con el compilador escrito en Titan; las 1.0.x anteriores son del prototipo antiguo en Rust.</p>
+  <p class="sub">Si estás en Linux x86-64 y prefieres construir el compilador completo desde cero, solo necesitas <code>bash</code> y <code>gzip</code>. El proceso verifica automáticamente la autocompilación en tres etapas.</p>
   <div class="steps">
     <div class="step"><div class="step-h"><span class="stepn">1</span><h3>Construir</h3><p>Tarda unos 2–3 minutos.</p></div>
       <div class="step-b">{{COD:Linux x86-64|git clone https://github.com/alexsndersoto04-source/aio.git\ncd aio\nbash selfhost/bootstrap.sh\nselfhost/titan version}}</div></div>
@@ -129,11 +158,11 @@
   </div>
   <div class="grid2 sp">
     <div class="note"><b>Cómo se construye.</b> El repositorio incluye una semilla: una copia ya compilada del compilador (7,7 MB, <code>selfhost/semilla/</code>). <code>bootstrap.sh</code> la usa para compilar el compilador escrito en Titan, que luego se compila a sí mismo dos veces; el script comprueba que las tres versiones sean idénticas byte a byte.</div>
-    <div class="note"><b>Termux (Android, ARM64).</b> El flujo «Linux ARM64 (Termux)» de GitHub Actions fabrica <code>titan-v1.2.0-linux-aarch64.tar.gz</code>. El instalador <code>selfhost/instalar-termux.sh</code> instala <code>clang</code> y deja <code>titan</code> en el <code>PATH</code>. Ver la <a href="docs/termux.html">guía de Termux</a>.</div>
+    <div class="note"><b>Paquetes para Linux x86-64 y ARM64.</b> En cada lanzamiento, GitHub Actions construye y verifica automáticamente <code>titan-linux-x86_64.tar.gz</code> y <code>titan-linux-aarch64.tar.gz</code> junto con sus sumas SHA-256. En Termux (Android ARM64), el script <code>selfhost/instalar-termux.sh</code> descarga la última versión, instala <code>clang</code> y configura <code>titan</code> y <code>zett</code> en el <code>PATH</code>.</div>
   </div>
 </div></section>
 
-<section id="como-funciona"><div class="wrap">
+<section id="como-funciona" class="alt"><div class="wrap">
   <p class="eyebrow">Arquitectura</p>
   <h2>Cómo se construye un programa</h2>
   <p class="sub">Todas las etapas, el runtime y la biblioteca estándar están escritos en Titan.</p>
@@ -153,13 +182,14 @@
   <p class="more">Detalle en la <a href="docs/arquitectura.html">página de arquitectura</a>.</p>
 </div></section>
 
-<section id="estado" class="alt"><div class="wrap">
+<section id="estado"><div class="wrap">
   <p class="eyebrow">Estado del proyecto</p>
   <h2>Qué está verificado y qué no</h2>
   <div class="grid2 est">
     <div class="card"><h3>Verificado</h3>
       <ul class="lista ok-l">
         <li><b>Punto fijo:</b> el compilador se compila a sí mismo; las etapas 1, 2 y 3 son idénticas byte a byte.</li>
+        <li><b>Genéricos <code>&lt;T&gt;</code>:</b> funciones, structs, enums, alias e <code>impl&lt;T&gt;</code> con inferencia de tipos y sintaxis turbofish <code>::&lt;T&gt;</code>.</li>
         <li><b>Biblioteca estándar:</b> 812 de 812 funciones con cuerpo en Titan.</li>
         <li><b>ARM64 real:</b> 95 programas con salida idéntica a x86-64, en un servidor ARM64 de GitHub Actions.</li>
         <li><b>Depurador y DAP:</b> 40 y 20 casos de prueba en x86-64.</li>
@@ -167,9 +197,9 @@
       </ul></div>
     <div class="card"><h3>Límites conocidos</h3>
       <ul class="lista">
-        <li><b>Plataformas:</b> sin ejecutable para macOS ni Windows, ni para ARM de 32 bits; ARM64 sin probar en un teléfono.</li>
+        <li><b>Plataformas:</b> sin ejecutable para macOS ni Windows, ni para ARM de 32 bits; ARM64 probado en servidor ARM64 y arranque en Termux.</li>
         <li><b>Permisos:</b> los ejecutables nativos no tienen sandbox; un programa puede leer archivos, lanzar procesos y usar la red.</li>
-        <li><b>Lenguaje:</b> sin genéricos definidos por el usuario, referencias ni <code>break</code> con valor.</li>
+        <li><b>Lenguaje:</b> sin referencias prestadas (<i>borrowing</i>) ni <code>break</code> con valor.</li>
         <li><b>Tareas:</b> fibras cooperativas, sin paralelismo entre núcleos; no se puede limitar la memoria por tarea.</li>
         <li><b>Audio:</b> WAV, FLAC y Ogg Vorbis; sin MP3, Opus ni AAC. La salida a altavoces no se ha probado con hardware real.</li>
         <li><b>SQLite:</b> sin FTS, RTREE, ATTACH ni tablas temporales.</li>
@@ -179,7 +209,7 @@
   <p class="more">El detalle de cada pieza está en el <a href="docs/estado.html">estado verificado</a>.</p>
 </div></section>
 
-<section id="documentacion"><div class="wrap">
+<section id="documentacion" class="alt"><div class="wrap">
   <p class="eyebrow">Documentación</p>
   <h2>Guías y referencias</h2>
   <div class="doccols">
@@ -208,6 +238,6 @@
 </div></section>
 
 <section class="cta"><div class="wrap cta-in">
-  <div><h2>Empieza con Titan</h2><p>Construye el compilador, ejecuta tu primer programa y revisa el código en GitHub.</p></div>
-  <div class="btns"><a class="btn primary" href="#instalar">Instalar</a><a class="btn" href="{{REPO}}/releases">Descargas</a><a class="btn" href="{{REPO}}">GitHub</a></div>
+  <div><h2>Empieza con Titan</h2><p>Descarga el paquete para tu arquitectura (Linux x86-64 o ARM64) o construye el compilador desde el código fuente.</p></div>
+  <div class="btns"><a class="btn primary" href="#descargas">Descargar Titan</a><a class="btn" href="#instalar">Compilar desde fuentes</a><a class="btn" href="{{REPO}}">GitHub</a></div>
 </div></section>

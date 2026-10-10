@@ -396,13 +396,59 @@ fn parse_item(tk: array, st0: St) -> Result {
     expected(tk, st, "a declaration (fn, struct, enum, trait, impl, mod, import, const or type)")
 }
 
+// Parámetros de tipo opcionales `<T, U>` en declaraciones (fn, struct, enum, trait, impl, type).
+fn parse_type_params(tk: array, st0: St) -> Result {
+    let (lt, st) = eat(tk, st0, "Lt")
+    if !lt {
+        return Result::Ok(([], st0))
+    }
+    let mut tparams = []
+    let mut s = st
+    while !at_k(tk, s, "Gt") {
+        let (tname, s1) = expect_ident(tk, s)?
+        tparams = std::array::push(tparams, tname)
+        let (comma, s2) = eat(tk, s1, "Comma")
+        s = s2
+        if !comma {
+            break
+        }
+    }
+    let (_, s3) = expect(tk, s, "Gt")?
+    Result::Ok((tparams, s3))
+}
+
+fn with_tparams(n: Node, tparams: array) -> Node {
+    if len(tparams) == 0 {
+        return n
+    }
+    Node { kind: n.kind, text: n.text, text2: n.text2, flag: n.flag, a: n.a, b: n.b, c: n.c, list: n.list, list2: tparams, span: n.span }
+}
+
+fn parse_type_args_angle(tk: array, st0: St) -> Result {
+    let (_, s0) = expect(tk, st0, "Lt")?
+    let mut args = []
+    let mut s = s0
+    while !at_k(tk, s, "Gt") {
+        let (g, s1) = parse_type(tk, s)?
+        args = std::array::push(args, g)
+        let (comma, s2) = eat(tk, s1, "Comma")
+        s = s2
+        if !comma {
+            break
+        }
+    }
+    let (_, s3) = expect(tk, s, "Gt")?
+    Result::Ok((args, s3))
+}
+
 fn parse_type_alias(tk: array, st0: St) -> Result {
     let (span, st) = expect(tk, st0, "Type")?
     let (name, st) = expect_ident(tk, st)?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (_, st) = expect(tk, st, "Eq")?
     let (target, st) = parse_type(tk, st)?
     let (_, st) = eat(tk, st, "Semicolon")
-    Result::Ok((node1("typealias", name, target, span), st))
+    Result::Ok((with_tparams(node1("typealias", name, target, span), tparams), st))
 }
 
 // Parámetros de una función: `(a: int, mut b = 1, self)`; el `(` ya se
@@ -462,6 +508,7 @@ fn parse_function(tk: array, st0: St) -> Result {
     }
     let (start, st) = expect(tk, s1, "Fn")?
     let (name, st) = expect_ident(tk, st)?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (_, st) = expect(tk, st, "LParen")?
     let (params, st) = parse_fn_params(tk, st)?
     let (has_ret, st) = eat(tk, st, "ThinArrow")
@@ -481,12 +528,13 @@ fn parse_function(tk: array, st0: St) -> Result {
         body = b
         s3 = s
     }
-    Result::Ok((mk("fn", name, is_extern, abi, ret, body, params, start), s3))
+    Result::Ok((with_tparams(mk("fn", name, is_extern, abi, ret, body, params, start), tparams), s3))
 }
 
 fn parse_struct(tk: array, st0: St) -> Result {
     let (span, st) = expect(tk, st0, "Struct")?
     let (name, st) = expect_ident(tk, st)?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (_, st) = expect(tk, st, "LBrace")?
     let mut fields = []
     let mut s = st
@@ -505,12 +553,13 @@ fn parse_struct(tk: array, st0: St) -> Result {
         }
     }
     let (_, st) = expect(tk, s, "RBrace")?
-    Result::Ok((mk("struct", name, false, nil, nil, nil, fields, span), st))
+    Result::Ok((with_tparams(mk("struct", name, false, nil, nil, nil, fields, span), tparams), st))
 }
 
 fn parse_enum(tk: array, st0: St) -> Result {
     let (span, st) = expect(tk, st0, "Enum")?
     let (name, st) = expect_ident(tk, st)?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (_, st) = expect(tk, st, "LBrace")?
     let mut variants = []
     let mut s = st
@@ -535,26 +584,28 @@ fn parse_enum(tk: array, st0: St) -> Result {
         }
     }
     let (_, st) = expect(tk, s, "RBrace")?
-    Result::Ok((mk("enum", name, false, nil, nil, nil, variants, span), st))
+    Result::Ok((with_tparams(mk("enum", name, false, nil, nil, nil, variants, span), tparams), st))
 }
 
 fn parse_trait(tk: array, st0: St) -> Result {
     let (span, st) = expect(tk, st0, "Trait")?
     let (name, st) = expect_ident(tk, st)?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (_, st) = expect(tk, st, "LBrace")?
     let mut methods = []
     let mut s = st
     while !at_k(tk, s, "RBrace") {
         let (f, s1) = parse_function(tk, s)?
-        methods = std::array::push(methods, mk("method", f.text, false, nil, f.b, f.c, f.list, f.span))
+        methods = std::array::push(methods, with_tparams(mk("method", f.text, false, nil, f.b, f.c, f.list, f.span), f.list2))
         s = s1
     }
     let (_, st) = expect(tk, s, "RBrace")?
-    Result::Ok((mk("trait", name, false, nil, nil, nil, methods, span), st))
+    Result::Ok((with_tparams(mk("trait", name, false, nil, nil, nil, methods, span), tparams), st))
 }
 
 fn parse_impl(tk: array, st0: St) -> Result {
     let (span, st) = expect(tk, st0, "Impl")?
+    let (tparams, st) = parse_type_params(tk, st)?
     let (first, st) = parse_type(tk, st)?
     let (has_for, st) = eat(tk, st, "For")
     let mut trait_name: any = nil
@@ -578,7 +629,7 @@ fn parse_impl(tk: array, st0: St) -> Result {
         s3 = s4
     }
     let (_, st) = expect(tk, s3, "RBrace")?
-    Result::Ok((mk("impl", "", false, trait_name, target, nil, methods, span), st))
+    Result::Ok((with_tparams(mk("impl", "", false, trait_name, target, nil, methods, span), tparams), st))
 }
 
 fn parse_module(tk: array, st0: St) -> Result {
@@ -1244,10 +1295,17 @@ fn parse_postfix(tk: array, st0: St) -> Result {
                 continue
             }
             let (name, s2) = expect_ident(tk, s1)?
-            let (call, s3) = eat(tk, s2, "LParen")
+            let mut targs: any = nil
+            let mut s2_t = s2
+            if at_k(tk, s2, "ColonColon") && kind_at(tk, s2.pos + 1) == "Lt" {
+                let (parsed_targs, st_t) = parse_type_args_angle(tk, adv(tk, s2))?
+                targs = parsed_targs
+                s2_t = st_t
+            }
+            let (call, s3) = eat(tk, s2_t, "LParen")
             if call {
                 let (args, s4) = parse_call_args(tk, s3)?
-                expr = mk("methodcall", name, false, expr, nil, nil, args, span)
+                expr = mk("methodcall", name, false, expr, targs, nil, args, span)
                 s = s4
             } else {
                 expr = node1("field", name, expr, span)
@@ -1399,14 +1457,38 @@ fn starts_uppercase(name: string) -> bool {
 fn parse_ident_or_struct(tk: array, st: St, span: Span) -> Result {
     let mut qualified = tk[st.pos].text
     let mut s = adv(tk, st)
+    let mut type_args: any = nil
     loop {
         let (more, s1) = eat(tk, s, "ColonColon")
         if !more {
             break
         }
+        if at_k(tk, s1, "Lt") {
+            let (targs, s2) = parse_type_args_angle(tk, s1)?
+            type_args = targs
+            s = s2
+            continue
+        }
         let (seg, s2) = expect_path_segment(tk, s1)?
         qualified = qualified + "::" + seg
         s = s2
+    }
+    if type_args == nil && at_k(tk, s, "Lt") && starts_uppercase(qualified) {
+        let saved = s
+        match parse_type_args_angle(tk, s) {
+            Result::Ok(pair) => {
+                let (targs, s_after) = pair
+                if at_k(tk, s_after, "LBrace") && brace_opens_struct_body(tk, s_after) {
+                    type_args = targs
+                    s = s_after
+                } else {
+                    s = saved
+                }
+            }
+            Result::Err(_) => {
+                s = saved
+            }
+        }
     }
     if at_k(tk, s, "LBrace") && starts_uppercase(qualified) && brace_opens_struct_body(tk, s) {
         let mut names = []
@@ -1431,10 +1513,14 @@ fn parse_ident_or_struct(tk: array, st: St, span: Span) -> Result {
             }
         }
         let (_, s9) = expect(tk, s3, "RBrace")?
-        let lit = Node { kind: "structlit", text: qualified, text2: "", flag: false, a: nil, b: nil, c: nil, list: names, list2: values, span: span }
+        let lit = Node { kind: "structlit", text: qualified, text2: "", flag: false, a: type_args, b: nil, c: nil, list: names, list2: values, span: span }
         return Result::Ok((lit, s9))
     }
-    Result::Ok((ident_node(qualified, span), s))
+    let mut id_node = ident_node(qualified, span)
+    if type_args != nil {
+        id_node = node1("ident", qualified, type_args, span)
+    }
+    Result::Ok((id_node, s))
 }
 
 // `[a, ..b, c]`: sin spread es un array literal; con spread, una cadena de

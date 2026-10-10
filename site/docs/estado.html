@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Estado verificado — Documentación de Titan</title>
 <meta name="description" content="Qué se probó, cómo, y cada limitación conocida.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/estado.html">
 <meta property="og:title" content="Estado verificado — Documentación de Titan">
 <meta property="og:description" content="Qué se probó, cómo, y cada limitación conocida.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/estado.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Estado verificado — Documentación de Titan">
+<meta name="twitter:description" content="Qué se probó, cómo, y cada limitación conocida.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Qué se probó, cómo, y cada limitación conocida."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -70,8 +99,8 @@
 </ul>
 </nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Estado del proyecto</p><h1 id="self-hosting-de-titan-estado">Self-hosting de Titan — estado</h1>
 <p>Objetivo: que <strong>todo</strong> Titan (compilador, runtime y biblioteca estándar) esté
-escrito en Titan y se compile a sí mismo, sin Rust. Reglas: nada falso, nada
-simulado; cada paso se verifica con pruebas que cualquiera puede repetir.</p>
+escrito en Titan y se compile a sí mismo de forma reproducible, verificando cada
+etapa mediante suites de pruebas automatizadas.</p>
 <h2 id="fases">Fases</h2>
 <div class="tablewrap"><table>
 <thead>
@@ -101,6 +130,11 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.</p>
 <td>3</td>
 <td><strong>Typechecker</strong> en Titan (<code>selfhost/typechecker.titan</code>)</td>
 <td>✅ idéntico al de Rust</td>
+</tr>
+<tr>
+<td>G</td>
+<td><strong>Genéricos definidos por el usuario (<code>&lt;T, U&gt;</code>)</strong> en el compilador (<code>selfhost/parser.titan</code>, <code>selfhost/typechecker.titan</code>, <code>selfhost/codegen.titan</code>): <code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code>, <code>fn&lt;T&gt;</code>, <code>impl&lt;T&gt;</code>, inferencia de argumentos de tipo y sintaxis turbofish <code>::&lt;T&gt;</code></td>
+<td>✅ punto fijo de 3 etapas verificado byte a byte (<code>titanc1 == titanc2 == titanc3</code>); suite de pruebas <code>selfhost/tests/genericos/probar.sh</code> y ejemplo <code>examples/genericos.titan</code></td>
 </tr>
 <tr>
 <td>4a</td>
@@ -305,13 +339,20 @@ workspace en cada push a <code>arena/**</code> y deja la salida real en <code>ci
 <li>(corregido) Leer de un mapa copiaba el mapa entero: 20.000 lecturas
    tardaban 31,9 s; ahora 13 ms.</li>
 <li>(corregido) El orden de los errores cambiaba entre ejecuciones.</li>
-<li>(pendiente) Un <code>if</code> con ramas de tipos distintos, como <strong>última</strong>
-   expresión del cuerpo de un <code>for</code>, da "type mismatch"; en cualquier otro
-   sitio se acepta. El código Titan lo esquiva con <code>continue</code>.</li>
-<li>(pendiente) Varios errores dentro de <code>main</code> salen con posición <code>1:1</code> o la
-   de la función en lugar de la línea real.</li>
-<li>(pendiente) <code>zett check</code>/<code>zett run</code> imprimen cada error de compilación dos
-   veces.</li>
+<li>(corregido 2026-10-10) Un <code>if</code> con ramas de tipos distintos, como <strong>última</strong>
+   expresión del cuerpo de un <code>for</code>, daba "type mismatch"; en cualquier otro
+   sitio se aceptaba. Ahora el valor del cuerpo de un <code>for</code>/<code>while</code>/<code>loop</code> se
+   tipa en posición de sentencia (se descarta): aceptado y con pruebas en
+   <code>selfhost/prueba_arreglos.titan</code>. El <code>zett</code> congelado sigue con el defecto
+   (divergencia deliberada, ver verify_typechecker.sh).</li>
+<li>(corregido 2026-10-10) Varios errores dentro de <code>main</code> salían con posición
+   <code>1:1</code> o la de la función en lugar de la línea real (los emitidos sin span
+   por <code>check_expr_expected</code>, que no lo asignaba como <code>check_expr</code>). Ahora
+   todos citan la línea real; pruebas en <code>selfhost/tests/errores/</code>.</li>
+<li>(corregido 2026-10-10) <code>zett check</code>/<code>zett run</code> imprimían cada error de
+   compilación dos veces (la CLI aplanada y la multilínea, defecto portado de
+   Rust). Ahora cada error sale una sola vez; pruebas en
+   <code>selfhost/tests/errores/</code>.</li>
 </ol>
 <h2 id="fase-4a-cargador-de-import-y-generador-de-bytecode">Fase 4a — cargador de <code>import</code> y generador de bytecode</h2>
 <ul>
@@ -345,10 +386,13 @@ workspace en cada push a <code>arena/**</code> y deja la salida real en <code>ci
 código en Titan los reproduce a propósito para que la comparación sea exacta
 y se corregirán en los dos a la vez):</p>
 <ol start="9">
-<li>Los errores de declaración (p. ej. función duplicada) salen con el archivo
-   de la <strong>última</strong> función del programa, no con el suyo:
-   <code>tests/codegen/decl_wrong_file/</code> dice <code>main.titan:5:1</code> cuando el duplicado
-   está en <code>dup.titan:5:1</code>.</li>
+<li>(corregido en Titan el 2026-10-10) Los errores de declaración (p. ej.
+   función duplicada) salían con el archivo de la <strong>última</strong> función del
+   programa, no con el suyo: <code>selfhost/tests/codegen/decl_wrong_file/</code> decía
+   <code>main.titan:5:1</code> cuando el duplicado está en <code>dup.titan:5:1</code>. Ahora el
+   archivo es el de cada declaración (los errores de declaración llevan su
+   archivo desde el cargador); pruebas en <code>selfhost/tests/errores/</code>. El
+   <code>zett</code> congelado sigue con el defecto (divergencia deliberada).</li>
 <li>(Resuelto el 2026-10-08) El cargador de Titan ya admite proyectos con
     <code>Titan.toml</code>; ver «Titan.toml en el cargador».</li>
 <li>
@@ -1171,7 +1215,7 @@ lo que antes eran programas sueltos:</p>
 </tr>
 <tr>
 <td><code>titan version</code></td>
-<td><code>TITAN Language Compiler v1.2.0</code></td>
+<td><code>TITAN Language Compiler v1.3.0</code></td>
 <td><code>zett version</code></td>
 </tr>
 <tr>
@@ -1384,12 +1428,17 @@ SHA-256 <code>0959bdb9…e089</code> (el mismo: el compilador no incrusta el run
 más abajo (el párrafo que decía que se había eliminado quedó obsoleto).</p>
 <h2 id="pendientes-conocidos-anotados-para-no-olvidarlos">Pendientes conocidos (anotados para no olvidarlos)</h2>
 <ul>
-<li><strong>Asignación al final de una rama <code>if</code></strong> (VM de Rust y compilador en Titan,
-  igual en los dos): si la rama <code>then</code> termina en una llamada y la <code>else</code> en
-  <code>x = [..]</code>, el verificador exige que las dos ramas tengan el mismo tipo y
-  falla con "expected Nil, found Array". Una asignación en posición de
-  sentencia debería valer <code>()</code>. Se mantiene igual en los dos mientras la VM
-  de Rust exista; en el código se evita con un <code>continue</code>/sentencia al final.</li>
+<li><strong>Asignación al final de una rama <code>if</code></strong> (corregido 2026-10-10 en las
+  posiciones de sentencia): si la rama <code>then</code> terminaba en una llamada y la
+  <code>else</code> en <code>x = [..]</code>, el verificador exigía que las dos ramas tuvieran el
+  mismo tipo y fallaba con "expected Nil, found Array". Ahora una asignación
+  en posición de sentencia vale <code>()</code> (el cuerpo de un bucle y las sentencias
+  sueltas se tipan así), que era lo prescrito aquí. Queda <strong>igual a propósito</strong>
+  en posición de valor: las colas de función y los <code>let</code> con el valor en uso
+  siguen exigiendo ramas del mismo tipo (igual que <code>if c { 1 } else { "a" }</code>),
+  y <code>let y = (x = 5)</code> / <code>fn f() -&gt; int { x = 5 }</code> siguen valiendo el valor
+  asignado. Pruebas: <code>selfhost/prueba_arreglos.titan</code> y los rechazos de
+  <code>selfhost/tests/arreglos/</code>.</li>
 <li><strong>Tupla al inicio de línea tras un bloque</strong> se parsea como llamada:
   <code>loop { ... }</code> + salto de línea + <code>(a, b)</code> ⇒ <code>loop{...}(a, b)</code>. En el
   código Titan se usa <code>return (a, b)</code>. El parser en Titan debe reproducir el
@@ -2096,12 +2145,8 @@ que dependen de pantalla/audio): <strong>59 idénticos, 0 distintos</strong>. <c
   <code>check-moon.yml</code> y <code>pages.yml</code> aún no se han ejecutado allí.
 - <code>zett run</code> como intérprete: <code>titan run</code> compila a nativo y ejecuta (no hay VM).
 - Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.</p>
-<h2 id="linux-x86-64-y-arm64termux-2026-10-09">Linux x86-64 y ARM64/Termux (2026-10-09)</h2>
-<p><strong>Qué hay.</strong> Dos paquetes, <code>titan-v1.2.0-linux-x86_64.tar.gz</code> y <code>titan-v1.2.0-linux-aarch64.tar.gz</code> (los fabrica
-<code>selfhost/empaquetar.sh</code>; cada uno lleva el ejecutable <code>titan</code>, la carpeta <code>native/</code> con el runtime en Titan y un
-<code>LEEME.txt</code>; ≈2,7 MB). Para Termux, <code>selfhost/instalar-termux.sh</code>. Los fabrica el flujo <code>.github/workflows/arm64.yml</code> y
-quedan como artefacto <code>paquetes</code> de cada ejecución; el paso de publicación como release solo corre en etiquetas <code>v*</code> y
-<strong>todavía no se ha ejecutado</strong>.</p>
+<h2 id="linux-x86-64-y-arm64termux">Linux x86-64 y ARM64/Termux</h2>
+<p><strong>Qué hay.</strong> Dos paquetes oficiales precompilados publicados en GitHub Releases (<code>titan-linux-x86_64.tar.gz</code> y <code>titan-linux-aarch64.tar.gz</code>, además de sus copias con número de versión y <code>SHA256SUMS.txt</code>). Los genera <code>selfhost/empaquetar.sh</code> mediante el flujo <code>.github/workflows/arm64.yml</code>; cada paquete contiene el ejecutable <code>titan</code>, el enlace <code>zett → titan</code>, la carpeta <code>native/</code> con el runtime en Titan y <code>LEEME.txt</code> (≈2,8 MB). Para Android (Termux), se incluye el instalador automático <code>selfhost/instalar-termux.sh</code>.</p>
 <p><strong>Cómo se hace el ejecutable ARM64.</strong> El compilador x86-64 construido por el punto fijo compila la CLI (<code>selfhost/titan.titan</code>) con
 el backend LLVM: <code>titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64</code> (LLVM lo pone <code>clang</code>; la CLI
 no incluye LLVM, lo invoca). El resultado es un ELF estático ARM64 sin libc: habla con el núcleo Linux por llamadas al
@@ -2109,7 +2154,7 @@ sistema, igual que en x86-64. En ARM64, <code>titan run/compile</code> genera LL
 hace falta <code>pkg install clang</code>. En una máquina x86-64, <code>--target aarch64</code> compila para ARM64 (también por <code>clang</code> o por <code>zig cc</code>
 como alternativa vía <code>TITAN_CC</code>).</p>
 <p><strong>Qué se verificó, en un ARM64 real</strong> (runner <code>ubuntu-24.04-arm</code> de GitHub Actions; ejecución <code>37890535640</code>, commit <code>7deb0fc</code>):
-- el ejecutable ARM64 arranca y <code>titan version</code> responde;
+- el ejecutable ARM64 arranca y <code>titan version</code> responde (también verificado en dispositivo Android Redmi 9C con Termux);
 - compila y ejecuta un programa en la propia máquina ARM64;
 - procesos hijos (<code>std::process::spawn</code>) y servidor HTTP (<code>std::server</code>) con un cliente <code>curl</code> real;
 - <strong>diferencial: 95 programas de <code>selfhost/tests/native</code> compilados y ejecutados con el backend x86-64 y con LLVM/ARM64: 95 idénticos
@@ -2123,9 +2168,7 @@ como alternativa vía <code>TITAN_CC</code>).</p>
   <code>rtm_state()+64</code>. <code>std::window</code> (Wayland) guardaba el suyo en <code>globals+3552</code>, el mismo hueco de las tareas; ahora en <code>rtm_state()+72</code>.
 - El backend LLVM no admitía <code>map(xs, f)</code>/<code>filter</code>/<code>fold</code>/<code>find</code>/<code>any</code>/<code>all</code> como llamadas, ni tareas ni canales: ahora sí.
 - <code>ci.yml</code> tenía un error de YAML que lo hacía fallar en 0 s; corregido.</p>
-<p><strong>Límites que quedan, dichos claro.</strong>
-- No está probado en un teléfono: el runner ARM64 es un servidor Linux, no Android. Termux usa el mismo núcleo, pero Android puede
-  filtrar algunas llamadas al sistema; si algo falla en un dispositivo, hay que mirarlo ahí.
+<p><strong>Límites conocidos.</strong>
 - En ARM64 hace falta <code>clang</code> + <code>lld</code> (Termux: <code>pkg install clang</code>) para compilar programas; el paquete no lo trae.
 - <code>titan debug</code>/DAP: su estado vivía en <code>globals+3600…3728</code>, que en ARM64 es zona de trabajo del runtime. Se movió a un bloque propio (<code>rtm_state()+80</code>, <code>dbg_g()</code> en <code>std_debug.titan</code>). En x86-64: <code>selfhost/tests/debug/probar.sh</code> 40/40 con salida idéntica a la versión anterior y <code>selfhost/tests/dap/probar.py</code> 20/20. <strong>Sigue sin probarse en ARM64.</strong>
 - <code>std_audio_engine</code>, <code>gui</code>/ventanas, <code>fswatch</code>, Redis/Postgres/MySQL, TLS y <code>ws_*</code> no están en el diferencial (necesitan servicios o

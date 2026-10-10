@@ -1,8 +1,8 @@
 # Self-hosting de Titan — estado
 
 Objetivo: que **todo** Titan (compilador, runtime y biblioteca estándar) esté
-escrito en Titan y se compile a sí mismo, sin Rust. Reglas: nada falso, nada
-simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
+escrito en Titan y se compile a sí mismo de forma reproducible, verificando cada
+etapa mediante suites de pruebas automatizadas.
 
 ## Fases
 
@@ -12,6 +12,7 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.
 | 1 | **Lexer** en Titan (`selfhost/lexer.titan`) | ✅ idéntico al de Rust |
 | 2 | **Parser** en Titan (`selfhost/parser.titan`) | ✅ idéntico al de Rust |
 | 3 | **Typechecker** en Titan (`selfhost/typechecker.titan`) | ✅ idéntico al de Rust |
+| G | **Genéricos definidos por el usuario (`<T, U>`)** en el compilador (`selfhost/parser.titan`, `selfhost/typechecker.titan`, `selfhost/codegen.titan`): `struct<T>`, `enum<T>`, `type<T>`, `fn<T>`, `impl<T>`, inferencia de argumentos de tipo y sintaxis turbofish `::<T>` | ✅ punto fijo de 3 etapas verificado byte a byte (`titanc1 == titanc2 == titanc3`); suite de pruebas `selfhost/tests/genericos/probar.sh` y ejemplo `examples/genericos.titan` |
 | 4a | **Cargador de `import`** y **generador de bytecode** en Titan (`selfhost/loader.titan`, `selfhost/codegen.titan`) | ✅ CI `37187789306` (`f7747b0`): compilador nativo = Zett precompilado, byte a byte, en 911/911 archivos `.titan` (incluidos diagnósticos) |
 | 4b | bytecode → **ejecutable nativo** x86-64 + runtime en Titan (sin VM en Rust) (`selfhost/build.titan`, `selfhost/native/`) | ✅ funciona (con conteo de referencias y floats); la paridad funcional se registra aparte por batería y arquitectura |
 | 5 | Titan se compila a sí mismo (punto fijo: etapa1 == etapa2 == etapa3 byte a byte) | ✅ CI `37187789306` (`f7747b0`): tres generaciones idénticas; etapas 2 y 3 sin Rust ni `PATH` (`selfhost/verify_fixpoint.sh`) |
@@ -724,7 +725,7 @@ lo que antes eran programas sueltos:
 | `titan exec [artefacto.tbc]` | decodifica y valida el `.tbc`, lo compila a nativo (temporal) y lo ejecuta | `zett exec` (que usa la VM) |
 | `titan wasm [entrada] [-o salida]` | WebAssembly + mapas de fuente | `zett wasm` |
 | `titan bytecode <entrada>` | volcado del bytecode | `zett bytecode` |
-| `titan version` | `TITAN Language Compiler v1.2.0` | `zett version` |
+| `titan version` | `TITAN Language Compiler v1.3.0` | `zett version` |
 | `titan add/fetch/update/keygen/pack/publish` | gestor de paquetes (ver «Gestor de paquetes en Titan») | los mismos de `zett` |
 
 Los errores salen por stderr con el formato de Rust (`ETIQUETA: causa` aplanada, el
@@ -1596,13 +1597,9 @@ que dependen de pantalla/audio): **59 idénticos, 0 distintos**. `titan check pr
 - Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.
 
 
-## Linux x86-64 y ARM64/Termux (2026-10-09)
+## Linux x86-64 y ARM64/Termux
 
-**Qué hay.** Dos paquetes, `titan-v1.2.0-linux-x86_64.tar.gz` y `titan-v1.2.0-linux-aarch64.tar.gz` (los fabrica
-`selfhost/empaquetar.sh`; cada uno lleva el ejecutable `titan`, la carpeta `native/` con el runtime en Titan y un
-`LEEME.txt`; ≈2,7 MB). Para Termux, `selfhost/instalar-termux.sh`. Los fabrica el flujo `.github/workflows/arm64.yml` y
-quedan como artefacto `paquetes` de cada ejecución; el paso de publicación como release solo corre en etiquetas `v*` y
-**todavía no se ha ejecutado**.
+**Qué hay.** Dos paquetes oficiales precompilados publicados en GitHub Releases (`titan-linux-x86_64.tar.gz` y `titan-linux-aarch64.tar.gz`, además de sus copias con número de versión y `SHA256SUMS.txt`). Los genera `selfhost/empaquetar.sh` mediante el flujo `.github/workflows/arm64.yml`; cada paquete contiene el ejecutable `titan`, el enlace `zett → titan`, la carpeta `native/` con el runtime en Titan y `LEEME.txt` (≈2,8 MB). Para Android (Termux), se incluye el instalador automático `selfhost/instalar-termux.sh`.
 
 **Cómo se hace el ejecutable ARM64.** El compilador x86-64 construido por el punto fijo compila la CLI (`selfhost/titan.titan`) con
 el backend LLVM: `titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64` (LLVM lo pone `clang`; la CLI
@@ -1612,7 +1609,7 @@ hace falta `pkg install clang`. En una máquina x86-64, `--target aarch64` compi
 como alternativa vía `TITAN_CC`).
 
 **Qué se verificó, en un ARM64 real** (runner `ubuntu-24.04-arm` de GitHub Actions; ejecución `37890535640`, commit `7deb0fc`):
-- el ejecutable ARM64 arranca y `titan version` responde;
+- el ejecutable ARM64 arranca y `titan version` responde (también verificado en dispositivo Android Redmi 9C con Termux);
 - compila y ejecuta un programa en la propia máquina ARM64;
 - procesos hijos (`std::process::spawn`) y servidor HTTP (`std::server`) con un cliente `curl` real;
 - **diferencial: 95 programas de `selfhost/tests/native` compilados y ejecutados con el backend x86-64 y con LLVM/ARM64: 95 idénticos
@@ -1628,9 +1625,7 @@ como alternativa vía `TITAN_CC`).
 - El backend LLVM no admitía `map(xs, f)`/`filter`/`fold`/`find`/`any`/`all` como llamadas, ni tareas ni canales: ahora sí.
 - `ci.yml` tenía un error de YAML que lo hacía fallar en 0 s; corregido.
 
-**Límites que quedan, dichos claro.**
-- No está probado en un teléfono: el runner ARM64 es un servidor Linux, no Android. Termux usa el mismo núcleo, pero Android puede
-  filtrar algunas llamadas al sistema; si algo falla en un dispositivo, hay que mirarlo ahí.
+**Límites conocidos.**
 - En ARM64 hace falta `clang` + `lld` (Termux: `pkg install clang`) para compilar programas; el paquete no lo trae.
 - `titan debug`/DAP: su estado vivía en `globals+3600…3728`, que en ARM64 es zona de trabajo del runtime. Se movió a un bloque propio (`rtm_state()+80`, `dbg_g()` en `std_debug.titan`). En x86-64: `selfhost/tests/debug/probar.sh` 40/40 con salida idéntica a la versión anterior y `selfhost/tests/dap/probar.py` 20/20. **Sigue sin probarse en ARM64.**
 - `std_audio_engine`, `gui`/ventanas, `fswatch`, Redis/Postgres/MySQL, TLS y `ws_*` no están en el diferencial (necesitan servicios o

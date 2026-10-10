@@ -2,7 +2,7 @@
 // ============================================================
 // Una red social vacía se siente muerta: cuando el feed o el explorador no
 // tienen nada que mostrar, proponemos personas reales a las que seguir, con
-// su botón de seguir funcionando contra la API. Nada simulado.
+// su botón de seguir conectado directamente a la API.
 
 import React, { useEffect, useState } from 'react';
 import { api } from '../api.js';

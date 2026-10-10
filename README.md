@@ -17,7 +17,7 @@ código fuente (.titan)
 
 ## Qué incluye
 
-- **Lenguaje:** funciones, closures, structs, enums con datos, `match`, traits, módulos e imports, constantes, alias de tipos, arrays, mapas, rangos, interpolación de strings, `Option` / `Result` y el operador `?`.
+- **Lenguaje:** funciones, closures, structs, enums con datos, genéricos `<T>` (en funciones, structs, enums, alias e `impl<T>`), `match`, traits, módulos e imports, constantes, alias de tipos, arrays, mapas, rangos, interpolación de strings, `Option` / `Result` y el operador `?`.
 - **Ejecutables nativos:** `titan run` y `titan compile` generan código de máquina. El backend propio produce x86-64; el backend LLVM (necesita `clang` y `lld`) produce x86-64 o ARM64 (`--target aarch64`).
 - **Concurrencia:** `spawn`, `join`, canales, `select` y timeouts, sobre fibras cooperativas (no hilos del sistema). Ver [`docs/CONCURRENCY.md`](docs/CONCURRENCY.md).
 - **WebAssembly:** `titan wasm` genera módulos con memoria lineal, strings, arrays, mapas, structs y enums, más un host JavaScript para DOM, eventos, `fetch`, WebSocket y Canvas.
@@ -25,9 +25,19 @@ código fuente (.titan)
 - **Gestor de paquetes: Zett.** `zett add`, `zett fetch`, `zett update`, `zett pack`, `zett publish`: dependencias remotas verificadas con SHA-256 y firmas Ed25519. Ver [`docs/ZETT.md`](docs/ZETT.md).
 - **Biblioteca estándar:** 812 funciones en 73 espacios de nombres `std::*`, escritas en Titan (ver abajo).
 
-## Instalación
+## Descargas e instalación
 
-Titan se construye desde las fuentes en **Linux x86-64**, con `bash` y `gzip` (en ARM64 se usa el paquete ya compilado; ver más abajo). El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
+### Opción A: Paquetes precompilados (Linux x86-64 y ARM64)
+
+En [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) se publican paquetes precompilados para ambas arquitecturas de Linux, con el ejecutable `titan`, el gestor de paquetes `zett` y el runtime nativo (`native/`):
+
+- **Linux x86-64:** [`titan-linux-x86_64.tar.gz`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz)
+- **Linux ARM64 (`aarch64` / Termux):** [`titan-linux-aarch64.tar.gz`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz)
+- **Sumas de verificación:** [`SHA256SUMS.txt`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/SHA256SUMS.txt)
+
+### Opción B: Construir desde las fuentes (Linux x86-64)
+
+Titan se construye desde las fuentes en **Linux x86-64**, con `bash` y `gzip`. El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
 
 ```bash
 git clone https://github.com/alexsndersoto04-source/aio.git
@@ -48,7 +58,7 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 > teléfono con núcleo de 64 bits **sí puede usar este Titan** (el binario aarch64 corre; caso probado: Redmi 9C). El instalador
 > lo comprueba de verdad al final. Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
 
-El flujo `Linux ARM64 (Termux)` de GitHub Actions fabrica `titan-v1.2.0-linux-aarch64.tar.gz` y lo prueba en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` necesita `clang` y `lld` instalados. Guía y límites conocidos: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
+El flujo `Linux ARM64 (Termux)` de GitHub Actions construye `titan-linux-aarch64.tar.gz` y lo verifica en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` requiere `clang` y `lld` instalados. Guía e instrucciones detalladas: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador automático: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 
 ### Cruzar de arquitectura
 
@@ -199,9 +209,9 @@ Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementac
 - [Guía de Termux](docs/GUIA_TERMUX.md)
 - [Historial de cambios](CHANGELOG.md)
 
-## Colaborar
+## Contribuir
 
-Las reglas, las comprobaciones antes de proponer un cambio y cómo se abre un Pull Request están en [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Las contribuciones al compilador, la biblioteca estándar, las herramientas y la documentación son bienvenidas. Consulta la [`Guía de Contribución (CONTRIBUTING.md)`](CONTRIBUTING.md) para conocer la configuración del entorno de desarrollo, la suite de pruebas y el proceso para enviar un Pull Request.
 
 ## Licencia
 

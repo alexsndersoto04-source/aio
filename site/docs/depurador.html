@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Depurador — Documentación de Titan</title>
 <meta name="description" content="Información de depuración y depurador interactivo.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/depurador.html">
 <meta property="og:title" content="Depurador — Documentación de Titan">
 <meta property="og:description" content="Información de depuración y depurador interactivo.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/depurador.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Depurador — Documentación de Titan">
+<meta name="twitter:description" content="Información de depuración y depurador interactivo.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Información de depuración y depurador interactivo."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -90,7 +119,7 @@ hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está e
 <h2 id="terminal-debugger">Terminal debugger</h2>
 <p><code>titan debug</code> compiles a source file/project, resolves canonical <code>path:line</code> breakpoints, starts the VM on a worker thread and controls it through the debugger channels:</p>
 <pre><code class="language-bash">titan debug . --break src/main.titan:4
-titan debug --sandbox . -b src/main.titan:4 -b src/math.titan:2
+titan debug . -b src/main.titan:4 -b src/math.titan:2
 </code></pre>
 <p>At every stop it displays source location, call depth, function identity, locals and operand stack. Interactive commands are <code>continue</code>, <code>step</code>, <code>next</code> (step over), <code>out</code>, <code>print</code>, and <code>quit</code>. With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.</p>
 <p>The project loader now assigns canonical source paths to every function and impl method before programs are merged. Paths propagate through named functions and nested closures into <code>.tbc</code>, debugger frames and <code>SourceLine</code> breakpoints. Two files can therefore use the same line number without colliding; the breakpoint matches both canonical source path and one-based line.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/DEBUGGER.md">Ver este archivo en GitHub</a></p></article></div></main>

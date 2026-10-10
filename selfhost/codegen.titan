@@ -417,12 +417,28 @@ fn cg_zero_span() -> Span {
 
 // BytecodeType de Rust, como texto Debug.
 fn cg_bytecode_type(t, enums: map) -> string {
+    cg_bytecode_type_tp(t, enums, [])
+}
+
+fn cg_in_tparams(name: string, tparams: array) -> bool {
+    for tp in tparams {
+        if tp == name {
+            return true
+        }
+    }
+    false
+}
+
+fn cg_bytecode_type_tp(t, enums: map, tparams: array) -> string {
     if t == nil {
         return "Unknown"
     }
     let k = t.kind
     if k == "t_named" {
         let name = t.text
+        if len(tparams) > 0 && len(t.list) == 0 && cg_in_tparams(name, tparams) {
+            return "Unknown"
+        }
         if name == "int" {
             return "Int"
         }
@@ -433,7 +449,7 @@ fn cg_bytecode_type(t, enums: map) -> string {
             return "String"
         }
         if name == "map" && len(t.list) == 2 {
-            return "MapOf(" + cg_bytecode_type(t.list[0], enums) + ", " + cg_bytecode_type(t.list[1], enums) + ")"
+            return "MapOf(" + cg_bytecode_type_tp(t.list[0], enums, tparams) + ", " + cg_bytecode_type_tp(t.list[1], enums, tparams) + ")"
         }
         if name == "map" {
             return "Map"
@@ -441,7 +457,7 @@ fn cg_bytecode_type(t, enums: map) -> string {
         if std::map::contains(enums, name) && len(t.list) > 0 {
             let mut parts = []
             for generic in t.list {
-                parts = std::array::push(parts, cg_bytecode_type(generic, enums))
+                parts = std::array::push(parts, cg_bytecode_type_tp(generic, enums, tparams))
             }
             return "EnumOf(" + q(name) + ", [" + cg_join(parts, ", ") + "])"
         }
@@ -451,12 +467,12 @@ fn cg_bytecode_type(t, enums: map) -> string {
         return "Struct(" + q(name) + ")"
     }
     if k == "t_array" || k == "t_slice" {
-        return "ArrayOf(" + cg_bytecode_type(t.a, enums) + ")"
+        return "ArrayOf(" + cg_bytecode_type_tp(t.a, enums, tparams) + ")"
     }
     if k == "t_tuple" {
         let mut parts = []
         for element in t.list {
-            parts = std::array::push(parts, cg_bytecode_type(element, enums))
+            parts = std::array::push(parts, cg_bytecode_type_tp(element, enums, tparams))
         }
         return "TupleOf([" + cg_join(parts, ", ") + "])"
     }
@@ -567,6 +583,12 @@ fn cg_collect_items_with_traits(items: array, acc: (array, map, map, map), trait
             continue
         }
         let type_name = item.b.text
+        let mut impl_tps = item.list2
+        for g in item.b.list {
+            if g.kind == "t_named" && len(g.list) == 0 {
+                impl_tps = std::array::push(impl_tps, g.text)
+            }
+        }
         let mut provided = std::map::new()
         for method in item.list {
             provided = std::map::insert(provided, method.text, true)
@@ -574,7 +596,8 @@ fn cg_collect_items_with_traits(items: array, acc: (array, map, map, map), trait
         for method in item.list {
             let renamed_name = type_name + "::" + method.text
             let params = cg_with_self_type(method.list, type_name, zero_span())
-            let renamed = Node { kind: method.kind, text: renamed_name, text2: method.text2, flag: method.flag, a: method.a, b: method.b, c: method.c, list: params, list2: method.list2, span: method.span }
+            let all_tps = std::array::concat(impl_tps, method.list2)
+            let renamed = Node { kind: method.kind, text: renamed_name, text2: method.text2, flag: method.flag, a: method.a, b: method.b, c: method.c, list: params, list2: all_tps, span: method.span }
             methods = std::map::insert(methods, renamed_name, len(functions))
             functions = std::array::push(functions, renamed)
         }
@@ -588,7 +611,8 @@ fn cg_collect_items_with_traits(items: array, acc: (array, map, map, map), trait
             }
             let synth_name = type_name + "::" + tm.text
             let params = cg_with_self_type(tm.list, type_name, zero_span())
-            let synth = Node { kind: "fn", text: synth_name, text2: "", flag: false, a: nil, b: tm.b, c: tm.c, list: params, list2: [], span: tm.span }
+            let all_tps = std::array::concat(impl_tps, tm.list2)
+            let synth = Node { kind: "fn", text: synth_name, text2: "", flag: false, a: nil, b: tm.b, c: tm.c, list: params, list2: all_tps, span: tm.span }
             methods = std::map::insert(methods, synth_name, len(functions))
             functions = std::array::push(functions, synth)
         }
@@ -661,11 +685,11 @@ fn cg_compile_function(g0: G, f) -> Result {
     }
     let mut params = []
     for p in f.list {
-        params = std::array::push(params, cg_bytecode_type(p.a, g.enums))
+        params = std::array::push(params, cg_bytecode_type_tp(p.a, g.enums, f.list2))
     }
     let mut ret: any = nil
     if f.b != nil {
-        ret = cg_bytecode_type(f.b, g.enums)
+        ret = cg_bytecode_type_tp(f.b, g.enums, f.list2)
     }
     let mut file: any = nil
     if f.text2 != "" {

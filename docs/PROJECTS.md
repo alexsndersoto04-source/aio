@@ -98,10 +98,7 @@ Run recursively and deterministically:
 
 ```bash
 titan test
-titan test --sandbox
 ```
-
-Sandbox mode permits pure standard-library functions but rejects filesystem, process, network, and environment natives.
 
 ## Current namespace rule
 

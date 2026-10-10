@@ -49,7 +49,6 @@ La misma documentación está publicada, con menú lateral y buscador, en la
 | [`../selfhost/ESTADO.md`](../selfhost/ESTADO.md) | **Fuente de la verdad**: qué está verificado, cómo y qué límites tiene |
 | [`VALIDATION.md`](VALIDATION.md) | Registro de validaciones de la etapa anterior |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Historial de cambios |
-| [`historico/`](historico) | Informes de la etapa en Rust, conservados como registro |
 
 > **Si dos documentos se contradicen**, manda `selfhost/ESTADO.md`: es el que
 > se actualiza con cada verificación. Los documentos de dependencias externas

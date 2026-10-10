@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Proyectos, módulos y tests — Documentación de Titan</title>
 <meta name="description" content="Estructura de un proyecto, Titan.toml, imports y pruebas.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/proyectos.html">
 <meta property="og:title" content="Proyectos, módulos y tests — Documentación de Titan">
 <meta property="og:description" content="Estructura de un proyecto, Titan.toml, imports y pruebas.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/proyectos.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Proyectos, módulos y tests — Documentación de Titan">
+<meta name="twitter:description" content="Estructura de un proyecto, Titan.toml, imports y pruebas.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Estructura de un proyecto, Titan.toml, imports y pruebas."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -137,9 +166,7 @@ version = &quot;0.3.0&quot;
 </code></pre>
 <p>Run recursively and deterministically:</p>
 <pre><code class="language-bash">titan test
-titan test --sandbox
 </code></pre>
-<p>Sandbox mode permits pure standard-library functions but rejects filesystem, process, network, and environment natives.</p>
 <h2 id="current-namespace-rule">Current namespace rule</h2>
 <p>Loaded declarations currently share the executable module namespace. Duplicate function names are rejected by codegen. Imports control loading and dependency boundaries, but aliases do not yet qualify declarations (<code>shared::function</code>) at runtime. Full symbol namespaces require HIR name resolution and are tracked as a separate language feature; the loader does not pretend they already exist.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/PROJECTS.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">

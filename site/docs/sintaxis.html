@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Referencia de sintaxis — Documentación de Titan</title>
 <meta name="description" content="Todas las construcciones del lenguaje con ejemplos.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/sintaxis.html">
 <meta property="og:title" content="Referencia de sintaxis — Documentación de Titan">
 <meta property="og:description" content="Todas las construcciones del lenguaje con ejemplos.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/sintaxis.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Referencia de sintaxis — Documentación de Titan">
+<meta name="twitter:description" content="Todas las construcciones del lenguaje con ejemplos.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Todas las construcciones del lenguaje con ejemplos."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -297,6 +326,49 @@ ambas ramas tienen que devolver lo mismo:</p>
 spawn go true false nil self as extern type</code> no se pueden usar como nombres de variables, funciones ni campos
 (por ejemplo <code>let go = 1</code> es un error de sintaxis: <code>go</code> y <code>spawn</code> lanzan tareas). <code>as</code> y <code>unsafe</code> están reservadas
 sin gramática.</p>
+<hr />
+<h2 id="genericos-definidos-por-el-usuario-t">Genéricos definidos por el usuario (<code>&lt;T&gt;</code>)</h2>
+<p>Titan permite parametrizar tipos y funciones mediante parámetros genéricos <code>&lt;T, U&gt;</code>:</p>
+<pre><code class="language-titan"><span class="c">// Struct genérico</span>
+<span class="k">struct</span> Par&lt;A, B&gt; {
+    primero: A,
+    segundo: B,
+}
+
+<span class="c">// Enum genérico</span>
+<span class="k">enum</span> Quizas&lt;T&gt; {
+    <span class="t">Valor</span>(T),
+    Nada,
+}
+
+<span class="c">// Alias de tipo genérico</span>
+<span class="k">type</span> Lista&lt;T&gt; = [T]
+
+<span class="c">// Función genérica (con inferencia automática o turbofish ::&lt;T&gt;)</span>
+<span class="k">fn</span> identidad&lt;T&gt;(x: T) -&gt; T {
+    x
+}
+
+<span class="c">// Métodos genéricos con impl&lt;T&gt;</span>
+<span class="k">struct</span> Caja&lt;T&gt; { valor: T }
+
+<span class="k">impl</span>&lt;T&gt; Caja&lt;T&gt; {
+    <span class="k">fn</span> nueva(v: T) -&gt; Caja&lt;T&gt; {
+        Caja { valor: v }
+    }
+    <span class="k">fn</span> obtener(self) -&gt; T {
+        self.valor
+    }
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> n = identidad(<span class="n">42</span>)
+    <span class="k">let</span> texto = identidad::&lt;string&gt;(<span class="s">&quot;Titan&quot;</span>)
+    <span class="k">let</span> c = <span class="t">Caja</span>::nueva(Par { primero: n, segundo: texto })
+    print(<span class="s">&quot;{c.obtener().primero} - {c.obtener().segundo}&quot;</span>)
+}
+</code></pre>
+<p>Ejemplo completo verificable: <code>examples/genericos.titan</code>.</p>
 <hr />
 <h2 id="interpolacion-de-strings">Interpolación de strings</h2>
 <p>Dentro de <code>{...}</code> en un texto se puede escribir <strong>cualquier expresión de Titan</strong>: variables, aritmética, índices, campos, llamadas con expresiones, <code>if</code>, closures...</p>
@@ -773,6 +845,7 @@ el error por completo:</p>
 funcional distinto:</p>
 <ul>
 <li><code>hello.titan</code>, <code>fibonacci.titan</code>     — básicos</li>
+<li><code>genericos.titan</code>                    — structs, enums, funciones e <code>impl&lt;T&gt;</code> genéricos</li>
 <li><code>extras.titan</code>, <code>formats.titan</code>      — regex, hash, yaml, xml, etc.</li>
 <li><code>network.titan</code>, <code>security.titan</code>    — HTTPS, DNS, JWT, crypto</li>
 <li><code>android.titan</code>, <code>tui.titan</code>         — Termux hardware + TUI</li>

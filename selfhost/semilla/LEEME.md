@@ -2,8 +2,8 @@
 
 Un compilador que se compila a sí mismo necesita un primer compilador que ya exista. Esa es la
 semilla: `titanc-linux-x86_64.gz` es el compilador nativo de Titan (Linux x86-64, ejecutable estático, sin
-bibliotecas), comprimido (650 KB; descomprimido 7,7 MB). Su SHA-256 descomprimido está en
-`titanc-linux-x86_64.sha256` (`f4943da3…bc3d`).
+bibliotecas), comprimido (686 KB; descomprimido 7,7 MB). Su SHA-256 descomprimido está en
+`titanc-linux-x86_64.sha256` (`27e40a9f…4d20`).
 
 **De dónde sale.** Se construyó con la última versión del proyecto que todavía tenía Rust (etiqueta
 `ultimo-con-rust`, commit `5dbb238`): la VM de Rust ejecutó `selfhost/build.titan` con un runtime «delgado»

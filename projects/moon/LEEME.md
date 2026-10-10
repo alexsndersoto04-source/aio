@@ -1,8 +1,8 @@
 # Moon — la red social (LEEME principal)
 
-Moon es una red social **real**: cuentas, publicaciones, fotos, historias de 24
-horas, grupos, mensajes, notificaciones, contactos y administración. Todo vive
-en una base de datos PostgreSQL de verdad; no hay nada simulado ni de ejemplo.
+Moon es una aplicación de red social completa: cuentas, publicaciones, fotos, historias de 24
+horas, grupos, mensajes, notificaciones, contactos y panel de administración, respaldada
+por una base de datos PostgreSQL.
 
 ## Dónde está
 

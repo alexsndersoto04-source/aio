@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Titan en Termux — Documentación de Titan</title>
 <meta name="description" content="Instalar y usar Titan en Android (ARM64).">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/termux.html">
 <meta property="og:title" content="Titan en Termux — Documentación de Titan">
 <meta property="og:description" content="Instalar y usar Titan en Android (ARM64).">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/termux.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Titan en Termux — Documentación de Titan">
+<meta name="twitter:description" content="Instalar y usar Titan en Android (ARM64).">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Instalar y usar Titan en Android (ARM64)."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -73,36 +102,38 @@
 <blockquote>
 <p><strong>Estado honesto.</strong> El ejecutable ARM64 se probó en un servidor Linux ARM64 (GitHub Actions, <code>ubuntu-24.04-arm</code>): arranca,
 compila y ejecuta programas, y 95 programas de prueba dieron exactamente la misma salida que con el compilador x86-64
-(ver «Linux x86-64 y ARM64/Termux» en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>). <strong>No se ha probado todavía en un teléfono
-Android.</strong> Android puede filtrar algunas llamadas al sistema que un Linux normal permite; si algo falla en tu teléfono,
-ese dato es justo lo que falta saber.</p>
+(ver «Linux x86-64 y ARM64/Termux» en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>). En un teléfono Android (Redmi 9C,
+Termux de 32 bits) el binario aarch64 arranca (<code>titan version</code> sí corre). El 2026-10-10 se corrigió la detección de
+arquitectura para esos Termux de 32 bits (antes el compilador creía estar en una PC y pedía un binario que no era).</p>
 </blockquote>
-<h2 id="antes-de-instalar-tu-termux-es-de-64-bits">Antes de instalar: ¿tu Termux es de 64 bits?</h2>
-<p>Titan solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>). <strong>No existe versión para ARM de 32 bits</strong>
-(<code>armv7l</code>, <code>armv8l</code>): ahí el instalador se detiene con «esta máquina es armv8l».</p>
-<pre><code class="language-sh">uname -m                              # debe decir: aarch64
-getprop ro.product.cpu.abilist        # debe incluir: arm64-v8a
+<h2 id="antes-de-instalar-tu-termux-corre-el-binario-de-64-bits">Antes de instalar: ¿tu Termux corre el binario de 64 bits?</h2>
+<p>Titan solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>); no existe versión para ARM de 32 bits. Pero cuidado:
+<strong>un Termux de 32 bits puede estar en un teléfono con núcleo de 64 bits</strong>, y ahí el binario aarch64 corre igual.
+La prueba de verdad es intentarlo (el instalador lo hace al final):</p>
+<pre><code class="language-sh">uname -m                              # a | aarch64 → estupendo; armv8l / armv7l → mira abajo
+getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
 </code></pre>
 <ul>
-<li>Si dice <code>aarch64</code>, sigue con el paso 1.</li>
-<li>Si dice <code>armv7l</code> o <code>armv8l</code> pero <code>abilist</code> incluye <code>arm64-v8a</code>: tu teléfono es de 64 bits y tienes el Termux de 32 bits;
-  instala el Termux de 64 bits (APK <code>arm64-v8a</code>, de F-Droid o del GitHub oficial de Termux). Desinstalar el Termux actual borra
-  sus datos: guarda antes lo que quieras conservar.</li>
-<li>Si <code>abilist</code> solo trae <code>armeabi-v7a</code> y <code>armeabi</code>: tu teléfono es de 32 bits y <strong>no puede ejecutar este Titan</strong>. Soportarlo
-  exigiría un generador de código para ARM de 32 bits, que no existe.</li>
+<li>Si <code>uname -m</code> dice <code>aarch64</code>, sigue con el paso 1.</li>
+<li>Si dice <code>armv7l</code> o <code>armv8l</code> (Termux de 32 bits): sigue igual. Si al final <code>titan version</code> imprime la versión,
+  tu teléfono ejecuta los binarios de 64 bits y <strong>todo funciona</strong> (caso del Redmi 9C, aunque <code>abilist</code> solo
+  traiga <code>armeabi-v7a</code> y <code>armeabi</code>). Si ves «Exec format error», tu teléfono es de 32 bits de verdad: instala
+  el Termux de 64 bits (APK <code>arm64-v8a</code>, de F-Droid o del GitHub oficial de Termux) <strong>si tu teléfono lo admite</strong>;
+  si no lo admite, no hay versión posible (hace falta un generador de código para ARM de 32 bits, que no existe).</li>
+<li>Alternativa recomendada si puedes: instalar el Termux de 64 bits desde el principio. Desinstalar el Termux
+  actual borra sus datos: guarda antes lo que quieras conservar.</li>
 </ul>
 <h2 id="1-instalar">1. Instalar</h2>
-<p>Necesitas el paquete <code>titan-v1.2.0-linux-aarch64.tar.gz</code>. Lo fabrica el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions
-(artefacto <code>paquetes</code> de la ejecución; también se publica como release cuando se crea una etiqueta <code>v*</code>).</p>
-<p>Con la release publicada:</p>
+<p>Necesitas el paquete <code>titan-linux-aarch64.tar.gz</code> de la última versión publicada en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">GitHub Releases</a> (generado y verificado por el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions).</p>
+<p>Con la release publicada (descarga e instalación automática):</p>
 <pre><code class="language-sh">pkg install -y curl
 curl -fLO https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/selfhost/instalar-termux.sh
 bash instalar-termux.sh
 </code></pre>
-<p>Con un paquete que ya descargaste (por ejemplo el artefacto de Actions):</p>
-<pre><code class="language-sh">bash selfhost/instalar-termux.sh /ruta/a/titan-v1.2.0-linux-aarch64.tar.gz
+<p>Con un paquete que ya descargaste localmente:</p>
+<pre><code class="language-sh">bash selfhost/instalar-termux.sh /ruta/a/titan-linux-aarch64.tar.gz
 </code></pre>
-<p>Desde la versión 1.2.0 el paquete trae también <code>zett</code>, el gestor de paquetes (ver <a href="zett.html"><code>ZETT.md</code></a>); el script lo deja en el <code>PATH</code> junto a <code>titan</code>.</p>
+<p>El paquete incluye también <code>zett</code>, el gestor de paquetes (ver <a href="zett.html"><code>ZETT.md</code></a>); el script lo deja en el <code>PATH</code> junto a <code>titan</code>.</p>
 <p>El script instala <code>clang</code> (Titan en ARM64 genera LLVM IR y llama a <code>clang</code>/<code>lld</code> para producir el ejecutable) y deja <code>titan</code>
 en <code>$PREFIX/bin</code>. Comprueba:</p>
 <pre><code class="language-sh">titan version

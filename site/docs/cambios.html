@@ -5,23 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Historial de cambios — Documentación de Titan</title>
 <meta name="description" content="Cambios por versión.">
+<meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
+<link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/cambios.html">
 <meta property="og:title" content="Historial de cambios — Documentación de Titan">
 <meta property="og:description" content="Cambios por versión.">
+<meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/cambios.html">
+<meta property="og:site_name" content="Titan — Lenguaje de Programación">
+<meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Historial de cambios — Documentación de Titan">
+<meta name="twitter:description" content="Cambios por versión.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Titan",
+  "alternateName": "Zett",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux x86-64, Linux ARM64 (aarch64), Android (Termux), WebAssembly",
+  "softwareVersion": "1.3.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://alexsndersoto04-source.github.io/aio/",
+  "codeRepository": "https://github.com/alexsndersoto04-source/aio",
+  "downloadUrl": [
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
+    "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
+  ],
+  "description": "Cambios por versión."
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenido">Saltar al contenido</a>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="Titan" height="30"><span>Titan</span></a>
   <nav class="main" aria-label="Principal">
     <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#descargas">Descargas</a>
     <a href="../index.html#instalar">Instalación</a>
     <a href="../index.html#plataformas">Plataformas</a>
     <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
     <a href="../documentacion.html" aria-current="page">Documentación</a>
-    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
     <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
   </nav>
 </div></header>
@@ -75,8 +104,42 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
-<h2 id="sin-publicar">Sin publicar</h2>
+<h2 id="130-2026-10-10">1.3.0 — 2026-10-10</h2>
 <ul>
+<li><strong>Lenguaje (Genéricos <code>&lt;T&gt;</code>):</strong> soporte completo para genéricos definidos por el usuario en structs (<code>struct Par&lt;A, B&gt;</code>),
+  enums (<code>enum Quizas&lt;T&gt;</code>), alias de tipo (<code>type Lista&lt;T&gt; = [T]</code>), funciones (<code>fn id&lt;T&gt;(x: T) -&gt; T</code>), bloques <code>impl&lt;T&gt;</code>,
+  inferencia automática de tipos por argumentos y sintaxis turbofish (<code>::&lt;T&gt;</code>). Pruebas: <code>selfhost/tests/genericos/probar.sh</code>
+  y <code>examples/genericos.titan</code>.</li>
+<li><strong>Semilla actualizada (<code>selfhost/semilla/</code>):</strong> actualizada al nuevo punto fijo <code>titanc3</code> con soporte nativo de genéricos <code>&lt;T&gt;</code>.</li>
+<li><strong>Sitio web y documentación:</strong> sección de descargas habilitada para ambas arquitecturas (<code>Linux x86-64</code> y <code>Linux ARM64 / Termux</code>)
+  y actualización integral de <code>CONTRIBUTING.md</code>, <code>GUIA_RAPIDA.md</code>, <code>TITAN_SYNTAX.md</code> y <code>SPEC.md</code>.</li>
+</ul>
+<h2 id="122-2026-10-10">1.2.2 — 2026-10-10</h2>
+<ul>
+<li><strong>Errores:</strong> las posiciones de los errores dentro de <code>main</code> ya no caen en <code>1:1</code> (citaban el inicio
+  de la función): todos citan la línea real (fallita 4).</li>
+<li><strong>Errores:</strong> los errores de declaración (tipo desconocido en una firma, función duplicada…) citan
+  el archivo donde están escritos, no el de la última función del programa (fallita 5). Ejemplo:
+  <code>selfhost/tests/codegen/decl_wrong_file/</code> ahora dice <code>dup.titan:5:1</code>, que es la verdad.</li>
+<li><strong>Errores:</strong> <code>titan check</code>/<code>run</code> (y <code>zett</code>, que es un enlace a la CLI) imprimen cada error UNA
+  sola vez; antes lo imprimían dos (fallita 6). Pruebas: <code>selfhost/tests/errores/</code>.</li>
+<li>El oráculo congelado <code>zett</code> (Rust) conserva estos tres defectos: son divergencias deliberadas a
+  favor de la verdad; la paridad diferencial se mantiene para lo demás.</li>
+</ul>
+<h2 id="121-2026-10-10">1.2.1 — 2026-10-10</h2>
+<ul>
+<li><strong>Teléfonos (Termux de 32 bits):</strong> <code>titan</code> detectaba mal la arquitectura y generaba un binario de PC
+  (<code>ENOEXEC: std::process::run_timeout</code>) en teléfonos como el Redmi 9C, donde <code>uname -m</code> dice <code>armv8l</code>
+  pero el binario aarch64 sí corre. Ahora el compilador detecta la arquitectura desde su propio ELF
+  (y si no, de <code>uname</code>, aceptando <code>armv8l</code>/<code>armv7l</code>/<code>armv6l</code>), con la decisión pura en
+  <code>cli_util::cl_arch_from</code>. El instalador de Termux ya no rechaza a ciegas esas máquinas: comprueba de
+  verdad si el binario arranca. Pruebas: <code>selfhost/prueba_arreglos.titan</code>.</li>
+<li><strong>Lenguaje:</strong> el valor del cuerpo de un <code>for</code>/<code>while</code>/<code>loop</code> se tipa en posición de sentencia (se
+  descarta): un <code>if</code> con ramas de tipos distintos como última expresión ya no da "type mismatch", y una
+  asignación al final de una rama de <code>if</code> en esas posiciones vale <code>()</code> (antes: "expected Nil, found
+  Array"). En posición de valor nada cambia: las ramas siguen teniendo que tener el mismo tipo y
+  <code>let y = (x = 5)</code> sigue valiendo el valor asignado. Pruebas: <code>selfhost/prueba_arreglos.titan</code> y
+  <code>selfhost/tests/arreglos/</code>.</li>
 <li><strong>Lenguaje:</strong> la interpolación de textos acepta cualquier expresión (<code>"{a / 7}"</code>, <code>"{v[0]}"</code>, <code>"{p.x}"</code>,
   <code>"{f(a + 1)}"</code>, <code>"{if c { 1 } else { 0 }}"</code>). Las llaves que no son una expresión (JSON, CSS, <code>{2,3}</code>, <code>${VAR}</code>)
   siguen siendo texto, y las llaves deben pegarse a la expresión (<code>{ a }</code> o un bloque de código dentro del texto no se
@@ -113,6 +176,10 @@ El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 <li>Eliminado: <code>std::audio::cloud_*</code> (dependía de bibliotecas de Rust), <code>--sandbox</code>, <code>spawn_quota</code>.</li>
 <li>macOS y Windows: sin paquete por ahora.</li>
 </ul>
+<hr />
+<blockquote>
+<p><strong>Historial de la etapa anterior (prototipo en Rust):</strong> Las entradas siguientes corresponden a la numeración interna del prototipo original en Rust antes de la reescritura completa en Titan (<code>v1.1.0</code>).</p>
+</blockquote>
 <h2 id="130-fase-43-nube-musical-en-telegram-biblioteca-doble-con-streaming-puro-stdaudiocloud_">1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (<code>std::audio::cloud_*</code>) ☁️</h2>
 <ul>
 <li>Tus canciones viven en un canal privado de Telegram («Mi Música», se crea solo) y Titan las toca <strong>directo de la nube</strong>: solo viajan unos segundos por adelantado (MBs en memoria) y <strong>nada se guarda en el teléfono</strong>, salvo descarga explícita tuya. Como Spotify/YouTube.</li>
