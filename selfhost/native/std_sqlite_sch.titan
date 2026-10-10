@@ -1,0 +1,303 @@
+// std::sqlite en Titan, parte 10: esquema (sqlite_master) y lectura de filas. Prefijo `sh`.
+
+fn sh_key(name: string) -> string {
+    sq_fold(name)
+}
+
+fn sh_find_tab(sch: Sch, name: string) -> any {
+    std::map::get(sch.tabs, sh_key(name))
+}
+
+fn sh_find_idx(sch: Sch, name: string) -> any {
+    std::map::get(sch.idxs, sh_key(name))
+}
+
+fn sh_find_view(sch: Sch, name: string) -> any {
+    std::map::get(sch.views, sh_key(name))
+}
+
+fn sh_col_index(tab: TabI, name: string) -> int {
+    let k = sh_key(name)
+    let mut i = 0
+    for c in tab.cols {
+        if sh_key(c.name) == k {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn sh_col_of_expr(tab_cols: array, e: any) -> int {
+    let mut nm = ""
+    match e {
+        Ex::ECol(p) => {
+            nm = p.1
+        },
+        _ => {
+            return -1
+        },
+    }
+    let k = sh_key(nm)
+    let mut i = 0
+    for c in tab_cols {
+        if sh_key(c.name) == k {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn sh_master_tab() -> TabI {
+    let names = ["type", "name", "tbl_name", "rootpage", "sql"]
+    let tys = ["TEXT", "TEXT", "TEXT", "INT", "TEXT"]
+    let mut cols = []
+    let mut i = 0
+    while i < 5 {
+        cols = std::array::push(cols, ColI { name: names[i], ty: tys[i], aff: sc_affinity(tys[i]), notnull: false, nnconf: "", dflt: nil, coll: "", gen: nil, genstored: false, pk: false, hidden: false })
+        i += 1
+    }
+    TabI { name: "sqlite_master", root: 1, cols: cols, rowid: -1, pk: [], norowid: false, fks: [], checks: [], autoinc: false, sql: "", strict: false, uniqs: [], temp: false, rconf: "" }
+}
+
+// Tabla a partir de un CREATE TABLE analizado. Devuelve (tabla, error).
+fn sh_tab_from_ct(ct: CT, root: int, sql: string) -> (any, string) {
+    if ct.norowid {
+        return (nil, "WITHOUT ROWID tables are not supported")
+    }
+    if ct.strict {
+        return (nil, "STRICT tables are not supported")
+    }
+    if ct.temp {
+        return (nil, "temporary tables are not supported")
+    }
+    let mut cols = []
+    let mut pk = []
+    let mut autoinc = false
+    let mut fks = []
+    let mut checks = []
+    let mut pkdesc = false
+    let mut rconf = ""
+    let mut i = 0
+    for cd in ct.cols {
+        if cd.gen != nil {
+            return (nil, "generated columns are not supported")
+        }
+        cols = std::array::push(cols, ColI { name: cd.name, ty: cd.ty, aff: sc_affinity(cd.ty), notnull: cd.notnull, nnconf: cd.nnconf, dflt: cd.dflt, coll: cd.coll, gen: nil, genstored: false, pk: cd.pk, hidden: false })
+        if cd.pk {
+            pk = [i]
+            rconf = cd.pkconf
+            pkdesc = cd.pkdesc
+            if cd.autoinc {
+                autoinc = true
+            }
+        }
+        if cd.fk != nil {
+            fks = std::array::push(fks, cd.fk)
+        }
+        for ck in cd.checks {
+            checks = std::array::push(checks, ck)
+        }
+        i += 1
+    }
+    for tc in ct.cons {
+        if tc.kind == "PRIMARY" {
+            let mut idxs = []
+            for c in tc.cols {
+                let ix = sh_col_of_expr(cols, c[0])
+                if ix < 0 {
+                    return (nil, "unknown column in PRIMARY KEY")
+                }
+                idxs = std::array::push(idxs, ix)
+                if len(tc.cols) == 1 && c[1] {
+                    pkdesc = true
+                }
+            }
+            pk = idxs
+            rconf = tc.conf
+        }
+        if tc.kind == "CHECK" {
+            checks = std::array::push(checks, tc.ex)
+        }
+        if tc.kind == "FOREIGN" {
+            fks = std::array::push(fks, tc.fk)
+        }
+    }
+    let mut rowid = -1
+    if len(pk) == 1 && !pkdesc {
+        let c = cols[pk[0]]
+        if sql_upper_ascii(c.ty) == "INTEGER" {
+            rowid = pk[0]
+        }
+    }
+    // restricciones UNIQUE / PRIMARY KEY que crean un autoíndice, en orden textual
+    let mut uniqs = []
+    let mut seen = std::map::new()
+    let mut j = 0
+    for cd in ct.cols {
+        if cd.pk && rowid != j {
+            let k = sh_set_key([j])
+            if !std::map::contains(seen, k) {
+                seen = std::map::insert(seen, k, 1)
+                uniqs = std::array::push(uniqs, [[j], true, cd.pkconf])
+            }
+        }
+        if cd.unique {
+            let k = sh_set_key([j])
+            if !std::map::contains(seen, k) {
+                seen = std::map::insert(seen, k, 1)
+                uniqs = std::array::push(uniqs, [[j], false, cd.ukconf])
+            }
+        }
+        j += 1
+    }
+    for tc in ct.cons {
+        if tc.kind == "PRIMARY" || tc.kind == "UNIQUE" {
+            let mut idxs = []
+            for c in tc.cols {
+                let ix = sh_col_of_expr(cols, c[0])
+                if ix < 0 {
+                    return (nil, "unknown column in " + tc.kind)
+                }
+                idxs = std::array::push(idxs, ix)
+            }
+            let isrowid = tc.kind == "PRIMARY" && len(idxs) == 1 && rowid == idxs[0]
+            let k = sh_set_key(idxs)
+            if !isrowid && !std::map::contains(seen, k) {
+                seen = std::map::insert(seen, k, 1)
+                uniqs = std::array::push(uniqs, [idxs, tc.kind == "PRIMARY", tc.conf])
+            }
+        }
+    }
+    let t = TabI { name: ct.name, root: root, cols: cols, rowid: rowid, pk: pk, norowid: false, fks: fks, checks: checks, autoinc: autoinc, sql: sql, strict: false, uniqs: uniqs, temp: false, rconf: rconf }
+    return (t, "")
+}
+
+fn sh_set_key(a: array) -> string {
+    let mut parts = []
+    for x in a {
+        parts = std::array::push(parts, "{x}")
+    }
+    std::collections::join(parts, ",")
+}
+
+fn sh_idx_from_ci(ci: CI, root: int, sql: string) -> IdxI {
+    IdxI { name: ci.name, tbl: ci.tbl, root: root, cols: ci.cols, unique: ci.unique, wh: ci.wh, auto: false, sql: sql }
+}
+
+// Carga el esquema leyendo sqlite_master. Devuelve (esquema, error).
+fn sh_load(p: SqPg) -> (Sch, string) {
+    let mut tabs = std::map::new()
+    let mut idxs = std::map::new()
+    let mut views = std::map::new()
+    let mut trgs = []
+    tabs = std::map::insert(tabs, "sqlite_master", sh_master_tab())
+    tabs = std::map::insert(tabs, "sqlite_schema", sh_master_tab())
+    let rows = sqt_t_scan(p, 1)
+    let mut autos = []
+    // primero las tablas, luego el resto
+    let mut recs = []
+    for r in rows {
+        recs = std::array::push(recs, sq_rec_dec(r[1], -1))
+    }
+    for rec in recs {
+        let ty = sc_to_text(rec[0])
+        let nm = sc_to_text(rec[1])
+        let root = sc_to_int(rec[3])
+        let sql = sc_to_text(rec[4])
+        if ty == "table" {
+            let (all, err) = ss_parse_all(sql)
+            if err != "" {
+                return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, "malformed database schema (" + nm + ") - " + err)
+            }
+            let st = all[0][0]
+            let (t, e2) = sh_tab_from_ct(st.v, root, sql)
+            if e2 != "" {
+                return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, e2)
+            }
+            tabs = std::map::insert(tabs, sh_key(nm), t)
+        }
+    }
+    for rec in recs {
+        let ty = sc_to_text(rec[0])
+        let nm = sc_to_text(rec[1])
+        let tbl = sc_to_text(rec[2])
+        let root = sc_to_int(rec[3])
+        let sql = sc_to_text(rec[4])
+        if ty == "index" {
+            if sx_isnull(rec[4]) {
+                let ix = IdxI { name: nm, tbl: tbl, root: root, cols: [], unique: true, wh: nil, auto: true, sql: "" }
+                idxs = std::map::insert(idxs, sh_key(nm), ix)
+            } else {
+                let (all, err) = ss_parse_all(sql)
+                if err != "" {
+                    return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, "malformed database schema (" + nm + ") - " + err)
+                }
+                idxs = std::map::insert(idxs, sh_key(nm), sh_idx_from_ci(all[0][0].v, root, sql))
+            }
+        }
+        if ty == "view" {
+            let (all, err) = ss_parse_all(sql)
+            if err != "" {
+                return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, "malformed database schema (" + nm + ") - " + err)
+            }
+            let cv = all[0][0].v
+            views = std::map::insert(views, sh_key(nm), ViewI { name: nm, cols: cv.cols, sel: cv.sel, sql: sql })
+        }
+        if ty == "trigger" {
+            let (all, err) = ss_parse_all(sql)
+            if err != "" {
+                return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, "malformed database schema (" + nm + ") - " + err)
+            }
+            let tr = all[0][0].v
+            trgs = std::array::push(trgs, TrgI { name: nm, tbl: tbl, timing: tr.timing, ev: tr.ev, ucols: tr.ucols, wh: tr.wh, body: tr.body, sql: sql })
+        }
+    }
+    return (Sch { tabs: tabs, idxs: idxs, views: views, trgs: trgs }, "")
+}
+
+// Índices de una tabla (incluye autoíndices), como array de IdxI.
+fn sh_tab_indexes(sch: Sch, tab: TabI) -> array {
+    let mut out = []
+    for k in std::map::keys(sch.idxs) {
+        let ix = std::map::get(sch.idxs, k)
+        if sh_key(ix.tbl) == sh_key(tab.name) {
+            out = std::array::push(out, ix)
+        }
+    }
+    out
+}
+
+// Fila completa de una tabla: ncols valores + rowid al final.
+fn sh_row(cx: Cx, tab: TabI, rowid: int, payload: array) -> array {
+    let vals = sq_rec_dec(payload, -1)
+    let nc = len(tab.cols)
+    let mut out = []
+    let mut i = 0
+    while i < nc {
+        if i == tab.rowid {
+            out = std::array::push(out, Sv::SInt(rowid))
+        } else if i < len(vals) {
+            out = std::array::push(out, vals[i])
+        } else {
+            let c = tab.cols[i]
+            if c.dflt != nil {
+                out = std::array::push(out, sx_ev(cx, c.dflt, []))
+            } else {
+                out = std::array::push(out, Sv::SNull)
+            }
+        }
+        i += 1
+    }
+    std::array::push(out, Sv::SInt(rowid))
+}
+
+// Todas las filas de una tabla.
+fn sh_scan(cx: Cx, tab: TabI) -> array {
+    let mut out = []
+    for r in sqt_t_scan(cx.pg, tab.root) {
+        out = std::array::push(out, sh_row(cx, tab, r[0], r[1]))
+    }
+    out
+}

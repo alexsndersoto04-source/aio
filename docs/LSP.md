@@ -1,5 +1,9 @@
 # TITAN Language Server
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 `titan-lsp` is a real stdio Language Server Protocol process. It uses JSON-RPC 2.0 messages framed with `Content-Length`, caps inbound messages at 16 MiB, never writes logs to stdout, and flushes every response/notification.
 
 Implemented protocol surface:
@@ -20,7 +24,7 @@ Positions are converted between UTF-8 byte offsets used by the compiler and UTF-
 Run directly:
 
 ```bash
-cargo run -p titan_lsp --bin titan-lsp
+titan lsp
 ```
 
 Editor configuration must launch `titan-lsp` as a subprocess and communicate over stdin/stdout. The server advertises its capabilities during `initialize`.

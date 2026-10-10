@@ -1,0 +1,8 @@
+fn main() {
+let mut i = 0
+while i < 257 {
+    let t = spawn || { 1 }
+    i += 1
+}
+print(i)
+}

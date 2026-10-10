@@ -1,0 +1,658 @@
+// std::sqlite en Titan, parte 11: resolución de nombres y afinidades de las expresiones. Prefijo `sr`.
+// Convierte ECol en ESlot (profundidad, índice, afinidad, collation), registra agregados y funciones
+// de ventana, y ejecuta de antemano las subconsultas que no dependen de la consulta externa.
+
+struct ScCol {
+    alias: string,
+    name: string,
+    aff: string,
+    coll: string,
+    hidden: bool,
+    merged: bool,
+}
+
+struct Rc {
+    aggs: array,
+    wins: array,
+    wdefs: array,
+    allow_agg: bool,
+    err: string,
+    aliases: array,
+    alias_first: bool,
+    cx: Cx,
+}
+
+fn sr_sep() -> string {
+    sx_chr(1)
+}
+
+fn sr_fail(rc: Rc, msg: string, pos: int) -> Rc {
+    if rc.err != "" {
+        return rc
+    }
+    let mut m = msg
+    if pos >= 0 {
+        m = msg + sr_sep() + "{pos}"
+    }
+    Rc { aggs: rc.aggs, wins: rc.wins, wdefs: rc.wdefs, allow_agg: rc.allow_agg, err: m, aliases: rc.aliases, alias_first: rc.alias_first, cx: rc.cx }
+}
+
+fn sr_with_agg(rc: Rc, allow: bool) -> Rc {
+    Rc { aggs: rc.aggs, wins: rc.wins, wdefs: rc.wdefs, allow_agg: allow, err: rc.err, aliases: rc.aliases, alias_first: rc.alias_first, cx: rc.cx }
+}
+
+fn sr_with_aggs(rc: Rc, aggs: array) -> Rc {
+    Rc { aggs: aggs, wins: rc.wins, wdefs: rc.wdefs, allow_agg: rc.allow_agg, err: rc.err, aliases: rc.aliases, alias_first: rc.alias_first, cx: rc.cx }
+}
+
+fn sr_with_wins(rc: Rc, wins: array) -> Rc {
+    Rc { aggs: rc.aggs, wins: wins, wdefs: rc.wdefs, allow_agg: rc.allow_agg, err: rc.err, aliases: rc.aliases, alias_first: rc.alias_first, cx: rc.cx }
+}
+
+fn sr_isnum_aff(a: string) -> bool {
+    a == "INTEGER" || a == "REAL" || a == "NUMERIC"
+}
+
+// Reglas de afinidad de las comparaciones.
+fn sr_pair(l: Ex, r: Ex) -> (Ex, Ex) {
+    let la = sx_aff_of(l)
+    let ra = sx_aff_of(r)
+    if sr_isnum_aff(la) && !sr_isnum_aff(ra) {
+        return (l, Ex::ECoerce((r, "NUMERIC")))
+    }
+    if sr_isnum_aff(ra) && !sr_isnum_aff(la) {
+        return (Ex::ECoerce((l, "NUMERIC")), r)
+    }
+    if la == "TEXT" && ra == "" {
+        return (l, Ex::ECoerce((r, "TEXT")))
+    }
+    if ra == "TEXT" && la == "" {
+        return (Ex::ECoerce((l, "TEXT")), r)
+    }
+    return (l, r)
+}
+
+fn sr_rowid_name(k: string) -> bool {
+    k == "rowid" || k == "oid" || k == "_rowid_"
+}
+
+fn sr_unq(qual: string, name: string) -> string {
+    if qual == "" {
+        return name
+    }
+    qual + "." + name
+}
+
+// Busca una columna. Devuelve (estado, Ex): estado 0 = no existe, 1 = hallada, 2 = ambigua.
+fn sr_lookup(scopes: array, qual: string, name: string) -> (int, any) {
+    let nk = sh_key(name)
+    let qk = sh_key(qual)
+    let mut si = len(scopes) - 1
+    while si >= 0 {
+        let cols = scopes[si]
+        let mut hit = -1
+        let mut nhit = 0
+        let mut i = 0
+        for c in cols {
+            if (!c.hidden || c.aff == "HID") && sh_key(c.name) == nk {
+                let skip = qual == "" && c.merged
+                if !skip && (qual == "" || sh_key(c.alias) == qk) {
+                    nhit += 1
+                    if hit < 0 {
+                        hit = i
+                    }
+                }
+            }
+            i += 1
+        }
+        if nhit == 0 && sr_rowid_name(nk) {
+            let mut j = 0
+            for c in cols {
+                if c.hidden && (qual == "" || sh_key(c.alias) == qk) && nhit == 0 {
+                    nhit = 1
+                    hit = j
+                }
+                j += 1
+            }
+        }
+        if nhit > 1 {
+            return (2, nil)
+        }
+        if nhit == 1 {
+            let c = cols[hit]
+            return (1, Ex::ESlot((len(scopes) - 1 - si, hit, c.aff, c.coll)))
+        }
+        si -= 1
+    }
+    return (0, nil)
+}
+
+fn sr_has_win(e: any) -> bool {
+    match e {
+        Ex::EWin(_) => true,
+        Ex::ECoerce(p) => sr_has_win(p.0),
+        Ex::ECollate(p) => sr_has_win(p.0),
+        Ex::ECast(p) => sr_has_win(p.0),
+        Ex::EUn(p) => sr_has_win(p.1),
+        Ex::EBin(p) => sr_has_win(p.1) || sr_has_win(p.2),
+        Ex::EIsNull(p) => sr_has_win(p.0),
+        Ex::EFn(p) => {
+            for a in p.1 {
+                if sr_has_win(a) {
+                    return true
+                }
+            }
+            false
+        },
+        _ => false,
+    }
+}
+
+fn sr_alias_find(rc: Rc, name: string) -> any {
+    let k = sh_key(name)
+    for a in rc.aliases {
+        if sh_key(a[0]) == k {
+            return a[1]
+        }
+    }
+    nil
+}
+
+fn sr_list(items: array, scopes: array, rc: Rc) -> (array, Rc) {
+    let mut out = []
+    let mut r = rc
+    for it in items {
+        let (e, r2) = sr_ex(it, scopes, r)
+        r = r2
+        if r.err != "" {
+            return (out, r)
+        }
+        out = std::array::push(out, e)
+    }
+    return (out, r)
+}
+
+fn sr_is_cmp_op(op: string) -> bool {
+    op == "=" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "IS" || op == "ISNOT"
+}
+
+fn sr_opt(e: any, scopes: array, rc: Rc) -> (any, Rc) {
+    if e == nil {
+        return (nil, rc)
+    }
+    sr_ex(e, scopes, rc)
+}
+
+// Subconsulta: intenta ejecutarla sin contexto externo. Devuelve (ejecutada, filas, nombres, error).
+fn sr_try_sub(rc: Rc, sel: any, scopes: array, lim: int) -> (bool, array, array, string) {
+    let (names, rows, err) = sy_select(rc.cx, sel, [], [], lim)
+    if err == "" {
+        return (true, rows, names, "")
+    }
+    if std::text::substring(err, 0, 14) == "no such column" {
+        return (false, [], [], "")
+    }
+    return (false, [], [], err)
+}
+
+fn sr_ex(e: any, scopes: array, rc: Rc) -> (any, Rc) {
+    match e {
+        Ex::ELit(_) => (e, rc),
+        Ex::EPar(_) => (e, rc),
+        Ex::ERaise(_) => (e, rc),
+        Ex::ESlot(_) => (e, rc),
+        Ex::ECol(p) => {
+            let qual = p.0
+            let name = p.1
+            if qual == "" && rc.alias_first {
+                let a = sr_alias_find(rc, name)
+                if a != nil {
+                    return (a, rc)
+                }
+            }
+            let (st, ex) = sr_lookup(scopes, qual, name)
+            if st == 1 {
+                return (ex, rc)
+            }
+            if st == 2 {
+                return (e, sr_fail(rc, "ambiguous column name: " + sr_unq(qual, name), p.2))
+            }
+            if qual == "" {
+                let a = sr_alias_find(rc, name)
+                if a != nil {
+                    if sr_has_win(a) {
+                        return (e, sr_fail(rc, "misuse of aliased window function " + name, -1))
+                    }
+                    return (a, rc)
+                }
+            }
+            return (e, sr_fail(rc, "no such column: " + sr_unq(qual, name), p.2))
+        },
+        Ex::ECoerce(p) => {
+            let (x, r) = sr_ex(p.0, scopes, rc)
+            return (Ex::ECoerce((x, p.1)), r)
+        },
+        Ex::ECollate(p) => {
+            let (x, r) = sr_ex(p.0, scopes, rc)
+            return (Ex::ECollate((x, p.1)), r)
+        },
+        Ex::ECast(p) => {
+            let (x, r) = sr_ex(p.0, scopes, rc)
+            return (Ex::ECast((x, p.1)), r)
+        },
+        Ex::EUn(p) => {
+            let (x, r) = sr_ex(p.1, scopes, rc)
+            return (Ex::EUn((p.0, x)), r)
+        },
+        Ex::EIsNull(p) => {
+            let (x, r) = sr_ex(p.0, scopes, rc)
+            return (Ex::EIsNull((x, p.1)), r)
+        },
+        Ex::EBin(p) => {
+            let (l, r1) = sr_ex(p.1, scopes, rc)
+            if r1.err != "" {
+                return (e, r1)
+            }
+            let (r, r2) = sr_ex(p.2, scopes, r1)
+            if r2.err != "" {
+                return (e, r2)
+            }
+            return sr_bin(p.0, l, r, r2)
+        },
+        Ex::EBetween(p) => {
+            let (x, r1) = sr_ex(p.0, scopes, rc)
+            let (lo, r2) = sr_ex(p.1, scopes, r1)
+            let (hi, r3) = sr_ex(p.2, scopes, r2)
+            if r3.err != "" {
+                return (e, r3)
+            }
+            let (x1, lo2) = sr_pair(x, lo)
+            let (x2, hi2) = sr_pair(x, hi)
+            return (Ex::EBetween((x, lo2, hi2, p.3)), r3)
+        },
+        Ex::EIn(p) => {
+            let (x, r1) = sr_ex(p.0, scopes, rc)
+            let (items, r2) = sr_list(p.1, scopes, r1)
+            if r2.err != "" {
+                return (e, r2)
+            }
+            let mut out = []
+            for it in items {
+                let (x1, it2) = sr_pair(x, it)
+                out = std::array::push(out, it2)
+            }
+            return (Ex::EIn((x, out, p.2)), r2)
+        },
+        Ex::ELike(p) => {
+            let (x, r1) = sr_ex(p.1, scopes, rc)
+            let (pt, r2) = sr_ex(p.2, scopes, r1)
+            let (es, r3) = sr_opt(p.3, scopes, r2)
+            return (Ex::ELike((p.0, x, pt, es, p.4)), r3)
+        },
+        Ex::ECase(p) => {
+            let (b, r1) = sr_opt(p.0, scopes, rc)
+            let mut r = r1
+            let mut whens = []
+            for w in p.1 {
+                let (c, r2) = sr_ex(w[0], scopes, r)
+                let (t, r3) = sr_ex(w[1], scopes, r2)
+                r = r3
+                let mut c2 = c
+                if b != nil {
+                    let (bb, cc) = sr_pair(b, c)
+                    c2 = cc
+                }
+                whens = std::array::push(whens, [c2, t])
+            }
+            let (el, r4) = sr_opt(p.2, scopes, r)
+            return (Ex::ECase((b, whens, el)), r4)
+        },
+        Ex::ERow(_) => (e, sr_fail(rc, "row value misused", -1)),
+        Ex::EInSel(p) => {
+            let (x, r1) = sr_ex(p.0, scopes, rc)
+            if r1.err != "" {
+                return (e, r1)
+            }
+            let sel = p.1
+            let (done, rows, names, err) = sr_try_sub(r1, sel, scopes, -1)
+            if err != "" {
+                return (e, sr_fail(r1, err, -1))
+            }
+            if done {
+                if len(names) != 1 {
+                    return (e, sr_fail(r1, "sub-select returns {len(names)} columns - expected 1", -1))
+                }
+                let mut set = std::map::new()
+                for rw in rows {
+                    if sx_isnull(rw[0]) {
+                        set = std::map::insert(set, "N", 1)
+                    } else {
+                        set = std::map::insert(set, sx_key(rw[0]), 1)
+                    }
+                }
+                return (Ex::EInSet((x, set, p.2)), r1)
+            }
+            return (Ex::EInSel((x, [sel, scopes], p.2)), r1)
+        },
+        Ex::EExists(sel) => {
+            let (done, rows, names, err) = sr_try_sub(rc, sel, scopes, 1)
+            if err != "" {
+                return (e, sr_fail(rc, err, -1))
+            }
+            if done {
+                return (Ex::ELit(sc_bool(len(rows) > 0)), rc)
+            }
+            return (Ex::EExists([sel, scopes]), rc)
+        },
+        Ex::ESub(sel) => {
+            let (done, rows, names, err) = sr_try_sub(rc, sel, scopes, 1)
+            if err != "" {
+                return (e, sr_fail(rc, err, -1))
+            }
+            if done {
+                if len(names) != 1 {
+                    return (e, sr_fail(rc, "sub-select returns {len(names)} columns - expected 1", -1))
+                }
+                if len(rows) == 0 {
+                    return (Ex::ELit(Sv::SNull), rc)
+                }
+                return (Ex::ELit(rows[0][0]), rc)
+            }
+            return (Ex::ESub([sel, scopes]), rc)
+        },
+        Ex::EFn(p) => sr_fn(p, scopes, rc),
+        _ => (e, sr_fail(rc, "unsupported expression", -1)),
+    }
+}
+
+fn sr_bin(op: string, l: Ex, r: Ex, rc: Rc) -> (any, Rc) {
+    // valores fila
+    let mut lrow = []
+    let mut rrow = []
+    let mut isrow = false
+    match l {
+        Ex::ERow(a) => {
+            lrow = a
+            isrow = true
+        },
+        _ => {},
+    }
+    match r {
+        Ex::ERow(a) => {
+            rrow = a
+            isrow = true
+        },
+        _ => {},
+    }
+    if isrow {
+        return (l, sr_fail(rc, "row value misused", -1))
+    }
+    if sr_is_cmp_op(op) {
+        let (l2, r2) = sr_pair(l, r)
+        return (Ex::EBin((op, l2, r2)), rc)
+    }
+    return (Ex::EBin((op, l, r)), rc)
+}
+
+fn sr_fn(p: any, scopes: array, rc: Rc) -> (any, Rc) {
+    let name = sx_lc(p.0)
+    let rawargs = p.1
+    let star = p.2
+    let distinct = p.3
+    let filter = p.4
+    let over = p.5
+    let pos = p.6
+    let nargs = len(rawargs)
+    let isagg = sx_is_agg(name, nargs)
+    if over != nil {
+        if !isagg && !sx_is_window_only(name) {
+            let (amn, amx) = sx_arity(name)
+            if amn != -2 {
+                return (nil, sr_fail(rc, name + "() may not be used as a window function", pos))
+            }
+            return (nil, sr_fail(rc, "no such function: " + p.0, pos))
+        }
+        return sr_window(name, p, scopes, rc)
+    }
+    if sx_is_window_only(name) {
+        return (nil, sr_fail(rc, "misuse of window function " + name + "()", pos))
+    }
+    if isagg {
+        if !rc.allow_agg {
+            return (nil, sr_fail(rc, "misuse of aggregate function " + name + "()", pos))
+        }
+        let inner = sr_with_agg(rc, false)
+        let (args, r1) = sr_list(rawargs, scopes, inner)
+        if r1.err != "" {
+            // un agregado dentro de otro: el mensaje apunta al interior
+            return (nil, r1)
+        }
+        let (flt, r2) = sr_opt(filter, scopes, r1)
+        if r2.err != "" {
+            return (nil, r2)
+        }
+        let (mn, mx) = sx_arity(name)
+        if nargs < mn || (mx >= 0 && nargs > mx) {
+            return (nil, sr_fail(r2, "wrong number of arguments to function " + name + "()", pos))
+        }
+        let mut coll = 0
+        if len(args) > 0 {
+            coll = sx_coll_code(sx_coll_of(args[0]))
+        }
+        let idx = len(r2.aggs)
+        let r3 = sr_with_aggs(sr_with_agg(r2, rc.allow_agg), std::array::push(r2.aggs, [name, args, distinct, flt, coll]))
+        return (Ex::EAgg(idx), r3)
+    }
+    let (mn, mx) = sx_arity(name)
+    if mn == -2 {
+        if name == "current_timestamp" || name == "current_date" || name == "current_time" {
+            return (Ex::EFn((name, [], false, false, nil, nil, pos)), rc)
+        }
+        return (nil, sr_fail(rc, "no such function: " + p.0, pos))
+    }
+    if nargs < mn || (mx >= 0 && nargs > mx) {
+        return (nil, sr_fail(rc, "wrong number of arguments to function " + p.0 + "()", pos))
+    }
+    let (args, r1) = sr_list(rawargs, scopes, rc)
+    if r1.err != "" {
+        return (nil, r1)
+    }
+    return (Ex::EFn((name, args, star, distinct, filter, nil, pos)), r1)
+}
+
+fn sr_spec(sp: any, scopes: array, rc: Rc) -> (any, Rc) {
+    let mut base = sp
+    if sp.base != "" {
+        let mut cur = sp
+        let mut depth = 0
+        while cur.base != "" && depth < 20 {
+            let mut found: any = nil
+            for d in rc.wdefs {
+                if sh_key(d[0]) == sh_key(cur.base) {
+                    found = d[1]
+                }
+            }
+            if found == nil {
+                return (nil, sr_fail(rc, "no such window: " + cur.base, -1))
+            }
+            let mut part = cur.part
+            let mut order = cur.order
+            let mut frame = cur.frame
+            if len(part) == 0 {
+                part = found.part
+            }
+            if len(order) == 0 {
+                order = found.order
+            }
+            if frame == nil {
+                frame = found.frame
+            }
+            cur = WinSpec { base: found.base, part: part, order: order, frame: frame }
+            depth += 1
+        }
+        base = WinSpec { base: "", part: cur.part, order: cur.order, frame: cur.frame }
+    }
+    let (part, r1) = sr_list(base.part, scopes, rc)
+    let mut r = r1
+    let mut ord = []
+    for o in base.order {
+        let (e, r2) = sr_ex(o.e, scopes, r)
+        r = r2
+        ord = std::array::push(ord, [e, o.desc, o.nulls])
+    }
+    let mut frame: any = nil
+    if base.frame != nil {
+        let f = base.frame
+        let (sx, r3) = sr_opt(f[2], scopes, r)
+        let (ex, r4) = sr_opt(f[4], scopes, r3)
+        r = r4
+        frame = [f[0], f[1], sx, f[3], ex, f[5]]
+    }
+    return ([part, ord, frame], sr_with_agg(r, rc.allow_agg))
+}
+
+fn sr_window(name: string, p: any, scopes: array, rc: Rc) -> (any, Rc) {
+    let (args, r1) = sr_list(p.1, scopes, rc)
+    if r1.err != "" {
+        return (nil, r1)
+    }
+    if len(r1.wins) > len(rc.wins) {
+        return (nil, sr_fail(r1, "misuse of window function " + r1.wins[len(rc.wins)][0] + "()", r1.wins[len(rc.wins)][7]))
+    }
+    let (flt, r2) = sr_opt(p.4, scopes, r1)
+    if r2.err != "" {
+        return (nil, r2)
+    }
+    let (spec, r3) = sr_spec(p.5, scopes, r2)
+    if r3.err != "" {
+        return (nil, r3)
+    }
+    let (mn, mx) = sx_arity(name)
+    if len(args) < mn || (mx >= 0 && len(args) > mx) {
+        return (nil, sr_fail(r3, "wrong number of arguments to function " + name + "()", p.6))
+    }
+    let mut coll = 0
+    if len(args) > 0 {
+        coll = sx_coll_code(sx_coll_of(args[0]))
+    }
+    let idx = len(r3.wins)
+    let r4 = sr_with_agg(sr_with_wins(r3, std::array::push(r3.wins, [name, args, p.3, flt, spec, coll, len(p.1), p.6])), rc.allow_agg)
+    return (Ex::EWin(idx), r4)
+}
+
+// ¿La expresión contiene alguna llamada a un agregado (sin OVER)?
+fn sr_has_agg(e: any) -> bool {
+    match e {
+        Ex::EFn(p) => {
+            if p.5 == nil && sx_is_agg(sx_lc(p.0), len(p.1)) {
+                return true
+            }
+            for a in p.1 {
+                if sr_has_agg(a) {
+                    return true
+                }
+            }
+            return false
+        },
+        Ex::EUn(p) => sr_has_agg(p.1),
+        Ex::EBin(p) => sr_has_agg(p.1) || sr_has_agg(p.2),
+        Ex::ECast(p) => sr_has_agg(p.0),
+        Ex::ECollate(p) => sr_has_agg(p.0),
+        Ex::EIsNull(p) => sr_has_agg(p.0),
+        Ex::EBetween(p) => sr_has_agg(p.0) || sr_has_agg(p.1) || sr_has_agg(p.2),
+        Ex::ELike(p) => sr_has_agg(p.1) || sr_has_agg(p.2) || (p.3 != nil && sr_has_agg(p.3)),
+        Ex::EIn(p) => {
+            if sr_has_agg(p.0) {
+                return true
+            }
+            for a in p.1 {
+                if sr_has_agg(a) {
+                    return true
+                }
+            }
+            return false
+        },
+        Ex::EInSel(p) => sr_has_agg(p.0),
+        Ex::ECase(p) => {
+            if p.0 != nil && sr_has_agg(p.0) {
+                return true
+            }
+            for w in p.1 {
+                if sr_has_agg(w[0]) || sr_has_agg(w[1]) {
+                    return true
+                }
+            }
+            if p.2 != nil && sr_has_agg(p.2) {
+                return true
+            }
+            return false
+        },
+        _ => false,
+    }
+}
+
+// Mayor índice de ranura (profundidad 0) usado por una expresión resuelta; -1 si ninguno.
+// El segundo valor indica que contiene una subconsulta (se evalúa al final).
+fn sr_max_slot(e: any) -> (int, bool) {
+    match e {
+        Ex::ESlot(p) => {
+            if p.0 == 0 {
+                return (p.1, false)
+            }
+            return (-1, false)
+        },
+        Ex::ECoerce(p) => sr_max_slot(p.0),
+        Ex::ECollate(p) => sr_max_slot(p.0),
+        Ex::ECast(p) => sr_max_slot(p.0),
+        Ex::EIsNull(p) => sr_max_slot(p.0),
+        Ex::EUn(p) => sr_max_slot(p.1),
+        Ex::EBin(p) => sr_max2(sr_max_slot(p.1), sr_max_slot(p.2)),
+        Ex::EBetween(p) => sr_max2(sr_max2(sr_max_slot(p.0), sr_max_slot(p.1)), sr_max_slot(p.2)),
+        Ex::ELike(p) => {
+            let mut r = sr_max2(sr_max_slot(p.1), sr_max_slot(p.2))
+            if p.3 != nil {
+                r = sr_max2(r, sr_max_slot(p.3))
+            }
+            return r
+        },
+        Ex::EIn(p) => {
+            let mut r = sr_max_slot(p.0)
+            for a in p.1 {
+                r = sr_max2(r, sr_max_slot(a))
+            }
+            return r
+        },
+        Ex::EInSet(p) => sr_max_slot(p.0),
+        Ex::EFn(p) => {
+            let mut r = (-1, false)
+            for a in p.1 {
+                r = sr_max2(r, sr_max_slot(a))
+            }
+            return r
+        },
+        Ex::ECase(p) => {
+            let mut r = (-1, false)
+            if p.0 != nil {
+                r = sr_max_slot(p.0)
+            }
+            for w in p.1 {
+                r = sr_max2(sr_max2(r, sr_max_slot(w[0])), sr_max_slot(w[1]))
+            }
+            if p.2 != nil {
+                r = sr_max2(r, sr_max_slot(p.2))
+            }
+            return r
+        },
+        Ex::ELit(_) => (-1, false),
+        Ex::EPar(_) => (-1, false),
+        _ => (-1, true),
+    }
+}
+
+fn sr_max2(a: (int, bool), b: (int, bool)) -> (int, bool) {
+    let mut m = a.0
+    if b.0 > m {
+        m = b.0
+    }
+    return (m, a.1 || b.1)
+}

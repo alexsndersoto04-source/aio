@@ -4,7 +4,7 @@
 //
 // Corre este cliente en OTRA sesion de Termux (Sesiones -> Nueva)
 // DESPUES de haber arrancado el servidor con:
-//     zett run examples/rest/main.titan
+//     titan run examples/rest/main.titan
 //
 // El cliente hace un tour completo:
 //   1) GET /health

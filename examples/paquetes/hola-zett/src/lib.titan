@@ -1,0 +1,4 @@
+// Paquete de ejemplo del registro de Zett.
+fn saludar(nombre: string) -> string {
+    "Hola, {nombre}, desde Zett"
+}

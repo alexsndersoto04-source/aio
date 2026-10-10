@@ -11,7 +11,7 @@
 // aborta con un error claro antes de correr nada.
 //
 // Ejecutar con:
-//     zett run examples/traits.titan
+//     titan run examples/traits.titan
 
 // ---------- 1) Trait basico con dos metodos default ----------
 

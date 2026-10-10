@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cliente HTTP/HTTPS — Documentación de Titan</title>
+<meta name="description" content="std::http::request.">
+<meta property="og:title" content="Cliente HTTP/HTTPS — Documentación de Titan">
+<meta property="og:description" content="std::http::request.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html" class="on">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="titan-httphttps-client">TITAN HTTP/HTTPS Client</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p><code>std::http::request(method, url, headers, body, maximum_body, redirects, timeout_ms)</code> performs a bounded blocking HTTP/1.1 request over TCP or TLS with certificate validation (Titan's own TLS) and returns a map with <code>status</code>, normalized <code>headers</code>, binary <code>body</code>, and <code>final_url</code>.</p>
+<p>The client validates URL scheme/host/port, methods and header tokens, prevents caller overrides of framing headers, writes exact Content-Length, applies read/write timeouts, caps headers at 64 KiB and body at the caller limit, follows a bounded number of absolute or relative redirects, and applies GET semantics to 303.</p>
+<p>Response framing supports strict Content-Length, chunked transfer with extensions, and connection-close bodies. Conflicting lengths, CL/TE ambiguity, unsupported transfer codings, malformed chunks, oversized bodies, invalid redirects and incomplete responses are errors. HTTPS uses WebPKI chain/hostname validation and SNI through <code>titan_tls</code>.</p>
+<p>Example:</p>
+<pre><code class="language-titan"><span class="k">let</span> response = std::http::request(
+    <span class="s">&quot;GET&quot;</span>,
+    <span class="s">&quot;https://example.com/api&quot;</span>,
+    std::json::parse(<span class="s">&quot;{\&quot;Accept\&quot;:\&quot;application/json\&quot;}&quot;</span>),
+    std::encoding::utf8_encode(<span class="s">&quot;&quot;</span>),
+    <span class="n">1048576</span>,
+    <span class="n">5</span>,
+    <span class="n">10000</span>
+)
+</code></pre><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/HTTP_CLIENT.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

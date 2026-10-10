@@ -1,0 +1,41 @@
+// Introspección del runtime (los valores de memoria no coinciden entre VM y nativo,
+// así que solo se imprimen los que son deterministas y comparaciones).
+fn main() {
+    print(std::runtime::optimize_level())
+    print(std::runtime::fast_path_enabled())
+    print(std::runtime::gc_threshold())
+    std::runtime::gc_set_threshold(4096)
+    print(std::runtime::gc_threshold())
+    print(std::runtime::gc_collect())
+    print(std::runtime::active_tasks())
+    let t = spawn || { 5 }
+    let u = spawn || { 6 }
+    print(std::runtime::active_tasks())
+    print(join(t) + join(u))
+    print(std::runtime::active_tasks())
+    let antes = std::runtime::allocated_bytes()
+    let mut v = []
+    let mut i = 0
+    while i < 20000 {
+        v = std::array::push(v, "elemento {i}")
+        i += 1
+    }
+    let durante = std::runtime::allocated_bytes()
+    print(durante > antes)
+    print(std::runtime::gc_live_count() == std::runtime::allocated_bytes() / 64)
+    print(len(v))
+    let b = std::runtime::benchmark(1000, || 1 + 1)
+    print(std::map::get(b, "iterations"))
+    print(std::map::get(b, "ns_per_op") >= 0)
+    print(std::map::keys(b))
+    print(std::runtime::heap_dump("/nonexistent-dir/dump.json"))
+    let ruta = "/tmp/titan_runtime_info_dump.json"
+    print(std::runtime::heap_dump(ruta))
+    let doc = std::json::parse(std::fs::read_text(ruta))
+    print(std::map::keys(doc))
+    print(std::map::get(doc, "memory_limit"))
+    print(std::map::get(doc, "status"))
+    print(std::map::get(doc, "gc_threshold"))
+    print(std::map::get(doc, "allocated_bytes") > 0)
+    std::fs::remove_file(ruta)
+}

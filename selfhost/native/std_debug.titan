@@ -1,0 +1,737 @@
+// Depurador de los ejecutables nativos (`titan debug` y `titan dap`).
+//
+// Un ejecutable de depuración se compila con `bk_build_with(.., tabla)` (backend.titan): antes
+// de cada instrucción de bytecode de las funciones del usuario se llama a `rt_dbg_hook`, y
+// `rt_dbg_init` corre antes de `main`. Como la pila de operandos del bytecode ES la pila de la
+// máquina y las variables locales están en el marco (ver backend.titan), el gancho lee de
+// (rbp, rsp) exactamente lo que la VM de Rust entrega en `DebugFrame`: función, instrucción,
+// profundidad, posición en el fuente, locales y pila. Las decisiones de parada (puntos de
+// interrupción, paso a paso, salir) son las de `Debugger` de titan_vm/src/debug.rs.
+//
+// Tabla (texto, una línea por registro; `\` `|` y salto de línea van escapados como `\\` `\p` `\n`):
+//   K|cli                      depurador interactivo (stdin/stdout)
+//   K|dap|<seq>                servidor DAP (`seq` = siguiente número de secuencia)
+//   B|s|<archivo>|<línea>      punto de interrupción por línea de fuente
+//   B|i|<función>|<instr>      punto de interrupción por instrucción
+//   F|<id>|<nombre>|<locales>|<archivo>   una función; la línea siguiente es
+//   L|<l:c>,<l:c>,,...         posición de cada instrucción (vacío = sin posición)
+//
+// Ranuras del bloque del depurador (dbg_g(), desplazamientos desde 0):
+//   +0 funciones [nombre, locales, archivo|nil, líneas, columnas]   (array)
+//   +8 puntos de interrupción [tipo, a, b]                          (array)
+//   +16 modo: 0 seguir, 1 paso adentro, 2 paso sobre, 3 paso afuera
+//   +24 profundidad del modo        +32 activo (0/1)    +40 clase (0 cli, 1 dap)
+//   +48 estado DAP (mapa)           +56 último marco detenido (mapa) o 0
+//   +64 siguiente `seq` DAP         +72 buffer de entrada (bytes)     +80 programa terminado (0/1)
+// Prefijo `dbg_` / `rt_dbg_`.
+
+// ------------------------------------------------------------ utilidades
+
+// El estado del depurador vive en un bloque propio (campo +80 de rtm_state()), no en las globales de
+// 4096 bytes: en ARM64 el final de esa zona (+3584..) es zona de trabajo del runtime. Los desplazamientos
+// de abajo son relativos a ese bloque (0…136).
+fn dbg_g() -> int {
+    let s = rtm_state()
+    let mut b = std::raw::load(s + 80)
+    if b == 0 {
+        b = rt_alloc_zero(192)
+        std::raw::store(s + 80, b)
+    }
+    b
+}
+
+fn dbg_get(slot: int, tag: int) -> any {
+    let bits = std::raw::load(dbg_g() + slot)
+    if bits == 0 {
+        return nil
+    }
+    std::raw::value(tag, bits)
+}
+
+fn dbg_put(slot: int, tag: int, v: any) {
+    let old = std::raw::load(dbg_g() + slot)
+    std::raw::store(dbg_g() + slot, std::raw::keep(v))
+    if old != 0 {
+        std::raw::release(tag, old)
+    }
+}
+
+// Subcadena por bytes [from, to).
+fn dbg_slice(s: any, from: int, to: int) -> any {
+    let p = std::raw::bits(s)
+    let b = sb_new(to - from + 1)
+    sb_raw(b, p + 16 + from, to - from)
+    sb_finish(b)
+}
+
+fn dbg_split(s: any, sep: int) -> any {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut out = []
+    let mut start = 0
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + 16 + i) == sep {
+            out = std::array::push(out, dbg_slice(s, start, i))
+            start = i + 1
+        }
+        i += 1
+    }
+    std::array::push(out, dbg_slice(s, start, n))
+}
+
+fn dbg_unescape(s: any) -> any {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n + 1)
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + 16 + i)
+        if c == 92 && i + 1 < n {
+            let d = std::raw::load8(p + 16 + i + 1)
+            if d == 112 {
+                sb_byte(b, 124)
+            } else if d == 110 {
+                sb_byte(b, 10)
+            } else {
+                sb_byte(b, d)
+            }
+            i += 2
+        } else {
+            sb_byte(b, c)
+            i += 1
+        }
+    }
+    sb_finish(b)
+}
+
+fn dbg_int(s: any) -> int {
+    let p = std::raw::bits(s)
+    let n = std::raw::load(p + 8)
+    let mut neg = false
+    let mut i = 0
+    let mut v = 0
+    if n > 0 && std::raw::load8(p + 16) == 45 {
+        neg = true
+        i = 1
+    }
+    while i < n {
+        v = v * 10 + (std::raw::load8(p + 16 + i) - 48)
+        i += 1
+    }
+    if neg {
+        return 0 - v
+    }
+    v
+}
+
+fn dbg_int_list(s: any) -> any {
+    let parts = dbg_split(s, 44)
+    let mut out = []
+    for part in parts {
+        out = std::array::push(out, dbg_int(part))
+    }
+    out
+}
+
+// ------------------------------------------------------------ tabla
+
+fn dbg_parse_locs(text: any) -> any {
+    let lines = []
+    let cols = []
+    let mut ls = lines
+    let mut cs = cols
+    let pieces = dbg_split(text, 44)
+    for piece in pieces {
+        let n = rt_slen(piece)
+        if n == 0 {
+            ls = std::array::push(ls, 0)
+            cs = std::array::push(cs, 0)
+        } else {
+            let two = dbg_split(piece, 58)
+            ls = std::array::push(ls, dbg_int(two[0]))
+            cs = std::array::push(cs, dbg_int(two[1]))
+        }
+    }
+    return [ls, cs]
+}
+
+fn rt_dbg_init(table: any) {
+    let g = dbg_g()
+    if std::raw::load(g + 32) != 0 {
+        return
+    }
+    std::raw::store(g + 32, 1)
+    let lines = dbg_split(table, 10)
+    let mut funcs = []
+    let mut bps = []
+    let mut kind = 0
+    let mut seq = 1
+    let mut i = 0
+    let total = rt_seq_len(lines)
+    while i < total {
+        let line = lines[i]
+        i += 1
+        if rt_slen(line) < 2 {
+            continue
+        }
+        let parts = dbg_split(line, 124)
+        let tag = rt_slice_byte(parts[0], 0)
+        if tag == 75 {
+            if rt_str_eq(parts[1], "dap") {
+                kind = 1
+                seq = dbg_int(parts[2])
+            }
+        } else if tag == 66 {
+            if rt_str_eq(parts[1], "s") {
+                bps = std::array::push(bps, ["s", dbg_unescape(parts[2]), dbg_int(parts[3])])
+            } else {
+                bps = std::array::push(bps, ["i", dbg_int(parts[2]), dbg_int(parts[3])])
+            }
+        } else if tag == 70 {
+            let locs_line = lines[i]
+            i += 1
+            let locs = dbg_parse_locs(dbg_slice(locs_line, 2, rt_slen(locs_line)))
+            let mut file: any = nil
+            if rt_slen(parts[4]) > 0 {
+                file = dbg_unescape(parts[4])
+            }
+            funcs = std::array::push(funcs, [dbg_unescape(parts[2]), dbg_int(parts[3]), file, locs[0], locs[1]])
+        }
+    }
+    dbg_put(0, 7, funcs)
+    dbg_put(8, 7, bps)
+    std::raw::store(g + 40, kind)
+    std::raw::store(g + 64, seq)
+    std::raw::store(g + 16, 0)
+    std::raw::store(g + 24, 0)
+    std::raw::store(g + 80, 0)
+    if kind == 1 {
+        dap_init()
+    }
+}
+
+fn rt_slice_byte(s: any, i: int) -> int {
+    std::raw::load8(std::raw::bits(s) + 16 + i)
+}
+
+// ------------------------------------------------------------ marco
+
+// Lo que la VM llamaría DebugFrame: [fid, nombre, archivo|nil, ip, profundidad, línea, columna, locales, pila].
+fn dbg_frame(fid: int, ip: int, bp: int, sp: int, depth: int) -> any {
+    let funcs = dbg_get(0, 7)
+    let f = funcs[fid]
+    let nlocals = f[1]
+    let mut locals = []
+    let mut i = 0
+    while i < nlocals {
+        let a = bp - 16 * (i + 1)
+        locals = std::array::push(locals, std::raw::value(std::raw::load(a), std::raw::load(a + 8)))
+        i += 1
+    }
+    let base = bp - 16 * nlocals
+    let n = (base - sp) / 16
+    let mut stack = []
+    i = 0
+    while i < n {
+        let a = base - 16 * (i + 1)
+        stack = std::array::push(stack, std::raw::value(std::raw::load(a), std::raw::load(a + 8)))
+        i += 1
+    }
+    let lines = f[3]
+    let cols = f[4]
+    let mut line = 0
+    let mut col = 0
+    if ip < rt_seq_len(lines) {
+        line = lines[ip]
+        col = cols[ip]
+    }
+    return [fid, f[0], f[2], ip, depth, line, col, locals, stack]
+}
+
+fn dbg_bp_hit(fid: int, ip: int) -> bool {
+    let bps = dbg_get(8, 7)
+    let n = rt_seq_len(bps)
+    if n == 0 {
+        return false
+    }
+    let funcs = dbg_get(0, 7)
+    let f = funcs[fid]
+    let mut i = 0
+    while i < n {
+        let b = bps[i]
+        if rt_str_eq(b[0], "i") {
+            if b[1] == fid && b[2] == ip {
+                return true
+            }
+        } else {
+            let file = f[2]
+            if file != nil && rt_str_eq(file, b[1]) {
+                let lines = f[3]
+                if ip < rt_seq_len(lines) && lines[ip] == b[2] {
+                    return true
+                }
+            }
+        }
+        i += 1
+    }
+    false
+}
+
+// ------------------------------------------------------------ Debug de Rust (`{:?}`) de un Value
+
+fn dbg_char_repr(c: any) -> any {
+    let one = rt_char_to_str(std::raw::bits(c))
+    let q = rt_debug_str(std::raw::bits(one) + 16, rt_slen(one))
+    let inner = dbg_slice(q, 1, rt_slen(q) - 1)
+    let p = std::raw::bits(inner)
+    let n = std::raw::load(p + 8)
+    let b = sb_new(n + 8)
+    sb_byte(b, 39)
+    let mut i = 0
+    while i < n {
+        let ch = std::raw::load8(p + 16 + i)
+        if ch == 92 && i + 1 < n && std::raw::load8(p + 16 + i + 1) == 34 {
+            sb_byte(b, 34)
+            i += 2
+        } else if ch == 39 {
+            sb_byte(b, 92)
+            sb_byte(b, 39)
+            i += 1
+        } else {
+            sb_byte(b, ch)
+            i += 1
+        }
+    }
+    sb_byte(b, 39)
+    sb_finish(b)
+}
+
+// f64 `{:?}`: igual que Display pero con ".0" en los enteros y notación científica fuera de
+// [1e-4, 1e16).
+fn dbg_float_repr(v: any) -> any {
+    let text = fl_to_string(std::raw::bits(v))
+    let n = rt_slen(text)
+    let p = std::raw::bits(text)
+    let first = std::raw::load8(p + 16)
+    // NaN, inf, -inf
+    if first == 78 || first == 105 || (first == 45 && n > 1 && std::raw::load8(p + 17) == 105) {
+        return text
+    }
+    let mut neg = false
+    let mut start = 0
+    if first == 45 {
+        neg = true
+        start = 1
+    }
+    // dígitos y posición del punto
+    let mut digits = ""
+    let mut point = n - start
+    let mut i = start
+    let mut seen = false
+    while i < n {
+        let c = std::raw::load8(p + 16 + i)
+        if c == 46 {
+            point = i - start
+            seen = true
+        } else {
+            digits = rt_concat(digits, rt_char_to_str(c))
+        }
+        i += 1
+    }
+    // quitar ceros a la izquierda (ajustando el exponente) y a la derecha
+    let dn = rt_slen(digits)
+    let mut lead = 0
+    while lead < dn && rt_slice_byte(digits, lead) == 48 {
+        lead += 1
+    }
+    if lead == dn {
+        if neg {
+            return "-0.0"
+        }
+        return "0.0"
+    }
+    let mut end = dn
+    while end > lead && rt_slice_byte(digits, end - 1) == 48 {
+        end -= 1
+    }
+    let sig = dbg_slice(digits, lead, end)
+    // valor = 0.sig * 10^(point - lead)  →  exponente científico = point - lead - 1
+    let exp = point - lead - 1
+    let mut out = ""
+    if neg {
+        out = "-"
+    }
+    if exp >= 16 || exp < 0 - 4 {
+        out = rt_concat(out, dbg_slice(sig, 0, 1))
+        if rt_slen(sig) > 1 {
+            out = rt_concat(rt_concat(out, "."), dbg_slice(sig, 1, rt_slen(sig)))
+        }
+        return rt_concat(rt_concat(out, "e"), rt_int_to_str(exp))
+    }
+    if !seen || rt_slen(sig) <= exp + 1 {
+        return rt_concat(rt_concat(text, ""), ".0")
+    }
+    text
+}
+
+fn dbg_repr(v: any) -> any {
+    let t = std::raw::tag(v)
+    if t == 0 {
+        return "Nil"
+    }
+    if t == 1 {
+        return rt_concat(rt_concat("Int(", rt_int_to_str(std::raw::bits(v))), ")")
+    }
+    if t == 2 {
+        return rt_concat(rt_concat("Float(", dbg_float_repr(v)), ")")
+    }
+    if t == 3 {
+        if std::raw::bits(v) == 0 {
+            return "Bool(false)"
+        }
+        return "Bool(true)"
+    }
+    if t == 4 {
+        return rt_concat(rt_concat("Char(", dbg_char_repr(v)), ")")
+    }
+    if t == 5 {
+        return rt_concat(rt_concat("Str(", rt_debug_str(std::raw::bits(v) + 16, rt_slen(v))), ")")
+    }
+    if t == 6 {
+        let p = std::raw::bits(v)
+        let n = std::raw::load(p + 8)
+        let mut out = "Bytes(["
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            out = rt_concat(out, rt_int_to_str(std::raw::load8(p + 16 + i)))
+            i += 1
+        }
+        return rt_concat(out, "])")
+    }
+    if t == 7 || t == 8 {
+        let mut out = "Tuple(["
+        if t == 7 {
+            out = "Array(["
+        }
+        let n = rt_seq_len(v)
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            out = rt_concat(out, dbg_repr(rt_seq_get(v, i)))
+            i += 1
+        }
+        return rt_concat(out, "])")
+    }
+    if t == 9 {
+        return rt_concat(rt_concat("Map(", dbg_map_repr(v)), ")")
+    }
+    if t == 10 {
+        let p = std::raw::bits(v)
+        let name = std::raw::load(p + 8)
+        let schema = std::raw::load(p + 16)
+        let n = std::raw::load(p + 24)
+        let mut out = "{"
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                out = rt_concat(out, ", ")
+            }
+            out = rt_concat(out, dbg_debug_str(rt_sref(std::raw::load(schema + 8 + 8 * i))))
+            out = rt_concat(out, ": ")
+            let e = p + 32 + 16 * i
+            out = rt_concat(out, dbg_repr(std::raw::value(std::raw::load(e), std::raw::load(e + 8))))
+            i += 1
+        }
+        out = rt_concat(out, "}")
+        return rt_concat(rt_concat(rt_concat(rt_concat("Struct { name: ", dbg_debug_str(rt_sref(name))), ", fields: "), out), " }")
+    }
+    if t == 11 {
+        let p = std::raw::bits(v)
+        let mut payload = "None"
+        if std::raw::load(p + 24) != 0 {
+            payload = rt_concat(rt_concat("Some(", dbg_repr(std::raw::value(std::raw::load(p + 32), std::raw::load(p + 40)))), ")")
+        }
+        let mut out = rt_concat("Enum { name: ", dbg_debug_str(rt_sref(std::raw::load(p + 8))))
+        out = rt_concat(rt_concat(out, ", variant: "), dbg_debug_str(rt_sref(std::raw::load(p + 16))))
+        return rt_concat(rt_concat(rt_concat(out, ", payload: "), payload), " }")
+    }
+    if t == 12 {
+        let p = std::raw::bits(v)
+        let n = std::raw::load(p + 16)
+        let mut caps = "["
+        let mut i = 0
+        while i < n {
+            if i > 0 {
+                caps = rt_concat(caps, ", ")
+            }
+            caps = rt_concat(caps, dbg_repr(std::raw::value(std::raw::load(p + 48 + 16 * i), std::raw::load(p + 56 + 16 * i))))
+            i += 1
+        }
+        caps = rt_concat(caps, "]")
+        let mut out = rt_concat("Closure { function: ", rt_int_to_str(std::raw::load(p + 32)))
+        return rt_concat(rt_concat(rt_concat(out, ", captures: "), caps), " }")
+    }
+    // Handles: Task(7) ...
+    let id = std::raw::load(std::raw::bits(v) + 8)
+    rt_concat(rt_concat(rt_concat(dbg_handle_variant(t), "("), rt_int_to_str(id)), ")")
+}
+
+fn dbg_debug_str(s: any) -> any {
+    rt_debug_str(std::raw::bits(s) + 16, rt_slen(s))
+}
+
+fn dbg_map_repr(v: any) -> any {
+    let p = std::raw::bits(v)
+    let n = std::raw::load(p + 8)
+    let data = std::raw::load(p + 24)
+    let mut out = "{"
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = rt_concat(out, ", ")
+        }
+        let e = data + 24 * i
+        out = rt_concat(out, dbg_debug_str(rt_sref(std::raw::load(e))))
+        out = rt_concat(out, ": ")
+        out = rt_concat(out, dbg_repr(std::raw::value(std::raw::load(e + 8), std::raw::load(e + 16))))
+        i += 1
+    }
+    rt_concat(out, "}")
+}
+
+fn dbg_handle_variant(t: int) -> string {
+    if t == 13 {
+        return "Task"
+    }
+    if t == 14 {
+        return "ChannelSender"
+    }
+    if t == 15 {
+        return "ChannelReceiver"
+    }
+    if t == 16 {
+        return "TcpListener"
+    }
+    if t == 17 {
+        return "TcpStream"
+    }
+    if t == 18 {
+        return "HttpRouter"
+    }
+    if t == 19 {
+        return "TlsStream"
+    }
+    if t == 20 {
+        return "TlsServerConfig"
+    }
+    if t == 21 {
+        return "WebSocketDecoder"
+    }
+    if t == 22 {
+        return "WebSocket"
+    }
+    if t == 23 {
+        return "ServerControl"
+    }
+    if t == 24 {
+        return "Sqlite"
+    }
+    if t == 25 {
+        return "SqlitePool"
+    }
+    if t == 26 {
+        return "Postgres"
+    }
+    if t == 27 {
+        return "PostgresPool"
+    }
+    if t == 28 {
+        return "Mysql"
+    }
+    "MysqlPool"
+}
+
+// Vec<Value> con `{:?}`.
+fn dbg_list_repr(values: any) -> any {
+    let mut out = "["
+    let n = rt_seq_len(values)
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = rt_concat(out, ", ")
+        }
+        out = rt_concat(out, dbg_repr(values[i]))
+        i += 1
+    }
+    rt_concat(out, "]")
+}
+
+// ------------------------------------------------------------ entrada de líneas
+
+// Lee una línea de stdin (sin el salto). nil = fin del flujo.
+fn dbg_read_line() -> any {
+    let buf = rt_alloc(16)
+    let b = sb_new(64)
+    let mut got_any = false
+    loop {
+        let r = std::raw::syscall(0, 0, buf, 1, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            break
+        }
+        got_any = true
+        let c = std::raw::load8(buf)
+        if c == 10 {
+            break
+        }
+        sb_byte(b, c)
+    }
+    rt_free_block(buf)
+    let text = sb_finish(b)
+    if !got_any {
+        return nil
+    }
+    text
+}
+
+// ------------------------------------------------------------ terminación
+
+fn dbg_exit(code: int) {
+    pg_cleanup()
+    ps_cleanup()
+    std::raw::syscall(60, code, 0, 0, 0, 0, 0)
+}
+
+// El programa terminó (error = nil) o falló. Como `DebugEvent::Terminated`.
+fn dbg_terminated(error: any) {
+    if std::raw::load(dbg_g() + 40) == 1 {
+        dap_terminated(error)
+        return
+    }
+    if error == nil {
+        rt_write(1, "debuggee exited successfully\n")
+    } else {
+        rt_write(1, rt_concat(rt_concat("debuggee terminated: ", error), "\n"))
+    }
+    dbg_exit(0)
+}
+
+fn rt_dbg_finish(v: any) {
+    dbg_terminated(nil)
+}
+
+fn rt_dbg_fatal(message: any) {
+    if std::raw::load(std::raw::globals() + 24) != 0 {
+        std::raw::throw(message)
+    }
+    dbg_terminated(rt_flatten(message))
+}
+
+// ------------------------------------------------------------ parada
+
+fn dbg_value_text(values: any) -> any {
+    let mut out = ""
+    let n = rt_seq_len(values)
+    let mut i = 0
+    while i < n {
+        out = rt_concat(out, rt_concat(rt_concat(rt_concat("  [", rt_int_to_str(i)), "] = "), rt_to_string(values[i])))
+        out = rt_concat(out, "\n")
+        i += 1
+    }
+    out
+}
+
+fn dbg_where(frame: any) -> any {
+    if frame[5] > 0 {
+        let mut file = "<source>"
+        if frame[2] != nil {
+            file = frame[2]
+        }
+        return rt_concat(rt_concat(rt_concat(rt_concat(file, ":"), rt_int_to_str(frame[5])), ":"), rt_int_to_str(frame[6]))
+    }
+    rt_concat(rt_concat(frame[1], ":ip"), rt_int_to_str(frame[3]))
+}
+
+// Modo interactivo: muestra el marco y espera un comando. Devuelve sin cambiar nada si reanuda.
+fn dbg_cli_stop(frame: any) {
+    let g = dbg_g()
+    let mut text = rt_concat(rt_concat(rt_concat(rt_concat("\nstopped at ", dbg_where(frame)), " [depth "), rt_int_to_str(frame[4])), "]\n")
+    text = rt_concat(text, rt_concat(rt_concat(rt_concat(rt_concat("function: ", frame[1]), " (id "), rt_int_to_str(frame[0])), ")\n"))
+    text = rt_concat(text, "locals:\n")
+    text = rt_concat(text, dbg_value_text(frame[7]))
+    text = rt_concat(text, "stack:\n")
+    text = rt_concat(text, dbg_value_text(frame[8]))
+    rt_write(1, text)
+    loop {
+        rt_write(1, "debug [c=continue s=step n=next o=out p=print q=quit]> ")
+        let line = dbg_read_line()
+        if line == nil {
+            // Fin de la entrada: se trata como `q` (el de Rust repetiría "unknown debugger command" sin fin).
+            dbg_terminated("execution terminated by debugger")
+        }
+        let cmd = rt_trim(line)
+        if rt_str_eq(cmd, "c") || rt_str_eq(cmd, "continue") {
+            std::raw::store(g + 16, 0)
+            return
+        }
+        if rt_str_eq(cmd, "s") || rt_str_eq(cmd, "step") {
+            std::raw::store(g + 16, 1)
+            return
+        }
+        if rt_str_eq(cmd, "n") || rt_str_eq(cmd, "next") {
+            std::raw::store(g + 16, 2)
+            std::raw::store(g + 24, frame[4])
+            return
+        }
+        if rt_str_eq(cmd, "o") || rt_str_eq(cmd, "out") {
+            std::raw::store(g + 16, 3)
+            std::raw::store(g + 24, frame[4])
+            return
+        }
+        if rt_str_eq(cmd, "q") || rt_str_eq(cmd, "quit") {
+            dbg_terminated("execution terminated by debugger")
+        }
+        if rt_str_eq(cmd, "p") || rt_str_eq(cmd, "print") {
+            rt_write(1, rt_concat(rt_concat(rt_concat(rt_concat("locals=", dbg_list_repr(frame[7])), "\nstack="), dbg_list_repr(frame[8])), "\n"))
+        } else {
+            rt_write(1, "unknown debugger command\n")
+        }
+    }
+}
+
+fn rt_dbg_hook(fid: int, ip: int, bp: int, sp: int, table: any) {
+    let g = dbg_g()
+    let kind = std::raw::load(g + 40)
+    if kind == 1 {
+        dap_poll(fid, ip, bp, sp)
+    }
+    let mode = std::raw::load(g + 16)
+    let depth = std::raw::load(std::raw::globals() + 16) - 1
+    let mut stop = false
+    if mode == 1 {
+        stop = true
+    } else if mode == 2 {
+        stop = depth <= std::raw::load(g + 24)
+    } else if mode == 3 {
+        stop = depth < std::raw::load(g + 24)
+    } else {
+        stop = dbg_bp_hit(fid, ip)
+    }
+    if !stop {
+        return
+    }
+    let frame = dbg_frame(fid, ip, bp, sp, depth)
+    if kind == 1 {
+        dap_stop(frame)
+    } else {
+        dbg_cli_stop(frame)
+    }
+}

@@ -1,6 +1,6 @@
 // Demo Fase 38: Concurrencia No-Bloqueante y Sandbox de Memoria por Tarea (`std::runtime`).
 // Ejecutar con:
-//     zett run examples/enterprise_runtime.titan
+//     titan run examples/enterprise_runtime.titan
 //
 // Demuestra:
 // 1. Auditoría en vivo de la memoria asignada y límite del runtime de TITAN

@@ -1,0 +1,30 @@
+// Operaciones de colección como llamadas (`map(xs, f)`), que el generador de
+// código traduce a ArrayMap/ArrayFilter/ArrayFold/ArrayFind/ArrayAny/ArrayAll.
+fn dyn_map(v: any, f: any) -> any { map(v, f) }
+fn dyn_filter(v: any, f: any) -> any { filter(v, f) }
+fn dyn_fold(v: any, f: any) -> any { fold(v, 0, f) }
+fn dyn_find(v: any, f: any) -> any { find(v, f) }
+fn dyn_any(v: any, f: any) -> any { any(v, f) }
+fn dyn_all(v: any, f: any) -> any { all(v, f) }
+
+fn main() {
+    let xs = [4, 7, 1, 9, 2]
+    print(map(xs, |v| v * 3))
+    print(filter(xs, |v| v > 3))
+    print(fold(xs, 0, |a, v| a + v))
+    print(fold(xs, "", |a, v| a + "{v};"))
+    print(find(xs, |v| v > 6))
+    print(find(xs, |v| v > 60))
+    print(any(xs, |v| v == 9))
+    print(all(xs, |v| v < 9))
+    print(map([], |v| v))
+    print(map(map(xs, |v| v + 1), |v| v * v))
+    print(std::try::catch(|| { dyn_map(xs, 3) }))
+    print(std::try::catch(|| { dyn_map(7, |v| v) }))
+    print(std::try::catch(|| { dyn_filter(xs, |v| v) }))
+    print(std::try::catch(|| { dyn_find(xs, |v| 1) }))
+    print(std::try::catch(|| { dyn_any(xs, |v| nil) }))
+    print(std::try::catch(|| { dyn_all(xs, |v| "x") }))
+    print(std::try::catch(|| { dyn_fold(xs, |a| a) }))
+    print(std::try::catch(|| { dyn_fold("abc", |a, b| a) }))
+}

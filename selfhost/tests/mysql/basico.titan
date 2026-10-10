@@ -1,0 +1,141 @@
+// puerto: 53301
+// std::mysql contra el servidor de prueba (servidor.py en 127.0.0.1:53301): conexión, consultas,
+// tipos, errores, transacciones, migraciones y pool. La VM de Rust y el nativo deben imprimir lo mismo.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn id(v: any) -> any {
+    v
+}
+
+fn tomar(o: any) -> any {
+    match o {
+        Option::Some(v) => v,
+        _ => nil,
+    }
+}
+
+fn mig(v: int, nombre: string, sql: string) -> any {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "version", v)
+    m = std::map::insert(m, "name", nombre)
+    m = std::map::insert(m, "sql", sql)
+    m
+}
+
+fn main() {
+    let url = "mysql://app:secret@127.0.0.1:53301/test"
+    let db = std::mysql::connect(url)
+    print(db)
+    mostrar("ping", std::mysql::ping(db))
+    mostrar("drop", std::mysql::execute(db, "DROP TABLE IF EXISTS tb1", []))
+    mostrar("create", std::mysql::execute(db, "CREATE TABLE tb1(id INTEGER PRIMARY KEY AUTOINCREMENT, n TEXT, v REAL, b BLOB, k INTEGER)", []))
+    mostrar("insert1", std::mysql::execute(db, "INSERT INTO tb1(n, v, b, k) VALUES (?, ?, ?, ?)", ["uno", 1.5, std::encoding::utf8_encode("by\ttes"), 7]))
+    mostrar("lastid1", std::mysql::last_insert_id(db))
+    mostrar("insert2", std::mysql::execute(db, "INSERT INTO tb1(n, v, b, k) VALUES (?, ?, ?, ?)", ["héllo ñ 日本", -2.25, std::encoding::utf8_encode("x"), nil]))
+    mostrar("lastid2", std::mysql::last_insert_id(db))
+    mostrar("insert3", std::mysql::execute(db, "INSERT INTO tb1(n, k) VALUES ('tres', 9223372036854775807), ('cuatro', -9223372036854775807)", []))
+    mostrar("lastid3", std::mysql::last_insert_id(db))
+    mostrar("update", std::mysql::execute(db, "UPDATE tb1 SET v = ? WHERE id > ?", [0.5, 1]))
+    mostrar("update_nada", std::mysql::execute(db, "UPDATE tb1 SET v = 1 WHERE id > 100", []))
+    mostrar("lastid_tras_update", std::mysql::last_insert_id(db))
+    for f in std::mysql::query(db, "SELECT * FROM tb1 ORDER BY id", []) {
+        print(f)
+    }
+    mostrar("vacio", std::mysql::query(db, "SELECT * FROM tb1 WHERE id = ?", [99]))
+    mostrar("lastid_tras_select", std::mysql::last_insert_id(db))
+    mostrar("exec_select", std::mysql::execute(db, "SELECT * FROM tb1", []))
+    mostrar("duplicadas", std::mysql::query(db, "SELECT 1 AS a, 2 AS a, 3 AS b", []))
+    mostrar("nombrados", std::mysql::query(db, "SELECT n FROM tb1 WHERE id = :x", [1]))
+    mostrar("nombrados_dos", std::mysql::query(db, "SELECT n FROM tb1 WHERE id = :x OR id = :y_2 ORDER BY id", [1, 2]))
+    mostrar("cadena_con_dospuntos", std::mysql::query(db, "SELECT ':no' AS a, \"x:y\" AS b", []))
+    mostrar("comentario", std::mysql::query(db, "SELECT 1 AS a /* :c */", []))
+    mostrar("mezclados", std::try::catch(|| { std::mysql::query(db, "SELECT :a, ?", [1, 2]) }))
+    mostrar("tipos_enteros", std::mysql::query(db, "SELECT 1 AS b_a, -1 AS b_b, 127 AS ub_c, 255 AS ub_d, -32768 AS s_e, 65535 AS us_f, -2147483648 AS l_g, 4294967295 AS ul_h, 2020 AS y_i", []))
+    mostrar("u64", std::mysql::query(db, "SELECT '18446744073709551615' AS u_a, '9223372036854775807' AS u_b, '9223372036854775808' AS u_c, 5 AS u_d", []))
+    mostrar("flotantes", std::mysql::query(db, "SELECT 0.1 AS f_a, 16777216.0 AS f_b, 3.4e38 AS f_c, 1.5 AS x, 2.5e-300 AS e", []))
+    mostrar("fechas", std::mysql::query(db, "SELECT '2026-07-15 01:02:03' AS dt_a, '2026-07-15 01:02:03.000004' AS dt_b, '2026-07-15' AS dt_c, '0000-00-00 00:00:00' AS dt_d, '2026-07-15' AS d_e, '0000-00-00' AS d_f", []))
+    mostrar("horas", std::mysql::query(db, "SELECT '01:02:03' AS t_a, '-01:02:03.5' AS t_b, '100:00:00' AS t_c, '00:00:00' AS t_d, '838:59:59' AS t_e", []))
+    mostrar("json_decimal", std::mysql::query(db, "SELECT '{\"a\": 1}' AS j_a, '12.50' AS n_b", []))
+    mostrar("nulos", std::mysql::query(db, "SELECT NULL AS a, NULL AS f_b, NULL AS dt_c, NULL AS u_d", []))
+    mostrar("bytes_invalidos", std::mysql::query(db, "SELECT x'fffe00' AS a, x'' AS b", []))
+    mostrar("param_vacio", std::mysql::query(db, "SELECT ? AS a, ? AS b", ["", std::encoding::utf8_encode("")]))
+    mostrar("param_unicode", std::mysql::query(db, "SELECT ? AS a", ["日本語 🙂"]))
+    mostrar("param_flotantes", std::mysql::query(db, "SELECT ? AS a, ? AS b, ? AS c", [0.1, -0.0, 1e300]))
+    mostrar("param_enteros", std::mysql::query(db, "SELECT ? AS a, ? AS b, ? AS c", [0, 9223372036854775807, -9223372036854775807]))
+    let mut largo = ""
+    let mut i = 0
+    while i < 30000 {
+        largo = largo + "abcdefghij"
+        i += 1
+    }
+    let r = std::mysql::query(db, "SELECT ? AS a", [largo])
+    mostrar("param_largo", std::text::length(r[0]["a"]))
+    mostrar("param_largo_igual", r[0]["a"] == largo)
+    mostrar("sql_malo", std::try::catch(|| { std::mysql::query(db, "SELEC 1", []) }))
+    mostrar("tabla_no_existe", std::try::catch(|| { std::mysql::query(db, "SELECT * FROM no_existe", []) }))
+    mostrar("pocos_params", std::try::catch(|| { std::mysql::query(db, "SELECT ?, ?", [1]) }))
+    mostrar("muchos_params", std::try::catch(|| { std::mysql::query(db, "SELECT 1", [1, 2]) }))
+    mostrar("param_mapa", std::try::catch(|| { std::mysql::query(db, "SELECT ?", [std::map::new()]) }))
+    mostrar("param_bool", std::try::catch(|| { std::mysql::query(db, "SELECT ?", [true]) }))
+    mostrar("param_array", std::try::catch(|| { std::mysql::query(db, "SELECT ?", [[1]]) }))
+    mostrar("param_inf", std::try::catch(|| { std::mysql::query(db, "SELECT ?", [1.0 / 0.0]) }))
+    mostrar("params_no_array", std::try::catch(|| { std::mysql::query(db, "SELECT 1", id(5)) }))
+    mostrar("sql_no_texto", std::try::catch(|| { std::mysql::query(db, id(5), []) }))
+    mostrar("db_no_mysql", std::try::catch(|| { std::mysql::query(id(5), "SELECT 1", []) }))
+    mostrar("sigue_viva", std::mysql::query(db, "SELECT 1 AS a", []))
+    // transacciones
+    mostrar("commit_sin_begin", std::try::catch(|| { std::mysql::commit(db) }))
+    mostrar("rollback_sin_begin", std::try::catch(|| { std::mysql::rollback(db) }))
+    mostrar("begin", std::mysql::begin(db))
+    mostrar("begin_doble", std::try::catch(|| { std::mysql::begin(db) }))
+    mostrar("tx_insert", std::mysql::execute(db, "INSERT INTO tb1(n) VALUES ('tx')", []))
+    mostrar("rollback", std::mysql::rollback(db))
+    mostrar("tras_rollback", std::mysql::query(db, "SELECT count(*) AS c FROM tb1 WHERE n = 'tx'", []))
+    mostrar("begin2", std::mysql::begin(db))
+    mostrar("tx_insert2", std::mysql::execute(db, "INSERT INTO tb1(n) VALUES ('tx2')", []))
+    mostrar("commit", std::mysql::commit(db))
+    mostrar("tras_commit", std::mysql::query(db, "SELECT count(*) AS c FROM tb1 WHERE n = 'tx2'", []))
+    // migraciones
+    mostrar("m_drop", std::mysql::execute(db, "DROP TABLE IF EXISTS _titan_migrations", []))
+    mostrar("m_drop2", std::mysql::execute(db, "DROP TABLE IF EXISTS mg1", []))
+    let ms = [mig(1, "crear", "CREATE TABLE mg1(id INTEGER)"), mig(2, "insertar", "INSERT INTO mg1 VALUES (1)")]
+    mostrar("migrar", std::mysql::migrate(db, ms))
+    mostrar("migrar_otra_vez", std::mysql::migrate(db, ms))
+    mostrar("migrar_mas", std::mysql::migrate(db, [mig(1, "crear", "CREATE TABLE mg1(id INTEGER)"), mig(2, "insertar", "INSERT INTO mg1 VALUES (1)"), mig(3, "otra", "INSERT INTO mg1 VALUES (2)")]))
+    mostrar("migraciones", std::mysql::query(db, "SELECT version, name, checksum FROM _titan_migrations ORDER BY version", []))
+    mostrar("mg1", std::mysql::query(db, "SELECT id FROM mg1 ORDER BY id", []))
+    mostrar("migrar_cambiada", std::try::catch(|| { std::mysql::migrate(db, [mig(1, "crear", "CREATE TABLE mg1(id INTEGER, x TEXT)")]) }))
+    mostrar("migrar_nombre", std::try::catch(|| { std::mysql::migrate(db, [mig(1, "otro", "CREATE TABLE mg1(id INTEGER)")]) }))
+    mostrar("migrar_orden", std::try::catch(|| { std::mysql::migrate(db, [mig(2, "a", "SELECT 1"), mig(1, "b", "SELECT 1")]) }))
+    mostrar("migrar_cero", std::try::catch(|| { std::mysql::migrate(db, [mig(0, "a", "SELECT 1")]) }))
+    mostrar("migrar_repetida", std::try::catch(|| { std::mysql::migrate(db, [mig(5, "a", "SELECT 1"), mig(5, "b", "SELECT 1")]) }))
+    mostrar("migrar_mala", std::try::catch(|| { std::mysql::migrate(db, [mig(10, "mala", "SELEC 1")]) }))
+    mostrar("migrar_vacia", std::mysql::migrate(db, []))
+    mostrar("migrar_tipo", std::try::catch(|| { std::mysql::migrate(db, [id(5)]) }))
+    mostrar("migrar_sin_version", std::try::catch(|| { std::mysql::migrate(db, [id(std::map::new())]) }))
+    mostrar("migrar_no_array", std::try::catch(|| { std::mysql::migrate(db, id(5)) }))
+    // genéricas
+    mostrar("db_execute", std::db::execute(db, "INSERT INTO mg1 VALUES (?)", [7]))
+    mostrar("db_query", std::db::query(db, "SELECT id FROM mg1 WHERE id = ?", [7]))
+    mostrar("db_begin", std::db::begin(db))
+    mostrar("db_rollback", std::db::rollback(db))
+    mostrar("db_commit_sin_tx", std::try::catch(|| { std::db::commit(db) }))
+    mostrar("db_migrate", std::db::migrate(db, ms))
+    mostrar("db_ping", std::db::ping(db))
+    mostrar("db_sql_no_texto", std::try::catch(|| { std::db::query(db, id(3), []) }))
+    // cerrar
+    mostrar("close", std::mysql::close(db))
+    mostrar("close_otra_vez", std::mysql::close(db))
+    mostrar("usar_cerrada", std::try::catch(|| { std::mysql::ping(db) }))
+    mostrar("close_tipo", std::try::catch(|| { std::mysql::close(id(5)) }))
+    // transacción abierta al cerrar: se deshace
+    let d2 = std::mysql::connect(url)
+    std::mysql::begin(d2)
+    std::mysql::execute(d2, "INSERT INTO tb1(n) VALUES ('perdida')", [])
+    std::mysql::close(d2)
+    let d3 = std::mysql::connect(url)
+    mostrar("tx_perdida", std::mysql::query(d3, "SELECT count(*) AS c FROM tb1 WHERE n = 'perdida'", []))
+    std::mysql::close(d3)
+}

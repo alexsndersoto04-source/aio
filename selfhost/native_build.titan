@@ -1,0 +1,39 @@
+// Compilación nativa como biblioteca: la usan build.titan (compilador de línea
+// de comandos del bootstrap) y titan.titan (la CLI única).
+import args
+import frontend
+import rtcache
+import native::backend
+
+fn build_runtime(runtime: string, exe: string) -> Result {
+    let rt_natives = std::array::concat(native_table(), raw_signatures())
+    let dir = std::path::parent(runtime)
+    let mut key = ""
+    if std::env::get("TITAN_CACHE") != "0" {
+        key = rc_key(exe, dir)
+    }
+    if key != "" {
+        let hit = rc_load(dir, key)
+        if hit != nil {
+            return Result::Ok(hit)
+        }
+    }
+    let gr = match front(runtime, rt_natives) {
+        Result::Ok(g) => g,
+        Result::Err(message) => {
+            return Result::Err("native runtime: " + message)
+        },
+    }
+    if key != "" {
+        rc_save(dir, gr, key)
+    }
+    Result::Ok(gr)
+}
+
+// `exe`: el ejecutable (o el .titan, bajo la VM) que está compilando; identifica
+// la caché del runtime.
+fn build(program: string, runtime: string, exe: string) -> Result {
+    let gu = front(program, native_table())?
+    let gr = build_runtime(runtime, exe)?
+    bk_build(gu, gr)
+}

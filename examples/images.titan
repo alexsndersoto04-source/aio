@@ -1,6 +1,6 @@
 // Demo Fase 7: imagenes + codigos QR.
 // Ejecutar en Termux con:
-//     zett run examples/images.titan
+//     titan run examples/images.titan
 //
 // Muestra:
 //  1. Generar un QR y mostrarlo en ASCII y Unicode en la terminal.

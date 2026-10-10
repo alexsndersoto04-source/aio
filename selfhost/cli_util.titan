@@ -1,0 +1,51 @@
+// Utilidades de las CLI de Titan (titan.titan, wasm_cmd.titan): salida por
+// stderr y lectura de variables de entorno.
+
+// std::env::get devuelve nil si la variable no existe.
+fn cl_env(name: string) -> string {
+    let v = std::env::get(name)
+    if v == nil {
+        return ""
+    }
+    v
+}
+
+// stderr: no hay un nativo para escribir en el descriptor 2, así que se abre
+// /dev/stderr; si no se pudiera abrir (p. ej. un socket) se usa stdout.
+fn cl_write_fd(path: string, data: any) -> bool {
+    let r = std::try::catch(|| {
+        std::fs::append(path, data)
+    })
+    let mut ok = false
+    match r {
+        Result::Ok(v) => {
+            ok = true
+        },
+        Result::Err(e) => {
+            ok = false
+        },
+    }
+    ok
+}
+
+fn cl_text(data: any) -> string {
+    let r = std::try::catch(|| {
+        std::encoding::utf8_decode(data)
+    })
+    let mut text = "<binary output>"
+    match r {
+        Result::Ok(v) => {
+            text = v
+        },
+        Result::Err(e) => {
+            text = "<binary output>"
+        },
+    }
+    text
+}
+
+fn cl_eprint(text: string) {
+    if !cl_write_fd("/dev/stderr", std::encoding::utf8_encode(text + "\n")) {
+        print(text)
+    }
+}

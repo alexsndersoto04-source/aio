@@ -1,0 +1,3858 @@
+// ============================================================================
+// Backend WebAssembly de Titan escrito en Titan (self-hosting, paso `std::web`).
+//
+// Traducción fiel de crates/titan_wasm/src/lib.rs: recibe el módulo de bytecode
+// de selfhost/codegen.titan y produce el mismo binario .wasm, el mismo mapa
+// lógico (JSON) y el mismo mapa estándar (source map v3) que `zett wasm`.
+// Verificación diferencial: selfhost/tests/wasm_diff/run.sh compara byte a byte.
+//
+// Representación:
+//   - Los cuerpos de función son `array` de enteros (bytes). Las funciones
+//     `wa_<instrucción>(b, ...)` añaden una instrucción y devuelven el array.
+//   - Un marcador de mapa de fuente es el valor -1 dentro del cuerpo (en Rust,
+//     un `nop` tras un `end`); al ensamblar se cambia por el byte 1 y se
+//     anota su posición absoluta (lo que Rust obtiene releyendo con wasmparser).
+//   - Los errores viajan como Result::Err(mensaje), con el texto de WasmError.
+// Todo lleva el prefijo wa_ / Wa porque `import` junta los nombres en un solo
+// espacio.
+// ============================================================================
+import codegen
+
+// ------------------------------------------------------------ codificación
+
+fn wa_i(x: int) -> string {
+    "{x}"
+}
+
+fn wa_uleb(n: int) -> array {
+    let mut out = []
+    let mut v = n
+    loop {
+        let byte = v % 128
+        v = v / 128
+        if v == 0 {
+            out = std::array::push(out, byte)
+            break
+        }
+        out = std::array::push(out, byte + 128)
+    }
+    out
+}
+
+// LEB128 con signo de un entero de 64 bits en complemento a dos.
+fn wa_sleb(n: int) -> array {
+    let mut out = []
+    let mut v = n
+    loop {
+        let mut byte = v % 128
+        if byte < 0 {
+            byte += 128
+        }
+        v = (v - byte) / 128
+        if (v == 0 && byte < 64) || (v == -1 && byte >= 64) {
+            out = std::array::push(out, byte)
+            break
+        }
+        out = std::array::push(out, byte + 128)
+    }
+    out
+}
+
+fn wa_utf8(s: string) -> array {
+    std::bytes::to_array(std::encoding::utf8_encode(s))
+}
+
+fn wa_name(s: string) -> array {
+    let bytes = wa_utf8(s)
+    std::array::concat(wa_uleb(len(bytes)), bytes)
+}
+
+fn wa_le32(v: int) -> array {
+    [v % 256, (v / 256) % 256, (v / 65536) % 256, (v / 16777216) % 256]
+}
+
+fn wa_i32_const(b: array, v: int) -> array {
+    std::array::concat(std::array::push(b, 65), wa_sleb(v))
+}
+
+fn wa_i64_const(b: array, v: int) -> array {
+    std::array::concat(std::array::push(b, 66), wa_sleb(v))
+}
+
+fn wa_memarg(b: array, align: int, offset: int) -> array {
+    std::array::concat(std::array::concat(b, wa_uleb(align)), wa_uleb(offset))
+}
+
+fn wa_block(b: array) -> array {
+    std::array::push(std::array::push(b, 2), 64)
+}
+
+fn wa_loop(b: array) -> array {
+    std::array::push(std::array::push(b, 3), 64)
+}
+
+fn wa_if(b: array) -> array {
+    std::array::push(std::array::push(b, 4), 64)
+}
+
+fn wa_br_table(b: array, targets: array, default: int) -> array {
+    let mut out = std::array::concat(std::array::push(b, 14), wa_uleb(len(targets)))
+    for t in targets {
+        out = std::array::concat(out, wa_uleb(t))
+    }
+    std::array::concat(out, wa_uleb(default))
+}
+
+fn wa_memory_copy(b: array) -> array {
+    std::array::concat(b, [252, 10, 0, 0])
+}
+
+fn wa_memory_fill(b: array, mem: int) -> array {
+    std::array::concat(b, [252, 11, mem])
+}
+
+fn wa_memory_size(b: array, mem: int) -> array {
+    std::array::concat(b, [63, mem])
+}
+
+fn wa_memory_grow(b: array, mem: int) -> array {
+    std::array::concat(b, [64, mem])
+}
+
+// Marcador de mapa de fuente: `block end nop` (el nop es el centinela -1).
+fn wa_marker(b: array) -> array {
+    std::array::concat(b, [2, 64, 11, -1])
+}
+
+// Solo el `nop` del marcador (tras un `end` ya emitido).
+fn wa_nop_marker(b: array) -> array {
+    std::array::push(b, -1)
+}
+
+fn wa_section(id: int, content: array) -> array {
+    std::array::concat(std::array::concat([id], wa_uleb(len(content))), content)
+}
+
+fn wa_vec(items: array) -> array {
+    let mut out = wa_uleb(len(items))
+    for item in items {
+        out = std::array::concat(out, item)
+    }
+    out
+}
+
+fn wa_hex(v: int, digits: int) -> string {
+    let chars = "0123456789abcdef"
+    let cs = std::text::chars(chars)
+    let mut out = ""
+    let mut x = v
+    let mut i = 0
+    while i < digits {
+        out = std::text::from_char_code(std::text::char_code(cs[x % 16])) + out
+        x = x / 16
+        i += 1
+    }
+    out
+}
+
+// Número de 64 bits sin signo, en decimal (los tags de enum usan el rango completo).
+fn wa_u64_text(v: int) -> string {
+    if v >= 0 {
+        return "{v}"
+    }
+    // v + 2^64 = hi * 2^32 + lo con hi, lo sin signo de 32 bits.
+    let mut hi = (v - ((v % 4294967296) + 4294967296) % 4294967296) / 4294967296 + 4294967296
+    let lo = ((v % 4294967296) + 4294967296) % 4294967296
+    let mut digits = ""
+    let mut lo2 = lo
+    while hi > 0 || lo2 > 0 {
+        let rem_hi = hi % 10
+        hi = hi / 10
+        let cur = rem_hi * 4294967296 + lo2
+        let d = cur % 10
+        lo2 = cur / 10
+        digits = "{d}" + digits
+    }
+    digits
+}
+
+// Multiplicación módulo 2^64 (en dos límbos de 32 bits en cuatro de 16).
+fn wa_mul64(a: int, b: int) -> int {
+    let au = a
+    let bu = b
+    let mut al = []
+    let mut bl = []
+    let mut x = au
+    let mut y = bu
+    let mut i = 0
+    while i < 4 {
+        let mut ra = x % 65536
+        if ra < 0 {
+            ra += 65536
+        }
+        x = (x - ra) / 65536
+        let mut rb = y % 65536
+        if rb < 0 {
+            rb += 65536
+        }
+        y = (y - rb) / 65536
+        al = std::array::push(al, ra)
+        bl = std::array::push(bl, rb)
+        i += 1
+    }
+    // columnas de 16 bits con acarreo
+    let mut limbs = []
+    let mut carry = 0
+    let mut k = 0
+    while k < 4 {
+        let mut sum = carry
+        let mut j = 0
+        while j <= k {
+            sum += al[j] * bl[k - j]
+            j += 1
+        }
+        limbs = std::array::push(limbs, sum % 65536)
+        carry = sum / 65536
+        k += 1
+    }
+    // reconstruir como entero con signo: el límbo alto manda el signo
+    let hi = limbs[3]
+    let mut top = hi
+    if top >= 32768 {
+        top = top - 65536
+    }
+    top * 281474976710656 + limbs[2] * 4294967296 + limbs[1] * 65536 + limbs[0]
+}
+
+fn wa_xor64(a: int, b: int) -> int {
+    a ^ b
+}
+
+// Hash FNV-1a de 64 bits del tag de enum: Nombre::Variante.
+fn wa_enum_tag(name: string, variant: string) -> int {
+    let mut hash = -3750763034362895579
+    for byte in std::array::concat(std::array::concat(wa_utf8(name), [58, 58]), wa_utf8(variant)) {
+        hash = wa_xor64(hash, byte)
+        hash = wa_mul64(hash, 1099511628211)
+    }
+    hash
+}
+
+// ------------------------------------------------------------ tipos de bytecode
+
+struct WaTy {
+    k: string,
+    name: string,
+    kids: array,
+}
+
+fn wa_ty(k: string) -> WaTy {
+    WaTy { k: k, name: "", kids: [] }
+}
+
+fn wa_is_ident(c: char) -> bool {
+    std::text::is_alphanumeric(c) || c == '_'
+}
+
+// Analiza el texto Debug de un BytecodeType desde `pos`; devuelve (tipo, siguiente posición).
+fn wa_parse_ty(cs: array, pos: int) -> (WaTy, int) {
+    let mut i = pos
+    let mut ident = ""
+    while i < len(cs) && wa_is_ident(cs[i]) {
+        ident += std::text::from_char_code(std::text::char_code(cs[i]))
+        i += 1
+    }
+    if i >= len(cs) || cs[i] != '(' {
+        return (wa_ty(ident), i)
+    }
+    i += 1
+    let mut t = wa_ty(ident)
+    if ident == "Struct" || ident == "Enum" || ident == "EnumOf" {
+        // "nombre"
+        i += 1
+        let mut name = ""
+        while cs[i] != '"' {
+            name += std::text::from_char_code(std::text::char_code(cs[i]))
+            i += 1
+        }
+        i += 1
+        t = WaTy { k: ident, name: name, kids: [] }
+        if ident == "EnumOf" {
+            // , [T, T]
+            i += 3
+            let mut kids = []
+            while cs[i] != ']' {
+                let (kid, next) = wa_parse_ty(cs, i)
+                kids = std::array::push(kids, kid)
+                i = next
+                if cs[i] == ',' {
+                    i += 2
+                }
+            }
+            i += 1
+            t = WaTy { k: ident, name: name, kids: kids }
+        }
+    } else if ident == "TupleOf" {
+        i += 1
+        let mut kids = []
+        while cs[i] != ']' {
+            let (kid, next) = wa_parse_ty(cs, i)
+            kids = std::array::push(kids, kid)
+            i = next
+            if cs[i] == ',' {
+                i += 2
+            }
+        }
+        i += 1
+        t = WaTy { k: ident, name: "", kids: kids }
+    } else {
+        // ArrayOf(T) o MapOf(K, V)
+        let mut kids = []
+        while cs[i] != ')' {
+            let (kid, next) = wa_parse_ty(cs, i)
+            kids = std::array::push(kids, kid)
+            i = next
+            if cs[i] == ',' {
+                i += 2
+            }
+        }
+        t = WaTy { k: ident, name: "", kids: kids }
+    }
+    // cierra el paréntesis
+    i += 1
+    return (t, i)
+}
+
+fn wa_type_of(text: any) -> any {
+    if text == nil {
+        return nil
+    }
+    let (t, end) = wa_parse_ty(std::text::chars(text), 0)
+    t
+}
+
+// ------------------------------------------------------------ clases de valor
+
+// ValueKind de Rust. k: Numeric | String | Array | Tuple | Map | Struct | Enum | Unknown.
+//   Array/Map: `inner` es el tipo del elemento (nil = None).
+//   Tuple: `inner` es true cuando hay lista (Some) y `list` son los elementos.
+//   Struct: `list` son los nombres de campo. Enum: `name` y `payloads` (variante -> clase).
+struct WaVk {
+    k: string,
+    inner: any,
+    list: array,
+    name: string,
+    payloads: map,
+}
+
+fn wa_vk(k: string) -> WaVk {
+    WaVk { k: k, inner: nil, list: [], name: "", payloads: std::map::new() }
+}
+
+fn wa_vk_with(k: string, inner: any) -> WaVk {
+    WaVk { k: k, inner: inner, list: [], name: "", payloads: std::map::new() }
+}
+
+fn wa_metadata_kind(g: G, ty: any) -> WaVk {
+    if ty == nil {
+        return wa_vk("Unknown")
+    }
+    let k = ty.k
+    if k == "Int" || k == "Bool" {
+        return wa_vk("Numeric")
+    }
+    if k == "String" {
+        return wa_vk("String")
+    }
+    if k == "Array" {
+        return wa_vk("Array")
+    }
+    if k == "Tuple" {
+        return wa_vk("Tuple")
+    }
+    if k == "Map" {
+        return wa_vk("Map")
+    }
+    if k == "ArrayOf" {
+        return wa_vk_with("Array", wa_metadata_kind(g, ty.kids[0]))
+    }
+    if k == "MapOf" {
+        return wa_vk_with("Map", wa_metadata_kind(g, ty.kids[1]))
+    }
+    if k == "TupleOf" {
+        let mut els = []
+        for e in ty.kids {
+            els = std::array::push(els, wa_metadata_kind(g, e))
+        }
+        return WaVk { k: "Tuple", inner: true, list: els, name: "", payloads: std::map::new() }
+    }
+    if k == "Enum" {
+        return WaVk { k: "Enum", inner: nil, list: [], name: ty.name, payloads: std::map::new() }
+    }
+    if k == "EnumOf" {
+        let mut kinds = []
+        for e in ty.kids {
+            kinds = std::array::push(kinds, wa_metadata_kind(g, e))
+        }
+        let mut payloads = std::map::new()
+        if ty.name == "Option" && len(kinds) == 1 {
+            payloads = std::map::insert(payloads, "Some", kinds[0])
+        } else if ty.name == "Result" && len(kinds) == 2 {
+            payloads = std::map::insert(payloads, "Ok", kinds[0])
+            payloads = std::map::insert(payloads, "Err", kinds[1])
+        } else if len(kinds) == 1 {
+            payloads = std::map::insert(payloads, "*", kinds[0])
+        }
+        return WaVk { k: "Enum", inner: nil, list: [], name: ty.name, payloads: payloads }
+    }
+    if k == "Struct" {
+        if std::map::contains(g.structs, ty.name) {
+            return WaVk { k: "Struct", inner: nil, list: std::map::get(g.structs, ty.name), name: "", payloads: std::map::new() }
+        }
+        return wa_vk("Unknown")
+    }
+    wa_vk("Unknown")
+}
+
+struct WaTs {
+    stack: array,
+    locals: array,
+}
+
+// Diseño de una función tras el análisis de pila.
+//   heights: altura de pila antes de cada instrucción (-1 = inalcanzable).
+struct WaLay {
+    heights: array,
+    stack_base: int,
+    stack_slots: int,
+    pc_local: int,
+    adds: map,
+    fields: map,
+}
+
+fn wa_drop_n(st: array, n: int) -> array {
+    std::array::slice(st, 0, len(st) - n)
+}
+
+fn wa_last(st: array) -> WaVk {
+    st[len(st) - 1]
+}
+
+fn wa_apply_effect(op: Op, state: WaTs, g: G, f: Func, instruction: int) -> WaTs {
+    let k = op.k
+    let mut stack = state.stack
+    let mut locals = state.locals
+    if k == "PushStr" {
+        stack = std::array::push(stack, wa_vk("String"))
+    } else if k == "PushInt" || k == "PushBool" || k == "PushChar" {
+        stack = std::array::push(stack, wa_vk("Numeric"))
+    } else if k == "PushNil" {
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    } else if k == "PushLocal" {
+        stack = std::array::push(stack, locals[op.n])
+    } else if k == "StoreLocal" {
+        locals = std::array::set(locals, op.n, wa_last(stack))
+        stack = wa_drop_n(stack, 1)
+    } else if k == "Pop" || k == "JumpIfFalse" {
+        if len(stack) > 0 {
+            stack = wa_drop_n(stack, 1)
+        }
+    } else if k == "Dup" {
+        stack = std::array::push(stack, wa_last(stack))
+    } else if k == "Add" {
+        let right = stack[len(stack) - 1]
+        let left = stack[len(stack) - 2]
+        stack = wa_drop_n(stack, 2)
+        let mut result = wa_vk("Unknown")
+        if left == wa_vk("String") && right == wa_vk("String") {
+            result = wa_vk("String")
+        } else if left == wa_vk("Numeric") && right == wa_vk("Numeric") {
+            result = wa_vk("Numeric")
+        }
+        stack = std::array::push(stack, result)
+    } else if k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" {
+        stack = wa_drop_n(stack, 2)
+        stack = std::array::push(stack, wa_vk("Numeric"))
+    } else if k == "Neg" || k == "Not" || k == "BitNot" || k == "Len" {
+        stack = wa_drop_n(stack, 1)
+        stack = std::array::push(stack, wa_vk("Numeric"))
+    } else if k == "NewArray" {
+        let count = op.n
+        let elements = std::array::slice(stack, len(stack) - count, len(stack))
+        stack = wa_drop_n(stack, count)
+        let mut element: any = nil
+        if count > 0 {
+            let first = elements[0]
+            let mut all = true
+            for e in elements {
+                if e != first {
+                    all = false
+                }
+            }
+            if all {
+                element = first
+            }
+        }
+        stack = std::array::push(stack, wa_vk_with("Array", element))
+    } else if k == "NewTuple" {
+        let count = op.n
+        let elements = std::array::slice(stack, len(stack) - count, len(stack))
+        stack = wa_drop_n(stack, count)
+        stack = std::array::push(stack, WaVk { k: "Tuple", inner: true, list: elements, name: "", payloads: std::map::new() })
+    } else if k == "NewStruct" {
+        stack = wa_drop_n(stack, len(op.list))
+        stack = std::array::push(stack, WaVk { k: "Struct", inner: nil, list: op.list, name: "", payloads: std::map::new() })
+    } else if k == "GetField" {
+        stack = wa_drop_n(stack, 1)
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    } else if k == "NewEnum" {
+        let mut payloads = std::map::new()
+        if op.flag {
+            if len(stack) > 0 {
+                payloads = std::map::insert(payloads, op.s2, wa_last(stack))
+                stack = wa_drop_n(stack, 1)
+            }
+        }
+        stack = std::array::push(stack, WaVk { k: "Enum", inner: nil, list: [], name: op.s, payloads: payloads })
+    } else if k == "EnumIs" {
+        stack = wa_drop_n(stack, 1)
+        stack = std::array::push(stack, wa_vk("Numeric"))
+    } else if k == "EnumPayload" {
+        let value = wa_last(stack)
+        stack = wa_drop_n(stack, 1)
+        // variante de la última comprobación EnumIs anterior
+        let mut variant: any = nil
+        let mut j = instruction - 1
+        while j >= 0 && variant == nil {
+            if f.code[j].k == "EnumIs" {
+                variant = f.code[j].s2
+            }
+            j -= 1
+        }
+        let mut payload = wa_vk("Unknown")
+        if value.k == "Enum" {
+            let mut found: any = nil
+            if variant != nil {
+                if std::map::contains(value.payloads, variant) {
+                    found = std::map::get(value.payloads, variant)
+                } else if std::map::contains(value.payloads, "*") {
+                    found = std::map::get(value.payloads, "*")
+                }
+            }
+            if found == nil {
+                let keys = std::map::keys(value.payloads)
+                if len(keys) == 1 {
+                    found = std::map::get(value.payloads, keys[0])
+                }
+            }
+            if found != nil {
+                payload = found
+            }
+        }
+        stack = std::array::push(stack, payload)
+    } else if k == "Index" {
+        stack = wa_drop_n(stack, 1)
+        let target = wa_last(stack)
+        stack = wa_drop_n(stack, 1)
+        let mut result = wa_vk("Unknown")
+        if target.k == "Array" && target.inner != nil {
+            result = target.inner
+        } else if target.k == "Tuple" && target.inner != nil {
+            let els = target.list
+            if len(els) > 0 {
+                let first = els[0]
+                let mut all = true
+                for e in els {
+                    if e != first {
+                        all = false
+                    }
+                }
+                if all {
+                    result = first
+                }
+            }
+        }
+        stack = std::array::push(stack, result)
+    } else if k == "Call" {
+        stack = wa_drop_n(stack, op.m)
+        let mut rk = wa_vk("Unknown")
+        if !op.flag && op.n < len(g.funcs) {
+            rk = wa_metadata_kind(g, wa_type_of(g.funcs[op.n].ret))
+        }
+        stack = std::array::push(stack, rk)
+    } else if k == "CallNative" {
+        let name = op.s
+        let argc = op.n
+        let mut rk = wa_vk("Unknown")
+        if name == "std::map::new" {
+            rk = wa_vk("Map")
+        } else if (name == "std::map::insert_new" || name == "std::map::insert") && argc >= 3 && len(stack) >= argc {
+            let map_kind = stack[len(stack) - argc]
+            let value_kind = stack[len(stack) - 1]
+            if map_kind.k == "Map" && map_kind.inner != nil {
+                rk = wa_vk_with("Map", map_kind.inner)
+            } else if value_kind != wa_vk("Unknown") {
+                rk = wa_vk_with("Map", value_kind)
+            } else {
+                rk = wa_vk("Map")
+            }
+        } else if name == "std::map::remove" && argc >= 2 && len(stack) >= argc {
+            let mk = stack[len(stack) - argc]
+            if mk.k == "Map" {
+                rk = wa_vk_with("Map", mk.inner)
+            } else {
+                rk = wa_vk("Map")
+            }
+        } else if name == "std::map::get" && argc >= 2 && len(stack) >= argc {
+            let mk = stack[len(stack) - argc]
+            if mk.k == "Map" && mk.inner != nil {
+                rk = mk.inner
+            }
+        } else if name == "std::map::values" && argc >= 1 && len(stack) >= argc {
+            let mk = stack[len(stack) - argc]
+            if mk.k == "Map" && mk.inner != nil {
+                rk = wa_vk_with("Array", mk.inner)
+            } else {
+                rk = wa_vk("Array")
+            }
+        } else if name == "std::map::keys" {
+            rk = wa_vk_with("Array", wa_vk("String"))
+        } else if name == "std::map::length" {
+            rk = wa_vk("Numeric")
+        }
+        stack = wa_drop_n(stack, argc)
+        stack = std::array::push(stack, rk)
+    } else if k == "Print" {
+        stack = wa_drop_n(stack, op.n)
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    }
+    WaTs { stack: stack, locals: locals }
+}
+
+// Mezcla `incoming` en el estado de destino; devuelve (estado, cambió).
+fn wa_merge_state(dest: any, incoming: WaTs) -> (any, bool) {
+    if dest == nil {
+        return (incoming, true)
+    }
+    let mut changed = false
+    let mut stack = dest.stack
+    let mut locals = dest.locals
+    let mut i = 0
+    while i < len(stack) && i < len(incoming.stack) {
+        if stack[i] != incoming.stack[i] && stack[i].k != "Unknown" {
+            stack = std::array::set(stack, i, wa_vk("Unknown"))
+            changed = true
+        }
+        i += 1
+    }
+    i = 0
+    while i < len(locals) && i < len(incoming.locals) {
+        if locals[i] != incoming.locals[i] && locals[i].k != "Unknown" {
+            locals = std::array::set(locals, i, wa_vk("Unknown"))
+            changed = true
+        }
+        i += 1
+    }
+    return (WaTs { stack: stack, locals: locals }, changed)
+}
+
+fn wa_unsupported(f: Func, operation: string) -> Result {
+    Result::Err("function '" + f.name + "' uses unsupported WebAssembly operation: " + operation)
+}
+
+// Devuelve Result::Ok((sumas de strings, índices de campo)) o el error.
+fn wa_infer(g: G, f: Func, heights: array) -> Result {
+    if len(f.code) == 0 {
+        return Result::Ok((std::map::new(), std::map::new()))
+    }
+    let mut initial = []
+    let mut li = 0
+    while li < f.locals {
+        initial = std::array::push(initial, wa_vk("Unknown"))
+        li += 1
+    }
+    li = 0
+    for p in f.params {
+        if li < len(initial) {
+            initial = std::array::set(initial, li, wa_metadata_kind(g, wa_type_of(p)))
+        }
+        li += 1
+    }
+    let n = len(f.code)
+    let mut states = []
+    let mut si = 0
+    while si < n {
+        states = std::array::push(states, nil)
+        si += 1
+    }
+    states = std::array::set(states, 0, WaTs { stack: [], locals: initial })
+    let mut pending = [0]
+    let mut head = 0
+    while head < len(pending) {
+        let instruction = pending[head]
+        head += 1
+        let op = f.code[instruction]
+        let state = wa_apply_effect(op, states[instruction], g, f, instruction)
+        let mut succ = []
+        if op.k == "Jump" {
+            succ = [op.n]
+        } else if op.k == "JumpIfFalse" {
+            succ = [op.n]
+            if instruction + 1 < n {
+                succ = std::array::push(succ, instruction + 1)
+            }
+        } else if op.k == "Ret" || op.k == "Halt" {
+            succ = []
+        } else if instruction + 1 < n {
+            succ = [instruction + 1]
+        }
+        for s in succ {
+            let (merged, changed) = wa_merge_state(states[s], state)
+            states = std::array::set(states, s, merged)
+            if changed {
+                pending = std::array::push(pending, s)
+            }
+        }
+    }
+    let mut adds = std::map::new()
+    let mut fields = std::map::new()
+    let mut instruction = 0
+    while instruction < n {
+        let op = f.code[instruction]
+        if heights[instruction] < 0 {
+            instruction += 1
+            continue
+        }
+        let state = states[instruction]
+        if op.k == "EnumIs" {
+            let top = wa_last(state.stack)
+            if top.k == "Enum" {
+                if top.name != op.s {
+                    return wa_unsupported(f, "enum test expects '" + op.s + "', found '" + top.name + "'")
+                }
+            } else if top.k != "Unknown" {
+                return wa_unsupported(f, "value is not enum '" + op.s + "' at instruction {instruction}")
+            }
+        }
+        if op.k == "GetField" {
+            let top = wa_last(state.stack)
+            if top.k != "Struct" {
+                return wa_unsupported(f, "unresolved struct field '" + op.s + "' at instruction {instruction}")
+            }
+            let mut index = -1
+            let mut fi = 0
+            for candidate in top.list {
+                if index < 0 && candidate == op.s {
+                    index = fi
+                }
+                fi += 1
+            }
+            if index < 0 {
+                return wa_unsupported(f, "unknown struct field '" + op.s + "' at instruction {instruction}")
+            }
+            fields = std::map::insert(fields, "{instruction}", index)
+        }
+        if op.k == "Index" && state.stack[len(state.stack) - 2] == wa_vk("String") {
+            return wa_unsupported(f, "string Index at instruction {instruction}")
+        }
+        if op.k == "Add" {
+            let left = state.stack[len(state.stack) - 2]
+            let right = state.stack[len(state.stack) - 1]
+            if left == wa_vk("String") && right == wa_vk("String") {
+                adds = std::map::insert(adds, "{instruction}", true)
+            } else if left == wa_vk("String") || right == wa_vk("String") {
+                return Result::Err("function '" + f.name + "' has an ambiguous '+' at instruction {instruction}; string and numeric operands cannot be distinguished from erased bytecode")
+            }
+        }
+        instruction += 1
+    }
+    return Result::Ok((adds, fields))
+}
+// ---- biblioteca de instrucciones (generada; cada función añade una instrucción a `b`)
+fn wa_unreachable(b: array) -> array {
+    std::array::push(b, 0)
+}
+
+fn wa_else(b: array) -> array {
+    std::array::push(b, 5)
+}
+
+fn wa_end(b: array) -> array {
+    std::array::push(b, 11)
+}
+
+fn wa_return(b: array) -> array {
+    std::array::push(b, 15)
+}
+
+fn wa_i32_eqz(b: array) -> array {
+    std::array::push(b, 69)
+}
+
+fn wa_i32_eq(b: array) -> array {
+    std::array::push(b, 70)
+}
+
+fn wa_i32_ne(b: array) -> array {
+    std::array::push(b, 71)
+}
+
+fn wa_i32_lt_s(b: array) -> array {
+    std::array::push(b, 72)
+}
+
+fn wa_i32_lt_u(b: array) -> array {
+    std::array::push(b, 73)
+}
+
+fn wa_i32_gt_s(b: array) -> array {
+    std::array::push(b, 74)
+}
+
+fn wa_i32_gt_u(b: array) -> array {
+    std::array::push(b, 75)
+}
+
+fn wa_i32_le_s(b: array) -> array {
+    std::array::push(b, 76)
+}
+
+fn wa_i32_le_u(b: array) -> array {
+    std::array::push(b, 77)
+}
+
+fn wa_i32_ge_s(b: array) -> array {
+    std::array::push(b, 78)
+}
+
+fn wa_i32_ge_u(b: array) -> array {
+    std::array::push(b, 79)
+}
+
+fn wa_i64_eqz(b: array) -> array {
+    std::array::push(b, 80)
+}
+
+fn wa_i64_eq(b: array) -> array {
+    std::array::push(b, 81)
+}
+
+fn wa_i64_ne(b: array) -> array {
+    std::array::push(b, 82)
+}
+
+fn wa_i64_lt_s(b: array) -> array {
+    std::array::push(b, 83)
+}
+
+fn wa_i64_lt_u(b: array) -> array {
+    std::array::push(b, 84)
+}
+
+fn wa_i64_gt_s(b: array) -> array {
+    std::array::push(b, 85)
+}
+
+fn wa_i64_gt_u(b: array) -> array {
+    std::array::push(b, 86)
+}
+
+fn wa_i64_le_s(b: array) -> array {
+    std::array::push(b, 87)
+}
+
+fn wa_i64_le_u(b: array) -> array {
+    std::array::push(b, 88)
+}
+
+fn wa_i64_ge_s(b: array) -> array {
+    std::array::push(b, 89)
+}
+
+fn wa_i64_ge_u(b: array) -> array {
+    std::array::push(b, 90)
+}
+
+fn wa_i32_add(b: array) -> array {
+    std::array::push(b, 106)
+}
+
+fn wa_i32_sub(b: array) -> array {
+    std::array::push(b, 107)
+}
+
+fn wa_i32_mul(b: array) -> array {
+    std::array::push(b, 108)
+}
+
+fn wa_i32_div_s(b: array) -> array {
+    std::array::push(b, 109)
+}
+
+fn wa_i32_div_u(b: array) -> array {
+    std::array::push(b, 110)
+}
+
+fn wa_i32_rem_s(b: array) -> array {
+    std::array::push(b, 111)
+}
+
+fn wa_i32_rem_u(b: array) -> array {
+    std::array::push(b, 112)
+}
+
+fn wa_i32_and(b: array) -> array {
+    std::array::push(b, 113)
+}
+
+fn wa_i32_or(b: array) -> array {
+    std::array::push(b, 114)
+}
+
+fn wa_i32_xor(b: array) -> array {
+    std::array::push(b, 115)
+}
+
+fn wa_i32_shl(b: array) -> array {
+    std::array::push(b, 116)
+}
+
+fn wa_i32_shr_s(b: array) -> array {
+    std::array::push(b, 117)
+}
+
+fn wa_i32_shr_u(b: array) -> array {
+    std::array::push(b, 118)
+}
+
+fn wa_i64_add(b: array) -> array {
+    std::array::push(b, 124)
+}
+
+fn wa_i64_sub(b: array) -> array {
+    std::array::push(b, 125)
+}
+
+fn wa_i64_mul(b: array) -> array {
+    std::array::push(b, 126)
+}
+
+fn wa_i64_div_s(b: array) -> array {
+    std::array::push(b, 127)
+}
+
+fn wa_i64_div_u(b: array) -> array {
+    std::array::push(b, 128)
+}
+
+fn wa_i64_rem_s(b: array) -> array {
+    std::array::push(b, 129)
+}
+
+fn wa_i64_rem_u(b: array) -> array {
+    std::array::push(b, 130)
+}
+
+fn wa_i64_and(b: array) -> array {
+    std::array::push(b, 131)
+}
+
+fn wa_i64_or(b: array) -> array {
+    std::array::push(b, 132)
+}
+
+fn wa_i64_xor(b: array) -> array {
+    std::array::push(b, 133)
+}
+
+fn wa_i64_shl(b: array) -> array {
+    std::array::push(b, 134)
+}
+
+fn wa_i64_shr_s(b: array) -> array {
+    std::array::push(b, 135)
+}
+
+fn wa_i64_shr_u(b: array) -> array {
+    std::array::push(b, 136)
+}
+
+fn wa_i32_wrap_i64(b: array) -> array {
+    std::array::push(b, 167)
+}
+
+fn wa_i64_extend_i32_s(b: array) -> array {
+    std::array::push(b, 172)
+}
+
+fn wa_i64_extend_i32_u(b: array) -> array {
+    std::array::push(b, 173)
+}
+
+fn wa_drop(b: array) -> array {
+    std::array::push(b, 26)
+}
+
+fn wa_select(b: array) -> array {
+    std::array::push(b, 27)
+}
+
+fn wa_local_get(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 32), wa_uleb(n))
+}
+
+fn wa_local_set(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 33), wa_uleb(n))
+}
+
+fn wa_local_tee(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 34), wa_uleb(n))
+}
+
+fn wa_global_get(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 35), wa_uleb(n))
+}
+
+fn wa_global_set(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 36), wa_uleb(n))
+}
+
+fn wa_call(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 16), wa_uleb(n))
+}
+
+fn wa_br(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 12), wa_uleb(n))
+}
+
+fn wa_br_if(b: array, n: int) -> array {
+    std::array::concat(std::array::push(b, 13), wa_uleb(n))
+}
+
+fn wa_i32_load(b: array, align: int, offset: int) -> array {
+    wa_memarg(std::array::push(b, 40), align, offset)
+}
+
+fn wa_i64_load(b: array, align: int, offset: int) -> array {
+    wa_memarg(std::array::push(b, 41), align, offset)
+}
+
+fn wa_i64_load8_u(b: array, align: int, offset: int) -> array {
+    wa_memarg(std::array::push(b, 49), align, offset)
+}
+
+fn wa_i32_store(b: array, align: int, offset: int) -> array {
+    wa_memarg(std::array::push(b, 54), align, offset)
+}
+
+fn wa_i64_store(b: array, align: int, offset: int) -> array {
+    wa_memarg(std::array::push(b, 55), align, offset)
+}
+// Importaciones del navegador (`titan.<campo>`): nativa, campo, parámetros, ¿devuelve valor?
+fn wa_web_table() -> array {
+    return [
+        ["std::web::query_exists", "dom_query_exists", 1, true],
+        ["std::web::set_text", "dom_set_text", 2, false],
+        ["std::web::set_html", "dom_set_html", 2, false],
+        ["std::web::set_attribute", "dom_set_attribute", 3, false],
+        ["std::web::add_class", "dom_add_class", 2, false],
+        ["std::web::remove_class", "dom_remove_class", 2, false],
+        ["std::web::focus", "dom_focus", 1, false],
+        ["std::web::set_title", "dom_set_title", 1, false],
+        ["std::web::listen", "dom_listen", 3, true],
+        ["std::web::unlisten", "dom_unlisten", 1, true],
+        ["std::web::event_type", "dom_event_type", 0, true],
+        ["std::web::event_value", "dom_event_value", 0, true],
+        ["std::web::event_key", "dom_event_key", 0, true],
+        ["std::web::event_target_id", "dom_event_target_id", 0, true],
+        ["std::web::event_checked", "dom_event_checked", 0, true],
+        ["std::web::event_x", "dom_event_x", 0, true],
+        ["std::web::event_y", "dom_event_y", 0, true],
+        ["std::web::fetch", "fetch_start", 4, true],
+        ["std::web::fetch_cancel", "fetch_cancel", 1, true],
+        ["std::web::fetch_ok", "fetch_ok", 0, true],
+        ["std::web::fetch_status", "fetch_status", 0, true],
+        ["std::web::fetch_body", "fetch_body", 0, true],
+        ["std::web::fetch_url", "fetch_url", 0, true],
+        ["std::web::fetch_error", "fetch_error", 0, true],
+        ["std::web::fetch_headers", "fetch_headers", 0, true],
+        ["std::web::request", "fetch_request", 7, true],
+        ["std::web::ws_connect", "ws_connect", 7, true],
+        ["std::web::ws_send", "ws_send", 2, true],
+        ["std::web::ws_close", "ws_close", 3, true],
+        ["std::web::ws_id", "ws_id", 0, true],
+        ["std::web::ws_message", "ws_message", 0, true],
+        ["std::web::ws_protocol", "ws_protocol", 0, true],
+        ["std::web::ws_close_code", "ws_close_code", 0, true],
+        ["std::web::ws_close_reason", "ws_close_reason", 0, true],
+        ["std::web::ws_was_clean", "ws_was_clean", 0, true],
+        ["std::web::ws_error", "ws_error", 0, true],
+        ["std::web::canvas_resize", "canvas_resize", 3, false],
+        ["std::web::canvas_clear", "canvas_clear", 2, false],
+        ["std::web::canvas_fill_rect", "canvas_fill_rect", 6, false],
+        ["std::web::canvas_stroke_rect", "canvas_stroke_rect", 7, false],
+        ["std::web::canvas_line", "canvas_line", 7, false],
+        ["std::web::canvas_text", "canvas_text", 6, false],
+        ["std::web::animation_start", "animation_start", 1, true],
+        ["std::web::animation_cancel", "animation_cancel", 1, true],
+        ["std::web::frame_id", "frame_id", 0, true],
+        ["std::web::frame_time_ms", "frame_time_ms", 0, true],
+        ["std::web::frame_delta_ms", "frame_delta_ms", 0, true],
+        ["std::web::frame_count", "frame_count", 0, true],
+        ["std::web::webgl_supported", "webgl_supported", 1, true],
+        ["std::web::webgl_create", "webgl_create", 5, true],
+        ["std::web::webgl_uniform_f32", "webgl_uniform_f32", 4, true],
+        ["std::web::webgl_draw", "webgl_draw", 2, true],
+        ["std::web::webgl_delete", "webgl_delete", 1, true],
+    ]
+}
+
+// ------------------------------------------------------------ importaciones y capas
+
+struct WaStr {
+    handles: array,
+    data: array,
+    pages: int,
+    heap_start: int,
+}
+
+// definiciones: [nativa, campo, parámetros, ¿devuelve valor?]; print: índice o -1.
+struct WaHi {
+    defs: array,
+    print: int,
+    natives: map,
+    web: map,
+}
+
+struct WaEc {
+    g: G,
+    f: Func,
+    lay: WaLay,
+    st: WaStr,
+    hi: WaHi,
+    concat: int,
+    alloc: int,
+    seq: int,
+    shash: int,
+    scratch1: int,
+    scratch2: int,
+    pc: int,
+}
+
+fn wa_map_arity(name: string) -> int {
+    if name == "std::map::new" {
+        return 0
+    }
+    if name == "std::map::length" || name == "std::map::keys" || name == "std::map::values" {
+        return 1
+    }
+    if name == "std::map::insert_new" || name == "std::map::insert" {
+        return 3
+    }
+    if name == "std::map::contains" || name == "std::map::get" || name == "std::map::remove" {
+        return 2
+    }
+    -1
+}
+
+fn wa_string_arity(name: string) -> int {
+    if name == "std::text::equals" {
+        return 2
+    }
+    if name == "std::text::hash64" {
+        return 1
+    }
+    -1
+}
+
+fn wa_array_arity(name: string) -> int {
+    if name == "std::array::set" || name == "std::array::slice" {
+        return 3
+    }
+    if name == "std::array::push" || name == "std::array::concat" {
+        return 2
+    }
+    if name == "std::array::pop" {
+        return 1
+    }
+    -1
+}
+
+fn wa_heap_arity(name: string) -> int {
+    if name == "std::wasm::heap_used" || name == "std::wasm::heap_capacity" || name == "std::wasm::heap_limit" || name == "std::wasm::heap_checkpoint" || name == "std::wasm::heap_allocations" || name == "std::wasm::heap_allocated_bytes" || name == "std::wasm::heap_restores" || name == "std::wasm::heap_reclaimed_bytes" || name == "std::wasm::heap_peak_used" || name == "std::wasm::heap_reset_counters" || name == "std::wasm::heap_scope_begin" {
+        return 0
+    }
+    if name == "std::wasm::heap_set_limit" || name == "std::wasm::heap_restore" || name == "std::wasm::heap_scope_end" {
+        return 1
+    }
+    -1
+}
+
+fn wa_web_map() -> map {
+    let mut m = std::map::new()
+    for d in wa_web_table() {
+        m = std::map::insert(m, d[0], d)
+    }
+    m
+}
+
+fn wa_target(op: Op) -> int {
+    if op.flag {
+        return 9223372036854775807
+    }
+    op.n
+}
+
+// ------------------------------------------------------------ validación
+
+fn wa_validate(g: G, f: Func, op: Op, web: map) -> Result {
+    let k = op.k
+    if (k == "PushLocal" || k == "StoreLocal") && op.n >= f.locals {
+        return Result::Err("function '" + f.name + "' accesses invalid local " + wa_i(op.n) + "")
+    }
+    if k == "PushStr" && op.n >= len(g.table) {
+        return Result::Err("function '" + f.name + "' references invalid string-table entry " + wa_i(op.n) + "")
+    }
+    if (k == "NewArray" || k == "NewTuple") && op.n > 536870911 {
+        return wa_unsupported(f, "collection with " + wa_i(op.n) + " elements exceeds Wasm memory32")
+    }
+    if k == "NewStruct" && len(op.list) > 536870911 {
+        return wa_unsupported(f, "struct exceeds Wasm memory32")
+    }
+    if k == "Print" && op.n != 1 {
+        return wa_unsupported(f, "Print(" + wa_i(op.n) + ") requires exactly one browser-host argument")
+    }
+    if k == "CallNative" {
+        let name = op.s
+        let mut expected = wa_map_arity(name)
+        if expected < 0 {
+            expected = wa_string_arity(name)
+        }
+        if expected < 0 {
+            expected = wa_array_arity(name)
+        }
+        if expected < 0 {
+            expected = wa_heap_arity(name)
+        }
+        if expected < 0 && std::map::contains(web, name) {
+            expected = std::map::get(web, name)[2]
+        }
+        if expected < 0 {
+            return wa_unsupported(f, "CallNative(" + name + ")")
+        }
+        if op.n != expected {
+            return Result::Err("function '" + f.name + "' calls '" + name + "' with " + wa_i(op.n) + " arguments, but it expects {expected}")
+        }
+        return Result::Ok(nil)
+    }
+    if k == "Call" {
+        if op.flag {
+            return wa_unsupported(f, "range expressions (start..end / start..=end) are not yet supported when compiling to WebAssembly")
+        }
+        if op.n >= len(g.funcs) {
+            return Result::Err("function '" + f.name + "' calls invalid function " + wa_i(op.n) + "")
+        }
+        let target = g.funcs[op.n]
+        if op.m != target.arity {
+            return Result::Err("function '" + f.name + "' calls '" + target.name + "' with " + wa_i(op.m) + " arguments, but it expects " + wa_i(target.arity) + "")
+        }
+        return Result::Ok(nil)
+    }
+    if k == "PushInt" || k == "PushBool" || k == "PushChar" || k == "PushNil" || k == "PushStr" || k == "PushLocal" || k == "StoreLocal" || k == "Pop" || k == "Dup" || k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Neg" || k == "Not" || k == "BitNot" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Jump" || k == "JumpIfFalse" || k == "Ret" || k == "Print" || k == "Len" || k == "NewArray" || k == "NewTuple" || k == "Index" || k == "NewStruct" || k == "GetField" || k == "NewEnum" || k == "EnumIs" || k == "EnumPayload" || k == "Nop" || k == "Halt" {
+        return Result::Ok(nil)
+    }
+    wa_unsupported(f, cg_op_text(op))
+}
+
+// (consumidos, producidos)
+fn wa_stack_effect(op: Op) -> (int, int) {
+    let k = op.k
+    if k == "PushInt" || k == "PushBool" || k == "PushChar" || k == "PushNil" || k == "PushStr" || k == "PushLocal" {
+        return (0, 1)
+    }
+    if k == "StoreLocal" || k == "Pop" || k == "JumpIfFalse" {
+        return (1, 0)
+    }
+    if k == "Dup" {
+        return (1, 2)
+    }
+    if k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" {
+        return (2, 1)
+    }
+    if k == "Neg" || k == "Not" || k == "BitNot" || k == "Len" {
+        return (1, 1)
+    }
+    if k == "NewArray" || k == "NewTuple" {
+        return (op.n, 1)
+    }
+    if k == "NewStruct" {
+        return (len(op.list), 1)
+    }
+    if k == "Index" {
+        return (2, 1)
+    }
+    if k == "GetField" {
+        return (1, 1)
+    }
+    if k == "NewEnum" {
+        if op.flag {
+            return (1, 1)
+        }
+        return (0, 1)
+    }
+    if k == "EnumIs" || k == "EnumPayload" {
+        return (1, 1)
+    }
+    if k == "Call" {
+        return (op.m, 1)
+    }
+    if k == "CallNative" || k == "Print" {
+        return (op.n, 1)
+    }
+    return (0, 0)
+}
+
+// ------------------------------------------------------------ análisis de pila
+
+// Anota la altura de `target`; devuelve Err(mensaje) o Ok(¿hay que encolarlo?).
+fn wa_enqueue(f: Func, heights: array, target: int, height: int) -> Result {
+    if target >= len(heights) || target < 0 {
+        let mut shown = "{target}"
+        if target == 9223372036854775807 {
+            shown = "18446744073709551615"
+        }
+        return Result::Err("function '" + f.name + "' jumps to invalid instruction " + shown)
+    }
+    let first = heights[target]
+    if first >= 0 && first != height {
+        return Result::Err("inconsistent operand stack in function '" + f.name + "' at instruction {target}: {first} versus {height} values")
+    }
+    if first >= 0 {
+        return Result::Ok(false)
+    }
+    Result::Ok(true)
+}
+
+fn wa_analyze(g: G, f: Func, web: map) -> Result {
+    if len(f.code) == 0 {
+        return Result::Ok(WaLay { heights: [], stack_base: f.locals, stack_slots: 0, pc_local: f.locals, adds: std::map::new(), fields: std::map::new() })
+    }
+    let n = len(f.code)
+    let mut heights = []
+    let mut i = 0
+    while i < n {
+        heights = std::array::push(heights, -1)
+        i += 1
+    }
+    heights = std::array::set(heights, 0, 0)
+    let mut pending = [0]
+    let mut head = 0
+    let mut maximum = 0
+    while head < len(pending) {
+        let instruction = pending[head]
+        head += 1
+        let height = heights[instruction]
+        let op = f.code[instruction]
+        wa_validate(g, f, op, web)?
+        let (consumed, produced) = wa_stack_effect(op)
+        if height < consumed {
+            return Result::Err("operand stack underflow in function '" + f.name + "' at instruction {instruction}")
+        }
+        let next_height = height - consumed + produced
+        if next_height > maximum {
+            maximum = next_height
+        }
+        if maximum > f.max_stack {
+            return Result::Err("operand stack in function '" + f.name + "' requires {maximum} values, exceeding declared maximum " + wa_i(f.max_stack) + "")
+        }
+        let mut targets = []
+        if op.k == "Jump" {
+            targets = [wa_target(op)]
+        } else if op.k == "JumpIfFalse" {
+            targets = [wa_target(op), instruction + 1]
+        } else if op.k == "Ret" || op.k == "Halt" {
+            targets = []
+        } else {
+            targets = [instruction + 1]
+        }
+        let mut ti = 0
+        for target in targets {
+            let is_fallthrough = target == instruction + 1 && op.k != "Jump"
+            if is_fallthrough && target >= n {
+                return Result::Err("function '" + f.name + "' jumps to invalid instruction {target}")
+            }
+            let push = wa_enqueue(f, heights, target, next_height)?
+            if push {
+                heights = std::array::set(heights, target, next_height)
+                pending = std::array::push(pending, target)
+            }
+            ti += 1
+        }
+    }
+    let (adds, fields) = wa_infer(g, f, heights)?
+    Result::Ok(WaLay { heights: heights, stack_base: f.locals, stack_slots: maximum, pc_local: f.locals + maximum, adds: adds, fields: fields })
+}
+
+// ------------------------------------------------------------ regiones estructuradas
+
+fn wa_has_jumps(f: Func) -> bool {
+    for op in f.code {
+        if op.k == "Jump" || op.k == "JumpIfFalse" {
+            return true
+        }
+    }
+    false
+}
+
+fn wa_is_linear(f: Func, lay: WaLay) -> bool {
+    for h in lay.heights {
+        if h < 0 {
+            return false
+        }
+    }
+    !wa_has_jumps(f)
+}
+
+// (then_jump, else_start, end) o nil.
+fn wa_if_region(f: Func, conditional: int, limit: int) -> any {
+    if conditional >= len(f.code) {
+        return nil
+    }
+    let op = f.code[conditional]
+    if op.k != "JumpIfFalse" {
+        return nil
+    }
+    let else_start = wa_target(op)
+    if else_start < 1 {
+        return nil
+    }
+    let then_jump = else_start - 1
+    if then_jump >= len(f.code) || f.code[then_jump].k != "Jump" {
+        return nil
+    }
+    let end = wa_target(f.code[then_jump])
+    if conditional >= then_jump || end <= else_start || end > limit {
+        return nil
+    }
+    return (then_jump, else_start, end)
+}
+
+// (condición, salto atrás, fin) o nil.
+fn wa_loop_region(f: Func, start: int, limit: int) -> any {
+    let mut condition = start
+    while condition < limit {
+        let op = f.code[condition]
+        if op.k == "JumpIfFalse" {
+            let end = wa_target(op)
+            if end > condition + 1 && end <= limit {
+                let back_jump = end - 1
+                if back_jump < len(f.code) && f.code[back_jump].k == "Jump" && wa_target(f.code[back_jump]) == start {
+                    return (condition, back_jump, end)
+                }
+            }
+        }
+        condition += 1
+    }
+    nil
+}
+
+// loop_targets: has_loop, continue_target, break_target
+fn wa_reducible(f: Func, lay: WaLay, start: int, end: int, has_loop: bool, cont: int, brk: int) -> bool {
+    let mut instruction = start
+    while instruction < end {
+        if lay.heights[instruction] < 0 {
+            instruction += 1
+            continue
+        }
+        let region = wa_loop_region(f, instruction, end)
+        if region != nil {
+            let (condition, back_jump, rend) = region
+            if !wa_reducible(f, lay, instruction, condition, has_loop, cont, brk) || !wa_reducible(f, lay, condition + 1, back_jump, true, instruction, rend) {
+                return false
+            }
+            instruction = rend
+            continue
+        }
+        let op = f.code[instruction]
+        if op.k == "JumpIfFalse" {
+            let r = wa_if_region(f, instruction, end)
+            if r == nil {
+                return false
+            }
+            let (then_jump, else_start, rend) = r
+            if !wa_reducible(f, lay, instruction + 1, then_jump, has_loop, cont, brk) || !wa_reducible(f, lay, else_start, rend, has_loop, cont, brk) {
+                return false
+            }
+            instruction = rend
+        } else if op.k == "Jump" && has_loop && (wa_target(op) == cont || wa_target(op) == brk) {
+            instruction += 1
+        } else if op.k == "Jump" {
+            return false
+        } else {
+            instruction += 1
+        }
+    }
+    true
+}
+
+fn wa_has_reducible(f: Func, lay: WaLay) -> bool {
+    wa_has_jumps(f) && wa_reducible(f, lay, 0, len(f.code), false, 0, 0)
+}
+
+// ------------------------------------------------------------ emisión de operaciones
+
+fn wa_store_const(b: array, local: int, value: int) -> array {
+    wa_local_set(wa_i64_const(b, value), local)
+}
+
+fn wa_binary(b: array, lay: WaLay, height: int, opcode: array) -> array {
+    let output = lay.stack_base + height - 2
+    let mut out = wa_local_get(b, output)
+    out = wa_local_get(out, output + 1)
+    out = std::array::concat(out, opcode)
+    wa_local_set(out, output)
+}
+
+fn wa_comparison(b: array, lay: WaLay, height: int, opcode: array) -> array {
+    let output = lay.stack_base + height - 2
+    let mut out = wa_local_get(b, output)
+    out = wa_local_get(out, output + 1)
+    out = std::array::concat(out, opcode)
+    out = wa_i64_extend_i32_u(out)
+    wa_local_set(out, output)
+}
+
+fn wa_set_pc(b: array, local: int, instruction: int) -> array {
+    wa_local_set(wa_i32_const(b, instruction), local)
+}
+
+fn wa_collection_count(b: array, handle_local: int) -> array {
+    let mut out = wa_local_get(b, handle_local)
+    out = wa_i32_wrap_i64(out)
+    out = wa_i32_const(out, 4)
+    out = wa_i32_sub(out)
+    wa_i32_load(out, 2, 0)
+}
+
+fn wa_allocation_counters(b: array, previous_heap: int) -> array {
+    let mut b2 = b
+    b2 = wa_global_get(b2, 3)
+    b2 = wa_i64_const(b2, 1)
+    b2 = wa_i64_add(b2)
+    b2 = wa_global_set(b2, 3)
+    b2 = wa_global_get(b2, 4)
+    b2 = wa_global_get(b2, 0)
+    b2 = wa_local_get(b2, previous_heap)
+    b2 = wa_i32_sub(b2)
+    b2 = wa_i64_extend_i32_u(b2)
+    b2 = wa_i64_add(b2)
+    b2 = wa_global_set(b2, 4)
+    b2 = wa_global_get(b2, 0)
+    b2 = wa_i64_extend_i32_u(b2)
+    b2 = wa_global_get(b2, 7)
+    b2 = wa_i64_gt_u(b2)
+    b2 = wa_if(b2)
+    b2 = wa_global_get(b2, 0)
+    b2 = wa_i64_extend_i32_u(b2)
+    b2 = wa_global_set(b2, 7)
+    b2 = wa_end(b2)
+    b2
+}
+
+fn wa_emit_heap_rewind(b: array, checkpoint_local: int) -> array {
+    let mut b2 = b
+    b2 = wa_local_get(b2, checkpoint_local)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_i32_const(b2, 0)
+    b2 = wa_global_get(b2, 0)
+    b2 = wa_local_get(b2, checkpoint_local)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_i32_sub(b2)
+    b2 = wa_memory_fill(b2, 0)
+    b2 = wa_global_get(b2, 5)
+    b2 = wa_i64_const(b2, 1)
+    b2 = wa_i64_add(b2)
+    b2 = wa_global_set(b2, 5)
+    b2 = wa_global_get(b2, 6)
+    b2 = wa_global_get(b2, 0)
+    b2 = wa_local_get(b2, checkpoint_local)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_i32_sub(b2)
+    b2 = wa_i64_extend_i32_u(b2)
+    b2 = wa_i64_add(b2)
+    b2 = wa_global_set(b2, 6)
+    b2 = wa_local_get(b2, checkpoint_local)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_global_set(b2, 0)
+    b2
+}
+
+fn wa_emit_map_entry_address(b: array, map: int, index: int, offset: int) -> array {
+    let mut b2 = b
+    b2 = wa_local_get(b2, map)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_local_get(b2, index)
+    b2 = wa_i32_wrap_i64(b2)
+    b2 = wa_i32_const(b2, 24)
+    b2 = wa_i32_mul(b2)
+    b2 = wa_i32_add(b2)
+    if offset != 0 {
+        b2 = wa_i32_const(b2, offset)
+        b2 = wa_i32_add(b2)
+    }
+    b2
+}
+
+// Una instrucción de un solo byte para las operaciones aritméticas/comparaciones.
+fn wa_emit_operation(c: WaEc, instruction: int, height: int, dispatch: int, b: array) -> array {
+    let f = c.f
+    let lay = c.lay
+    let bias = len(c.hi.defs)
+    let op = f.code[instruction]
+    let k = op.k
+    let mut b2 = b
+    let sb = lay.stack_base
+    if k == "PushInt" {
+        b2 = wa_store_const(b2, sb + height, op.n)
+    } else if k == "PushBool" {
+        if op.flag {
+            b2 = wa_store_const(b2, sb + height, 1)
+        } else {
+            b2 = wa_store_const(b2, sb + height, 0)
+        }
+    } else if k == "PushChar" {
+        b2 = wa_store_const(b2, sb + height, std::text::char_code(std::text::chars(op.s)[0]))
+    } else if k == "PushNil" {
+        b2 = wa_store_const(b2, sb + height, 0)
+    } else if k == "PushStr" {
+        b2 = wa_store_const(b2, sb + height, c.st.handles[op.n])
+    } else if k == "PushLocal" {
+        b2 = wa_local_get(b2, op.n)
+        b2 = wa_local_set(b2, sb + height)
+    } else if k == "StoreLocal" {
+        b2 = wa_local_get(b2, sb + height - 1)
+        b2 = wa_local_set(b2, op.n)
+    } else if k == "Pop" {
+    } else if k == "Dup" {
+        b2 = wa_local_get(b2, sb + height - 1)
+        b2 = wa_local_set(b2, sb + height)
+    } else if k == "Add" && std::map::contains(lay.adds, "{instruction}") {
+        let output = sb + height - 2
+        b2 = wa_local_get(b2, output)
+        b2 = wa_local_get(b2, output + 1)
+        b2 = wa_call(b2, c.concat)
+        b2 = wa_local_set(b2, output)
+    } else if k == "Add" {
+        b2 = wa_binary(b2, lay, height, [124])
+    } else if k == "Sub" {
+        b2 = wa_binary(b2, lay, height, [125])
+    } else if k == "Mul" {
+        b2 = wa_binary(b2, lay, height, [126])
+    } else if k == "Div" {
+        b2 = wa_binary(b2, lay, height, [127])
+    } else if k == "Mod" {
+        b2 = wa_binary(b2, lay, height, [129])
+    } else if k == "BitAnd" {
+        b2 = wa_binary(b2, lay, height, [131])
+    } else if k == "BitOr" {
+        b2 = wa_binary(b2, lay, height, [132])
+    } else if k == "BitXor" {
+        b2 = wa_binary(b2, lay, height, [133])
+    } else if k == "Eq" {
+        b2 = wa_comparison(b2, lay, height, [81])
+    } else if k == "Neq" {
+        b2 = wa_comparison(b2, lay, height, [82])
+    } else if k == "Lt" {
+        b2 = wa_comparison(b2, lay, height, [83])
+    } else if k == "Gt" {
+        b2 = wa_comparison(b2, lay, height, [85])
+    } else if k == "Lte" {
+        b2 = wa_comparison(b2, lay, height, [87])
+    } else if k == "Gte" {
+        b2 = wa_comparison(b2, lay, height, [89])
+    } else if k == "Neg" {
+        let slot = sb + height - 1
+        b2 = wa_i64_const(b2, 0)
+        b2 = wa_local_get(b2, slot)
+        b2 = wa_i64_sub(b2)
+        b2 = wa_local_set(b2, slot)
+    } else if k == "Not" {
+        let slot = sb + height - 1
+        b2 = wa_local_get(b2, slot)
+        b2 = wa_i64_eqz(b2)
+        b2 = wa_i64_extend_i32_u(b2)
+        b2 = wa_local_set(b2, slot)
+    } else if k == "BitNot" {
+        let slot = sb + height - 1
+        b2 = wa_local_get(b2, slot)
+        b2 = wa_i64_const(b2, -1)
+        b2 = wa_i64_xor(b2)
+        b2 = wa_local_set(b2, slot)
+    } else if k == "Call" {
+        let first = height - op.m
+        let mut argument = first
+        while argument < height {
+            b2 = wa_local_get(b2, sb + argument)
+            argument += 1
+        }
+        b2 = wa_call(b2, op.n + bias)
+        b2 = wa_local_set(b2, sb + first)
+    } else if k == "CallNative" && op.s == "std::map::new" {
+        let output = sb + height
+        b2 = wa_i32_const(b2, 0)
+        b2 = wa_i32_const(b2, 0)
+        b2 = wa_call(b2, c.alloc)
+        b2 = wa_local_set(b2, output)
+    } else if k == "CallNative" && op.s == "std::map::length" {
+        let output = sb + height - 1
+        b2 = wa_collection_count(b2, output)
+        b2 = wa_i64_extend_i32_u(b2)
+        b2 = wa_local_set(b2, output)
+    } else if k == "CallNative" && (op.s == "std::map::keys" || op.s == "std::map::values") {
+        b2 = wa_emit_map_keys_or_values(c, height, op.s == "std::map::keys", b2)
+    } else if k == "CallNative" && op.s == "std::map::insert_new" {
+        b2 = wa_emit_map_insert_new(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::map::insert" {
+        b2 = wa_emit_map_insert(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::map::remove" {
+        b2 = wa_emit_map_remove(c, height, b2)
+    } else if k == "CallNative" && (op.s == "std::map::contains" || op.s == "std::map::get") {
+        b2 = wa_emit_map_lookup(c, height, op.s == "std::map::contains", b2)
+    } else if k == "CallNative" && op.s == "std::text::equals" {
+        let output = sb + height - 2
+        b2 = wa_local_get(b2, output)
+        b2 = wa_local_get(b2, output + 1)
+        b2 = wa_call(b2, c.seq)
+        b2 = wa_local_set(b2, output)
+    } else if k == "CallNative" && op.s == "std::text::hash64" {
+        let output = sb + height - 1
+        b2 = wa_local_get(b2, output)
+        b2 = wa_call(b2, c.shash)
+        b2 = wa_local_set(b2, output)
+    } else if k == "CallNative" && wa_heap_arity(op.s) >= 0 {
+        b2 = wa_emit_wasm_heap_native(op.s, c, height, b2)
+    } else if k == "CallNative" && op.s == "std::array::set" {
+        b2 = wa_emit_array_set(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::array::push" {
+        b2 = wa_emit_array_push(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::array::pop" {
+        b2 = wa_emit_array_pop(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::array::slice" {
+        b2 = wa_emit_array_slice(c, height, b2)
+    } else if k == "CallNative" && op.s == "std::array::concat" {
+        b2 = wa_emit_array_concat(c, height, b2)
+    } else if k == "CallNative" {
+        let first = height - op.n
+        let mut argument = first
+        while argument < height {
+            b2 = wa_local_get(b2, sb + argument)
+            argument += 1
+        }
+        b2 = wa_call(b2, std::map::get(c.hi.natives, op.s))
+        let imp = std::map::get(c.hi.web, op.s)
+        if imp[3] {
+            b2 = wa_local_set(b2, sb + first)
+        } else {
+            b2 = wa_store_const(b2, sb + first, 0)
+        }
+    } else if k == "Print" {
+        b2 = wa_local_get(b2, sb + height - 1)
+        b2 = wa_call(b2, c.hi.print)
+        b2 = wa_store_const(b2, sb + height - 1, 0)
+    } else if k == "Jump" {
+        b2 = wa_set_pc(b2, c.pc, wa_target(op))
+        b2 = wa_br(b2, dispatch)
+        return b2
+    } else if k == "JumpIfFalse" {
+        b2 = wa_local_get(b2, sb + height - 1)
+        b2 = wa_i64_eqz(b2)
+        b2 = wa_if(b2)
+        b2 = wa_set_pc(b2, c.pc, wa_target(op))
+        b2 = wa_else(b2)
+        b2 = wa_set_pc(b2, c.pc, instruction + 1)
+        b2 = wa_end(b2)
+        b2 = wa_br(b2, dispatch)
+        return b2
+    } else if k == "Ret" || k == "Halt" {
+        if height == 0 {
+            b2 = wa_i64_const(b2, 0)
+        } else {
+            b2 = wa_local_get(b2, sb + height - 1)
+        }
+        b2 = wa_return(b2)
+        return b2
+    } else if k == "NewArray" || k == "NewTuple" || k == "NewStruct" {
+        let mut count = op.n
+        if k == "NewStruct" {
+            count = len(op.list)
+        }
+        let first = height - count
+        b2 = wa_i32_const(b2, count * 8)
+        b2 = wa_i32_const(b2, count)
+        b2 = wa_call(b2, c.alloc)
+        b2 = wa_local_set(b2, c.scratch1)
+        let mut element = 0
+        while element < count {
+            b2 = wa_local_get(b2, c.scratch1)
+            b2 = wa_i32_wrap_i64(b2)
+            b2 = wa_i32_const(b2, element * 8)
+            b2 = wa_i32_add(b2)
+            b2 = wa_local_get(b2, sb + first + element)
+            b2 = wa_i64_store(b2, 3, 0)
+            element += 1
+        }
+        b2 = wa_local_get(b2, c.scratch1)
+        b2 = wa_local_set(b2, sb + first)
+    } else if k == "NewEnum" {
+        let mut output_slot = height
+        if op.flag {
+            output_slot = height - 1
+        }
+        let output = sb + output_slot
+        b2 = wa_i32_const(b2, 16)
+        b2 = wa_i32_const(b2, 2)
+        b2 = wa_call(b2, c.alloc)
+        b2 = wa_local_set(b2, c.scratch1)
+        let mut slot = 0
+        while slot < 2 {
+            b2 = wa_local_get(b2, c.scratch1)
+            b2 = wa_i32_wrap_i64(b2)
+            if slot != 0 {
+                b2 = wa_i32_const(b2, 8)
+                b2 = wa_i32_add(b2)
+            }
+            if slot == 0 {
+                b2 = wa_i64_const(b2, wa_enum_tag(op.s, op.s2))
+            } else if op.flag {
+                b2 = wa_local_get(b2, output)
+            } else {
+                b2 = wa_i64_const(b2, 0)
+            }
+            b2 = wa_i64_store(b2, 3, 0)
+            slot += 1
+        }
+        b2 = wa_local_get(b2, c.scratch1)
+        b2 = wa_local_set(b2, output)
+    } else if k == "EnumIs" {
+        let output = sb + height - 1
+        b2 = wa_local_get(b2, output)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i64_load(b2, 3, 0)
+        b2 = wa_i64_const(b2, wa_enum_tag(op.s, op.s2))
+        b2 = wa_i64_eq(b2)
+        b2 = wa_i64_extend_i32_u(b2)
+        b2 = wa_local_set(b2, output)
+    } else if k == "EnumPayload" {
+        let output = sb + height - 1
+        b2 = wa_local_get(b2, output)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i32_const(b2, 8)
+        b2 = wa_i32_add(b2)
+        b2 = wa_i64_load(b2, 3, 0)
+        b2 = wa_local_set(b2, output)
+    } else if k == "GetField" {
+        let output = sb + height - 1
+        let field = std::map::get(lay.fields, "{instruction}")
+        b2 = wa_local_get(b2, output)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i32_const(b2, field * 8)
+        b2 = wa_i32_add(b2)
+        b2 = wa_i64_load(b2, 3, 0)
+        b2 = wa_local_set(b2, output)
+    } else if k == "Index" {
+        let output = sb + height - 2
+        let index = output + 1
+        b2 = wa_local_get(b2, index)
+        b2 = wa_i64_const(b2, 0)
+        b2 = wa_i64_lt_s(b2)
+        b2 = wa_if(b2)
+        b2 = wa_unreachable(b2)
+        b2 = wa_end(b2)
+        b2 = wa_local_get(b2, index)
+        b2 = wa_local_get(b2, output)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i32_const(b2, 4)
+        b2 = wa_i32_sub(b2)
+        b2 = wa_i32_load(b2, 2, 0)
+        b2 = wa_i64_extend_i32_u(b2)
+        b2 = wa_i64_ge_u(b2)
+        b2 = wa_if(b2)
+        b2 = wa_unreachable(b2)
+        b2 = wa_end(b2)
+        b2 = wa_local_get(b2, output)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_local_get(b2, index)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i32_const(b2, 3)
+        b2 = wa_i32_shl(b2)
+        b2 = wa_i32_add(b2)
+        b2 = wa_i64_load(b2, 3, 0)
+        b2 = wa_local_set(b2, output)
+    } else if k == "Len" {
+        let slot = sb + height - 1
+        b2 = wa_local_get(b2, slot)
+        b2 = wa_i32_wrap_i64(b2)
+        b2 = wa_i32_const(b2, 4)
+        b2 = wa_i32_sub(b2)
+        b2 = wa_i32_load(b2, 2, 0)
+        b2 = wa_i64_extend_i32_u(b2)
+        b2 = wa_local_set(b2, slot)
+    }
+    if dispatch >= 0 {
+        b2 = wa_set_pc(b2, c.pc, instruction + 1)
+        b2 = wa_br(b2, dispatch)
+    }
+    b2
+}
+
+// ------------------------------------------------------------ cuerpo de una función
+
+// Rama activa de un bucle directo: has, continue_target, break_target, profundidades.
+fn wa_direct_region(c: WaEc, start: int, end: int, has: bool, ct: int, bt: int, cd: int, bd: int, b: array) -> array {
+    let f = c.f
+    let lay = c.lay
+    let sb = lay.stack_base
+    let mut b2 = b
+    let mut instruction = start
+    while instruction < end {
+        if lay.heights[instruction] < 0 {
+            instruction += 1
+            continue
+        }
+        let lr = wa_loop_region(f, instruction, end)
+        if lr != nil {
+            let (condition, back_jump, rend) = lr
+            b2 = wa_block(b2)
+            b2 = wa_loop(b2)
+            b2 = wa_direct_region(c, instruction, condition, has, ct, bt, cd + 2, bd + 2, b2)
+            b2 = wa_marker(b2)
+            let condition_height = lay.heights[condition]
+            b2 = wa_local_get(b2, sb + condition_height - 1)
+            b2 = wa_i64_eqz(b2)
+            b2 = wa_br_if(b2, 1)
+            b2 = wa_direct_region(c, condition + 1, back_jump, true, instruction, rend, 0, 1, b2)
+            if lay.heights[back_jump] >= 0 {
+                b2 = wa_marker(b2)
+            }
+            b2 = wa_br(b2, 0)
+            b2 = wa_end(b2)
+            b2 = wa_end(b2)
+            instruction = rend
+        } else if f.code[instruction].k == "JumpIfFalse" {
+            let (then_jump, else_start, rend) = wa_if_region(f, instruction, end)
+            b2 = wa_marker(b2)
+            let condition_height = lay.heights[instruction]
+            b2 = wa_local_get(b2, sb + condition_height - 1)
+            b2 = wa_i64_eqz(b2)
+            b2 = wa_i32_eqz(b2)
+            b2 = wa_if(b2)
+            b2 = wa_direct_region(c, instruction + 1, then_jump, has, ct, bt, cd + 1, bd + 1, b2)
+            if lay.heights[then_jump] >= 0 {
+                b2 = wa_marker(b2)
+            }
+            b2 = wa_else(b2)
+            b2 = wa_direct_region(c, else_start, rend, has, ct, bt, cd + 1, bd + 1, b2)
+            b2 = wa_end(b2)
+            instruction = rend
+        } else if f.code[instruction].k == "Jump" {
+            b2 = wa_marker(b2)
+            if wa_target(f.code[instruction]) == ct {
+                b2 = wa_br(b2, cd)
+            } else {
+                b2 = wa_br(b2, bd)
+            }
+            instruction += 1
+        } else {
+            b2 = wa_marker(b2)
+            let height = lay.heights[instruction]
+            b2 = wa_emit_operation(c, instruction, height, -1, b2)
+            instruction += 1
+        }
+    }
+    b2
+}
+
+// Cuerpo de la función (locales + instrucciones + end). Los marcadores son -1.
+fn wa_compile_function(g: G, f: Func, lay: WaLay, st: WaStr, hi: WaHi, concat: int, alloc: int, seq: int, shash: int) -> Result {
+    if f.locals < f.arity {
+        return Result::Err("local count underflow in function '" + f.name + "'")
+    }
+    let extra = f.locals - f.arity
+    let linear = wa_is_linear(f, lay)
+    let direct_control = wa_has_reducible(f, lay)
+    let direct = linear || direct_control
+    let numeric_locals = extra + lay.stack_slots + 2
+    let mut groups = []
+    if numeric_locals > 0 {
+        groups = std::array::push(groups, std::array::concat(wa_uleb(numeric_locals), [126]))
+    }
+    if !direct {
+        groups = std::array::push(groups, [1, 127])
+    }
+    let mut b = wa_vec(groups)
+    let c = WaEc { g: g, f: f, lay: lay, st: st, hi: hi, concat: concat, alloc: alloc, seq: seq, shash: shash, scratch1: lay.pc_local, scratch2: lay.pc_local + 1, pc: lay.pc_local + 2 }
+    let mut reachable = []
+    let mut ri = 0
+    for h in lay.heights {
+        if h >= 0 {
+            reachable = std::array::push(reachable, ri)
+        }
+        ri += 1
+    }
+    if len(reachable) == 0 {
+        b = wa_i64_const(b, 0)
+        b = wa_end(b)
+        return Result::Ok(b)
+    }
+    if linear {
+        for instruction in reachable {
+            b = wa_marker(b)
+            b = wa_emit_operation(c, instruction, lay.heights[instruction], -1, b)
+        }
+        b = wa_end(b)
+        return Result::Ok(b)
+    }
+    if direct_control {
+        b = wa_direct_region(c, 0, len(f.code), false, 0, 0, 0, 0, b)
+        b = wa_end(b)
+        return Result::Ok(b)
+    }
+    // Saltos arbitrarios: despacho O(1) con br_table.
+    b = wa_block(b)
+    b = wa_loop(b)
+    for x in reachable {
+        b = wa_block(b)
+    }
+    let default_depth = len(reachable) + 1
+    let mut targets = []
+    let mut ti = 0
+    while ti < len(f.code) {
+        targets = std::array::push(targets, default_depth)
+        ti += 1
+    }
+    let mut depth = 0
+    for instruction in reachable {
+        targets = std::array::set(targets, instruction, depth)
+        depth += 1
+    }
+    b = wa_local_get(b, c.pc)
+    b = wa_br_table(b, targets, default_depth)
+    let mut position = 0
+    for instruction in reachable {
+        b = wa_end(b)
+        b = wa_nop_marker(b)
+        let dispatch_depth = len(reachable) - position - 1
+        b = wa_emit_operation(c, instruction, lay.heights[instruction], dispatch_depth, b)
+        position += 1
+    }
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_unreachable(b)
+    b = wa_i64_const(b, 0)
+    b = wa_end(b)
+    Result::Ok(b)
+}
+fn wa_emit_wasm_heap_native(name: string, c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let mut output_slot = height
+    if name == "std::wasm::heap_set_limit" || name == "std::wasm::heap_restore" || name == "std::wasm::heap_scope_end" {
+        output_slot = height - 1
+    }
+    let output = c.lay.stack_base + output_slot 
+    if name == "std::wasm::heap_used" || name == "std::wasm::heap_checkpoint" {
+        b = wa_global_get(b, 0)
+        b = wa_i64_extend_i32_u(b)
+    } else if name == "std::wasm::heap_capacity" {
+        b = wa_memory_size(b, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_i64_const(b, 65536)
+        b = wa_i64_mul(b)
+    } else if name == "std::wasm::heap_limit" {
+        b = wa_global_get(b, 1)
+        b = wa_i64_extend_i32_u(b)
+    } else if name == "std::wasm::heap_allocations" {
+        b = wa_global_get(b, 3)
+    } else if name == "std::wasm::heap_allocated_bytes" {
+        b = wa_global_get(b, 4)
+    } else if name == "std::wasm::heap_restores" {
+        b = wa_global_get(b, 5)
+    } else if name == "std::wasm::heap_reclaimed_bytes" {
+        b = wa_global_get(b, 6)
+    } else if name == "std::wasm::heap_peak_used" {
+        b = wa_global_get(b, 7)
+    } else if name == "std::wasm::heap_reset_counters" {
+        for counter in 3..=6 {
+            b = wa_i64_const(b, 0)
+            b = wa_global_set(b, counter)
+        }
+        b = wa_global_get(b, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_global_set(b, 7)
+        b = wa_i64_const(b, 1)
+    } else if name == "std::wasm::heap_scope_begin" {
+        b = wa_global_get(b, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_local_set(b, output)
+        b = wa_i32_const(b, 8)
+        b = wa_i32_const(b, 2)
+ b = wa_call(b, c.alloc)
+        b = wa_local_set(b, c.scratch1)
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_global_get(b, 8)
+ b = wa_i32_store(b, 2, 0)
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+ b = wa_i32_store(b, 2, 4)
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_global_set(b, 8)
+        return b
+    } else if name == "std::wasm::heap_set_limit" {
+        b = wa_local_get(b, output)
+        b = wa_i64_const(b, 0)
+        b = wa_i64_lt_s(b)
+        b = wa_if(b)
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, output)
+        b = wa_else(b)
+        b = wa_local_get(b, output)
+        b = wa_i64_const(b, 4294967295)
+        b = wa_i64_gt_u(b)
+        b = wa_local_get(b, output)
+        b = wa_global_get(b, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_i64_lt_u(b)
+        b = wa_i32_or(b)
+        b = wa_if(b)
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, output)
+        b = wa_else(b)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+        b = wa_global_set(b, 1)
+        b = wa_i64_const(b, 1)
+        b = wa_local_set(b, output)
+        b = wa_end(b)
+        b = wa_end(b)
+        return b
+    } else if name == "std::wasm::heap_scope_end" {
+        b = wa_global_get(b, 8)
+        b = wa_i32_eqz(b)
+        b = wa_if(b)
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, output)
+        b = wa_else(b)
+        b = wa_global_get(b, 8)
+ b = wa_i32_load(b, 2, 4)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_local_get(b, output)
+        b = wa_i64_ne(b)
+        b = wa_if(b)
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, output)
+        b = wa_else(b)
+        b = wa_global_get(b, 8)
+ b = wa_i32_load(b, 2, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_local_set(b, c.scratch1)
+        b = wa_emit_heap_rewind(b, output)
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_global_set(b, 8)
+        b = wa_i64_const(b, 1)
+        b = wa_local_set(b, output)
+        b = wa_end(b)
+        b = wa_end(b)
+        return b
+    } else if name == "std::wasm::heap_restore" {
+        b = wa_local_get(b, output)
+        b = wa_i64_const(b, 0)
+        b = wa_i64_lt_s(b)
+        b = wa_local_get(b, output)
+        b = wa_global_get(b, 0)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_i64_gt_u(b)
+        b = wa_i32_or(b)
+        b = wa_local_get(b, output)
+        b = wa_global_get(b, 2)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_i64_lt_u(b)
+        b = wa_i32_or(b)
+        b = wa_if(b)
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, output)
+        b = wa_else(b)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i32_const(b, 0)
+        b = wa_global_get(b, 0)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i32_sub(b)
+        b = wa_memory_fill(b, 0)
+        b = wa_global_get(b, 5)
+        b = wa_i64_const(b, 1)
+        b = wa_i64_add(b)
+        b = wa_global_set(b, 5)
+        b = wa_global_get(b, 6)
+        b = wa_global_get(b, 0)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i32_sub(b)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_i64_add(b)
+        b = wa_global_set(b, 6)
+        b = wa_local_get(b, output)
+        b = wa_i32_wrap_i64(b)
+        b = wa_global_set(b, 0)
+        b = wa_i32_const(b, 0)
+        b = wa_global_set(b, 8)
+        b = wa_i64_const(b, 1)
+        b = wa_local_set(b, output)
+        b = wa_end(b)
+        return b
+    }
+    b = wa_local_set(b, output)
+    b
+}
+fn wa_emit_map_lookup(c: WaEc, height: int, contains: bool, b0: array) -> array {
+    let mut b = b0
+    let map = c.lay.stack_base + (height - 2) 
+    let key = map + 1
+            b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_collection_count(b, map)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, map)
+    b = wa_br(b, 2)
+    b = wa_end(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 0)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.shash)
+    b = wa_i64_eq(b)
+    b = wa_if(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 8)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.seq)
+    b = wa_i64_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_if(b)
+    if contains {
+        b = wa_i64_const(b, 1)
+    } else {
+        b = wa_emit_map_entry_address(b, map, c.scratch1, 16)
+        b = wa_i64_load(b, 3, 0)
+    }
+    b = wa_local_set(b, map)
+    b = wa_br(b, 3)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b
+}
+
+fn wa_emit_map_remove(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let map = c.lay.stack_base + (height - 2) 
+    let key = map + 1
+            b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_collection_count(b, map)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, -1)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_br(b, 2)
+    b = wa_end(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 0)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.shash)
+    b = wa_i64_eq(b)
+    b = wa_if(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 8)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.seq)
+    b = wa_i64_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_if(b)
+    b = wa_br(b, 3)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i64_const(b, -1)
+    b = wa_i64_eq(b)
+    b = wa_if(b)
+    b = wa_else(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, key)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, key)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, key)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, key)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_i32_add(b)
+    b = wa_collection_count(b, map)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_local_get(b, key)
+    b = wa_i64_sub(b)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_sub(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, map)
+    b = wa_end(b)
+    b
+}
+
+fn wa_emit_map_keys_or_values(c: WaEc, height: int, is_keys: bool, b0: array) -> array {
+    let mut b = b0
+    let map = c.lay.stack_base + (height - 1) 
+            b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 536870911)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_collection_count(b, map)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch2)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_collection_count(b, map)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_br_if(b, 1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+ b = wa_emit_map_entry_address(b, map, c.scratch2, if is_keys { 8 } else { 16 })
+    b = wa_i64_load(b, 3, 0)
+    b = wa_i64_store(b, 3, 0)
+
+    b = wa_local_get(b, c.scratch2)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch2)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, map)
+    b
+}
+
+fn wa_emit_map_insert(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let map = c.lay.stack_base + (height - 3) 
+    let key = map + 1
+    let value = map + 2
+            b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 178956970)
+    b = wa_i32_ge_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, map)
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_block(b)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_br_if(b, 1)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 0)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.shash)
+    b = wa_i64_eq(b)
+    b = wa_if(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 8)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.seq)
+    b = wa_i64_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_if(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 16)
+    b = wa_local_get(b, value)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 4)
+    b = wa_i32_sub(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+    b = wa_i32_store(b, 2, 0)
+    b = wa_br(b, 4)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_emit_map_entry_address(b, map, c.scratch1, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.shash)
+    b = wa_i64_store(b, 3, 0)
+    for pair in [[8, key], [16, value]] {
+        let offset = pair[0]
+        let local = pair[1]
+        b = wa_emit_map_entry_address(b, map, c.scratch1, offset)
+        b = wa_local_get(b, local)
+        b = wa_i64_store(b, 3, 0)
+    }
+    b = wa_end(b)
+    b
+}
+
+fn wa_emit_map_insert_new(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let map = c.lay.stack_base + (height - 3) 
+    let key = map + 1
+    let value = map + 2
+            b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 178956970)
+    b = wa_i32_ge_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_collection_count(b, map)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_br_if(b, 1)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_i32_add(b)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_local_get(b, key)
+ b = wa_call(b, c.shash)
+    b = wa_i64_eq(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, map)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, map)
+    b = wa_i32_const(b, 24)
+    b = wa_i32_mul(b)
+ b = wa_memory_copy(b)
+    for pair in [[0, key], [1, key], [2, value]] {
+        let slot = pair[0]
+        let local = pair[1]
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_collection_count(b, map)
+        b = wa_i32_const(b, 24)
+        b = wa_i32_mul(b)
+        b = wa_i32_add(b)
+        if slot != 0 {
+            b = wa_i32_const(b, slot * 8)
+            b = wa_i32_add(b)
+        }
+        b = wa_local_get(b, local)
+        if slot == 0 {
+ b = wa_call(b, c.shash)
+        }
+        b = wa_i64_store(b, 3, 0)
+    }
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, map)
+    b
+}
+
+fn wa_emit_array_set(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let output = c.lay.stack_base + (height - 3) 
+    let index = output + 1
+    let value = output + 2
+            b = wa_local_get(b, index)
+    b = wa_i64_const(b, 0)
+    b = wa_i64_lt_s(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, index)
+    b = wa_collection_count(b, output)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_ge_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_collection_count(b, output)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, output)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, index)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, value)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, output)
+    b
+}
+
+fn wa_emit_array_push(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let output = c.lay.stack_base + (height - 2) 
+    let value = output + 1
+            b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 536870911)
+    b = wa_i32_ge_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, output)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, value)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, output)
+    b
+}
+
+fn wa_emit_array_pop(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let output = c.lay.stack_base + (height - 1) 
+        b = wa_collection_count(b, output)
+    b = wa_i32_eqz(b)
+    b = wa_if(b)
+    // Empty arrays are already the correct persistent result.
+    b = wa_else(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, output)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, output)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_sub(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, output)
+    b = wa_end(b)
+    b
+}
+
+fn wa_emit_array_slice(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let output = c.lay.stack_base + (height - 3) 
+    let start = output + 1
+    let end = output + 2
+    for index in [start, end] {
+        b = wa_local_get(b, index)
+        b = wa_i64_const(b, 0)
+        b = wa_i64_lt_s(b)
+        b = wa_if(b)
+        b = wa_unreachable(b)
+        b = wa_end(b)
+    }
+    b = wa_local_get(b, start)
+    b = wa_local_get(b, end)
+    b = wa_i64_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, end)
+    b = wa_collection_count(b, output)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_local_get(b, end)
+    b = wa_local_get(b, start)
+    b = wa_i64_sub(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_local_get(b, end)
+    b = wa_local_get(b, start)
+    b = wa_i64_sub(b)
+    b = wa_i32_wrap_i64(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, output)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, start)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, end)
+    b = wa_local_get(b, start)
+    b = wa_i64_sub(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, output)
+    b
+}
+
+fn wa_emit_array_concat(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let left = c.lay.stack_base + (height - 2) 
+    let right = left + 1
+        b = wa_collection_count(b, right)
+    b = wa_i32_const(b, 536870911)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_collection_count(b, left)
+    b = wa_i32_const(b, 536870911)
+    b = wa_collection_count(b, right)
+    b = wa_i32_sub(b)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_collection_count(b, left)
+    b = wa_collection_count(b, right)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_collection_count(b, left)
+    b = wa_collection_count(b, right)
+    b = wa_i32_add(b)
+ b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, left)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, left)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, left)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, right)
+    b = wa_i32_wrap_i64(b)
+    b = wa_collection_count(b, right)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, left)
+    b
+}
+
+fn wa_compile_string_hash() -> array {
+    let mut b = wa_vec([[3, 127], [1, 126]])
+    b = wa_local_get(b, 0)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_set(b, 1)
+    b = wa_local_get(b, 0)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shr_u(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_set(b, 2)
+    b = wa_i64_const(b, -3750763034362895579)
+    b = wa_local_set(b, 4)
+    b = wa_loop(b)
+    b = wa_local_get(b, 3)
+    b = wa_local_get(b, 2)
+    b = wa_i32_ge_u(b)
+    b = wa_if(b)
+    b = wa_local_get(b, 4)
+    b = wa_return(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 4)
+    b = wa_local_get(b, 1)
+    b = wa_local_get(b, 3)
+    b = wa_i32_add(b)
+ b = wa_i64_load8_u(b, 0, 0)
+    b = wa_i64_xor(b)
+    b = wa_i64_const(b, 1099511628211)
+    b = wa_i64_mul(b)
+    b = wa_local_set(b, 4)
+    b = wa_local_get(b, 3)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_local_set(b, 3)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_unreachable(b)
+    b = wa_i64_const(b, 0)
+    b = wa_end(b)
+    b
+}
+
+fn wa_compile_string_equals() -> array {
+    let mut b = wa_vec([[4, 127]])
+    b = wa_local_get(b, 0)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shr_u(b)
+    b = wa_local_get(b, 1)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shr_u(b)
+    b = wa_i64_ne(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, 0)
+    b = wa_return(b)
+    b = wa_end(b)
+    for pair in [[0, 2], [1, 3]] {
+        let parameter = pair[0]
+        let pointer = pair[1]
+        b = wa_local_get(b, parameter)
+        b = wa_i32_wrap_i64(b)
+        b = wa_local_set(b, pointer)
+    }
+    b = wa_local_get(b, 0)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shr_u(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_set(b, 4)
+    b = wa_loop(b)
+    b = wa_local_get(b, 5)
+    b = wa_local_get(b, 4)
+    b = wa_i32_ge_u(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, 1)
+    b = wa_return(b)
+    b = wa_end(b)
+    for pointer in [2, 3] {
+        b = wa_local_get(b, pointer)
+        b = wa_local_get(b, 5)
+        b = wa_i32_add(b)
+ b = wa_i64_load8_u(b, 0, 0)
+    }
+    b = wa_i64_ne(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, 0)
+    b = wa_return(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 5)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_local_set(b, 5)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_unreachable(b)
+    b = wa_i64_const(b, 0)
+    b = wa_end(b)
+    b
+}
+
+fn wa_compile_string_concat() -> array {
+    let mut b = wa_vec([[10, 127]])
+    for triple in [[0, 2, 4], [1, 3, 5]] {
+        let parameter = triple[0]
+        let pointer = triple[1]
+        let length = triple[2]
+        b = wa_local_get(b, parameter)
+        b = wa_i32_wrap_i64(b)
+        b = wa_local_set(b, pointer)
+        b = wa_local_get(b, parameter)
+        b = wa_i64_const(b, 32)
+        b = wa_i64_shr_u(b)
+        b = wa_i32_wrap_i64(b)
+        b = wa_local_set(b, length)
+    }
+
+    b = wa_global_get(b, 0)
+    b = wa_local_set(b, 6)
+    b = wa_global_get(b, 0)
+    b = wa_i32_const(b, 4)
+    b = wa_i32_add(b)
+    b = wa_local_set(b, 7)
+
+    b = wa_local_get(b, 4)
+    b = wa_local_get(b, 5)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 8)
+    b = wa_local_get(b, 4)
+    b = wa_i32_lt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 7)
+    b = wa_local_get(b, 8)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 9)
+    b = wa_local_get(b, 7)
+    b = wa_i32_lt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 9)
+    b = wa_global_get(b, 1)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_memory_size(b, 0)
+    b = wa_local_set(b, 10)
+    b = wa_local_get(b, 9)
+    b = wa_i32_const(b, 16)
+    b = wa_i32_shr_u(b)
+    b = wa_local_get(b, 9)
+    b = wa_i32_const(b, 65_535)
+    b = wa_i32_and(b)
+    b = wa_i32_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 11)
+    b = wa_local_get(b, 10)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_local_get(b, 11)
+    b = wa_local_get(b, 10)
+    b = wa_i32_sub(b)
+    b = wa_memory_grow(b, 0)
+    b = wa_i32_const(b, -1)
+    b = wa_i32_eq(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_end(b)
+
+        b = wa_local_get(b, 6)
+    b = wa_local_get(b, 2)
+    b = wa_i32_const(b, 4)
+    b = wa_i32_sub(b)
+    b = wa_i32_load(b, 2, 0)
+    b = wa_local_get(b, 3)
+    b = wa_i32_const(b, 4)
+    b = wa_i32_sub(b)
+    b = wa_i32_load(b, 2, 0)
+    b = wa_i32_add(b)
+    b = wa_i32_store(b, 2, 0)
+
+    b = wa_local_get(b, 7)
+    b = wa_local_get(b, 2)
+    b = wa_local_get(b, 4)
+ b = wa_memory_copy(b)
+    b = wa_local_get(b, 7)
+    b = wa_local_get(b, 4)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, 3)
+    b = wa_local_get(b, 5)
+ b = wa_memory_copy(b)
+
+    b = wa_local_get(b, 9)
+    b = wa_i32_const(b, -4)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 9)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, -4)
+    b = wa_i32_and(b)
+    b = wa_global_set(b, 0)
+    b = wa_allocation_counters(b, 6)
+
+    b = wa_local_get(b, 8)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shl(b)
+    b = wa_local_get(b, 7)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_or(b)
+    b = wa_end(b)
+    b
+}
+
+fn wa_compile_host_string_allocator() -> array {
+    let mut b = wa_vec([[5, 127]])
+    b = wa_local_get(b, 1)
+    b = wa_local_get(b, 0)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_global_get(b, 0)
+    b = wa_local_tee(b, 2)
+    b = wa_i32_const(b, 4)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 3)
+    b = wa_local_get(b, 0)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 4)
+    b = wa_local_get(b, 3)
+    b = wa_i32_lt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 4)
+    b = wa_global_get(b, 1)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+
+    b = wa_memory_size(b, 0)
+    b = wa_local_set(b, 5)
+    b = wa_local_get(b, 4)
+    b = wa_i32_const(b, 16)
+    b = wa_i32_shr_u(b)
+    b = wa_local_get(b, 4)
+    b = wa_i32_const(b, 65_535)
+    b = wa_i32_and(b)
+    b = wa_i32_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_i32_add(b)
+    b = wa_local_tee(b, 6)
+    b = wa_local_get(b, 5)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_local_get(b, 6)
+    b = wa_local_get(b, 5)
+    b = wa_i32_sub(b)
+    b = wa_memory_grow(b, 0)
+    b = wa_i32_const(b, -1)
+    b = wa_i32_eq(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_end(b)
+
+    b = wa_local_get(b, 2)
+    b = wa_local_get(b, 1)
+ b = wa_i32_store(b, 2, 0)
+
+    b = wa_local_get(b, 4)
+    b = wa_i32_const(b, -4)
+    b = wa_i32_gt_u(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b = wa_local_get(b, 4)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_add(b)
+    b = wa_i32_const(b, -4)
+    b = wa_i32_and(b)
+    b = wa_global_set(b, 0)
+    b = wa_allocation_counters(b, 2)
+
+    b = wa_local_get(b, 0)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_const(b, 32)
+    b = wa_i64_shl(b)
+    b = wa_local_get(b, 3)
+    b = wa_i64_extend_i32_u(b)
+    b = wa_i64_or(b)
+    b = wa_end(b)
+    b
+}
+
+// ------------------------------------------------------------ JSON (como serde_json)
+
+// t: null | num | u64 | str | arr | obj.   obj: keys + items en paralelo.
+struct WaJ {
+    t: string,
+    s: string,
+    n: int,
+    items: array,
+    keys: array,
+}
+
+fn wa_jnull() -> WaJ {
+    WaJ { t: "null", s: "", n: 0, items: [], keys: [] }
+}
+
+fn wa_jnum(n: int) -> WaJ {
+    WaJ { t: "num", s: "", n: n, items: [], keys: [] }
+}
+
+fn wa_ju64(n: int) -> WaJ {
+    WaJ { t: "u64", s: "", n: n, items: [], keys: [] }
+}
+
+fn wa_jstr(s: string) -> WaJ {
+    WaJ { t: "str", s: s, n: 0, items: [], keys: [] }
+}
+
+fn wa_jarr(items: array) -> WaJ {
+    WaJ { t: "arr", s: "", n: 0, items: items, keys: [] }
+}
+
+fn wa_jobj(keys: array, items: array) -> WaJ {
+    WaJ { t: "obj", s: "", n: 0, items: items, keys: keys }
+}
+
+fn wa_json_string(s: string) -> string {
+    let mut out = "\""
+    for c in std::text::chars(s) {
+        let code = std::text::char_code(c)
+        if code == 34 {
+            out += "\\\""
+        } else if code == 92 {
+            out += "\\\\"
+        } else if code == 8 {
+            out += "\\b"
+        } else if code == 12 {
+            out += "\\f"
+        } else if code == 10 {
+            out += "\\n"
+        } else if code == 13 {
+            out += "\\r"
+        } else if code == 9 {
+            out += "\\t"
+        } else if code < 32 {
+            out += "\\u" + wa_hex(code, 4)
+        } else {
+            out += std::text::from_char_code(code)
+        }
+    }
+    out + "\""
+}
+
+fn wa_json_scalar(j: WaJ) -> string {
+    if j.t == "null" {
+        return "null"
+    }
+    if j.t == "num" {
+        let n = j.n
+        return "{n}"
+    }
+    if j.t == "u64" {
+        return wa_u64_text(j.n)
+    }
+    wa_json_string(j.s)
+}
+
+fn wa_json_compact(j: WaJ) -> string {
+    if j.t == "arr" {
+        let mut parts = []
+        for item in j.items {
+            parts = std::array::push(parts, wa_json_compact(item))
+        }
+        return "[" + cg_join(parts, ",") + "]"
+    }
+    if j.t == "obj" {
+        let mut parts = []
+        let mut i = 0
+        for item in j.items {
+            parts = std::array::push(parts, wa_json_string(j.keys[i]) + ":" + wa_json_compact(item))
+            i += 1
+        }
+        return "{" + cg_join(parts, ",") + "}"
+    }
+    wa_json_scalar(j)
+}
+
+fn wa_indent(n: int) -> string {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        out += "  "
+        i += 1
+    }
+    out
+}
+
+fn wa_json_pretty(j: WaJ, depth: int) -> string {
+    let pad = wa_indent(depth + 1)
+    let end_pad = wa_indent(depth)
+    if j.t == "arr" {
+        if len(j.items) == 0 {
+            return "[]"
+        }
+        let mut parts = []
+        for item in j.items {
+            parts = std::array::push(parts, pad + wa_json_pretty(item, depth + 1))
+        }
+        return "[\n" + cg_join(parts, ",\n") + "\n" + end_pad + "]"
+    }
+    if j.t == "obj" {
+        if len(j.items) == 0 {
+            return "{}"
+        }
+        let mut parts = []
+        let mut i = 0
+        for item in j.items {
+            parts = std::array::push(parts, pad + wa_json_string(j.keys[i]) + ": " + wa_json_pretty(item, depth + 1))
+            i += 1
+        }
+        return "{\n" + cg_join(parts, ",\n") + "\n" + end_pad + "}"
+    }
+    wa_json_scalar(j)
+}
+
+// ------------------------------------------------------------ mapas de fuente
+
+fn wa_normalize_source(source: any, root: string) -> any {
+    if source == nil {
+        return nil
+    }
+    let prefix = root + "/"
+    if std::text::starts_with(source, prefix) {
+        return std::text::substring(source, len(prefix), len(source))
+    }
+    if source == root {
+        return ""
+    }
+    source
+}
+
+fn wa_vlq(value: int) -> string {
+    let alphabet = std::text::chars("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+    let mut v = value * 2
+    if value < 0 {
+        v = (0 - value) * 2 + 1
+    }
+    let mut out = ""
+    loop {
+        let mut digit = v % 32
+        v = v / 32
+        if v != 0 {
+            digit += 32
+        }
+        out += std::text::from_char_code(std::text::char_code(alphabet[digit]))
+        if v == 0 {
+            break
+        }
+    }
+    out
+}
+
+fn wa_sort_entries(items: array) -> array {
+    if len(items) <= 1 {
+        return items
+    }
+    let mid = len(items) / 2
+    let left = wa_sort_entries(std::array::slice(items, 0, mid))
+    let right = wa_sort_entries(std::array::slice(items, mid, len(items)))
+    let mut out = []
+    let mut i = 0
+    let mut j = 0
+    while i < len(left) && j < len(right) {
+        if right[j][0] < left[i][0] {
+            out = std::array::push(out, right[j])
+            j += 1
+        } else {
+            out = std::array::push(out, left[i])
+            i += 1
+        }
+    }
+    while i < len(left) {
+        out = std::array::push(out, left[i])
+        i += 1
+    }
+    while j < len(right) {
+        out = std::array::push(out, right[j])
+        j += 1
+    }
+    out
+}
+
+// Mapa estándar (source map v3) con sourcesContent leído desde `root`.
+fn wa_standard_map(g: G, root: string, bias: int, offsets: map) -> WaJ {
+    let mut source_set = std::map::new()
+    let mut name_set = std::map::new()
+    for f in g.funcs {
+        let file = wa_normalize_source(f.file, root)
+        if file != nil {
+            source_set = std::map::insert(source_set, file, 0)
+        }
+        name_set = std::map::insert(name_set, f.name, 0)
+    }
+    let sources = std::map::keys(source_set)
+    let names = std::map::keys(name_set)
+    let mut source_index = std::map::new()
+    let mut i = 0
+    for s in sources {
+        source_index = std::map::insert(source_index, s, i)
+        i += 1
+    }
+    let mut name_index = std::map::new()
+    i = 0
+    for n in names {
+        name_index = std::map::insert(name_index, n, i)
+        i += 1
+    }
+    let mut entries = []
+    let mut fi = 0
+    for f in g.funcs {
+        let file = wa_normalize_source(f.file, root)
+        if file != nil {
+            let mut pc = 0
+            for loc in f.locs {
+                if loc != nil && std::map::contains(offsets, "{fi}:{pc}") {
+                    let mut line = loc.line - 1
+                    if line < 0 {
+                        line = 0
+                    }
+                    let mut column = loc.col - 1
+                    if column < 0 {
+                        column = 0
+                    }
+                    entries = std::array::push(entries, [std::map::get(offsets, "{fi}:{pc}"), std::map::get(source_index, file), line, column, std::map::get(name_index, f.name)])
+                }
+                pc += 1
+            }
+        }
+        fi += 1
+    }
+    entries = wa_sort_entries(entries)
+    let mut mappings = ""
+    let mut prev = [0, 0, 0, 0, 0]
+    let mut first = true
+    for e in entries {
+        if !first {
+            mappings += ","
+        }
+        first = false
+        let mut k = 0
+        while k < 5 {
+            mappings += wa_vlq(e[k] - prev[k])
+            k += 1
+        }
+        prev = e
+    }
+    let mut src_json = []
+    let mut content = []
+    for s in sources {
+        src_json = std::array::push(src_json, wa_jstr(s))
+        let mut path = s
+        if !std::text::starts_with(s, "/") {
+            path = std::path::join(root, s)
+        }
+        if std::fs::is_file(path) {
+            content = std::array::push(content, wa_jstr(std::fs::read_text(path)))
+        } else {
+            content = std::array::push(content, wa_jnull())
+        }
+    }
+    let mut name_json = []
+    for n in names {
+        name_json = std::array::push(name_json, wa_jstr(n))
+    }
+    wa_jobj(["version", "sources", "sourcesContent", "names", "mappings"], [wa_jnum(3), wa_jarr(src_json), wa_jarr(content), wa_jarr(name_json), wa_jstr(mappings)])
+}
+
+// Mapa lógico de Titan -> Wasm.
+fn wa_logical_map(g: G, root: string, bias: int, offsets: map, tags: map) -> WaJ {
+    let mut funcs = []
+    let mut fi = 0
+    for f in g.funcs {
+        let mut instrs = []
+        let mut pc = 0
+        for loc in f.locs {
+            if loc != nil {
+                let mut off = wa_jnull()
+                if std::map::contains(offsets, "{fi}:{pc}") {
+                    off = wa_jnum(std::map::get(offsets, "{fi}:{pc}"))
+                }
+                let mut operation = "<missing>"
+                if pc < len(f.code) {
+                    operation = cg_op_text(f.code[pc])
+                }
+                instrs = std::array::push(instrs, wa_jobj(["titan_instruction", "wasm_offset", "operation", "start", "end", "line", "column"], [wa_jnum(pc), off, wa_jstr(operation), wa_jnum(loc.start), wa_jnum(loc.end), wa_jnum(loc.line), wa_jnum(loc.col)]))
+            }
+            pc += 1
+        }
+        let file = wa_normalize_source(f.file, root)
+        let mut file_json = wa_jnull()
+        if file != nil {
+            file_json = wa_jstr(file)
+        }
+        funcs = std::array::push(funcs, wa_jobj(["titan_function_index", "wasm_function_index", "name", "source_file", "instructions"], [wa_jnum(fi), wa_jnum(bias + fi), wa_jstr(f.name), file_json, wa_jarr(instrs)]))
+        fi += 1
+    }
+    let mut tag_keys = []
+    let mut tag_vals = []
+    for label in std::map::keys(tags) {
+        tag_keys = std::array::push(tag_keys, label)
+        tag_vals = std::array::push(tag_vals, wa_ju64(std::map::get(tags, label)))
+    }
+    wa_jobj(["format", "version", "imported_function_count", "enum_tags", "functions"], [wa_jstr("titan-wasm-source-map"), wa_jnum(1), wa_jnum(bias), wa_jobj(tag_keys, tag_vals), wa_jarr(funcs)])
+}
+
+// ------------------------------------------------------------ ensamblado del módulo
+
+fn wa_custom_section(name: string, data: array) -> array {
+    wa_section(0, std::array::concat(wa_name(name), data))
+}
+
+fn wa_string_layout(strings: array) -> Result {
+    let too_big = "WebAssembly string data exceeds the 32-bit linear-memory ABI"
+    let mut handles = []
+    let mut data = []
+    for s in strings {
+        while (8 + len(data)) % 4 != 0 {
+            data = std::array::push(data, 0)
+        }
+        let bytes = wa_utf8(s)
+        let blen = len(bytes)
+        let slen = std::text::length(s)
+        if blen > 4294967295 {
+            return Result::Err(too_big)
+        }
+        let pointer = 8 + len(data) + 4
+        if pointer > 4294967295 {
+            return Result::Err(too_big)
+        }
+        handles = std::array::push(handles, blen * 4294967296 + pointer)
+        data = std::array::concat(data, wa_le32(slen))
+        data = std::array::concat(data, bytes)
+    }
+    let end = 8 + len(data)
+    let aligned = (end + 3) / 4 * 4
+    if aligned > 4294967295 {
+        return Result::Err(too_big)
+    }
+    let mut pages = (aligned + 65535) / 65536
+    if pages < 1 {
+        pages = 1
+    }
+    Result::Ok(WaStr { handles: handles, data: data, pages: pages, heap_start: aligned })
+}
+
+fn wa_hex64(v: int) -> string {
+    let lo = ((v % 4294967296) + 4294967296) % 4294967296
+    let mut hi = (v - lo) / 4294967296
+    if hi < 0 {
+        hi += 4294967296
+    }
+    wa_hex(hi, 8) + wa_hex(lo, 8)
+}
+
+fn wa_enum_tags(g: G) -> Result {
+    let mut tags = std::map::new()
+    let mut owners = std::map::new()
+    for f in g.funcs {
+        for op in f.code {
+            if op.k == "NewEnum" || op.k == "EnumIs" {
+                let label = op.s + "::" + op.s2
+                let tag = wa_enum_tag(op.s, op.s2)
+                let key = "{tag}"
+                if std::map::contains(owners, key) {
+                    let first = std::map::get(owners, key)
+                    if first != label {
+                        return Result::Err("enum discriminant collision between '" + first + "' and '" + label + "' at tag 0x" + wa_hex64(tag))
+                    }
+                }
+                owners = std::map::insert(owners, key, label)
+                tags = std::map::insert(tags, label, tag)
+            }
+        }
+    }
+    Result::Ok(tags)
+}
+
+fn wa_uses_native(natives: map, names: array) -> bool {
+    for n in names {
+        if std::map::contains(natives, n) {
+            return true
+        }
+    }
+    false
+}
+
+// Cuerpo con marcadores (-1) -> (bytes con 1, posiciones relativas de los marcadores).
+fn wa_resolve_markers(body: array) -> (array, array) {
+    let mut bytes = []
+    let mut marks = []
+    for v in body {
+        if v < 0 {
+            marks = std::array::push(marks, len(bytes))
+            bytes = std::array::push(bytes, 1)
+        } else {
+            bytes = std::array::push(bytes, v)
+        }
+    }
+    return (bytes, marks)
+}
+
+fn wa_val_types(n: int, t: int) -> array {
+    let mut out = []
+    let mut i = 0
+    while i < n {
+        out = std::array::push(out, t)
+        i += 1
+    }
+    out
+}
+
+fn wa_func_type(params: array, results: array) -> array {
+    std::array::concat(std::array::concat(std::array::concat([96], wa_uleb(len(params))), params), std::array::concat(wa_uleb(len(results)), results))
+}
+
+// Resultado: Ok((wasm, mapa lógico JSON, mapa estándar JSON, sources para el CLI)).
+// El generador de Titan emite `TakeLocal` (mueve el valor) donde Rust emite
+// `PushLocal`; para los enteros de Wasm son lo mismo. Se normaliza para el análisis
+// y la emisión; los mapas conservan el texto original de la operación.
+fn wa_normalize(g: G) -> G {
+    let mut funcs = []
+    for f in g.funcs {
+        let mut code = []
+        for op in f.code {
+            if op.k == "TakeLocal" {
+                code = std::array::push(code, Op { k: "PushLocal", n: op.n, m: op.m, s: op.s, s2: op.s2, flag: op.flag, list: op.list })
+            } else {
+                code = std::array::push(code, op)
+            }
+        }
+        funcs = std::array::push(funcs, Func { name: f.name, file: f.file, arity: f.arity, params: f.params, ret: f.ret, captures: f.captures, locals: f.locals, max_stack: f.max_stack, code: code, locs: f.locs })
+    }
+    gs_funcs(g, funcs)
+}
+
+fn wa_compile(g0: G, root: string) -> Result {
+    let g = wa_normalize(g0)
+    if g.entry >= len(g.funcs) {
+        return Result::Err("invalid module entry point")
+    }
+    let st = wa_string_layout(g.table)?
+    let tags = wa_enum_tags(g)?
+    let web = wa_web_map()
+    let mut layouts = []
+    for f in g.funcs {
+        layouts = std::array::push(layouts, wa_analyze(g, f, web)?)
+    }
+    // nativas y operaciones usadas
+    let mut used = std::map::new()
+    let mut needs_print = false
+    let mut needs_collections = false
+    for f in g.funcs {
+        for op in f.code {
+            if op.k == "Print" {
+                needs_print = true
+            }
+            if op.k == "NewArray" || op.k == "NewTuple" || op.k == "NewStruct" || op.k == "NewEnum" {
+                needs_collections = true
+            }
+            if op.k == "CallNative" {
+                used = std::map::insert(used, op.s, true)
+            }
+        }
+    }
+    let mut needs_concat = false
+    for lay in layouts {
+        if len(std::map::keys(lay.adds)) > 0 {
+            needs_concat = true
+        }
+    }
+    let needs_equals = wa_uses_native(used, ["std::text::equals", "std::map::contains", "std::map::get", "std::map::insert", "std::map::remove"])
+    let needs_hash = wa_uses_native(used, ["std::text::hash64", "std::map::insert_new", "std::map::insert", "std::map::contains", "std::map::get", "std::map::remove"])
+    let mut needs_arrays = needs_collections
+    let mut needs_maps = false
+    let mut needs_heap_api = false
+    for name in std::map::keys(used) {
+        if wa_array_arity(name) >= 0 {
+            needs_arrays = true
+        }
+        if wa_map_arity(name) >= 0 {
+            needs_maps = true
+        }
+        if wa_heap_arity(name) >= 0 {
+            needs_heap_api = true
+        }
+    }
+    // importaciones del navegador
+    let mut defs = []
+    let mut print_index = -1
+    if needs_print {
+        print_index = 0
+        defs = std::array::push(defs, ["", "print", 1, false])
+    }
+    let mut natives = std::map::new()
+    for d in wa_web_table() {
+        if std::map::contains(used, d[0]) {
+            natives = std::map::insert(natives, d[0], len(defs))
+            defs = std::array::push(defs, d)
+        }
+    }
+    let hi = WaHi { defs: defs, print: print_index, natives: natives, web: web }
+    let needs_host_strings = wa_uses_native(natives, ["std::web::event_type", "std::web::event_value", "std::web::event_key", "std::web::event_target_id", "std::web::fetch_body", "std::web::fetch_url", "std::web::fetch_error", "std::web::fetch_headers", "std::web::ws_message", "std::web::ws_protocol", "std::web::ws_close_reason", "std::web::ws_error"])
+    if needs_host_strings {
+        for f in g.funcs {
+            if f.name == "__titan_alloc_string" {
+                return Result::Err("function name '__titan_alloc_string' is reserved by the WebAssembly runtime ABI")
+            }
+        }
+    }
+    let needs_scopes = wa_uses_native(used, ["std::wasm::heap_scope_begin", "std::wasm::heap_scope_end"])
+    let needs_allocator = needs_host_strings || needs_arrays || needs_maps || needs_scopes
+    let needs_heap = needs_concat || needs_allocator || needs_heap_api
+    let bias = len(defs)
+    let count = len(g.funcs)
+    let mut next_fn = bias + count
+    let mut concat_fn = -1
+    if needs_concat {
+        concat_fn = next_fn
+        next_fn += 1
+    }
+    let mut alloc_fn = -1
+    if needs_allocator {
+        alloc_fn = next_fn
+        next_fn += 1
+    }
+    let mut equals_fn = -1
+    if needs_equals {
+        equals_fn = next_fn
+        next_fn += 1
+    }
+    let mut hash_fn = -1
+    if needs_hash {
+        hash_fn = next_fn
+        next_fn += 1
+    }
+    // tipos
+    let mut types = []
+    for f in g.funcs {
+        types = std::array::push(types, wa_func_type(wa_val_types(f.arity, 126), [126]))
+    }
+    let first_import_type = len(types)
+    for d in defs {
+        let mut results = []
+        if d[3] {
+            results = [126]
+        }
+        types = std::array::push(types, wa_func_type(wa_val_types(d[2], 126), results))
+    }
+    let concat_type = len(types)
+    if needs_concat {
+        types = std::array::push(types, wa_func_type([126, 126], [126]))
+    }
+    let alloc_type = len(types)
+    if needs_allocator {
+        types = std::array::push(types, wa_func_type([127, 127], [126]))
+    }
+    let equals_type = len(types)
+    if needs_equals {
+        types = std::array::push(types, wa_func_type([126, 126], [126]))
+    }
+    let hash_type = len(types)
+    if needs_hash {
+        types = std::array::push(types, wa_func_type([126], [126]))
+    }
+    let mut module = [0, 97, 115, 109, 1, 0, 0, 0]
+    module = std::array::concat(module, wa_section(1, wa_vec(types)))
+    if len(defs) > 0 {
+        let mut imports = []
+        let mut offset = 0
+        for d in defs {
+            imports = std::array::push(imports, std::array::concat(std::array::concat(wa_name("titan"), wa_name(d[1])), std::array::concat([0], wa_uleb(first_import_type + offset))))
+            offset += 1
+        }
+        module = std::array::concat(module, wa_section(2, wa_vec(imports)))
+    }
+    let mut fsec = []
+    let mut index = 0
+    while index < count {
+        fsec = std::array::push(fsec, wa_uleb(index))
+        index += 1
+    }
+    if needs_concat {
+        fsec = std::array::push(fsec, wa_uleb(concat_type))
+    }
+    if needs_allocator {
+        fsec = std::array::push(fsec, wa_uleb(alloc_type))
+    }
+    if needs_equals {
+        fsec = std::array::push(fsec, wa_uleb(equals_type))
+    }
+    if needs_hash {
+        fsec = std::array::push(fsec, wa_uleb(hash_type))
+    }
+    module = std::array::concat(module, wa_section(3, wa_vec(fsec)))
+    module = std::array::concat(module, wa_section(5, wa_vec([std::array::concat([0], wa_uleb(st.pages))])))
+    if needs_heap {
+        let mut globals = []
+        let heap_expr = std::array::concat(std::array::concat([127, 1, 65], wa_sleb(st.heap_start)), [11])
+        globals = std::array::push(globals, heap_expr)
+        globals = std::array::push(globals, [127, 1, 65, 127, 11])
+        globals = std::array::push(globals, std::array::concat(std::array::concat([127, 0, 65], wa_sleb(st.heap_start)), [11]))
+        let mut ci = 0
+        while ci < 4 {
+            globals = std::array::push(globals, [126, 1, 66, 0, 11])
+            ci += 1
+        }
+        globals = std::array::push(globals, std::array::concat(std::array::concat([126, 1, 66], wa_sleb(st.heap_start)), [11]))
+        globals = std::array::push(globals, [127, 1, 65, 0, 11])
+        module = std::array::concat(module, wa_section(6, wa_vec(globals)))
+    }
+    let mut exports = []
+    exports = std::array::push(exports, std::array::concat(wa_name("main"), std::array::concat([0], wa_uleb(g.entry + bias))))
+    exports = std::array::push(exports, std::array::concat(wa_name("memory"), [2, 0]))
+    if needs_host_strings {
+        exports = std::array::push(exports, std::array::concat(wa_name("__titan_alloc_string"), std::array::concat([0], wa_uleb(alloc_fn))))
+    }
+    index = 0
+    for f in g.funcs {
+        if f.name != "main" && !std::text::starts_with(f.name, "<") {
+            exports = std::array::push(exports, std::array::concat(wa_name(f.name), std::array::concat([0], wa_uleb(index + bias))))
+        }
+        index += 1
+    }
+    module = std::array::concat(module, wa_section(7, wa_vec(exports)))
+    // código
+    let mut bodies = []
+    index = 0
+    for f in g.funcs {
+        let body = wa_compile_function(g, f, layouts[index], st, hi, concat_fn, alloc_fn, equals_fn, hash_fn)?
+        bodies = std::array::push(bodies, body)
+        index += 1
+    }
+    if needs_concat {
+        bodies = std::array::push(bodies, wa_compile_string_concat())
+    }
+    if needs_allocator {
+        bodies = std::array::push(bodies, wa_compile_host_string_allocator())
+    }
+    if needs_equals {
+        bodies = std::array::push(bodies, wa_compile_string_equals())
+    }
+    if needs_hash {
+        bodies = std::array::push(bodies, wa_compile_string_hash())
+    }
+    let mut entries = []
+    let mut marks_per_fn = []
+    let mut total = len(wa_uleb(len(bodies)))
+    let mut starts = []
+    for body in bodies {
+        let (bytes, marks) = wa_resolve_markers(body)
+        let head = wa_uleb(len(bytes))
+        starts = std::array::push(starts, total + len(head))
+        total += len(head) + len(bytes)
+        entries = std::array::push(entries, std::array::concat(head, bytes))
+        marks_per_fn = std::array::push(marks_per_fn, marks)
+    }
+    let code_content_start = len(module) + 1 + len(wa_uleb(total))
+    // posiciones absolutas de los marcadores
+    let mut offsets = std::map::new()
+    index = 0
+    while index < count {
+        let lay = layouts[index]
+        let marks = marks_per_fn[index]
+        let mut expected = []
+        let mut ei = 0
+        for h in lay.heights {
+            if h >= 0 {
+                expected = std::array::push(expected, ei)
+            }
+            ei += 1
+        }
+        if len(marks) != len(expected) {
+            let got = len(marks)
+            let want = len(expected)
+            return Result::Err("could not encode WebAssembly source metadata: function {index} emitted {got} source markers, expected {want}")
+        }
+        let mut m = 0
+        while m < len(marks) {
+            offsets = std::map::insert(offsets, "{index}:" + wa_i(expected[m]) + "", code_content_start + starts[index] + marks[m])
+            m += 1
+        }
+        index += 1
+    }
+    let mut code_sec = wa_uleb(len(bodies))
+    for e in entries {
+        code_sec = std::array::concat(code_sec, e)
+    }
+    module = std::array::concat(module, wa_section(10, code_sec))
+    if len(st.data) > 0 {
+        let seg = std::array::concat(std::array::concat([0, 65], wa_sleb(8)), std::array::concat([11], std::array::concat(wa_uleb(len(st.data)), st.data)))
+        module = std::array::concat(module, wa_section(11, std::array::concat([1], seg)))
+    }
+    let logical = wa_logical_map(g0, root, bias, offsets, tags)
+    let standard = wa_standard_map(g0, root, bias, offsets)
+    module = std::array::concat(module, wa_custom_section("titan.source_map", wa_utf8(wa_json_compact(logical))))
+    Result::Ok((module, wa_json_pretty(logical, 0), wa_json_compact(standard)))
+}

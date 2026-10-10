@@ -1,360 +1,410 @@
-// std::tokenize — BPE real sobre tokenizer.json de HuggingFace.
-// Implementación pura en Titan: carga JSON, aplica merges BPE,
-// codifica/decodifica sin dependencias externas.
+// std::tokenize del runtime nativo: capa de nativas sobre el motor de tokenizers en Titan
+// (std_tokenize_*.titan). Mismos límites y mismos textos de error que la versión de Rust
+// (crates/titan_stdlib/src/tokenize_mod.rs). Prefijo `tz_`.
+//
+// Registro de tokenizers en el bloque rtm_state():
+//   +40  mapa "t<handle>" -> [tokenizer, bytes del JSON]   (0 = todavía vacío)
+//   +48  siguiente handle (0 = 1). Empiezan en 1 y no se reutilizan.
+//
+// Diferencias con Rust, documentadas:
+//   - Rechaza al cargar (error "unsupported ..."): normalizador Precompiled (T5/ALBERT/XLM-R),
+//     pre-tokenizador UnicodeScripts y BPE con dropout > 0.
+//   - Un JSON mal formado da un mensaje propio, no el de serde.
+//   - No hay límite de 2 operaciones concurrentes (las nativas no se interrumpen entre sí).
 
-const TK_DATA_SLOT: int = 3556
+fn tz_models_slot() -> int { rtm_state() + 40 }
+fn tz_next_slot() -> int { rtm_state() + 48 }
 
-fn tk_data_map() -> any {
-    let slot = std::raw::globals() + TK_DATA_SLOT
-    let m = std::raw::load(slot)
-    if m != 0 { return m }
-    let created = std::map::new()
-    std::raw::store(slot, created)
-    created
-}
-
-fn tk_set_data(handle: int, data: any) {
-    let slot = std::raw::globals() + TK_DATA_SLOT
-    let m = tk_data_map()
-    std::raw::store(slot, std::map::insert(m, handle, data))
-}
-
-fn tk_get_data(handle: int) -> any {
-    let m = tk_data_map()
-    if std::raw::tag(m) == 0 { return nil }
-    std::map::get(m, handle)
-}
-
-fn tk_next_handle() -> int {
-    let m = tk_data_map()
-    let h = std::map::get(m, "_next")
-    if std::raw::tag(h) != 0 { return h }
-    0
-}
-
-fn tk_bump_handle() -> int {
-    let h = tk_next_handle()
-    let slot = std::raw::globals() + TK_DATA_SLOT
-    let m = tk_data_map()
-    std::raw::store(slot, std::map::insert(m, "_next", h + 1))
-    h
-}
-
-fn std__tokenize__load(path: string) -> int {
-    let fname = "std::tokenize::load"
-    let result = std::fs::read_text(path)
-    if std::raw::tag(result) == 0 {
-        rt_native_fail(fname, "could not read tokenizer file: " + path)
+fn tz_reg() -> any {
+    let bits = std::raw::load(tz_models_slot())
+    if bits == 0 {
+        return std__map__new()
     }
-    std__tokenize__from_json(result)
+    std::raw::value(9, bits)
 }
 
-fn std__tokenize__from_json(json: string) -> int {
-    let fname = "std::tokenize::from_json"
-    let parsed = std::json::parse(json)
-    if std::raw::tag(parsed) == 0 {
-        rt_native_fail(fname, "invalid tokenizer JSON")
+fn tz_reg_take() -> any {
+    let bits = std::raw::load(tz_models_slot())
+    if bits == 0 {
+        return std__map__new()
     }
-    let model = std::map::get(parsed, "model")
-    if std::raw::tag(model) == 0 {
-        rt_native_fail(fname, "tokenizer JSON missing 'model' field")
+    std::raw::store(tz_models_slot(), 0)
+    std::raw::adopt(9, bits)
+}
+
+fn tz_reg_put(m: any) {
+    std::raw::store(tz_models_slot(), std::raw::keep(m))
+}
+
+fn tz_next_id() -> int {
+    let v = std::raw::load(tz_next_slot())
+    let mut id = v
+    if v == 0 {
+        id = 1
     }
-    let vocab = std::map::get(model, "vocab")
-    let merges = std::map::get(model, "merges")
-    let added = std::map::get(parsed, "added_tokens")
-    let model_type = std::map::get(model, "type")
-    // Build reverse vocab
-    let mut reverse = []
-    if std::raw::tag(vocab) == 4 {
-        let keys = std::map::keys(vocab)
-        let mut i = 0
-        while i < rt_seq_len(keys) {
-            let token = keys[i]
-            let id = std::map::get(vocab, token)
-            if std::raw::tag(id) == 0 || std::raw::tag(id) == 1 {
-                while rt_seq_len(reverse) <= id {
-                    reverse = std::array::add(reverse, "")
-                }
-                reverse[id] = token
-            }
-            i = i + 1
+    std::raw::store(tz_next_slot(), id + 1)
+    id
+}
+
+fn tz_fail(f: string, msg: string) {
+    rt_native_fail(f, msg)
+}
+
+fn tz_limit(f: string, what: string, limit: int) {
+    rt_native_fail(f, what + " exceeds limit " + "{limit}")
+}
+
+fn tz_entry(h: int) -> any {
+    let key = "t" + "{h}"
+    let reg = tz_reg()
+    if !std::map::contains(reg, key) {
+        return nil
+    }
+    std::map::get(reg, key)
+}
+
+fn tz_need(f: string, h: int) -> any {
+    let e = tz_entry(h)
+    if e == nil {
+        tz_fail(f, "unknown tokenizer handle " + "{h}")
+    }
+    e
+}
+
+fn tz_bool(v: any, f: string) {
+    if std::raw::tag(v) != 3 {
+        tz_fail(f, "expected bool")
+    }
+}
+
+fn tz_u32(v: int, what: string, f: string) {
+    if v < 0 || v > 4294967295 {
+        tz_fail(f, what + " out of u32 range")
+    }
+}
+
+fn tz_validate_text(f: string, text: any) {
+    if rt_slen(text) > 65536 {
+        tz_limit(f, "tokenizer input text bytes", 65536)
+    }
+}
+
+// Capacidad antes de cargar: handles (16), bytes de un JSON (16 MiB) y suma por runtime (64 MiB).
+fn tz_preflight(f: string, source_bytes: int) {
+    let reg = tz_reg()
+    let n = std::map::length(reg)
+    if n >= 16 {
+        tz_limit(f, "tokenizer handles", 16)
+    }
+    if source_bytes > 16777216 {
+        tz_limit(f, "tokenizer source bytes", 16777216)
+    }
+    let mut total = 0
+    for k in std::map::keys(reg) {
+        total += std::map::get(reg, k)[1]
+    }
+    if total + source_bytes > 67108864 {
+        tz_limit(f, "runtime tokenizer source bytes", 67108864)
+    }
+}
+
+// Interpreta el JSON y registra el tokenizer.
+fn tz_register(f: string, src: string, size: int) -> int {
+    let (t, err) = tk_load(tk_ctx(), src)
+    if err != "" {
+        tz_fail(f, "tokenizer error: " + err)
+    }
+    if tk_vocab_size(t, true) > 262144 {
+        tz_limit(f, "tokenizer vocabulary entries", 262144)
+    }
+    for k in std::map::keys(t.vocab) {
+        if rt_slen(k) > 256 {
+            tz_limit(f, "vocabulary token bytes", 256)
         }
     }
-    // Extract special token IDs
-    let mut special_ids = []
-    if std::raw::tag(added) == 6 {
-        let mut j = 0
-        while j < rt_seq_len(added) {
-            let entry = added[j]
-            if std::raw::tag(entry) == 4 {
-                let sp_flag = std::map::get(entry, "special")
-                if sp_flag == true {
-                    let sid = std::map::get(entry, "id")
-                    special_ids = std::array::add(special_ids, sid)
-                }
-            }
-            j = j + 1
+    for k in std::map::keys(t.am) {
+        if rt_slen(k) > 256 {
+            tz_limit(f, "vocabulary token bytes", 256)
         }
     }
-    let handle = tk_bump_handle()
-    let mut tok_data = std::map::new()
-    tok_data = std::map::insert(tok_data, "vocab", vocab)
-    tok_data = std::map::insert(tok_data, "reverse", reverse)
-    tok_data = std::map::insert(tok_data, "merges", if std::raw::tag(merges) != 0 { merges } else { [] })
-    tok_data = std::map::insert(tok_data, "type", if std::raw::tag(model_type) == 5 { model_type } else { "BPE" })
-    tok_data = std::map::insert(tok_data, "special_ids", special_ids)
-    tk_set_data(handle, tok_data)
-    handle
+    tz_preflight(f, size)
+    let id = tz_next_id()
+    let mut reg = tz_reg_take()
+    reg = std::map::insert(reg, "t" + "{id}", [t, size])
+    tz_reg_put(reg)
+    id
 }
 
-fn std__tokenize__close(handle: int) {
-    let slot = std::raw::globals() + TK_DATA_SLOT
-    let m = tk_data_map()
-    std::raw::store(slot, std::map::remove(m, handle))
+fn std__tokenize__load(path: any) -> any {
+    let f = "std::tokenize::load"
+    rt_expect_str(path, f)
+    if rt_slen(path) > 16384 {
+        tz_limit(f, "tokenizer path bytes", 16384)
+    }
+    if !std__fs__exists(path) {
+        tz_fail(f, "tokenizer I/O error: " + rt_os_error(2))
+    }
+    if std__fs__is_dir(path) {
+        tz_fail(f, "tokenizer I/O error: " + rt_os_error(21))
+    }
+    let got = std::try::catch(|| {
+        std__fs__read_bytes(path)
+    })
+    let mut bytes: any = nil
+    match got {
+        Result::Ok(b) => {
+            bytes = b
+        },
+        _ => {
+            tz_fail(f, "tokenizer I/O error: " + rt_os_error(13))
+        },
+    }
+    let size = rt_slen(bytes)
+    if size > 16777216 {
+        tz_limit(f, "tokenizer source bytes", 16777216)
+    }
+    tz_preflight(f, size)
+    if rt_slen(rt_utf8_error(rt_bdata(bytes), size)) > 0 {
+        tz_fail(f, "invalid tokenizer argument: tokenizer JSON is not UTF-8")
+    }
+    let src = std__encoding__utf8_decode(bytes)
+    tz_register(f, src, size)
 }
 
-fn std__tokenize__vocab_size(handle: int) -> int {
-    let data = tk_get_data(handle)
-    if std::raw::tag(data) == 0 { return 0 }
-    let reverse = std::map::get(data, "reverse")
-    if std::raw::tag(reverse) == 6 { return rt_seq_len(reverse) }
-    0
+fn std__tokenize__from_json(json: any) -> any {
+    let f = "std::tokenize::from_json"
+    rt_expect_str(json, f)
+    let size = rt_slen(json)
+    tz_preflight(f, size)
+    tz_register(f, json, size)
 }
 
-fn std__tokenize__token_to_id(handle: int, token: string) -> any {
-    let data = tk_get_data(handle)
-    if std::raw::tag(data) == 0 { return nil }
-    let vocab = std::map::get(data, "vocab")
-    if std::raw::tag(vocab) == 4 {
-        let v = std::map::get(vocab, token)
-        if std::raw::tag(v) != 0 { return v }
+fn std__tokenize__close(h: any) -> any {
+    rt_expect_int(h, "std::tokenize::close")
+    let key = "t" + "{h}"
+    let reg = tz_reg()
+    if std::map::contains(reg, key) {
+        let mut taken = tz_reg_take()
+        taken = std::map::remove(taken, key)
+        tz_reg_put(taken)
     }
     nil
 }
 
-fn std__tokenize__id_to_token(handle: int, id: int) -> any {
-    let data = tk_get_data(handle)
-    if std::raw::tag(data) == 0 { return nil }
-    let reverse = std::map::get(data, "reverse")
-    if std::raw::tag(reverse) != 6 { return nil }
-    if id < 0 || id >= rt_seq_len(reverse) { return nil }
-    let t = reverse[id]
-    if t == "" { return nil }
-    t
+fn std__tokenize__vocab_size(h: any) -> any {
+    let f = "std::tokenize::vocab_size"
+    rt_expect_int(h, f)
+    let e = tz_need(f, h)
+    tk_vocab_size(e[0], true)
 }
 
-// ---- BPE encoding ----
+// Una codificación -> mapa de Titan, con los límites de convert_encoding.
+fn tz_enc_bytes(e: Enc) -> int {
+    let mut n = 0
+    for s in e.toks {
+        n += rt_slen(s)
+    }
+    n
+}
 
-fn tk_pretokenize(text: string) -> any {
-    let mut words = []
-    let len = text.length()
+fn tz_check_enc(f: string, e: Enc) {
+    if len(e.ids) > 131072 {
+        tz_limit(f, "tokens per encoding", 131072)
+    }
+    if tz_enc_bytes(e) > 8388608 {
+        tz_limit(f, "encoded token bytes", 8388608)
+    }
+}
+
+fn tz_map(e: Enc) -> any {
+    let mut m = std__map__new()
+    m = std::map::insert(m, "ids", e.ids)
+    m = std::map::insert(m, "tokens", e.toks)
+    m = std::map::insert(m, "type_ids", e.tys)
+    m = std::map::insert(m, "attention_mask", e.at)
+    m = std::map::insert(m, "special_tokens_mask", e.sp)
+    m
+}
+
+fn std__tokenize__encode(h: any, text: any, special: any) -> any {
+    let f = "std::tokenize::encode"
+    rt_expect_int(h, f)
+    rt_expect_str(text, f)
+    tz_bool(special, f)
+    tz_validate_text(f, text)
+    let e = tz_need(f, h)
+    let (enc, err) = tk_encode(e[0], text, special)
+    if err != "" {
+        tz_fail(f, "tokenizer error: " + err)
+    }
+    tz_check_enc(f, enc)
+    tz_map(enc)
+}
+
+fn std__tokenize__encode_padded(h: any, text: any, max_length: any, pad_id: any, special: any) -> any {
+    let f = "std::tokenize::encode_padded"
+    rt_expect_int(h, f)
+    rt_expect_str(text, f)
+    rt_expect_int(max_length, f)
+    if max_length < 0 {
+        tz_fail(f, "expected nonnegative integer")
+    }
+    rt_expect_int(pad_id, f)
+    tz_u32(pad_id, "pad_id", f)
+    tz_bool(special, f)
+    tz_validate_text(f, text)
+    if max_length == 0 {
+        tz_fail(f, "invalid tokenizer argument: padded token length must be positive")
+    }
+    if max_length > 65536 {
+        tz_limit(f, "padded token length", 65536)
+    }
+    let ent = tz_need(f, h)
+    let (enc, err) = tk_encode(ent[0], text, special)
+    if err != "" {
+        tz_fail(f, "tokenizer error: " + err)
+    }
+    if len(enc.ids) > 131072 {
+        tz_limit(f, "raw tokens before padding", 131072)
+    }
+    let n = len(enc.ids)
+    let mut out = enc
+    if n > max_length {
+        let last = n - 1
+        let mut ids = std::array::slice(enc.ids, 0, max_length)
+        let mut toks = std::array::slice(enc.toks, 0, max_length)
+        let mut tys = std::array::slice(enc.tys, 0, max_length)
+        let mut at = std::array::slice(enc.at, 0, max_length)
+        let mut sp = std::array::slice(enc.sp, 0, max_length)
+        if special {
+            ids = std::array::set(ids, max_length - 1, enc.ids[last])
+            toks = std::array::set(toks, max_length - 1, enc.toks[last])
+            tys = std::array::set(tys, max_length - 1, enc.tys[last])
+            at = std::array::set(at, max_length - 1, enc.at[last])
+            sp = std::array::set(sp, max_length - 1, enc.sp[last])
+        }
+        out = Enc { ids: ids, toks: toks, tys: tys, sp: sp, at: at }
+    } else {
+        let k = max_length - n
+        out = Enc {
+            ids: tk_cat(enc.ids, std::array::filled(k, pad_id)),
+            toks: tk_cat(enc.toks, std::array::filled(k, "[PAD]")),
+            tys: tk_cat(enc.tys, std::array::filled(k, 0)),
+            sp: tk_cat(enc.sp, std::array::filled(k, 1)),
+            at: tk_cat(enc.at, std::array::filled(k, 0)),
+        }
+    }
+    if tz_enc_bytes(out) > 8388608 {
+        tz_limit(f, "encoded token bytes", 8388608)
+    }
+    tz_map(out)
+}
+
+fn std__tokenize__encode_batch(h: any, texts: any, special: any) -> any {
+    let f = "std::tokenize::encode_batch"
+    rt_expect_int(h, f)
+    rt_expect_array(texts, f)
+    let n = len(texts)
     let mut i = 0
-    while i < len {
-        while i < len {
-            let c = std::raw::cast(text[i])
-            if c != 32 && c != 10 && c != 13 && c != 9 { break }
-            i = i + 1
-        }
-        if i >= len { break }
-        let start = i
-        while i < len {
-            let c = std::raw::cast(text[i])
-            if c == 32 || c == 10 || c == 13 || c == 9 { break }
-            i = i + 1
-        }
-        if i > start {
-            words = std::array::add(words, std::text::substring(text, start, i))
-        }
+    while i < n {
+        rt_expect_str(texts[i], f)
+        i += 1
     }
-    words
+    tz_bool(special, f)
+    if n > 64 {
+        tz_limit(f, "tokenizer batch items", 64)
+    }
+    let mut total = 0
+    i = 0
+    while i < n {
+        tz_validate_text(f, texts[i])
+        total += rt_slen(texts[i])
+        i += 1
+    }
+    if total > 262144 {
+        tz_limit(f, "tokenizer batch input bytes", 262144)
+    }
+    let ent = tz_need(f, h)
+    let (encs, err) = tk_encode_batch(ent[0], texts, special)
+    if err != "" {
+        tz_fail(f, "tokenizer error: " + err)
+    }
+    let mut tokens = 0
+    let mut bytes = 0
+    for e in encs {
+        tokens += len(e.ids)
+        bytes += tz_enc_bytes(e)
+    }
+    if tokens > 262144 {
+        tz_limit(f, "tokens per batch", 262144)
+    }
+    if bytes > 16777216 {
+        tz_limit(f, "encoded batch token bytes", 16777216)
+    }
+    let mut out = []
+    for e in encs {
+        tz_check_enc(f, e)
+        out = std::array::push(out, tz_map(e))
+    }
+    out
 }
 
-fn tk_bpe_encode(word: string, merges: any, vocab: any) -> any {
-    let mut symbols = []
-    let len = word.length()
+fn std__tokenize__decode(h: any, ids: any, skip: any) -> any {
+    let f = "std::tokenize::decode"
+    rt_expect_int(h, f)
+    rt_expect_array(ids, f)
+    let n = len(ids)
     let mut i = 0
-    while i < len {
-        symbols = std::array::add(symbols, std::text::substring(word, i, i + 1))
-        i = i + 1
+    while i < n {
+        rt_expect_int(ids[i], f)
+        tz_u32(ids[i], "token id", f)
+        i += 1
     }
-    if std::raw::tag(merges) == 6 {
-        let mut changed = true
-        while changed {
-            changed = false
-            let mut best_rank = rt_seq_len(merges) + 1
-            let mut best_pos = -1
-            let mut m = 0
-            while m < rt_seq_len(merges) {
-                let pair = merges[m]
-                if std::raw::tag(pair) == 6 && rt_seq_len(pair) >= 2 {
-                    let a = pair[0]
-                    let b = pair[1]
-                    let mut j = 0
-                    while j < rt_seq_len(symbols) - 1 {
-                        if symbols[j] == a && symbols[j + 1] == b && m < best_rank {
-                            best_rank = m
-                            best_pos = j
-                        }
-                        j = j + 1
-                    }
-                }
-                m = m + 1
-            }
-            if best_pos >= 0 {
-                let merged = symbols[best_pos] + symbols[best_pos + 1]
-                let mut new_symbols = []
-                let mut k = 0
-                while k < rt_seq_len(symbols) {
-                    if k == best_pos {
-                        new_symbols = std::array::add(new_symbols, merged)
-                        k = k + 2
-                    } else {
-                        new_symbols = std::array::add(new_symbols, symbols[k])
-                        k = k + 1
-                    }
-                }
-                symbols = new_symbols
-                changed = true
-            }
-        }
+    tz_bool(skip, f)
+    if n > 131072 {
+        tz_limit(f, "token ids to decode", 131072)
     }
-    let mut ids = []
-    let mut s = 0
-    while s < rt_seq_len(symbols) {
-        let id = std::map::get(vocab, symbols[s])
-        if std::raw::tag(id) != 0 {
-            ids = std::array::add(ids, id)
-        }
-        s = s + 1
+    let ent = tz_need(f, h)
+    let mut list = []
+    i = 0
+    while i < n {
+        list = std::array::push(list, ids[i])
+        i += 1
     }
-    ids
+    let text = tk_decode(ent[0], list, skip)
+    if rt_slen(text) > 1048576 {
+        tz_limit(f, "decoded tokenizer text bytes", 1048576)
+    }
+    text
 }
 
-fn std__tokenize__encode(handle: int, text: string, add_special: bool) -> any {
-    let data = tk_get_data(handle)
-    if std::raw::tag(data) == 0 {
-        let mut r = std::map::new()
-        r = std::map::insert(r, "ids", [])
-        r = std::map::insert(r, "tokens", [])
-        r = std::map::insert(r, "attention_mask", [])
-        return std::map::insert(r, "type_ids", [])
+fn std__tokenize__token_to_id(h: any, token: any) -> any {
+    let f = "std::tokenize::token_to_id"
+    rt_expect_int(h, f)
+    rt_expect_str(token, f)
+    if rt_slen(token) > 256 {
+        tz_limit(f, "token bytes", 256)
     }
-    let vocab = std::map::get(data, "vocab")
-    let merges = std::map::get(data, "merges")
-    let special_ids = std::map::get(data, "special_ids")
-    let words = tk_pretokenize(text)
-    let mut all_ids = []
-    let mut all_tokens = []
-    if add_special && std::raw::tag(special_ids) == 6 && rt_seq_len(special_ids) > 0 {
-        all_ids = std::array::add(all_ids, special_ids[0])
-        all_tokens = std::array::add(all_tokens, "[CLS]")
+    let ent = tz_need(f, h)
+    let id = tk_token_to_id(ent[0], token)
+    if id < 0 {
+        return nil
     }
-    let mut w = 0
-    while w < rt_seq_len(words) {
-        let word_ids = tk_bpe_encode(words[w], merges, vocab)
-        let mut j = 0
-        while j < rt_seq_len(word_ids) {
-            all_ids = std::array::add(all_ids, word_ids[j])
-            let tok = std__tokenize__id_to_token(handle, word_ids[j])
-            all_tokens = std::array::add(all_tokens, if std::raw::tag(tok) == 5 { tok } else { "?" })
-            j = j + 1
-        }
-        w = w + 1
-    }
-    if add_special && std::raw::tag(special_ids) == 6 && rt_seq_len(special_ids) > 1 {
-        all_ids = std::array::add(all_ids, special_ids[1])
-        all_tokens = std::array::add(all_tokens, "[SEP]")
-    }
-    let mut mask = []
-    let mut types = []
-    let mut k = 0
-    while k < rt_seq_len(all_ids) {
-        mask = std::array::add(mask, 1)
-        types = std::array::add(types, 0)
-        k = k + 1
-    }
-    let mut result = std::map::new()
-    result = std::map::insert(result, "ids", all_ids)
-    result = std::map::insert(result, "tokens", all_tokens)
-    result = std::map::insert(result, "attention_mask", mask)
-    std::map::insert(result, "type_ids", types)
+    id
 }
 
-fn std__tokenize__encode_padded(handle: int, text: string, max_length: int, pad_id: int, add_special: bool) -> any {
-    let enc = std__tokenize__encode(handle, text, add_special)
-    let ids = std::map::get(enc, "ids")
-    let tokens = std::map::get(enc, "tokens")
-    let mask = std::map::get(enc, "attention_mask")
-    let types = std::map::get(enc, "type_ids")
-    let mut new_ids = []
-    let mut new_tokens = []
-    let mut new_mask = []
-    let mut new_types = []
-    let src_len = rt_seq_len(ids)
-    let len = if src_len > max_length { max_length } else { src_len }
-    let mut i = 0
-    while i < len {
-        new_ids = std::array::add(new_ids, ids[i])
-        new_tokens = std::array::add(new_tokens, tokens[i])
-        new_mask = std::array::add(new_mask, mask[i])
-        new_types = std::array::add(new_types, types[i])
-        i = i + 1
+fn std__tokenize__id_to_token(h: any, id: any) -> any {
+    let f = "std::tokenize::id_to_token"
+    rt_expect_int(h, f)
+    rt_expect_int(id, f)
+    tz_u32(id, "token id", f)
+    let ent = tz_need(f, h)
+    let tok = tk_id_to_token(ent[0], id)
+    if tok == nil {
+        return nil
     }
-    while rt_seq_len(new_ids) < max_length {
-        new_ids = std::array::add(new_ids, pad_id)
-        new_tokens = std::array::add(new_tokens, "[PAD]")
-        new_mask = std::array::add(new_mask, 0)
-        new_types = std::array::add(new_types, 0)
+    if rt_slen(tok) > 256 {
+        tz_limit(f, "token bytes", 256)
     }
-    let mut result = std::map::new()
-    result = std::map::insert(result, "ids", new_ids)
-    result = std::map::insert(result, "tokens", new_tokens)
-    result = std::map::insert(result, "attention_mask", new_mask)
-    std::map::insert(result, "type_ids", new_types)
-}
-
-fn std__tokenize__encode_batch(handle: int, texts: any, add_special: bool) -> any {
-    let mut results = []
-    let mut i = 0
-    while i < rt_seq_len(texts) {
-        results = std::array::add(results, std__tokenize__encode(handle, texts[i], add_special))
-        i = i + 1
-    }
-    results
-}
-
-fn std__tokenize__decode(handle: int, ids: any, skip_special: bool) -> string {
-    let data = tk_get_data(handle)
-    if std::raw::tag(data) == 0 { return "" }
-    let reverse = std::map::get(data, "reverse")
-    let special_ids = std::map::get(data, "special_ids")
-    let mut result = ""
-    let mut i = 0
-    while i < rt_seq_len(ids) {
-        let id = ids[i]
-        if skip_special && std::raw::tag(special_ids) == 6 {
-            let mut is_special = false
-            let mut s = 0
-            while s < rt_seq_len(special_ids) {
-                if special_ids[s] == id { is_special = true }
-                s = s + 1
-            }
-            if is_special {
-                i = i + 1
-                continue
-            }
-        }
-        if std::raw::tag(reverse) == 6 && id >= 0 && id < rt_seq_len(reverse) {
-            let token = reverse[id]
-            if token != "" {
-                if std::text::starts_with(token, "Ġ") {
-                    result = result + " " + std::text::substring(token, 1, token.length())
-                } else {
-                    result = result + token
-                }
-            }
-        }
-        i = i + 1
-    }
-    result
+    tok
 }

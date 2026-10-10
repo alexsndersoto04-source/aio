@@ -1,0 +1,912 @@
+// std::tokenize en Titan, parte 3: JSON de configuración, cadena normalizada (con alineamientos),
+// normalizadores y pre-tokenizadores. Traducción de `tokenizers` 0.22.2 (ver std_tokenize_uni.titan).
+// Una cadena normalizada es un par (c, a): c = puntos de código; a = origen de cada carácter
+// (índice de carácter en el texto original de la pieza). Las salidas de std::tokenize no usan
+// desplazamientos, solo ids/tokens/máscaras, así que basta con esto: el alineamiento solo importa
+// para la regla `first` de Metaspace (`sh`, desplazamiento original de la pieza).
+// Prefijo `tj` (JSON), `tkn` (normalizadores), `tkp` (pre-tokenizadores), `tks` (piezas).
+
+// ------------------------------------------------------------ JSON dinámico
+
+fn tj_map(v: any) -> bool {
+    let r = std::try::catch(|| { std::map::length(v) })
+    match r {
+        Result::Ok(_) => true,
+        _ => false,
+    }
+}
+
+fn tj_arr(v: any) -> bool {
+    let r = std::try::catch(|| { std::array::slice(v, 0, 0) })
+    match r {
+        Result::Ok(_) => true,
+        _ => false,
+    }
+}
+
+fn tj_str(v: any) -> bool {
+    let r = std::try::catch(|| { std::text::length(v) })
+    match r {
+        Result::Ok(_) => true,
+        _ => false,
+    }
+}
+
+// Texto JSON de un escalar (null, true, false, número).
+fn tj_sc(v: any) -> string {
+    std::json::stringify(v)
+}
+
+fn tj_null(v: any) -> bool {
+    v == nil
+}
+
+fn tj_bool(v: any) -> bool {
+    if tj_map(v) || tj_arr(v) || tj_str(v) {
+        return false
+    }
+    tj_sc(v) == "true"
+}
+
+fn tj_isbool(v: any) -> bool {
+    if tj_map(v) || tj_arr(v) || tj_str(v) {
+        return false
+    }
+    let s = tj_sc(v)
+    s == "true" || s == "false"
+}
+
+// Entero no negativo / entero (sin parte decimal).
+fn tj_isint(v: any) -> bool {
+    if v == nil || tj_map(v) || tj_arr(v) || tj_str(v) || tj_isbool(v) {
+        return false
+    }
+    let cs = tk_cps(tj_sc(v))
+    let mut i = 0
+    for c in cs {
+        if !((c >= 48 && c <= 57) || (i == 0 && c == 45)) {
+            return false
+        }
+        i += 1
+    }
+    len(cs) > 0
+}
+
+fn tj_isnum(v: any) -> bool {
+    if v == nil || tj_map(v) || tj_arr(v) || tj_str(v) || tj_isbool(v) {
+        return false
+    }
+    true
+}
+
+fn tj_get(n: any, k: string) -> any {
+    if tj_map(n) {
+        return std::map::get(n, k)
+    }
+    return nil
+}
+
+// Campo presente y no nulo (Option::Some).
+fn tj_has(n: any, k: string) -> bool {
+    tj_get(n, k) != nil
+}
+
+fn tj_gstr(n: any, k: string, d: string) -> string {
+    let v = tj_get(n, k)
+    if tj_str(v) {
+        return v
+    }
+    return d
+}
+
+fn tj_gbool(n: any, k: string, d: bool) -> bool {
+    let v = tj_get(n, k)
+    if tj_isbool(v) {
+        return tj_bool(v)
+    }
+    return d
+}
+
+fn tj_gint(n: any, k: string, d: int) -> int {
+    let v = tj_get(n, k)
+    if tj_isint(v) {
+        return v
+    }
+    return d
+}
+
+fn tj_list(n: any, k: string) -> array {
+    let v = tj_get(n, k)
+    if tj_arr(v) {
+        return v
+    }
+    return []
+}
+
+// ------------------------------------------------------------ contexto
+
+// u: tablas Unicode; gcn: rangos de la categoría Number (char::is_numeric);
+// rxs: mapa patrón -> Rx ya compilado; bl: tabla byte -> carácter de ByteLevel;
+// blinv: carácter -> byte (-1 si no está).
+struct TkC {
+    u: TkU,
+    gcn: array,
+    rxs: any,
+    bl: array,
+    blinv: array,
+}
+
+fn tk_bl_new() -> (array, array) {
+    let mut bl = []
+    let mut n = 0
+    let mut b = 0
+    while b < 256 {
+        if (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255) {
+            bl = std::array::push(bl, b)
+        } else {
+            bl = std::array::push(bl, 256 + n)
+            n += 1
+        }
+        b += 1
+    }
+    let mut inv = std::array::filled(324, -1)
+    b = 0
+    while b < 256 {
+        inv = std::array::set(inv, bl[b], b)
+        b += 1
+    }
+    return (bl, inv)
+}
+
+fn tk_ctx() -> TkC {
+    let u = tku_new()
+    let (ok, num) = rx_find_prop(tkt_gc(), "number")
+    let (bl, inv) = tk_bl_new()
+    TkC { u: u, gcn: num, rxs: std::map::new(), bl: bl, blinv: inv }
+}
+
+// Regex escapada (regex::escape).
+fn tk_rx_escape(s: string) -> string {
+    let mut out = []
+    for c in tk_cps(s) {
+        if tk_in(tk_ints("92,92,46,46,43,43,42,42,63,63,40,41,124,124,91,93,123,125,94,94,36,36,35,35,38,38,45,45,126,126"), c) {
+            out = std::array::push(out, 92)
+        }
+        out = std::array::push(out, c)
+    }
+    tk_str(out)
+}
+
+// Regex compilada del patrón (debe estar en t.rxs: se compila al cargar).
+fn tk_rx(t: TkC, pat: string) -> Rx {
+    std::map::get(t.rxs, pat)
+}
+
+// Patrón {"String": s} o {"Regex": r} -> texto de regex ("" + bandera de validez).
+fn tk_pattern(p: any) -> (string, string) {
+    if !tj_map(p) {
+        return ("", "invalid pattern")
+    }
+    if tj_str(tj_get(p, "String")) {
+        return (tk_rx_escape(tj_get(p, "String")), "")
+    }
+    if tj_str(tj_get(p, "Regex")) {
+        return (tj_get(p, "Regex"), "")
+    }
+    return ("", "invalid pattern")
+}
+
+// ------------------------------------------------------------ cadena normalizada
+
+fn tk_idseq(n: int) -> array {
+    std::array::range(0, n)
+}
+
+// transform(): dest = (cps, cambios); `init` caracteres iniciales ya consumidos.
+fn tk_transform(a: array, dc: array, dg: array, init: int) -> (array, array) {
+    let n = len(a)
+    let mut oa = []
+    let mut p = init
+    let mut i = 0
+    let m = len(dc)
+    while i < m {
+        let g = dg[i]
+        let mut q = p
+        if g > 0 {
+            q = p - 1
+        }
+        let mut al = 0
+        if q >= n {
+            q = n - 1
+        }
+        if q >= 0 {
+            al = a[q]
+        }
+        oa = std::array::push(oa, al)
+        if g <= 0 {
+            p += 1
+            if g < 0 {
+                p += 0 - g
+            }
+        }
+        i += 1
+    }
+    return (dc, oa)
+}
+
+// Letras: minúscula de un carácter (char::to_lowercase).
+fn tk_lower_cp(c: int) -> array {
+    if c < 128 {
+        if c >= 65 && c <= 90 {
+            return [c + 32]
+        }
+        return [c]
+    }
+    tk_cps(std::text::lowercase(tk_str([c])))
+}
+
+fn tkn_lower(c: array, a: array) -> (array, array) {
+    let mut oc = []
+    let mut oa = []
+    let n = len(c)
+    let mut i = 0
+    while i < n {
+        let ch = c[i]
+        if ch < 128 {
+            if ch >= 65 && ch <= 90 {
+                oc = std::array::push(oc, ch + 32)
+            } else {
+                oc = std::array::push(oc, ch)
+            }
+            oa = std::array::push(oa, a[i])
+        } else {
+            for x in tk_lower_cp(ch) {
+                oc = std::array::push(oc, x)
+                oa = std::array::push(oa, a[i])
+            }
+        }
+        i += 1
+    }
+    return (oc, oa)
+}
+
+fn tkn_nf(t: TkC, c: array, a: array, compat: bool, compose: bool) -> (array, array) {
+    if compose {
+        let (dc, dg) = tk_nfc(t.u, c, compat)
+        return tk_transform(a, dc, dg, 0)
+    }
+    let (dc, dg) = tk_nfd(t.u, c, compat)
+    return tk_transform(a, dc, dg, 0)
+}
+
+fn tkn_keep(c: array, a: array, keep: array) -> (array, array) {
+    let mut oc = []
+    let mut oa = []
+    let mut i = 0
+    while i < len(c) {
+        if keep[i] {
+            oc = std::array::push(oc, c[i])
+            oa = std::array::push(oa, a[i])
+        }
+        i += 1
+    }
+    return (oc, oa)
+}
+
+// Rangos de caracteres chinos de BertNormalizer.
+fn tk_is_chinese(c: int) -> bool {
+    return (c >= 19968 && c <= 40959) || (c >= 13312 && c <= 19903) || (c >= 131072 && c <= 173791) || (c >= 173824 && c <= 177983) || (c >= 177984 && c <= 178207) || (c >= 178208 && c <= 183983) || (c >= 63744 && c <= 64255) || (c >= 194560 && c <= 195103)
+}
+
+// is_control de BertNormalizer: Other salvo \t \n \r.
+fn tk_is_control(t: TkC, c: int) -> bool {
+    if c == 9 || c == 10 || c == 13 {
+        return false
+    }
+    tk_in(t.u.other, c)
+}
+
+fn tkn_bert(t: TkC, node: any, c0: array, a0: array) -> (array, array) {
+    let lower = tj_gbool(node, "lowercase", false)
+    let mut c = c0
+    let mut a = a0
+    if tj_gbool(node, "clean_text", false) {
+        let mut keep = []
+        for ch in c {
+            keep = std::array::push(keep, !(ch == 0 || ch == 65533 || tk_is_control(t, ch)))
+        }
+        let (c1, a1) = tkn_keep(c, a, keep)
+        let mut c2 = []
+        for ch in c1 {
+            if tk_is_space(t.u, ch) {
+                c2 = std::array::push(c2, 32)
+            } else {
+                c2 = std::array::push(c2, ch)
+            }
+        }
+        c = c2
+        a = a1
+    }
+    if tj_gbool(node, "handle_chinese_chars", false) {
+        let mut dc = []
+        let mut dg = []
+        for ch in c {
+            if tk_is_chinese(ch) {
+                dc = std::array::push(dc, 32)
+                dg = std::array::push(dg, 0)
+                dc = std::array::push(dc, ch)
+                dg = std::array::push(dg, 1)
+                dc = std::array::push(dc, 32)
+                dg = std::array::push(dg, 1)
+            } else {
+                dc = std::array::push(dc, ch)
+                dg = std::array::push(dg, 0)
+            }
+        }
+        let (c1, a1) = tk_transform(a, dc, dg, 0)
+        c = c1
+        a = a1
+    }
+    let sa = tj_get(node, "strip_accents")
+    let mut strip = lower
+    if sa != nil {
+        strip = tj_bool(sa)
+    }
+    if strip {
+        let (c1, a1) = tkn_nf(t, c, a, false, false)
+        let mut keep = []
+        for ch in c1 {
+            keep = std::array::push(keep, !tk_in(t.u.mn, ch))
+        }
+        let (c2, a2) = tkn_keep(c1, a1, keep)
+        c = c2
+        a = a2
+    }
+    if lower {
+        let (c1, a1) = tkn_lower(c, a)
+        c = c1
+        a = a1
+    }
+    return (c, a)
+}
+
+fn tkn_nmt(c: array, a: array) -> (array, array) {
+    let mut keep = []
+    for ch in c {
+        let dr = (ch >= 1 && ch <= 8) || ch == 11 || (ch >= 14 && ch <= 31) || ch == 127 || ch == 143 || ch == 159
+        keep = std::array::push(keep, !dr)
+    }
+    let (c1, a1) = tkn_keep(c, a, keep)
+    let mut c2 = []
+    for ch in c1 {
+        let sp = ch == 9 || ch == 10 || ch == 12 || ch == 13 || ch == 5760 || (ch >= 8203 && ch <= 8207) || ch == 8232 || ch == 8233 || ch == 9601 || ch == 65279 || ch == 65533
+        if sp {
+            c2 = std::array::push(c2, 32)
+        } else {
+            c2 = std::array::push(c2, ch)
+        }
+    }
+    return (c2, a1)
+}
+
+fn tkn_strip(t: TkC, node: any, c: array, a: array) -> (array, array) {
+    let n = len(c)
+    let mut s = 0
+    let mut e = n
+    if tj_gbool(node, "strip_left", false) {
+        while s < n && tk_is_space(t.u, c[s]) {
+            s += 1
+        }
+    }
+    if tj_gbool(node, "strip_right", false) {
+        while e > s && tk_is_space(t.u, c[e - 1]) {
+            e -= 1
+        }
+    }
+    return (std::array::slice(c, s, e), std::array::slice(a, s, e))
+}
+
+// Reemplazo de todas las coincidencias de `rx` por `content` (cps).
+fn tkn_replace(t: TkC, rx: Rx, content: array, c: array, a: array) -> (array, array) {
+    let n = len(c)
+    if n == 0 {
+        return (c, a)
+    }
+    let ms = rx_find_iter(rx, c)
+    let mut oc = []
+    let mut oa = []
+    let mut prev = 0
+    let mut k = 0
+    while k < len(ms) {
+        let s = ms[k]
+        let e = ms[k + 1]
+        let mut i = prev
+        while i < s {
+            oc = std::array::push(oc, c[i])
+            oa = std::array::push(oa, a[i])
+            i += 1
+        }
+        let mut al = 0
+        if e > 0 {
+            al = a[e - 1]
+        }
+        for x in content {
+            oc = std::array::push(oc, x)
+            oa = std::array::push(oa, al)
+        }
+        prev = e
+        k += 2
+    }
+    let mut i = prev
+    while i < n {
+        oc = std::array::push(oc, c[i])
+        oa = std::array::push(oa, a[i])
+        i += 1
+    }
+    return (oc, oa)
+}
+
+// ByteLevel: cada byte UTF-8 pasa a su carácter; los bytes extra heredan el origen.
+fn tk_bytelevel(t: TkC, c: array, a: array) -> (array, array) {
+    let mut oc = []
+    let mut oa = []
+    let n = len(c)
+    let mut i = 0
+    while i < n {
+        for b in tk_utf8([c[i]]) {
+            oc = std::array::push(oc, t.bl[b])
+            oa = std::array::push(oa, a[i])
+        }
+        i += 1
+    }
+    return (oc, oa)
+}
+
+fn tkn_prepend(pre: array, c: array, a: array) -> (array, array) {
+    if len(pre) == 0 {
+        return (c, a)
+    }
+    if len(c) == 0 {
+        return (pre, std::array::filled(len(pre), 0))
+    }
+    let mut oa = std::array::filled(len(pre) + 1, a[0])
+    let mut i = 1
+    while i < len(a) {
+        oa = std::array::push(oa, a[i])
+        i += 1
+    }
+    return (std::array::concat(pre, c), oa)
+}
+
+fn tkn_run(t: TkC, node: any, c: array, a: array) -> (array, array) {
+    let ty = tj_gstr(node, "type", "")
+    if ty == "Sequence" {
+        let mut cc = c
+        let mut aa = a
+        for n in tj_list(node, "normalizers") {
+            let (c1, a1) = tkn_run(t, n, cc, aa)
+            cc = c1
+            aa = a1
+        }
+        return (cc, aa)
+    }
+    if ty == "Lowercase" {
+        return tkn_lower(c, a)
+    }
+    if ty == "NFC" {
+        return tkn_nf(t, c, a, false, true)
+    }
+    if ty == "NFD" {
+        return tkn_nf(t, c, a, false, false)
+    }
+    if ty == "NFKC" {
+        return tkn_nf(t, c, a, true, true)
+    }
+    if ty == "NFKD" {
+        return tkn_nf(t, c, a, true, false)
+    }
+    if ty == "BertNormalizer" {
+        return tkn_bert(t, node, c, a)
+    }
+    if ty == "Strip" {
+        return tkn_strip(t, node, c, a)
+    }
+    if ty == "StripAccents" {
+        let mut keep = []
+        for ch in c {
+            keep = std::array::push(keep, !tk_in(t.u.mn, ch))
+        }
+        return tkn_keep(c, a, keep)
+    }
+    if ty == "Nmt" {
+        return tkn_nmt(c, a)
+    }
+    if ty == "Replace" {
+        let (pat, e) = tk_pattern(tj_get(node, "pattern"))
+        return tkn_replace(t, tk_rx(t, pat), tk_cps(tj_gstr(node, "content", "")), c, a)
+    }
+    if ty == "Prepend" {
+        return tkn_prepend(tk_cps(tj_gstr(node, "prepend", "")), c, a)
+    }
+    if ty == "ByteLevel" {
+        return tk_bytelevel(t, c, a)
+    }
+    return (c, a)
+}
+
+// ------------------------------------------------------------ piezas
+
+// Pieza: texto normalizado + alineamiento; sh = desplazamiento original; id >= 0 si ya es un token añadido.
+struct TkP {
+    c: array,
+    a: array,
+    sh: int,
+    id: int,
+    tk: string,
+}
+
+fn tks_new(c: array) -> TkP {
+    TkP { c: c, a: tk_idseq(len(c)), sh: 0, id: -1, tk: "" }
+}
+
+// slice(Normalized(i..j)): alineamientos reubicados.
+fn tks_slice(p: TkP, i: int, j: int) -> TkP {
+    let a0 = p.a[i]
+    let mut na = []
+    let mut k = i
+    while k < j {
+        na = std::array::push(na, p.a[k] - a0)
+        k += 1
+    }
+    TkP { c: std::array::slice(p.c, i, j), a: na, sh: p.sh + a0, id: -1, tk: "" }
+}
+
+fn tks_tok(p: TkP, id: int, s: string) -> TkP {
+    TkP { c: p.c, a: p.a, sh: p.sh, id: id, tk: s }
+}
+
+// ------------------------------------------------------------ división (NormalizedString::split)
+
+// Predicados de carácter de los pre-tokenizadores:
+// 0 espacio, 1 puntuación Bert (ASCII o Unicode), 2 numérico, 3 igual a `arg`.
+fn tkp_pred(t: TkC, kind: int, arg: int, ch: int) -> bool {
+    if kind == 0 {
+        return tk_is_space(t.u, ch)
+    }
+    if kind == 1 {
+        return tk_is_ascii_punct(ch) || tk_is_punct(t.u, ch)
+    }
+    if kind == 2 {
+        return tk_is_numeric(t.u, t.gcn, ch)
+    }
+    return ch == arg
+}
+
+// find_matches de un predicado de carácter -> lista plana [ini, fin, es_coincidencia(0/1), ...].
+fn tkp_m_pred(t: TkC, c: array, kind: int, arg: int) -> array {
+    let n = len(c)
+    if n == 0 {
+        return [0, 0, 0]
+    }
+    let mut out = []
+    let mut last = 0
+    let mut i = 0
+    while i < n {
+        if tkp_pred(t, kind, arg, c[i]) {
+            if last < i {
+                out = std::array::push(out, last)
+                out = std::array::push(out, i)
+                out = std::array::push(out, 0)
+            }
+            out = std::array::push(out, i)
+            out = std::array::push(out, i + 1)
+            out = std::array::push(out, 1)
+            last = i + 1
+        }
+        i += 1
+    }
+    if n > last {
+        out = std::array::push(out, last)
+        out = std::array::push(out, n)
+        out = std::array::push(out, 0)
+    }
+    return out
+}
+
+// find_matches de una regex.
+fn tkp_m_rx(rx: Rx, c: array) -> array {
+    let n = len(c)
+    if n == 0 {
+        return [0, 0, 0]
+    }
+    let ms = rx_find_iter(rx, c)
+    let mut out = []
+    let mut prev = 0
+    let mut k = 0
+    while k < len(ms) {
+        if prev != ms[k] {
+            out = std::array::push(out, prev)
+            out = std::array::push(out, ms[k])
+            out = std::array::push(out, 0)
+        }
+        out = std::array::push(out, ms[k])
+        out = std::array::push(out, ms[k + 1])
+        out = std::array::push(out, 1)
+        prev = ms[k + 1]
+        k += 2
+    }
+    if prev != n {
+        out = std::array::push(out, prev)
+        out = std::array::push(out, n)
+        out = std::array::push(out, 0)
+    }
+    return out
+}
+
+fn tkp_invert(m: array) -> array {
+    let mut out = []
+    let mut k = 0
+    while k < len(m) {
+        out = std::array::push(out, m[k])
+        out = std::array::push(out, m[k + 1])
+        if m[k + 2] == 0 {
+            out = std::array::push(out, 1)
+        } else {
+            out = std::array::push(out, 0)
+        }
+        k += 3
+    }
+    return out
+}
+
+// Comportamientos: 0 Removed, 1 Isolated, 2 MergedWithPrevious, 3 MergedWithNext, 4 Contiguous.
+// Devuelve la lista plana [ini, fin, ...] de trozos que se conservan.
+fn tkp_behave(m: array, beh: int) -> array {
+    let n = len(m) / 3
+    let mut out = []
+    if beh == 0 {
+        let mut k = 0
+        while k < n {
+            if m[k * 3 + 2] == 0 {
+                out = std::array::push(out, m[k * 3])
+                out = std::array::push(out, m[k * 3 + 1])
+            }
+            k += 1
+        }
+        return out
+    }
+    if beh == 1 {
+        let mut k = 0
+        while k < n {
+            out = std::array::push(out, m[k * 3])
+            out = std::array::push(out, m[k * 3 + 1])
+            k += 1
+        }
+        return out
+    }
+    if beh == 3 {
+        // MergedWithNext: recorrido inverso (trozos [ini, fin] en orden inverso), luego se invierte
+        let mut acc = []
+        let mut prev = false
+        let mut k = n - 1
+        while k >= 0 {
+            let s = m[k * 3]
+            let e = m[k * 3 + 1]
+            let ism = m[k * 3 + 2] == 1
+            if ism && !prev && len(acc) > 0 {
+                acc = std::array::set(acc, len(acc) - 2, s)
+            } else {
+                acc = std::array::push(acc, s)
+                acc = std::array::push(acc, e)
+            }
+            prev = ism
+            k -= 1
+        }
+        let mut j = len(acc) - 2
+        while j >= 0 {
+            out = std::array::push(out, acc[j])
+            out = std::array::push(out, acc[j + 1])
+            j -= 2
+        }
+        return out
+    }
+    let mut prev = false
+    let mut k = 0
+    while k < n {
+        let s = m[k * 3]
+        let e = m[k * 3 + 1]
+        let ism = m[k * 3 + 2] == 1
+        let mut merge = false
+        if beh == 4 {
+            merge = ism == prev
+        } else {
+            merge = ism && !prev
+        }
+        if merge && len(out) > 0 {
+            out = std::array::set(out, len(out) - 1, e)
+        } else {
+            out = std::array::push(out, s)
+            out = std::array::push(out, e)
+        }
+        prev = ism
+        k += 1
+    }
+    return out
+}
+
+// Divide una pieza sin token; descarta trozos vacíos. `m` = find_matches.
+fn tkp_split_piece(p: TkP, m: array, beh: int) -> array {
+    let rs = tkp_behave(m, beh)
+    let mut out = []
+    let mut k = 0
+    while k < len(rs) {
+        if rs[k + 1] > rs[k] {
+            out = std::array::push(out, tks_slice(p, rs[k], rs[k + 1]))
+        }
+        k += 2
+    }
+    return out
+}
+
+fn tkp_beh_id(s: string) -> int {
+    if s == "Removed" {
+        return 0
+    }
+    if s == "Isolated" {
+        return 1
+    }
+    if s == "MergedWithPrevious" {
+        return 2
+    }
+    if s == "MergedWithNext" {
+        return 3
+    }
+    if s == "Contiguous" {
+        return 4
+    }
+    return -1
+}
+
+// ------------------------------------------------------------ pre-tokenizadores
+
+// Aplica un pre-tokenizador a la lista de piezas (las que ya son token se conservan).
+fn tkp_run(t: TkC, node: any, ps: array) -> array {
+    let ty = tj_gstr(node, "type", "")
+    if ty == "Sequence" {
+        let mut cur = ps
+        for n in tj_list(node, "pretokenizers") {
+            cur = tkp_run(t, n, cur)
+        }
+        return cur
+    }
+    let mut out = []
+    for p in ps {
+        if p.id >= 0 {
+            out = std::array::push(out, p)
+        } else {
+            for q in tkp_piece(t, node, ty, p) {
+                out = std::array::push(out, q)
+            }
+        }
+    }
+    return out
+}
+
+fn tkp_piece(t: TkC, node: any, ty: string, p: TkP) -> array {
+    if ty == "BertPreTokenizer" {
+        let mut out = []
+        for q in tkp_split_piece(p, tkp_m_pred(t, p.c, 0, 0), 0) {
+            for r in tkp_split_piece(q, tkp_m_pred(t, q.c, 1, 0), 1) {
+                out = std::array::push(out, r)
+            }
+        }
+        return out
+    }
+    if ty == "WhitespaceSplit" {
+        return tkp_split_piece(p, tkp_m_pred(t, p.c, 0, 0), 0)
+    }
+    if ty == "Whitespace" {
+        let rx = tk_rx(t, "\\w+|[^\\w\\s]+")
+        return tkp_split_piece(p, tkp_invert(tkp_m_rx(rx, p.c)), 0)
+    }
+    if ty == "Digits" {
+        let beh = if tj_gbool(node, "individual_digits", false) { 1 } else { 4 }
+        return tkp_split_piece(p, tkp_m_pred(t, p.c, 2, 0), beh)
+    }
+    if ty == "Punctuation" {
+        let b = tkp_beh_id(tj_gstr(node, "behavior", "Isolated"))
+        return tkp_split_piece(p, tkp_m_pred(t, p.c, 1, 0), b)
+    }
+    if ty == "CharDelimiterSplit" {
+        let d = tk_cps(tj_gstr(node, "delimiter", " "))
+        return tkp_split_piece(p, tkp_m_pred(t, p.c, 3, d[0]), 0)
+    }
+    if ty == "FixedLength" {
+        let n = len(p.c)
+        let l = tj_gint(node, "length", 5)
+        let mut out = []
+        let mut i = 0
+        while i < n {
+            let mut j = i + l
+            if j > n {
+                j = n
+            }
+            out = std::array::push(out, tks_slice(p, i, j))
+            i = j
+        }
+        return out
+    }
+    if ty == "Split" {
+        let (pat, e) = tk_pattern(tj_get(node, "pattern"))
+        let mut m = tkp_m_rx(tk_rx(t, pat), p.c)
+        if tj_gbool(node, "invert", false) {
+            m = tkp_invert(m)
+        }
+        return tkp_split_piece(p, m, tkp_beh_id(tj_gstr(node, "behavior", "Removed")))
+    }
+    if ty == "ByteLevel" {
+        let mut c = p.c
+        let mut a = p.a
+        if tj_gbool(node, "add_prefix_space", false) && len(c) > 0 && c[0] != 32 {
+            let (c1, a1) = tkn_prepend([32], c, a)
+            c = c1
+            a = a1
+        }
+        let np = TkP { c: c, a: a, sh: p.sh, id: -1, tk: "" }
+        let mut parts = [np]
+        if tj_gbool(node, "use_regex", true) {
+            let rx = tk_rx(t, tk_bl_pattern())
+            parts = tkp_split_piece(np, tkp_m_rx(rx, np.c), 1)
+        }
+        let mut out = []
+        for q in parts {
+            let (c2, a2) = tk_bytelevel(t, q.c, q.a)
+            out = std::array::push(out, TkP { c: c2, a: a2, sh: q.sh, id: -1, tk: "" })
+        }
+        return out
+    }
+    if ty == "Metaspace" {
+        let rep = tk_cps(tj_gstr(node, "replacement", "_"))
+        let r0 = rep[0]
+        let mut scheme = tj_gstr(node, "prepend_scheme", "always")
+        if !tj_has(node, "prepend_scheme") && tj_has(node, "add_prefix_space") && !tj_gbool(node, "add_prefix_space", true) {
+            scheme = "never"
+        }
+        let mut c = []
+        for ch in p.c {
+            if ch == 32 {
+                c = std::array::push(c, r0)
+            } else {
+                c = std::array::push(c, ch)
+            }
+        }
+        let mut a = p.a
+        let mut do_pre = false
+        if scheme == "always" {
+            do_pre = true
+        }
+        if scheme == "first" && p.sh == 0 {
+            do_pre = true
+        }
+        if do_pre && len(c) > 0 && c[0] != r0 {
+            let (c1, a1) = tkn_prepend([r0], c, a)
+            c = c1
+            a = a1
+        }
+        let np = TkP { c: c, a: a, sh: p.sh, id: -1, tk: "" }
+        if tj_gbool(node, "split", true) {
+            return tkp_split_piece(np, tkp_m_pred(t, np.c, 3, r0), 3)
+        }
+        return [np]
+    }
+    return [p]
+}
+
+// Regex de ByteLevel (GPT-2). Las llaves se construyen aparte (en un literal serían interpolación).
+fn tk_bl_pattern() -> string {
+    let lb = tk_str([123])
+    let rb = tk_str([125])
+    let pl = "\\p" + lb + "L" + rb
+    let pn = "\\p" + lb + "N" + rb
+    "'s|'t|'re|'ve|'m|'ll|'d| ?" + pl + "+| ?" + pn + "+| ?[^\\s" + pl + pn + "]+|\\s+(?!\\S)|\\s+"
+}

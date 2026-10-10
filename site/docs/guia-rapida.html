@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guía rápida — Documentación de Titan</title>
+<meta name="description" content="Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan.">
+<meta property="og:title" content="Guía rápida — Documentación de Titan">
+<meta property="og:description" content="Recorrido por el lenguaje en 20 minutos, con programas que se ejecutan.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html" class="on">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Empezar</p><h1 id="guia-rapida-de-titan">Guía rápida de Titan</h1>
+<p>Una vuelta completa por el lenguaje, en unos 20 minutos. Cada programa de esta
+guía está en <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples/guia"><code>examples/guia/</code></a> y se puede ejecutar tal cual.
+Las salidas que se muestran son las reales (se ejecutaron con el compilador
+construido desde este repositorio).</p>
+<p><strong>Antes de empezar:</strong> necesitas la herramienta <code>titan</code>. Se construye con
+<code>bash selfhost/bootstrap.sh</code> (ver <a href="https://github.com/alexsndersoto04-source/aio/blob/main/README.md#instalación">Instalación</a>).</p>
+<h2 id="1-variables-y-tipos">1. Variables y tipos</h2>
+<pre><code class="language-titan"><span class="k">fn</span> main() {
+    <span class="k">let</span> nombre = <span class="s">&quot;Titan&quot;</span>
+    <span class="k">let</span> <span class="k">mut</span> contador = <span class="n">0</span>
+    contador += <span class="n">1</span>
+    <span class="k">let</span> pi = <span class="n">3.14159</span>
+    <span class="k">let</span> activo = <span class="k">true</span>
+    print(<span class="s">&quot;{nombre} {contador} {pi} {activo}&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-bash">titan run examples/guia/01_variables.titan
+</code></pre>
+<pre><code class="language-text">Titan 1 3.14159 true
+</code></pre>
+<ul>
+<li><code>let</code> crea una variable que <strong>no</strong> cambia; <code>let mut</code> crea una que sí.</li>
+<li>Los tipos básicos son <code>int</code>, <code>float</code>, <code>string</code> y <code>bool</code>. El compilador los
+  deduce, pero se pueden escribir: <code>let n: int = 3</code>.</li>
+<li>Dentro de un texto, <code>{nombre}</code> inserta el valor de una variable. Solo admite
+  nombres de variables, no expresiones como <code>{a.b}</code> ni llamadas: calcula el valor
+  en una variable antes.</li>
+<li>Un <code>int</code> no se convierte solo en <code>float</code>: <code>1 + 0.5</code> es un error de tipos.</li>
+</ul>
+<h2 id="2-funciones-condiciones-y-bucles">2. Funciones, condiciones y bucles</h2>
+<pre><code class="language-titan"><span class="k">fn</span> factorial(n: int) -&gt; int {
+    <span class="k">if</span> n &lt;= <span class="n">1</span> { <span class="k">return</span> <span class="n">1</span> }
+    n * factorial(n - <span class="n">1</span>)
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> <span class="k">mut</span> total = <span class="n">0</span>
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">1</span>..=<span class="n">5</span> {
+        total += factorial(i)
+    }
+    print(<span class="s">&quot;suma de factoriales = {total}&quot;</span>)
+
+    <span class="k">let</span> <span class="k">mut</span> n = <span class="n">10</span>
+    <span class="k">while</span> n &gt; <span class="n">0</span> {
+        n -= <span class="n">4</span>
+    }
+    print(<span class="s">&quot;n = {n}&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-text">suma de factoriales = 153
+n = -2
+</code></pre>
+<ul>
+<li>La última expresión de una función es su resultado (no hace falta <code>return</code>).</li>
+<li><code>1..=5</code> incluye el 5; <code>1..5</code> no lo incluye.</li>
+<li>Los parámetros llevan su tipo y el resultado se declara con <code>-&gt;</code>.</li>
+</ul>
+<h2 id="3-arrays-mapas-y-closures">3. Arrays, mapas y closures</h2>
+<pre><code class="language-titan"><span class="k">fn</span> main() {
+    <span class="k">let</span> numeros = [<span class="n">3</span>, <span class="n">1</span>, <span class="n">4</span>, <span class="n">1</span>, <span class="n">5</span>]
+    <span class="k">let</span> dobles = numeros.map(|x| x * <span class="n">2</span>)
+    print(<span class="s">&quot;dobles: {dobles}&quot;</span>)
+    <span class="k">let</span> pares = numeros.filter(|x| x % <span class="n">2</span> == <span class="n">0</span>)
+    print(<span class="s">&quot;pares: {pares}&quot;</span>)
+
+    <span class="k">let</span> edades = std::map::new()
+    <span class="k">let</span> edades = std::map::insert(edades, <span class="s">&quot;ana&quot;</span>, <span class="n">31</span>)
+    <span class="k">let</span> edades = std::map::insert(edades, <span class="s">&quot;luis&quot;</span>, <span class="n">28</span>)
+    <span class="k">let</span> ana = std::map::get(edades, <span class="s">&quot;ana&quot;</span>)
+    print(<span class="s">&quot;ana tiene {ana} años&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-text">dobles: [6, 2, 8, 2, 10]
+pares: [4]
+ana tiene 31 años
+</code></pre>
+<ul>
+<li><code>|x| x * 2</code> es una <em>closure</em>: una función pequeña sin nombre.</li>
+<li>Los mapas se manejan con <code>std::map::*</code>; cada <code>insert</code> devuelve el mapa nuevo.</li>
+</ul>
+<h2 id="4-structs-metodos-y-traits">4. Structs, métodos y traits</h2>
+<pre><code class="language-titan"><span class="k">trait</span> Saludo {
+    <span class="k">fn</span> nombre(self) -&gt; string;
+    <span class="k">fn</span> saludar(self) -&gt; string {
+        <span class="s">&quot;Hola, &quot;</span> + self.nombre() + <span class="s">&quot;!&quot;</span>
+    }
+}
+
+<span class="k">struct</span> Persona { nombre: string, edad: int }
+
+<span class="k">impl</span> Persona {
+    <span class="k">fn</span> nueva(nombre: string, edad: int) -&gt; Persona {
+        Persona { nombre: nombre, edad: edad }
+    }
+    <span class="k">fn</span> es_mayor(self) -&gt; bool {
+        self.edad &gt;= <span class="n">18</span>
+    }
+}
+
+<span class="k">impl</span> Saludo <span class="k">for</span> Persona {
+    <span class="k">fn</span> nombre(self) -&gt; string {
+        self.nombre
+    }
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> p = <span class="t">Persona</span>::nueva(<span class="s">&quot;Ana&quot;</span>, <span class="n">31</span>)
+    print(p.saludar())
+    <span class="k">let</span> mayor = p.es_mayor()
+    print(<span class="s">&quot;mayor de edad: {mayor}&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-text">Hola, Ana!
+mayor de edad: true
+</code></pre>
+<ul>
+<li><code>struct</code> agrupa campos; <code>impl</code> le añade métodos. Los que no llevan <code>self</code> se
+  llaman con <code>Tipo::nombre(...)</code>.</li>
+<li>Un <code>trait</code> es un contrato: lista métodos que un tipo debe tener. Puede traer
+  métodos con cuerpo por defecto (<code>saludar</code>).</li>
+</ul>
+<h2 id="5-enums-y-match">5. Enums y <code>match</code></h2>
+<pre><code class="language-titan"><span class="k">enum</span> Forma {
+    <span class="t">Circulo</span>(float),
+    <span class="t">Cuadrado</span>(float),
+    Vacio,
+}
+
+<span class="k">fn</span> area(f: Forma) -&gt; float {
+    <span class="k">match</span> f {
+        <span class="t">Forma</span>::<span class="t">Circulo</span>(r) =&gt; <span class="n">3.14159</span> * r * r,
+        <span class="t">Forma</span>::<span class="t">Cuadrado</span>(l) =&gt; l * l,
+        <span class="t">Forma</span>::Vacio =&gt; <span class="n">0.0</span>,
+    }
+}
+</code></pre>
+<p><code>match</code> revisa que cubras todos los casos: si falta uno, el compilador lo avisa
+antes de ejecutar. El programa completo está en
+<a href="https://github.com/alexsndersoto04-source/aio/blob/main/examples/guia/05_enums_match.titan"><code>05_enums_match.titan</code></a>.</p>
+<h2 id="6-errores-result-y-el-operador">6. Errores: <code>Result</code> y el operador <code>?</code></h2>
+<pre><code class="language-titan"><span class="k">fn</span> dividir(a: int, b: int) -&gt; Result {
+    <span class="k">if</span> b == <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">Result</span>::<span class="t">Err</span>(<span class="s">&quot;división por cero&quot;</span>)
+    }
+    <span class="t">Result</span>::<span class="t">Ok</span>(a / b)
+}
+
+<span class="k">fn</span> calcular() -&gt; Result {
+    <span class="k">let</span> x = dividir(<span class="n">100</span>, <span class="n">5</span>)?
+    <span class="k">let</span> y = dividir(x, <span class="n">0</span>)?
+    <span class="t">Result</span>::<span class="t">Ok</span>(y)
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">match</span> calcular() {
+        <span class="t">Result</span>::<span class="t">Ok</span>(v) =&gt; print(<span class="s">&quot;resultado {v}&quot;</span>),
+        <span class="t">Result</span>::<span class="t">Err</span>(e) =&gt; print(<span class="s">&quot;error: {e}&quot;</span>),
+    }
+    <span class="k">let</span> r = std::try::catch(|| std::fs::read_text(<span class="s">&quot;/no/existe.txt&quot;</span>))
+    <span class="k">match</span> r {
+        <span class="t">Result</span>::<span class="t">Ok</span>(t) =&gt; print(<span class="s">&quot;leído&quot;</span>),
+        <span class="t">Result</span>::<span class="t">Err</span>(m) =&gt; print(<span class="s">&quot;no se pudo leer el archivo&quot;</span>),
+    }
+}
+</code></pre>
+<pre><code class="language-text">error: división por cero
+no se pudo leer el archivo
+</code></pre>
+<ul>
+<li><code>?</code> devuelve el error al que llamó a la función en cuanto aparece uno.</li>
+<li><code>std::try::catch(|| ...)</code> convierte en <code>Result</code> un fallo de la biblioteca (por
+  ejemplo, un archivo que no existe) para que el programa no termine.</li>
+</ul>
+<h2 id="7-tareas-y-canales">7. Tareas y canales</h2>
+<pre><code class="language-titan"><span class="k">fn</span> productor(tx: Sender, n: int) -&gt; int {
+    <span class="k">let</span> <span class="k">mut</span> i = <span class="n">1</span>
+    <span class="k">while</span> i &lt;= n {
+        send(tx, i * i)
+        i += <span class="n">1</span>
+    }
+    n
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> (tx, rx) = channel(<span class="n">2</span>)
+    <span class="k">let</span> tarea = <span class="k">spawn</span> || { productor(tx, <span class="n">5</span>) }
+    <span class="k">let</span> <span class="k">mut</span> suma = <span class="n">0</span>
+    <span class="k">let</span> <span class="k">mut</span> k = <span class="n">0</span>
+    <span class="k">while</span> k &lt; <span class="n">5</span> {
+        suma += recv(rx)
+        k += <span class="n">1</span>
+    }
+    print(<span class="s">&quot;suma de cuadrados = {suma}&quot;</span>)
+    print(<span class="s">&quot;la tarea envió {join(tarea)} valores&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-text">suma de cuadrados = 55
+la tarea envió 5 valores
+</code></pre>
+<p><code>spawn</code> lanza una tarea, <code>channel(n)</code> crea un canal con capacidad <code>n</code>, y <code>join</code>
+espera el resultado. Las tareas son fibras cooperativas: se turnan en un solo
+núcleo. Detalle: <a href="concurrencia.html"><code>CONCURRENCY.md</code></a>.</p>
+<h2 id="8-usar-la-biblioteca-estandar">8. Usar la biblioteca estándar</h2>
+<pre><code class="language-titan"><span class="k">fn</span> main() {
+    <span class="k">let</span> doc = std::json::parse(<span class="s">&quot;{\&quot;nombre\&quot;: \&quot;Titan\&quot;, \&quot;version\&quot;: 1}&quot;</span>)
+    print(doc.nombre)
+    <span class="k">let</span> datos = std::encoding::utf8_encode(<span class="s">&quot;hola&quot;</span>)
+    print(<span class="s">&quot;base64 = {std::encoding::base64_encode(datos)}&quot;</span>)
+    print(<span class="s">&quot;sha256 = {std::hash::sha256(datos)}&quot;</span>)
+}
+</code></pre>
+<pre><code class="language-text">Titan
+base64 = aG9sYQ==
+sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79
+</code></pre>
+<p>Las funciones se llaman con su ruta completa (<code>std::json::parse</code>). La lista
+completa está en <a href="stdlib.html"><code>STDLIB.md</code></a>.</p>
+<h2 id="9-del-programa-al-ejecutable">9. Del programa al ejecutable</h2>
+<pre><code class="language-bash">titan check examples/guia/02_control.titan                  # solo comprueba tipos
+titan run examples/guia/02_control.titan                    # compila y ejecuta
+titan compile examples/guia/02_control.titan -o factoriales # deja un ejecutable
+./factoriales
+titan wasm examples/guia/02_control.titan                   # módulo WebAssembly
+</code></pre>
+<p>El ejecutable de este ejemplo pesa unos 1,1 MB, no necesita nada instalado
+para correr y arranca sin máquina virtual.</p>
+<h2 id="10-tu-primer-proyecto">10. Tu primer proyecto</h2>
+<pre><code class="language-bash">titan new mi_app
+cd mi_app
+titan run
+</code></pre>
+<p><code>titan new</code> crea <code>Titan.toml</code> (nombre y dependencias) y <code>src/main.titan</code>. Para
+dividir el código en varios archivos y escribir tests (<code>tests/*.titan</code>, que
+ejecuta <code>titan test</code>), sigue <a href="proyectos.html"><code>PROJECTS.md</code></a>.</p>
+<h2 id="11-paquetes-con-zett">11. Paquetes con Zett</h2>
+<p><code>zett</code> es el gestor de paquetes de Titan (viene con <code>titan</code>; ver <a href="zett.html"><code>ZETT.md</code></a>):</p>
+<pre><code class="language-bash">cd mi_app
+zett add demo &quot;^1&quot;     # añade [dependencies.demo] a Titan.toml
+zett fetch             # descarga, verifica (SHA-256 y firma) e instala
+</code></pre>
+<p><code>zett add</code> escribe esto en <code>Titan.toml</code>:</p>
+<pre><code class="language-toml">[dependencies.demo]
+version = &quot;^1&quot;
+</code></pre>
+<p><code>zett fetch</code> necesita un registro de paquetes por HTTPS; este repositorio trae el cliente, no el servidor.</p>
+<h2 id="que-leer-despues">Qué leer después</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Si quieres…</th>
+<th>Lee</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Todas las construcciones del lenguaje</td>
+<td><a href="sintaxis.html"><code>TITAN_SYNTAX.md</code></a></td>
+</tr>
+<tr>
+<td>Las reglas exactas del lenguaje</td>
+<td><a href="especificacion.html"><code>SPEC.md</code></a> (en inglés)</td>
+</tr>
+<tr>
+<td>Qué trae la biblioteca</td>
+<td><a href="stdlib.html"><code>STDLIB.md</code></a></td>
+</tr>
+<tr>
+<td>Hacer un servidor web</td>
+<td><a href="red.html"><code>NETWORKING.md</code></a> y <code>examples/webserver.titan</code></td>
+</tr>
+<tr>
+<td>Guardar datos</td>
+<td><a href="sqlite.html"><code>SQLITE.md</code></a>, <a href="postgresql.html"><code>POSTGRESQL.md</code></a></td>
+</tr>
+<tr>
+<td>Depurar</td>
+<td><a href="depurador.html"><code>DEBUGGER.md</code></a></td>
+</tr>
+<tr>
+<td>Usar y publicar paquetes</td>
+<td><a href="zett.html"><code>ZETT.md</code></a></td>
+</tr>
+<tr>
+<td>Ver una aplicación completa</td>
+<td><a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon"><code>projects/moon</code></a></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="trampas-frecuentes">Trampas frecuentes</h2>
+<ul>
+<li><code>go</code>, <code>first</code> y <code>last</code> dan problemas como nombres de variable: usa otros.</li>
+<li>No hay conversión automática de <code>int</code> a <code>float</code>.</li>
+<li>Un <code>match</code> sobre un <code>Result</code> necesita cubrir <code>Ok</code> y <code>Err</code> (o <code>_</code>).</li>
+<li><code>"{a.b}"</code> no se evalúa dentro de un texto: guarda el valor en una variable.</li>
+<li>No hay genéricos definidos por el usuario ni referencias (<code>&amp;T</code>).</li>
+<li>Los límites conocidos de cada pieza están en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</li>
+</ul><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_RAPIDA.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

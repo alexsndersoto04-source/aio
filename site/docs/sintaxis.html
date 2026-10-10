@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Referencia de sintaxis — Documentación de Titan</title>
+<meta name="description" content="Todas las construcciones del lenguaje con ejemplos.">
+<meta property="og:title" content="Referencia de sintaxis — Documentación de Titan">
+<meta property="og:description" content="Todas las construcciones del lenguaje con ejemplos.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html" class="on">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Lenguaje</p><h1 id="titan-language-reference-programacion-real">Titan Language Reference — Programación Real</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p>Una guía práctica basada en 15 releases de escribir código Titan.
+Cubre los patrones, los gotchas conocidos, y cómo escribir programas
+que realmente funcionen.</p>
+<h2 id="indice">Índice</h2>
+<ol>
+<li><a href="#tipos-básicos">Tipos básicos</a></li>
+<li><a href="#variables-y-mutabilidad">Variables y mutabilidad</a></li>
+<li><a href="#strings-y-concatenación">Strings y concatenación</a></li>
+<li><a href="#arrays">Arrays</a></li>
+<li><a href="#maps-diccionarios">Maps (diccionarios)</a></li>
+<li><a href="#funciones">Funciones</a></li>
+<li><a href="#control-de-flujo">Control de flujo</a></li>
+<li><a href="#interpolación-de-strings">Interpolación de strings</a></li>
+<li><a href="#anotaciones-de-tipo">Anotaciones de tipo</a></li>
+<li><a href="#llamadas-a-la-stdlib">Llamadas a la stdlib</a></li>
+<li><a href="#gotchas-conocidos-sin-fix">Gotchas conocidos sin fix</a></li>
+</ol>
+<hr />
+<h2 id="tipos-basicos">Tipos básicos</h2>
+<p>Titan tiene los siguientes tipos primitivos:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Alias</th>
+<th>Tipo interno</th>
+<th>Ejemplo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>int</code></td>
+<td>Int (i64)</td>
+<td><code>42</code>, <code>-7</code>, <code>0</code></td>
+</tr>
+<tr>
+<td><code>float</code></td>
+<td>Float (f64)</td>
+<td><code>3.14</code>, <code>-0.5</code>, <code>2.0</code></td>
+</tr>
+<tr>
+<td><code>bool</code></td>
+<td>Bool</td>
+<td><code>true</code>, <code>false</code></td>
+</tr>
+<tr>
+<td><code>string</code></td>
+<td>String</td>
+<td><code>"hola"</code>, <code>"multi líneas"</code></td>
+</tr>
+<tr>
+<td><code>char</code></td>
+<td>Char (Unicode)</td>
+<td><code>'a'</code>, <code>'ñ'</code></td>
+</tr>
+<tr>
+<td><code>nil</code></td>
+<td>Nil</td>
+<td><code>nil</code></td>
+</tr>
+<tr>
+<td><code>array</code></td>
+<td>Array(Unknown)</td>
+<td><code>[1, 2, 3]</code>, <code>["a", 2]</code></td>
+</tr>
+<tr>
+<td><code>[T]</code></td>
+<td>Array(T)</td>
+<td><code>[float]</code>, <code>[int]</code></td>
+</tr>
+<tr>
+<td><code>map</code></td>
+<td>Named("map")</td>
+<td><code>std::map::new()</code></td>
+</tr>
+<tr>
+<td><code>any</code></td>
+<td>Unknown</td>
+<td>acepta cualquier cosa</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="variables-y-mutabilidad">Variables y mutabilidad</h2>
+<pre><code class="language-titan"><span class="k">let</span> x = <span class="n">42</span>              <span class="c">// inmutable</span>
+<span class="k">let</span> <span class="k">mut</span> y = <span class="n">10</span>          <span class="c">// mutable</span>
+y = <span class="n">20</span>                  <span class="c">// OK</span>
+<span class="c">// x = 100              // ERROR</span>
+</code></pre>
+<p>Los <code>let</code> en un <code>for</code> <strong>no crean shadowing persistente</strong>:</p>
+<pre><code class="language-titan"><span class="k">let</span> <span class="k">mut</span> acc = []
+<span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">5</span> {
+    acc = std::array::push(acc, i)   <span class="c">// OK: modifica el mut exterior</span>
+    <span class="c">// let acc = ...                  // BAD: shadowing local, se pierde al salir</span>
+}
+<span class="c">// acc == [0, 1, 2, 3, 4]</span>
+</code></pre>
+<hr />
+<h2 id="strings-y-concatenacion">Strings y concatenación</h2>
+<p>Desde <strong>v0.16.0</strong>, <code>+</code> acepta String con cualquier tipo (coerción automática):</p>
+<pre><code class="language-titan"><span class="k">let</span> n = <span class="n">42</span>
+<span class="k">let</span> msg = <span class="s">&quot;cantidad: &quot;</span> + n            <span class="c">// &quot;cantidad: 42&quot;</span>
+<span class="k">let</span> m = <span class="n">100</span> + <span class="s">&quot; puntos&quot;</span>               <span class="c">// &quot;100 puntos&quot;  (simétrico)</span>
+<span class="k">let</span> out = <span class="s">&quot;arr: &quot;</span> + [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]         <span class="c">// &quot;arr: [1, 2, 3]&quot;</span>
+</code></pre>
+<p>Encadenamiento libre:</p>
+<pre><code class="language-titan"><span class="k">let</span> user = <span class="s">&quot;juan&quot;</span>
+<span class="k">let</span> score = <span class="n">95</span>
+print(<span class="s">&quot;El usuario &quot;</span> + user + <span class="s">&quot; tiene &quot;</span> + score + <span class="s">&quot; puntos&quot;</span>)
+</code></pre>
+<hr />
+<h2 id="arrays">Arrays</h2>
+<p>Arrays <strong>homogéneos y heterogéneos</strong> ambos válidos desde <strong>v0.16.0</strong>:</p>
+<pre><code class="language-titan"><span class="k">let</span> a = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]                       <span class="c">// Array(Int)</span>
+<span class="k">let</span> b = [<span class="s">&quot;hola&quot;</span>, <span class="s">&quot;mundo&quot;</span>]               <span class="c">// Array(String)</span>
+<span class="k">let</span> c = [<span class="s">&quot;cpu&quot;</span>, [<span class="n">1.0</span>, <span class="n">2.0</span>], [<span class="n">3.0</span>, <span class="n">4.0</span>]] <span class="c">// Array(Unknown) — mixto OK</span>
+</code></pre>
+<p>Operaciones comunes:</p>
+<pre><code class="language-titan"><span class="k">let</span> xs = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+<span class="k">let</span> n = std::collections::length(xs)        <span class="c">// 3</span>
+<span class="k">let</span> ys = std::array::push(xs, <span class="n">4</span>)            <span class="c">// [1,2,3,4]  (xs sin cambiar)</span>
+<span class="k">let</span> zs = std::array::filled(<span class="n">10</span>, <span class="n">0.0</span>)        <span class="c">// [0.0, 0.0, ..., 0.0]  (10 elementos)</span>
+<span class="k">let</span> idx = xs[<span class="n">0</span>]                             <span class="c">// 1  (indexación por int)</span>
+<span class="k">let</span> updated = std::array::set(xs, <span class="n">1</span>, <span class="n">99</span>)    <span class="c">// [1, 99, 3]</span>
+</code></pre>
+<p>Push en un loop (patrón muy común):</p>
+<pre><code class="language-titan"><span class="k">let</span> <span class="k">mut</span> acc = []
+<span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..n {
+    acc = std::array::push(acc, transform(i))
+}
+</code></pre>
+<hr />
+<h2 id="maps-diccionarios">Maps (diccionarios)</h2>
+<p>Los maps son "estructura genérica de string → any". Se construyen paso a paso:</p>
+<pre><code class="language-titan"><span class="k">let</span> cfg = std::map::new()
+<span class="k">let</span> cfg = std::map::insert(cfg, <span class="s">&quot;port&quot;</span>, <span class="n">8080</span>)
+<span class="k">let</span> cfg = std::map::insert(cfg, <span class="s">&quot;host&quot;</span>, <span class="s">&quot;0.0.0.0&quot;</span>)
+
+<span class="k">let</span> port = cfg.port                         <span class="c">// 8080  (acceso por dot)</span>
+<span class="k">let</span> host = std::map::get(cfg, <span class="s">&quot;host&quot;</span>)       <span class="c">// &quot;0.0.0.0&quot;</span>
+</code></pre>
+<p><strong>Importante:</strong> <code>map.field</code> en Titan devuelve <code>Unknown</code>, así que no
+podés usar el resultado en un <code>require_compatible</code> estricto. Está OK
+si lo pasás a otras funciones que también acepten Unknown.</p>
+<hr />
+<h2 id="funciones">Funciones</h2>
+<pre><code class="language-titan"><span class="k">fn</span> suma(a: int, b: int) -&gt; int {
+    a + b
+}
+
+<span class="k">fn</span> saludar(nombre: string) {          <span class="c">// sin -&gt; ⇒ retorna Unit</span>
+    print(<span class="s">&quot;Hola &quot;</span> + nombre)
+}
+
+<span class="k">fn</span> generico(x) -&gt; any {               <span class="c">// x sin anotación ⇒ Unknown</span>
+    x
+}
+</code></pre>
+<p><strong>Parámetros sin anotación</strong> son <code>Unknown</code> — pueden recibir cualquier
+tipo. Útil cuando el argumento viene de un native que devolvió <code>Array</code>
+(genérico) o de un <code>map.field</code> (Unknown).</p>
+<p><strong>Regla práctica:</strong> si el arg viene de una fn nativa, <strong>no lo anotes</strong>:</p>
+<pre><code class="language-titan"><span class="c">// Bien</span>
+<span class="k">fn</span> print_top(items) {                 <span class="c">// items sin tipo</span>
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..std::collections::length(items) {
+        print(items[i])
+    }
+}
+
+<span class="c">// Mal (falla si items viene de un native &quot;Array&quot; genérico)</span>
+<span class="k">fn</span> print_top(items: [map]) { ... }    <span class="c">// fuerza Array(Named(&quot;map&quot;))</span>
+</code></pre>
+<hr />
+<h2 id="control-de-flujo">Control de flujo</h2>
+<h3 id="ifelse">if/else</h3>
+<p>Ambas ramas pueden tener <strong>tipos distintos</strong> desde <strong>v0.16.0</strong>:</p>
+<pre><code class="language-titan"><span class="k">if</span> condicion {
+    print(<span class="s">&quot;A&quot;</span>)            <span class="c">// Nil</span>
+} <span class="k">else</span> {
+    do_something()        <span class="c">// Unit</span>
+}
+<span class="c">// Ahora es válido — el tipo del if-expr degrada a Unknown</span>
+</code></pre>
+<p>Si querés usar el valor del if-expr como una expresión concreta,
+ambas ramas tienen que devolver lo mismo:</p>
+<pre><code class="language-titan"><span class="k">let</span> x = <span class="k">if</span> cond { <span class="n">10</span> } <span class="k">else</span> { <span class="n">20</span> }   <span class="c">// int</span>
+<span class="k">let</span> s = <span class="k">if</span> cond { <span class="s">&quot;sí&quot;</span> } <span class="k">else</span> { <span class="s">&quot;no&quot;</span> } <span class="c">// string</span>
+</code></pre>
+<h3 id="for">for</h3>
+<pre><code class="language-titan"><span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">10</span> {                 <span class="c">// 0..10 exclusivo del final</span>
+    print(i)
+}
+
+<span class="k">for</span> item <span class="k">in</span> [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>] {
+    print(item)
+}
+</code></pre>
+<h3 id="while">while</h3>
+<pre><code class="language-titan"><span class="k">let</span> <span class="k">mut</span> n = <span class="n">10</span>
+<span class="k">while</span> n &gt; <span class="n">0</span> {
+    print(n)
+    n = n - <span class="n">1</span>
+}
+</code></pre>
+<h3 id="match">match</h3>
+<pre><code class="language-titan"><span class="k">match</span> tag {
+    <span class="s">&quot;hello&quot;</span> =&gt; print(<span class="s">&quot;saludo&quot;</span>),
+    <span class="s">&quot;bye&quot;</span>   =&gt; print(<span class="s">&quot;despedida&quot;</span>),
+    _       =&gt; print(<span class="s">&quot;otro&quot;</span>),
+}
+</code></pre>
+<hr />
+<h2 id="numeros-int-y-float-no-se-mezclan">Números: <code>int</code> y <code>float</code> no se mezclan</h2>
+<p>Titan no convierte un entero en decimal por su cuenta: <code>3 * 2.5</code>, <code>2.5 + 1</code> y <code>2 &lt; 2.5</code> dan error de tipos
+(<code>invalid operands for Mul: Int and Float</code>). Se convierte de forma explícita:</p>
+<pre><code class="language-titan"><span class="k">let</span> n = <span class="n">3</span>
+<span class="k">let</span> f = std::math::to_float(n) * <span class="n">2.5</span>     <span class="c">// 7.5</span>
+<span class="k">let</span> k = std::math::to_int(f)             <span class="c">// 7 (trunca)</span>
+</code></pre>
+<h2 id="palabras-reservadas">Palabras reservadas</h2>
+<p><code>fn let mut if else match for while loop break continue in return struct enum trait impl mod import pub const unsafe
+spawn go true false nil self as extern type</code> no se pueden usar como nombres de variables, funciones ni campos
+(por ejemplo <code>let go = 1</code> es un error de sintaxis: <code>go</code> y <code>spawn</code> lanzan tareas). <code>as</code> y <code>unsafe</code> están reservadas
+sin gramática.</p>
+<hr />
+<h2 id="interpolacion-de-strings">Interpolación de strings</h2>
+<p>Dentro de <code>{...}</code> en un texto se puede escribir <strong>cualquier expresión de Titan</strong>: variables, aritmética, índices, campos, llamadas con expresiones, <code>if</code>, closures...</p>
+<pre><code class="language-titan"><span class="k">const</span> LIMIT: int = <span class="n">20</span>
+<span class="k">struct</span> Punto { x: int, y: int }
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> x = <span class="n">42</span>
+    <span class="k">let</span> arr = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+    <span class="k">let</span> p = Punto { x: <span class="n">3</span>, y: <span class="n">4</span> }
+    <span class="k">let</span> siguiente = |value: int| value + <span class="n">1</span>
+    print(<span class="s">&quot;x = {x}&quot;</span>)                          <span class="c">// &quot;x = 42&quot;</span>
+    print(<span class="s">&quot;límite = {LIMIT}&quot;</span>)                  <span class="c">// &quot;límite = 20&quot;</span>
+    print(<span class="s">&quot;suma = {x + 10}&quot;</span>)                   <span class="c">// &quot;suma = 52&quot;</span>
+    print(<span class="s">&quot;primero = {arr[0]} de {len(arr)}&quot;</span>)  <span class="c">// &quot;primero = 1 de 3&quot;</span>
+    print(<span class="s">&quot;punto = {p.x}, {p.y}&quot;</span>)              <span class="c">// &quot;punto = 3, 4&quot;</span>
+    print(<span class="s">&quot;siguiente = {siguiente(x + 1)}&quot;</span>)    <span class="c">// &quot;siguiente = 44&quot;</span>
+    print(<span class="s">&quot;home: {std::dirs::home()}&quot;</span>)
+}
+</code></pre>
+<p>Reglas:
+- Para escribir una comilla dentro de las llaves hay que escaparla: <code>"{std::text::uppercase(\"hola\")}"</code>.
+- Una llave cuyo contenido <strong>no es una expresión completa</strong> sigue siendo texto literal, siempre que el texto no tenga ningún grupo válido: JSON (<code>"{\"a\": 1}"</code>), CSS, <code>{2,3}</code> de una regex, <code>{}</code>. Un número o un texto suelto (<code>{3}</code>) también se queda literal.
+- Las llaves deben «pegarse» a la expresión: <code>{a / 7}</code> se interpola; <code>{ a / 7 }</code> (con espacio o salto de línea junto a la llave) se queda como texto. Así un texto con código dentro (<code>"fn main() {\n ... \n}"</code>) no se toca.
+- Una llave justo detrás de <code>$</code> (<code>${VAR-valor}</code> de shell o de JavaScript) no se interpola, salvo que sea un nombre simple (<code>${x}</code> sigue siendo <code>$</code> más el valor de <code>x</code>).
+- Si un texto tiene un grupo válido y otro que no lo es (<code>"{x} {a b}"</code>), el segundo da el error <code>invalid string interpolation expression</code>.
+- Para escribir una llave literal en un texto que sí interpola, arma el texto con <code>+</code>.
+- Los errores dentro de una interpolación se señalan en la línea y columna del texto original (la columna puede desviarse unos caracteres si el texto tiene escapes antes de la llave).</p>
+<hr />
+<h2 id="anotaciones-de-tipo">Anotaciones de tipo</h2>
+<h3 id="aliases-nuevos-desde-v0160">Aliases nuevos desde v0.16.0</h3>
+<pre><code class="language-titan"><span class="k">fn</span> foo() -&gt; array   { [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>] }        <span class="c">// Array(Unknown)</span>
+<span class="k">fn</span> bar() -&gt; map     { std::map::new() }   <span class="c">// Named(&quot;map&quot;)</span>
+<span class="k">fn</span> baz(x: any) -&gt; any { x }               <span class="c">// Unknown</span>
+</code></pre>
+<p>Estos son atajos convenientes para no escribir <code>[any]</code> o
+<code>std::map::new</code> genérico.</p>
+<h3 id="sigils-tradicionales">Sigils tradicionales</h3>
+<pre><code class="language-titan"><span class="k">fn</span> a() -&gt; [int]    { [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>] }
+<span class="k">fn</span> b() -&gt; [float]  { [<span class="n">1.0</span>, <span class="n">2.0</span>] }
+<span class="k">fn</span> c() -&gt; [string] { [<span class="s">&quot;a&quot;</span>, <span class="s">&quot;b&quot;</span>] }
+</code></pre>
+<p>Ambos estilos coexisten.</p>
+<hr />
+<h2 id="structs-y-metodos-impl-v0190">Structs y métodos (<code>impl</code>) — v0.19.0</h2>
+<p>Un struct declara los campos. Un bloque <code>impl</code> le agrega métodos:</p>
+<pre><code class="language-titan"><span class="k">struct</span> Point { x: float, y: float }
+
+<span class="k">impl</span> Point {
+    <span class="c">// Estático: se llama `Point::origin()`.</span>
+    <span class="k">fn</span> origin() -&gt; Point { Point { x: <span class="n">0.0</span>, y: <span class="n">0.0</span> } }
+
+    <span class="c">// Estático con args.</span>
+    <span class="k">fn</span> new(x: float, y: float) -&gt; Point { Point { x: x, y: y } }
+
+    <span class="c">// Instancia: `self` como primer parámetro. Tipo inferido = Point.</span>
+    <span class="k">fn</span> distance_sq(self, other: Point) -&gt; float {
+        <span class="k">let</span> dx = self.x - other.x
+        <span class="k">let</span> dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    <span class="k">fn</span> magnitude_sq(self) -&gt; float {
+        self.x * self.x + self.y * self.y
+    }
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> o = <span class="t">Point</span>::origin()
+    <span class="k">let</span> p = <span class="t">Point</span>::new(<span class="n">3.0</span>, <span class="n">4.0</span>)
+    print(p.distance_sq(o))        <span class="c">// 25.0</span>
+    print(p.magnitude_sq())        <span class="c">// 25.0</span>
+}
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><strong>Métodos estáticos</strong>: se llaman con <code>Tipo::nombre(args)</code> — sin
+  receiver. Útiles para constructores / factories.</li>
+<li><strong>Métodos de instancia</strong>: primer parámetro se llama <code>self</code>. No
+  hace falta anotar su tipo: se infiere como el tipo del <code>impl</code>.</li>
+<li><strong>Dispatch dinámico</strong>: <code>p.metodo(args)</code> mira el tipo real del
+  valor <code>p</code> en runtime. Dos structs distintos pueden compartir
+  nombre de método sin colisión.</li>
+<li><strong>Encadenable</strong>: <code>p.translated(1.0, 2.0).magnitude_sq()</code> funciona
+  siempre que cada método devuelva un valor con métodos.</li>
+</ul>
+<p>Ejemplo completo verificable: <code>examples/impl_structs.titan</code>.</p>
+<hr />
+<h2 id="fixes-de-limpieza-v0310">Fixes de limpieza — v0.31.0</h2>
+<h3 id="tipos-funcion-como-anotaciones">Tipos función como anotaciones</h3>
+<pre><code class="language-titan"><span class="k">type</span> Callback = <span class="k">fn</span>(int) -&gt; int
+<span class="k">type</span> Predicate = <span class="k">fn</span>(int) -&gt; bool
+<span class="k">type</span> Producer = <span class="k">fn</span>() -&gt; string
+
+<span class="k">fn</span> aplicar(x: int, cb: Callback) -&gt; int { cb(x) }
+</code></pre>
+<h3 id="let-_-expr-para-descartar"><code>let _ = expr</code> para descartar</h3>
+<pre><code class="language-titan"><span class="k">let</span> _ = calcular()          <span class="c">// side effect, resultado descartado</span>
+<span class="k">let</span> _ = <span class="n">1</span> + <span class="n">2</span> + <span class="n">3</span>
+</code></pre>
+<h3 id="sintaxis-n-para-tuplas">Sintaxis <code>.N</code> para tuplas</h3>
+<pre><code class="language-titan"><span class="k">let</span> t = (<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>)
+print(t.<span class="n">0</span>)                  <span class="c">// 10 — igual que t[0]</span>
+print(t.<span class="n">1</span>)                  <span class="c">// 20</span>
+print(t.<span class="n">2</span>)                  <span class="c">// 30</span>
+</code></pre>
+<h3 id="parse-y-substring-en-stdtext">Parse y substring en <code>std::text</code></h3>
+<pre><code class="language-titan"><span class="k">match</span> std::text::parse_int(<span class="s">&quot;42&quot;</span>) {
+    <span class="t">Option</span>::<span class="t">Some</span>(n) =&gt; print(n),
+    <span class="t">Option</span>::None    =&gt; print(<span class="s">&quot;no es int&quot;</span>),
+}
+std::text::parse_float(<span class="s">&quot;3.14&quot;</span>)           <span class="c">// Option::Some(3.14)</span>
+std::text::substring(<span class="s">&quot;año&quot;</span>, <span class="n">0</span>, <span class="n">2</span>)        <span class="c">// &quot;añ&quot; (Unicode chars, no bytes)</span>
+</code></pre>
+<p>Ejemplo completo: <code>examples/fixes_v032.titan</code>.</p>
+<hr />
+<h2 id="stdasync-utilidades-de-reintento-y-tiempo-v0300"><code>std::async</code> — utilidades de reintento y tiempo — v0.30.0</h2>
+<p>Primer módulo <code>std::</code> escrito en Titan (no en Rust). Se importa
+con <code>import std::async</code> — el loader lo carga desde el <code>.deb</code>.</p>
+<pre><code class="language-titan"><span class="k">import</span> std::async
+
+delay(<span class="n">500</span>)                              <span class="c">// sleep bloqueante ms</span>
+
+<span class="k">let</span> (r, ms) = measure(|| foo())         <span class="c">// (resultado, ms transcurridos)</span>
+
+<span class="k">let</span> r = retry(|| fetch(url), <span class="n">3</span>, <span class="n">500</span>)    <span class="c">// 3 intentos, 500ms entre cada</span>
+<span class="k">let</span> r = retry_backoff(|| fetch(url), <span class="n">5</span>, <span class="n">100</span>)  <span class="c">// 100→200→400→800ms</span>
+
+<span class="k">let</span> r = timeout(|| lenta(), <span class="n">2000</span>)       <span class="c">// Err si excede 2000ms</span>
+</code></pre>
+<p>Todas devuelven <code>Result::Ok(v)</code> o <code>Result::Err(msg)</code>, combinable
+con <code>std::try::catch</code> (Fase 18).</p>
+<p><strong>Cómo se agrega otro módulo <code>std::</code> en Titan puro:</strong>
+Poner <code>&lt;nombre&gt;.titan</code> en <code>stdlib/</code> del repositorio; el <code>.deb</code>
+lo empaqueta automáticamente en <code>$PREFIX/share/zett/stdlib/</code>. El
+loader lo encuentra al hacer <code>import std::&lt;nombre&gt;</code>.</p>
+<p>Ejemplo completo: <code>examples/async_demo.titan</code>.</p>
+<hr />
+<h2 id="const-con-expresiones-maps-literales-v0290"><code>const</code> con expresiones + maps literales <code>#{...}</code> — v0.29.0</h2>
+<p>Const acepta cualquier expresión (arrays, calls, higher-order):</p>
+<pre><code class="language-titan"><span class="k">const</span> NUMEROS   = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>, <span class="n">5</span>]
+<span class="k">const</span> CUADRADOS = map(NUMEROS, |n| n * n)
+</code></pre>
+<p>Maps literales con <code>#{...}</code>:</p>
+<pre><code class="language-titan"><span class="k">const</span> CONFIG = #{
+    <span class="s">&quot;puerto&quot;</span>: <span class="n">8080</span>,           <span class="c">// key con comillas</span>
+    host:     <span class="s">&quot;127.0.0.1&quot;</span>,    <span class="c">// key como identificador (equivalente)</span>
+    debug:    <span class="k">true</span>,
+}
+
+<span class="c">// Acceso natural</span>
+print(CONFIG.puerto)          <span class="c">// 8080</span>
+print(CONFIG.host)            <span class="c">// &quot;127.0.0.1&quot;</span>
+
+<span class="c">// Anidable</span>
+<span class="k">const</span> NESTED = #{
+    outer: #{
+        inner: #{ deep: <span class="n">42</span> },
+    },
+}
+print(NESTED.outer.inner.deep)   <span class="c">// 42</span>
+
+<span class="c">// Dinámico (dentro de fns), no solo const</span>
+<span class="k">fn</span> perfil(nombre: string) -&gt; map {
+    <span class="k">return</span> #{ nombre: nombre, creado: std::datetime::now() }
+}
+</code></pre>
+<p>Detalles:
+- Keys pueden ser <code>"string"</code> o <code>identificador</code> (equivalente).
+- Values son cualquier expresión válida.
+- Desazucar puro en el parser → <code>std::map::insert(std::map::new(), "k", v)</code>.
+- Const con expresiones se re-evalúa lazy en cada uso.</p>
+<p>Ejemplo completo: <code>examples/const_and_maps.titan</code>.</p>
+<hr />
+<h2 id="for-con-destructuring-v0280"><code>for</code> con destructuring — v0.28.0</h2>
+<p>Extiende Fase 22 (destructuring en <code>let</code>) al loop <code>for</code>:</p>
+<pre><code class="language-titan"><span class="k">for</span> (a, b) <span class="k">in</span> pares { ... }                    <span class="c">// tupla</span>
+<span class="k">for</span> Point { x, y } <span class="k">in</span> puntos { ... }           <span class="c">// struct</span>
+<span class="k">for</span> Point { x: cx, y: cy } <span class="k">in</span> puntos { ... }   <span class="c">// rename</span>
+<span class="k">for</span> (first, _, last) <span class="k">in</span> triples { ... }        <span class="c">// wildcard</span>
+<span class="k">for</span> (id, (a, b)) <span class="k">in</span> anidados { ... }           <span class="c">// anidado</span>
+<span class="k">for</span> (id, Point { x, y }) <span class="k">in</span> etiquetados { ... } <span class="c">// combinado</span>
+</code></pre>
+<p>Reglas: mismas que Fase 22. El azúcar se resuelve en el parser
+como un <code>for __item in xs { let PATTERN = __item; body }</code>. Cero
+cambios en runtime.</p>
+<p>Ejemplo completo: <code>examples/for_destructuring.titan</code>.</p>
+<hr />
+<h2 id="type-aliases-spread-v0270">Type aliases + spread <code>..</code> — v0.27.0</h2>
+<p>Aliases:</p>
+<pre><code class="language-titan"><span class="k">type</span> UserId = string
+<span class="k">type</span> Score  = int
+<span class="k">type</span> Handler = <span class="k">fn</span>(int) -&gt; string
+
+<span class="k">fn</span> find(id: UserId) -&gt; Player { ... }   <span class="c">// igual que `id: string`</span>
+</code></pre>
+<p>Cero costo runtime. Cambiás la definición y todas las firmas se
+adaptan. Chain permitido: <code>type A = B; type B = int</code> funciona.</p>
+<p>Spread en literales de array:</p>
+<pre><code class="language-titan"><span class="k">let</span> a = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+<span class="k">let</span> b = [<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>]
+
+[..a, ..b]                  <span class="c">// [1,2,3,10,20,30]</span>
+[<span class="n">0</span>, ..a, <span class="n">99</span>, ..b, <span class="n">100</span>]      <span class="c">// [0,1,2,3,99,10,20,30,100]</span>
+[..map(a, |x| x*x), <span class="n">999</span>]    <span class="c">// spread + higher-order</span>
+</code></pre>
+<p><code>..</code> <strong>al inicio</strong> de un elemento indica spread. Los ranges
+<code>0..10</code> no se ven afectados (van entre dos expresiones).</p>
+<p>Ejemplo completo: <code>examples/aliases_spread.titan</code>.</p>
+<hr />
+<h2 id="errores-custom-con-enums-v0260">Errores custom con enums — v0.26.0</h2>
+<pre><code class="language-titan"><span class="k">enum</span> ApiError {
+    <span class="t">NotFound</span>(string),
+    <span class="t">BadInput</span>(string),
+    Unauthorized,               <span class="c">// sin payload</span>
+    <span class="t">RateLimited</span>(int),
+}
+
+<span class="k">fn</span> find_user(id: string) -&gt; any {
+    <span class="k">if</span> id == <span class="s">&quot;&quot;</span> { <span class="k">return</span> <span class="t">Result</span>::<span class="t">Err</span>(<span class="t">ApiError</span>::<span class="t">BadInput</span>(<span class="s">&quot;id&quot;</span>)) }
+    <span class="k">return</span> <span class="t">Result</span>::<span class="t">Ok</span>(build_user(id))
+}
+
+<span class="c">// El operador `?` propaga el error tipado hacia arriba.</span>
+<span class="k">fn</span> describe(id: string) -&gt; any {
+    <span class="k">let</span> u = find_user(id)?      <span class="c">// si Err, salimos con ese Err</span>
+    <span class="k">return</span> <span class="t">Result</span>::<span class="t">Ok</span>(u.name)
+}
+
+<span class="c">// Extraer contexto con match:</span>
+<span class="k">match</span> describe(<span class="s">&quot;99&quot;</span>) {
+    <span class="t">Result</span>::<span class="t">Ok</span>(msg) =&gt; print(msg),
+    <span class="t">Result</span>::<span class="t">Err</span>(err) =&gt; <span class="k">match</span> err {
+        <span class="t">ApiError</span>::<span class="t">NotFound</span>(id)      =&gt; print(<span class="s">&quot;no existe: &quot;</span> + id),
+        <span class="t">ApiError</span>::<span class="t">BadInput</span>(field)   =&gt; print(<span class="s">&quot;campo: &quot;</span> + field),
+        <span class="t">ApiError</span>::Unauthorized      =&gt; print(<span class="s">&quot;sin auth&quot;</span>),
+        <span class="t">ApiError</span>::<span class="t">RateLimited</span>(secs) =&gt; print(<span class="s">&quot;esperar &quot;</span> + secs),
+    }
+}
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>enum X { ... }</code> en top-level; variantes con <code>,</code> como separador.</li>
+<li>Variantes con payload: <code>Name(tipo)</code> — 0 o 1 payload por variante.</li>
+<li>Variantes sin payload: solo el nombre.</li>
+<li>Se construyen con <code>X::Variant</code> (sin payload) o <code>X::Variant(val)</code>.</li>
+<li><code>Result::Err(cualquierEnum)</code> es idiomático para errores tipados.</li>
+<li>El operador <code>?</code> funciona con cualquier <code>Result</code> — propaga limpio.</li>
+<li>El pattern del inner en match debe ser <code>Ident</code> o <code>_</code> (no anidado).</li>
+</ul>
+<p>Ejemplo completo: <code>examples/custom_errors.titan</code>.</p>
+<hr />
+<h2 id="json-completo-stdjson-v0240">JSON completo (<code>std::json</code>) — v0.24.0</h2>
+<pre><code class="language-titan"><span class="c">// Parsear -&gt; Value nativo (objects son Map, arrays son Array)</span>
+<span class="k">let</span> obj = std::json::parse(text)
+print(obj.nombre)                          <span class="c">// acceso con .</span>
+print(obj.hobbies[<span class="n">0</span>])                      <span class="c">// acceso con [i]</span>
+print(obj.direccion.ciudad)                <span class="c">// anidado</span>
+
+<span class="c">// Serializar</span>
+std::json::stringify(x)                    <span class="c">// compacto</span>
+std::json::pretty(x)                       <span class="c">// indentado</span>
+
+<span class="c">// JSON Pointer (paths estilo XPath)</span>
+std::json::pointer(x, <span class="s">&quot;/direccion/cp&quot;</span>)
+std::json::pointer(x, <span class="s">&quot;/hobbies/1&quot;</span>)
+
+<span class="c">// Merge Patch (b sobre a; null en b borra la clave)</span>
+std::json::merge(base, patch)
+
+<span class="c">// Aplanar -&gt; [(path, valor)]</span>
+std::json::flatten(x)
+</code></pre>
+<p>Integración con HTTP:</p>
+<pre><code class="language-titan"><span class="c">// GET con parse automático</span>
+<span class="k">let</span> user = std::http_full::get_json(url, headers, opts)
+print(user.login)
+
+<span class="c">// POST con serialización automática del payload</span>
+<span class="k">let</span> resp = std::http_full::post_json(url, payload, headers, opts)
+</code></pre>
+<p>Conversiones: Object↔Map, Array↔Array, Number→Int o Float según,
+String↔String, Bool↔Bool, null↔Nil. Los structs de Titan también
+se pueden pasar directo — sus campos son las keys del JSON.</p>
+<p>Ejemplo completo: <code>examples/json_api.titan</code>.</p>
+<hr />
+<h2 id="operadores-pipeline-y-spaceship-v0230">Operadores <code>|&gt;</code> pipeline y <code>&lt;=&gt;</code> spaceship — v0.23.0</h2>
+<h3 id="pipeline">Pipeline</h3>
+<pre><code class="language-titan">x |&gt; f              <span class="c">// == f(x)</span>
+x |&gt; f(a, b)        <span class="c">// == f(x, a, b) — LHS va como PRIMER arg</span>
+x |&gt; f |&gt; g         <span class="c">// == g(f(x)) — encadenable, left-assoc</span>
+
+<span class="c">// Combina brutal con higher-order:</span>
+[<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>] |&gt; map(|x| x*x) |&gt; fold(<span class="n">0</span>, |acc, x| acc + x)
+</code></pre>
+<p>Precedencia mínima: <code>a + 1 |&gt; print</code> agrupa como <code>(a+1) |&gt; print</code>.</p>
+<h3 id="spaceship">Spaceship</h3>
+<pre><code class="language-titan">a &lt;=&gt; b             <span class="c">// -1 si a&lt;b, 0 si a==b, 1 si a&gt;b (solo int/float)</span>
+
+<span class="c">// Reemplaza el comparador manual en sort_by:</span>
+sort_by(xs, |a, b| a &lt;=&gt; b)              <span class="c">// asc</span>
+sort_by(xs, |a, b| b &lt;=&gt; a)              <span class="c">// desc</span>
+sort_by(items, |x, y| x.precio &lt;=&gt; y.precio)   <span class="c">// por campo</span>
+</code></pre>
+<p>Cada lado se evalúa una sola vez (usa dos temps internos).</p>
+<p>Ejemplo completo: <code>examples/pipeline_spaceship.titan</code>.</p>
+<hr />
+<h2 id="destructuring-en-let-v0220">Destructuring en <code>let</code> — v0.22.0</h2>
+<p>Para desempacar tuplas y structs directamente:</p>
+<pre><code class="language-titan"><span class="c">// Tupla</span>
+<span class="k">let</span> (a, b) = par
+<span class="k">let</span> (lo, hi) = min_max(xs)
+<span class="k">let</span> (first, _) = par                       <span class="c">// wildcard descarta</span>
+
+<span class="c">// Struct</span>
+<span class="k">let</span> Point { x, y } = p                     <span class="c">// igual nombre</span>
+<span class="k">let</span> Point { x: cx, y: cy } = p             <span class="c">// con rename</span>
+
+<span class="c">// Anidado</span>
+<span class="k">let</span> (id, Point { x, y }) = combo
+<span class="k">let</span> Person { name, home: Address { city } } = ana
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li>Después de <code>let</code>, <code>(</code> inicia patrón tupla.</li>
+<li><code>Ident { ... }</code> seguido de <code>=</code> es patrón struct.</li>
+<li><code>_</code> descarta.</li>
+<li>La RHS se evalúa <strong>una sola vez</strong>.</li>
+<li>Recursivo sin límite.</li>
+<li>Enum patterns (<code>let Some(x) = opt</code>) NO — usar <code>match</code>.</li>
+</ul>
+<p>Ejemplo completo verificable: <code>examples/destructuring.titan</code>.</p>
+<hr />
+<h2 id="traits-con-metodos-default-v0210">Traits con métodos default — v0.21.0</h2>
+<p>Un <code>trait</code> define un contrato: una lista de métodos que un tipo debe
+implementar. Cada método puede tener body default o solo firma.</p>
+<pre><code class="language-titan"><span class="k">trait</span> Greetable {
+    <span class="k">fn</span> name(self) -&gt; string;              <span class="c">// requerido</span>
+    <span class="k">fn</span> greet(self) -&gt; string {            <span class="c">// default</span>
+        <span class="s">&quot;Hola, &quot;</span> + self.name() + <span class="s">&quot;!&quot;</span>
+    }
+}
+
+<span class="k">struct</span> Person { first: string }
+
+<span class="k">impl</span> Greetable <span class="k">for</span> Person {
+    <span class="k">fn</span> name(self) -&gt; string { self.first }
+    <span class="c">// greet se hereda del trait automáticamente.</span>
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> p = Person { first: <span class="s">&quot;Ana&quot;</span> }
+    print(p.greet())    <span class="c">// &quot;Hola, Ana!&quot;</span>
+}
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li>Trait declarado con <code>trait Name { ... }</code>, dentro solo van <code>fn</code> con
+  o sin body.</li>
+<li><code>fn foo();</code> (con <code>;</code>) es <strong>obligatorio</strong> — el impl debe proveerlo.</li>
+<li><code>fn foo() { ... }</code> (con body) es <strong>default</strong> — el impl puede
+  omitirlo y hereda ese body.</li>
+<li>El impl se conecta con <code>impl Trait for Type { ... }</code>.</li>
+<li>Los defaults pueden llamarse entre sí via <code>self.otro()</code> — el
+  dispatch es dinámico (Fase 20).</li>
+<li>Un mismo struct puede implementar múltiples traits sin colisión.</li>
+<li>Si un método requerido falta en el impl, error en compilación.</li>
+</ul>
+<p>Ejemplo completo verificable: <code>examples/traits.titan</code>.</p>
+<hr />
+<h2 id="modulos-custom-con-import-v0200">Módulos custom con <code>import</code> — v0.20.0</h2>
+<p>Un proyecto Titan puede tener varios archivos <code>.titan</code>. Un archivo
+carga a otro con <code>import</code>:</p>
+<pre><code class="language-titan"><span class="c">// examples/modules/main.titan</span>
+<span class="k">import</span> geometry           <span class="c">// carga geometry.titan</span>
+<span class="k">import</span> util::text         <span class="c">// carga util/text.titan</span>
+<span class="k">import</span> util::math         <span class="c">// carga util/math.titan</span>
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> p = <span class="t">Point</span>::new(<span class="n">3.0</span>, <span class="n">4.0</span>)   <span class="c">// Point definido en geometry.titan</span>
+    print(greet(<span class="s">&quot;mundo&quot;</span>))           <span class="c">// greet definido en util/text.titan</span>
+    print(sum([<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]))           <span class="c">// sum definido en util/math.titan</span>
+}
+</code></pre>
+<p>Estructura:</p>
+<pre><code>examples/modules/
+├── main.titan
+├── geometry.titan
+└── util/
+    ├── math.titan
+    └── text.titan
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>import a::b</code> busca <code>a/b.titan</code> o <code>a/b/mod.titan</code>.</li>
+<li>Sin <code>Titan.toml</code>, el "source root" es la carpeta del entry.
+  Con <code>Titan.toml</code>, es <code>&lt;root&gt;/src/</code> (estilo Cargo).</li>
+<li>Todos los items (structs, impls, funciones, consts, enums) van a
+  un <strong>namespace plano</strong>: <code>Point::new()</code> funciona directo,
+  no hace falta <code>geometry::Point::new()</code>.</li>
+<li><strong>Ciclos</strong> (a importa b, b importa a) → error claro.</li>
+<li><strong>Escape</strong> (<code>import ../../secreto</code>) → error.</li>
+<li><strong>Sin doble carga</strong>: importar el mismo archivo desde dos módulos
+  distintos no lo duplica.</li>
+<li><code>import std::...</code> se ignora (la stdlib es nativa, no <code>.titan</code>).</li>
+</ul>
+<p>Ejemplo completo verificable: <code>examples/modules/main.titan</code>.</p>
+<hr />
+<h2 id="llamadas-a-la-stdlib">Llamadas a la stdlib</h2>
+<p>Las natives están organizadas por módulo:</p>
+<pre><code class="language-titan"><span class="c">// Filesystem</span>
+<span class="k">let</span> bytes = std::fs::read_bytes(<span class="s">&quot;/path&quot;</span>)
+std::fs::write_text(<span class="s">&quot;/out.txt&quot;</span>, <span class="s">&quot;hola&quot;</span>)
+
+<span class="c">// Números</span>
+<span class="k">let</span> r = std::random::int(<span class="n">1</span>, <span class="n">100</span>)
+<span class="k">let</span> e = std::math::exp(<span class="n">2.0</span>)
+
+<span class="c">// Strings</span>
+<span class="k">let</span> up = std::text::uppercase(<span class="s">&quot;titan&quot;</span>)
+
+<span class="c">// Colecciones</span>
+<span class="k">let</span> n = std::collections::length(xs)
+
+<span class="c">// Y muchos más (regex, hash, url, jwt, crypto, http, sql, etc.)</span>
+</code></pre>
+<p>Consultar <code>selfhost/natives.titan</code> para el registro
+completo (812 funciones nativas) y <a href="stdlib.html"><code>STDLIB.md</code></a>.</p>
+<hr />
+<h2 id="gotchas-conocidos-sin-fix">Gotchas conocidos sin fix</h2>
+<p>Estos son casos donde el parser/typechecker sigue siendo estricto y
+hay que usar workarounds:</p>
+<h3 id="al-inicio-de-linea-indexacion"><code>[</code> al inicio de línea = indexación</h3>
+<pre><code class="language-titan"><span class="k">let</span> sum = a + b
+[<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]                     <span class="c">// ← esto es sum[1,2,3], NO un array nuevo</span>
+                              <span class="c">// → ERROR de parseo</span>
+</code></pre>
+<p><strong>Workaround:</strong> asignar el array a una variable en la misma línea:</p>
+<pre><code class="language-titan"><span class="k">let</span> sum = a + b
+<span class="k">let</span> arr = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]           <span class="c">// OK</span>
+</code></pre>
+<h3 id="handles-usados-despues-de-close">Handles usados después de close</h3>
+<pre><code class="language-titan">std::pdf::close(doc)
+std::pdf::page_count(doc)     <span class="c">// → runtime ERROR: unknown handle</span>
+</code></pre>
+<p><strong>Workaround:</strong> consultar antes de cerrar.</p>
+<h3 id="errores-runtime-y-stdtrycatch">Errores runtime y <code>std::try::catch</code></h3>
+<p>Por defecto, un error de un native (archivo inexistente, conexión
+rechazada, desbordamiento, etc.) <strong>propaga y termina el programa</strong>.
+Pero Titan <strong>sí</strong> permite atraparlo con <code>std::try::catch</code>:</p>
+<pre><code class="language-titan"><span class="k">let</span> result = std::try::catch(|path| std::fs::read_bytes(path), <span class="s">&quot;data.bin&quot;</span>)
+<span class="k">match</span> result {
+    <span class="t">Result</span>::<span class="t">Ok</span>(bytes) =&gt; print(<span class="s">&quot;leí bytes&quot;</span>),
+    <span class="t">Result</span>::<span class="t">Err</span>(msg)  =&gt; print(<span class="s">&quot;falló: &quot;</span> + msg),
+}
+</code></pre>
+<p><code>std::try::catch(fn, args...)</code> ejecuta <code>fn(args...)</code> dentro de un
+límite seguro: si la llamada (o cualquier native que invoque) falla,
+captura el error y devuelve <code>Result::Err(String)</code> con el mensaje; si
+no, devuelve <code>Result::Ok(valor)</code>. Así podés recuperar el control en
+vez de morir.</p>
+<p>El operador <code>?</code> complementa: propaga un <code>Option</code>/<code>Result</code> hacia afuera
+de la función actual (retornando temprano el wrapper <code>None</code>/<code>Err</code>).</p>
+<p>Verificar precondiciones antes de llamar sigue siendo útil para evitar
+el error por completo:</p>
+<pre><code class="language-titan"><span class="k">if</span> std::fs::exists(path) {
+    <span class="k">let</span> bytes = std::fs::read_bytes(path)
+    ...
+}
+</code></pre>
+<hr />
+<h2 id="ejemplos-completos">Ejemplos completos</h2>
+<p>Ver el directorio <code>examples/</code> — cada <code>.titan</code> demuestra un patrón
+funcional distinto:</p>
+<ul>
+<li><code>hello.titan</code>, <code>fibonacci.titan</code>     — básicos</li>
+<li><code>extras.titan</code>, <code>formats.titan</code>      — regex, hash, yaml, xml, etc.</li>
+<li><code>network.titan</code>, <code>security.titan</code>    — HTTPS, DNS, JWT, crypto</li>
+<li><code>android.titan</code>, <code>tui.titan</code>         — Termux hardware + TUI</li>
+<li><code>images.titan</code>, <code>audio.titan</code>        — imágenes + WAV</li>
+<li><code>system.titan</code>, <code>database.titan</code>     — procfs, sled, redis</li>
+<li><code>webserver.titan</code>                    — HTTP server con router</li>
+<li><code>charts.titan</code>                       — SVG plots</li>
+<li><code>tokenizer.titan</code>, <code>onnx.titan</code>      — Fase 12 pt.1-2</li>
+<li><code>sentiment.titan</code>, <code>vector_search.titan</code>  — Fase 12 pt.3-4</li>
+<li><code>wifi.titan</code>                         — Fase 13'</li>
+<li><code>qol_*.titan</code>                        — demos de Fase 17 QoL</li>
+</ul><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/TITAN_SYNTAX.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

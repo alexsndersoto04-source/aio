@@ -1,0 +1,98 @@
+// Carga: ping-pong sin capacidad, 256 tareas vivas a la vez, recursión
+// profunda dentro de una tarea, try anidado y mapas/cadenas en tareas.
+fn profundo(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    1 + profundo(n - 1)
+}
+
+fn eco(entrada: Receiver, salida: Sender, n: int) -> int {
+    let mut i = 0
+    while i < n {
+        send(salida, recv(entrada) + 1)
+        i += 1
+    }
+    n
+}
+
+fn main() {
+    // Ping-pong: 2000 viajes de ida y vuelta por canales sin capacidad.
+    let (ida, r_ida) = channel(0)
+    let (vuelta, r_vuelta) = channel(0)
+    let t = spawn || { eco(r_ida, vuelta, 2000) }
+    let mut v = 0
+    let mut i = 0
+    while i < 2000 {
+        send(ida, v)
+        v = recv(r_vuelta)
+        i += 1
+    }
+    print(v)
+    print(join(t))
+
+    // 256 tareas a la vez (el máximo), todas esperando un mismo canal.
+    let (tx, rx) = channel(256)
+    let mut ts = []
+    let mut k = 0
+    while k < 256 {
+        let id = k
+        ts = std::array::push(ts, spawn || {
+            std::time::sleep_ms(20)
+            send(tx, id)
+            id * 2
+        })
+        k += 1
+    }
+    let mut suma = 0
+    let mut n = 0
+    while n < 256 {
+        suma += recv(rx)
+        n += 1
+    }
+    print(suma)
+    let mut dobles = 0
+    for t in ts {
+        dobles += join(t)
+    }
+    print(dobles)
+
+    // Recursión profunda dentro de una tarea (pila propia).
+    let d = spawn || { profundo(3000) }
+    print(join(d))
+
+    // try anidado dentro de la tarea: el error no sale de ella.
+    let e = spawn || {
+        let r = std::try::catch(|| 1 / 0)
+        let s = std::try::catch(|| profundo(10))
+        let par = [r, s]
+        par
+    }
+    print(join(e))
+
+    // Mapas, cadenas y arreglos creados y liberados dentro de tareas.
+    let w = spawn || {
+        let mut m = std::map::new()
+        let mut j = 0
+        while j < 200 {
+            m = std::map::insert(m, "k{j}", [j, j * 2])
+            j += 1
+        }
+        len(m)
+    }
+    let mut texto = ""
+    let mut q = 0
+    while q < 50 {
+        texto = texto + "ab"
+        q += 1
+    }
+    print(join(w))
+    print(len(texto))
+
+    // Una tarea que falla no impide recoger las demás.
+    let buena = spawn || { 1 }
+    let mala = spawn || { profundo(5) / 0 }
+    let otra = spawn || { 3 }
+    print(std::try::catch(|| join(mala)))
+    print(join(buena) + join(otra))
+}

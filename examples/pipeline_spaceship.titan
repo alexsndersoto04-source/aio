@@ -9,7 +9,7 @@
 // en un `if/else` que evalua cada lado UNA sola vez usando temps.
 //
 // Ejecutar con:
-//     zett run examples/pipeline_spaceship.titan
+//     titan run examples/pipeline_spaceship.titan
 
 fn dobla(x: int) -> int {
     x * 2

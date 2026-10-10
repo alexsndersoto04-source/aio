@@ -1,0 +1,24 @@
+fn dividir(a: int, b: int) -> Result {
+    if b == 0 {
+        return Result::Err("división por cero")
+    }
+    Result::Ok(a / b)
+}
+
+fn calcular() -> Result {
+    let x = dividir(100, 5)?
+    let y = dividir(x, 0)?
+    Result::Ok(y)
+}
+
+fn main() {
+    match calcular() {
+        Result::Ok(v) => print("resultado {v}"),
+        Result::Err(e) => print("error: {e}"),
+    }
+    let r = std::try::catch(|| std::fs::read_text("/no/existe.txt"))
+    match r {
+        Result::Ok(t) => print("leído"),
+        Result::Err(m) => print("no se pudo leer el archivo"),
+    }
+}

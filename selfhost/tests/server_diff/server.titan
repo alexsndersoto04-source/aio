@@ -1,0 +1,360 @@
+// Servidor de la prueba diferencial de std::server (ver run.sh y client.py).
+// Se ejecuta con la VM de Rust (el oráculo) y como binario nativo; el cliente
+// Python lanza las mismas peticiones contra los dos y se comparan, byte a byte,
+// lo que imprime este programa y lo que ve el cliente.
+
+fn try_s(label: string, r: any) {
+    match r {
+        Result::Ok(v) => println(label + " => " + v),
+        Result::Err(m) => println(label + " !! " + m),
+        _ => println(label + " ?"),
+    }
+}
+
+fn S(v: any) -> string {
+    std::json::stringify(v)
+}
+
+fn big_string(n: int) -> string {
+    let mut s = "x"
+    while std::text::length(s) < n {
+        s = s + s
+    }
+    std::text::substring(s, 0, n)
+}
+
+fn show_headers(h: int) {
+    let m = std::server::headers(h)
+    let keys = std::map::keys(m)
+    for k in keys {
+        println("  hdr " + k + " = " + std::map::get(m, k))
+    }
+}
+
+fn t_resp(h: int) {
+    let b = std::encoding::utf8_encode("x")
+    try_s("r101", std::try::catch(|| { std::server::respond(h, 101, "x"); "sent" }))
+    try_s("r99", std::try::catch(|| { std::server::respond(h, 99, "x"); "sent" }))
+    try_s("r600", std::try::catch(|| { std::server::respond(h, 600, "x"); "sent" }))
+    try_s("r204body", std::try::catch(|| { std::server::respond(h, 204, "x"); "sent" }))
+    try_s("r304body", std::try::catch(|| { std::server::respond(h, 304, "x"); "sent" }))
+    try_s("r100body", std::try::catch(|| { std::server::respond(h, 100, "x"); "sent" }))
+    try_s("r70000", std::try::catch(|| { std::server::respond(h, 70000, "x"); "sent" }))
+    try_s("rneg", std::try::catch(|| { std::server::respond(h, -5, "x"); "sent" }))
+    try_s("badct", std::try::catch(|| { std::server::respond_bytes(h, 200, "a\nb", b); "sent" }))
+    let bigct = big_string(1025)
+    try_s("bigct", std::try::catch(|| { std::server::respond_bytes(h, 200, bigct, b); "sent" }))
+    try_s("hdr-len", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "Content-Length": "1" }, b); "sent" }))
+    try_s("hdr-te", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "transfer-ENCODING": "1" }, b); "sent" }))
+    try_s("hdr-conn", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "Connection": "keep-alive" }, b); "sent" }))
+    try_s("hdr-ct", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "content-type": "a" }, b); "sent" }))
+    try_s("hdr-badname", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "bad name": "x" }, b); "sent" }))
+    try_s("hdr-emptyname", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "": "x" }, b); "sent" }))
+    try_s("hdr-badvalue", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "X": "a\nb" }, b); "sent" }))
+    try_s("hdr-nonstring", std::try::catch(|| { std::server::respond_full(h, 200, "t", #{ "X": 1 }, b); "sent" }))
+    let longname = std::map::insert(std::map::new(), big_string(257), "x")
+    try_s("hdr-longname", std::try::catch(|| { std::server::respond_full(h, 200, "t", longname, b); "sent" }))
+    let longvalue = std::map::insert(std::map::new(), "X", big_string(8193))
+    try_s("hdr-longvalue", std::try::catch(|| { std::server::respond_full(h, 200, "t", longvalue, b); "sent" }))
+    let mut many = std::map::new()
+    let mut i = 0
+    while i < 129 {
+        many = std::map::insert(many, "x-" + S(i), "v")
+        i += 1
+    }
+    try_s("hdr-129", std::try::catch(|| { std::server::respond_full(h, 200, "t", many, b); "sent" }))
+    let mut wide = std::map::new()
+    i = 0
+    while i < 9 {
+        wide = std::map::insert(wide, "w-" + S(i), big_string(8000))
+        i += 1
+    }
+    try_s("hdr-wide", std::try::catch(|| { std::server::respond_full(h, 200, "t", wide, b); "sent" }))
+    let mut wide2 = std::map::new()
+    i = 0
+    while i < 8 {
+        wide2 = std::map::insert(wide2, "w-" + S(i), big_string(8100))
+        i += 1
+    }
+    let ct1000 = big_string(1000)
+    try_s("hdr-wide-total", std::try::catch(|| { std::server::respond_full(h, 200, ct1000, wide2, b); "sent" }))
+}
+
+fn t_resp_big(h: int) {
+    let b = std::encoding::utf8_encode("x")
+    let huge = big_string(8388609)
+    try_s("body-huge", std::try::catch(|| { std::server::respond(h, 200, huge); "sent" }))
+    try_s("unknown-resp", std::try::catch(|| { std::server::respond(h + 1000, 200, "x"); "sent" }))
+    try_s("unknown-method", std::try::catch(|| std::server::method(h + 1000)))
+    try_s("unknown-body", std::try::catch(|| { std::server::body(h + 1000); "x" }))
+    try_s("unknown-bodytext", std::try::catch(|| std::server::body_text(h + 1000)))
+    try_s("unknown-headers", std::try::catch(|| { std::server::headers(h + 1000); "x" }))
+    try_s("unknown-header", std::try::catch(|| { std::server::header(h + 1000, "a"); "x" }))
+    try_s("unknown-url", std::try::catch(|| std::server::url(h + 1000)))
+    try_s("unknown-path", std::try::catch(|| std::server::path(h + 1000)))
+    try_s("unknown-query", std::try::catch(|| std::server::query(h + 1000)))
+    try_s("unknown-remote", std::try::catch(|| std::server::remote_addr(h + 1000)))
+    try_s("unknown-upgrade", std::try::catch(|| { std::server::upgrade_websocket(h + 1000, 10); "x" }))
+}
+
+fn ws_loop(w: int) {
+    let mut n = 0
+    while n < 60 {
+        n += 1
+        let r = std::try::catch(|| { std::server::ws_recv(w) })
+        match r {
+            Result::Ok(a) => {
+                let kind = a[0]
+                let text = a[1]
+                let data = a[2]
+                println("  ws " + kind + " text=" + S(std::text::length(text)) + " bytes=" + S(std::bytes::length(data)) + " b64=" + std::text::substring(std::encoding::base64_encode(data), 0, 24))
+                if kind == "text" && text == "send-all" {
+                    try_s("  send10", std::try::catch(|| { std::server::ws_send_text(w, "0123456789"); "sent" }))
+                    try_s("  send200", std::try::catch(|| { std::server::ws_send_text(w, big_string(200)); "sent" }))
+                    try_s("  send70000", std::try::catch(|| { std::server::ws_send_binary(w, std::encoding::utf8_encode(big_string(70000))); "sent" }))
+                    try_s("  sendbin", std::try::catch(|| { std::server::ws_send_binary(w, std::encoding::utf8_encode("bin")); "sent" }))
+                    try_s("  sendhuge", std::try::catch(|| { std::server::ws_send_text(w, big_string(4194305)); "sent" }))
+                }
+                if kind == "text" && text == "close-now" {
+                    try_s("  close1000", std::try::catch(|| { std::server::ws_close(w, 1000, "bye"); "closed" }))
+                    try_s("  recv-after-close", std::try::catch(|| { std::server::ws_recv(w); "x" }))
+                    try_s("  send-after-close", std::try::catch(|| { std::server::ws_send_text(w, "x"); "x" }))
+                    return
+                }
+                if kind == "close" {
+                    try_s("  send-after-peer-close", std::try::catch(|| { std::server::ws_send_text(w, "late"); "sent" }))
+                    try_s("  close-again", std::try::catch(|| { std::server::ws_close(w, 1000, ""); "closed" }))
+                    try_s("  close-again2", std::try::catch(|| { std::server::ws_close(w, 1000, ""); "closed" }))
+                    return
+                }
+            },
+            Result::Err(m) => {
+                println("  ws !! " + m)
+                try_s("  recv-after-error", std::try::catch(|| { std::server::ws_recv(w); "x" }))
+                return
+            },
+        }
+    }
+}
+
+fn try_accept(srv: int) -> int {
+    let r = std::try::catch(|| { std::server::accept(srv, 8000) })
+    match r {
+        Result::Ok(h) => h,
+        Result::Err(m) => {
+            println("accept !! " + m)
+            -2
+        },
+    }
+}
+
+fn handle(srv: int, h: int) -> bool {
+    let path = std::server::path(h)
+    println("req " + S(h) + " " + std::server::method(h) + " " + std::server::url(h) + " path=" + path + " query=" + std::server::query(h))
+    let ra = std::server::remote_addr(h)
+    println("  remote ok=" + S(std::text::starts_with(ra, "127.0.0.1:")))
+    if path == "/quit" {
+        std::server::respond(h, 200, "bye")
+        return true
+    }
+    if path == "/info" {
+        show_headers(h)
+        println("  host=" + std::server::header(h, "HOST"))
+        println("  xa=" + std::server::header(h, "x-a"))
+        println("  missing=" + S(std::server::header(h, "x-none") == nil))
+        try_s("  badname", std::try::catch(|| { std::server::header(h, "bad name"); "x" }))
+        try_s("  emptyname", std::try::catch(|| { std::server::header(h, ""); "x" }))
+        let longn = big_string(257)
+        try_s("  longname", std::try::catch(|| { std::server::header(h, longn); "x" }))
+        std::server::respond_full(h, 201, "text/x-test", #{ "X-Zed": "1", "A-First": "2", "b-mid": "3" }, std::encoding::utf8_encode("full"))
+        return false
+    }
+    if path == "/echo" {
+        try_s("  body_text", std::try::catch(|| std::server::body_text(h)))
+        try_s("  body-again", std::try::catch(|| { std::server::body(h); "x" }))
+        try_s("  bodytext-again", std::try::catch(|| std::server::body_text(h)))
+        std::server::respond_json(h, 200, "{\"ok\":true}")
+        return false
+    }
+    if path == "/bin" {
+        let r = std::try::catch(|| { std::server::body(h) })
+        match r {
+            Result::Ok(b) => println("  body len=" + S(std::bytes::length(b)) + " b64=" + std::text::substring(std::encoding::base64_encode(b), 0, 32)),
+            Result::Err(m) => println("  body !! " + m),
+        }
+        try_s("  respond", std::try::catch(|| { std::server::respond_bytes(h, 200, "application/octet-stream", std::encoding::utf8_encode("ok")); "sent" }))
+        return false
+    }
+    if path == "/resp" {
+        t_resp(h)
+        std::server::respond(h, 200, "fine")
+        return false
+    }
+    if path == "/resp-big" {
+        t_resp_big(h)
+        std::server::respond_html(h, 200, "<p>ok</p>")
+        return false
+    }
+    if path == "/head" {
+        std::server::respond(h, 200, "hello world")
+        return false
+    }
+    if path == "/s204" {
+        std::server::respond(h, 204, "")
+        return false
+    }
+    if path == "/s304" {
+        std::server::respond_bytes(h, 304, "", std::encoding::utf8_encode(""))
+        return false
+    }
+    if path == "/noct" {
+        std::server::respond_bytes(h, 200, "", std::encoding::utf8_encode("raw"))
+        return false
+    }
+    if path == "/twice" {
+        std::server::respond(h, 200, "once")
+        try_s("  respond-twice", std::try::catch(|| { std::server::respond(h, 200, "twice"); "sent" }))
+        try_s("  method-after", std::try::catch(|| std::server::method(h)))
+        return false
+    }
+    if path == "/hold256" {
+        let mut held = [h]
+        let mut n = 1
+        while n < 256 {
+            let x = try_accept(srv)
+            if x < 0 {
+                break
+            }
+            held = std::array::push(held, x)
+            n += 1
+        }
+        println("  held " + S(len(held)))
+        try_s("  accept-257", std::try::catch(|| S(std::server::accept(srv, 100))))
+        for x in held {
+            std::server::respond(x, 200, "held")
+        }
+        return false
+    }
+    if path == "/ws-hold" {
+        let mut socks = []
+        let first = std::server::upgrade_websocket(h, 1000)
+        socks = std::array::push(socks, first)
+        let mut n = 1
+        while n < 65 {
+            let x = try_accept(srv)
+            if x < 0 {
+                break
+            }
+            let r = std::try::catch(|| { std::server::upgrade_websocket(x, 1000) })
+            match r {
+                Result::Ok(w) => { socks = std::array::push(socks, w) },
+                Result::Err(m) => {
+                    println("  upgrade #" + S(n) + " !! " + m)
+                    std::server::respond(x, 400, "full")
+                },
+            }
+            n += 1
+        }
+        println("  ws held " + S(len(socks)))
+        for w in socks {
+            std::server::ws_close(w, 1000, "")
+        }
+        return false
+    }
+    if path == "/wsfail" {
+        let first = std::try::catch(|| { std::server::upgrade_websocket(h, 1024) })
+        match first {
+            Result::Ok(w) => {
+                println("  upgrade ok handle " + S(w))
+                std::server::ws_close(w, 1000, "")
+                return false
+            },
+            Result::Err(m) => println("  upgrade !! " + m),
+        }
+        try_s("  upgrade-0", std::try::catch(|| { std::server::upgrade_websocket(h, 0); "x" }))
+        try_s("  upgrade-big", std::try::catch(|| { std::server::upgrade_websocket(h, 4194305); "x" }))
+        try_s("  upgrade-neg", std::try::catch(|| { std::server::upgrade_websocket(h, -1); "x" }))
+        std::server::respond(h, 400, "no upgrade")
+        return false
+    }
+    if path == "/ws" || path == "/ws-small" {
+        let mut m = 1048576
+        if path == "/ws-small" {
+            m = 100
+        }
+        let r = std::try::catch(|| { std::server::upgrade_websocket(h, m) })
+        match r {
+            Result::Ok(w) => {
+                println("  ws handle " + S(w))
+                try_s("  upgrade-again", std::try::catch(|| { std::server::upgrade_websocket(h, m); "x" }))
+                ws_loop(w)
+            },
+            Result::Err(e) => println("  upgrade !! " + e),
+        }
+        return false
+    }
+    std::server::respond(h, 404, "unknown")
+    false
+}
+
+fn main() {
+    // direcciones
+    try_s("bind-localhost", std::try::catch(|| { std::server::start("localhost:80"); "x" }))
+    try_s("bind-v6-nobrackets", std::try::catch(|| { std::server::start("::1:80"); "x" }))
+    try_s("bind-noport", std::try::catch(|| { std::server::start("127.0.0.1"); "x" }))
+    try_s("bind-bigport", std::try::catch(|| { std::server::start("127.0.0.1:99999"); "x" }))
+    try_s("bind-zero4", std::try::catch(|| { std::server::start("01.2.3.4:80"); "x" }))
+    try_s("bind-plus", std::try::catch(|| { std::server::start("127.0.0.1:+80"); "x" }))
+    try_s("bind-empty", std::try::catch(|| { std::server::start(""); "x" }))
+    try_s("bind-space", std::try::catch(|| { std::server::start(" 127.0.0.1:80"); "x" }))
+    try_s("bind-scope-empty", std::try::catch(|| { std::server::start("[::1%]:80"); "x" }))
+    try_s("bind-busy", std::try::catch(|| { std::server::start("8.8.8.8:80"); "x" }))
+    try_s("bind-huge", std::try::catch(|| { std::server::start(big_string(4097)); "x" }))
+    let v6 = std::server::start("[::1]:19891")
+    println("v6 handle " + S(v6) + " " + std::server::local_addr(v6))
+    try_s("v6-dup", std::try::catch(|| { std::server::start("[::1]:19891"); "x" }))
+    try_s("accept-v6-timeout", std::try::catch(|| S(std::server::accept(v6, 30))))
+    std::server::stop(v6)
+    std::server::stop(v6)
+    std::server::stop(9999)
+    try_s("local-after-stop", std::try::catch(|| std::server::local_addr(v6)))
+    try_s("accept-after-stop", std::try::catch(|| S(std::server::accept(v6, 10))))
+    // límite de servidores vivos
+    let mut hs = []
+    let mut k = 0
+    while k < 9 {
+        let r = std::try::catch(|| { std::server::start("127.0.0.1:0") })
+        match r {
+            Result::Ok(x) => { hs = std::array::push(hs, x) },
+            Result::Err(m) => println("start #" + S(k) + " !! " + m),
+        }
+        k += 1
+    }
+    println("servers " + S(len(hs)) + " first=" + S(hs[0]))
+    for x in hs {
+        std::server::stop(x)
+    }
+    let again = std::server::start("127.0.0.1:19890")
+    println("restart handle " + S(again) + " " + std::server::local_addr(again))
+    try_s("accept-neg", std::try::catch(|| S(std::server::accept(again, -1))))
+    try_s("accept-big", std::try::catch(|| S(std::server::accept(again, 30001))))
+    try_s("accept-unknown", std::try::catch(|| S(std::server::accept(424242, 10))))
+    try_s("accept-0", std::try::catch(|| S(std::server::accept(again, 0))))
+    try_s("accept-50", std::try::catch(|| S(std::server::accept(again, 50))))
+    println("READY")
+    let srv = again
+    let mut done = false
+    let mut idle = 0
+    while !done && idle < 3 {
+        let h = try_accept(srv)
+        if h == -1 {
+            println("accept timeout")
+            idle += 1
+        } else if h != -2 {
+            idle = 0
+            done = handle(srv, h)
+        }
+    }
+    std::server::stop(srv)
+    println("fin")
+}

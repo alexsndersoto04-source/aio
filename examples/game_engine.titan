@@ -6,7 +6,7 @@
 // Windows y macOS.
 //
 // Ejecutar con:
-//     zett run examples/game_engine.titan
+//     titan run examples/game_engine.titan
 
 fn main() {
     print("==== Motor de juego TITAN (headless) ====")

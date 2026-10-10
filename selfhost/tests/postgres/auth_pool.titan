@@ -1,0 +1,145 @@
+// std::postgres: autenticación, errores de conexión, pool y migraciones (servidor real en 55432).
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn probar(nombre: string, url: string) {
+    let r = std::try::catch(|| {
+        let db = std::postgres::connect(url)
+        let v = std::postgres::query(db, "SELECT current_user AS u, current_database() AS d", [])
+        std::postgres::close(db)
+        v
+    })
+    mostrar(nombre, r)
+}
+
+fn tomar(o: any) -> any {
+    match o {
+        Option::Some(v) => v,
+        _ => nil,
+    }
+}
+
+fn migs(sql3: string) -> any {
+    let mut a = std::map::new()
+    a = std::map::insert(a, "version", 1)
+    a = std::map::insert(a, "name", "crear")
+    a = std::map::insert(a, "sql", "CREATE TABLE IF NOT EXISTS m1(id INT)")
+    let mut b = std::map::new()
+    b = std::map::insert(b, "version", 2)
+    b = std::map::insert(b, "name", "insertar")
+    b = std::map::insert(b, "sql", "INSERT INTO m1 VALUES (1),(2)")
+    let mut c = std::map::new()
+    c = std::map::insert(c, "version", 3)
+    c = std::map::insert(c, "name", "tercera")
+    c = std::map::insert(c, "sql", sql3)
+    return [a, b, c]
+}
+
+fn main() {
+    probar("trust", "postgresql://postgres@127.0.0.1:55432/tdb")
+    probar("md5", "postgresql://md5user:md5pw@127.0.0.1:55432/tdb")
+    probar("md5_mala", "postgresql://md5user:xx@127.0.0.1:55432/tdb")
+    probar("md5_sin_clave", "postgresql://md5user@127.0.0.1:55432/tdb")
+    probar("clara", "postgresql://clearuser:clearpw@127.0.0.1:55432/tdb")
+    probar("scram", "postgresql://scramuser:scrampw@127.0.0.1:55432/tdb")
+    probar("scram_mala", "postgresql://scramuser:otra@127.0.0.1:55432/tdb")
+    probar("scram_sin_clave", "postgresql://scramuser@127.0.0.1:55432/tdb")
+    probar("clave_codificada", "postgresql://scramuser:scram%70w@127.0.0.1:55432/tdb")
+    probar("kv", "host=127.0.0.1 port=55432 user=scramuser password='scrampw' dbname=tdb")
+    probar("params_url", "postgresql://127.0.0.1:55432/tdb?user=postgres&application_name=prueba")
+    probar("db_inexistente", "postgresql://postgres@127.0.0.1:55432/nada")
+    probar("usuario_inexistente", "postgresql://nadie@127.0.0.1:55432/tdb")
+    probar("sin_usuario", "postgresql://127.0.0.1:55432/tdb")
+    probar("rechazada", "postgresql://postgres@127.0.0.1:1/tdb")
+    probar("sin_host", "postgresql:///tdb")
+    probar("require_sin_tls", "postgresql://postgres@127.0.0.1:55432/tdb?sslmode=require")
+    probar("require_conectar_tls", "postgresql://postgres@127.0.0.1:55432/tdb?sslmode=disable")
+    mostrar("tls_prefer_sin_ssl", std::try::catch(|| {
+        let db = std::postgres::connect_tls("postgresql://postgres@127.0.0.1:55432/tdb")
+        let r = std::postgres::query(db, "SELECT 1::int4 AS x", [])
+        std::postgres::close(db)
+        r
+    }))
+    mostrar("tls_require_sin_ssl", std::try::catch(|| { std::postgres::connect_tls("postgresql://postgres@127.0.0.1:55432/tdb?sslmode=require") }))
+    mostrar("url_no_string_en_pool", std::try::catch(|| { std::postgres::pool("postgresql://postgres@127.0.0.1:55432/tdb", 0, false) }))
+    mostrar("pool_negativo", std::try::catch(|| { std::postgres::pool("postgresql://postgres@127.0.0.1:55432/tdb", -1, false) }))
+    mostrar("pool_grande", std::try::catch(|| { std::postgres::pool("postgresql://postgres@127.0.0.1:55432/tdb", 65, false) }))
+    // pool
+    let pool = std::postgres::pool("postgresql://postgres@127.0.0.1:55432/tdb", 2, false)
+    print(pool)
+    mostrar("stats0", std::postgres::pool_stats(pool))
+    let a = tomar(std::postgres::acquire(pool, 1000))
+    print(a)
+    mostrar("stats1", std::postgres::pool_stats(pool))
+    let b = tomar(std::postgres::acquire(pool, 1000))
+    mostrar("stats2", std::postgres::pool_stats(pool))
+    mostrar("agotado", std::postgres::acquire(pool, 50))
+    mostrar("pool_vivo", std::postgres::query(a, "SELECT 7::int8 AS x", []))
+    mostrar("soltar_a", std::postgres::close(a))
+    mostrar("stats3", std::postgres::pool_stats(pool))
+    mostrar("health", std::postgres::pool_health(pool, 500))
+    mostrar("stats4", std::postgres::pool_stats(pool))
+    let c = tomar(std::postgres::acquire(pool, 1000))
+    mostrar("stats5", std::postgres::pool_stats(pool))
+    std::postgres::begin(c)
+    mostrar("soltar_c_en_tx", std::postgres::close(c))
+    let d = tomar(std::postgres::acquire(pool, 1000))
+    mostrar("tx_persiste", std::try::catch(|| { std::postgres::begin(d) }))
+    mostrar("rollback_d", std::postgres::rollback(d))
+    mostrar("soltar_b", std::postgres::close(b))
+    mostrar("soltar_d", std::postgres::close(d))
+    mostrar("pool_cerrar", std::postgres::pool_close(pool))
+    mostrar("stats_cerrada", std::try::catch(|| { std::postgres::pool_stats(pool) }))
+    mostrar("acquire_cerrada", std::try::catch(|| { std::postgres::acquire(pool, 10) }))
+    mostrar("cerrar_dos_veces", std::try::catch(|| { std::postgres::pool_close(pool) }))
+    // pool con cierre mientras hay conexiones prestadas
+    let p2 = std::postgres::pool("postgresql://postgres@127.0.0.1:55432/tdb", 3, false)
+    let x = tomar(std::postgres::acquire(p2, 1000))
+    let y = tomar(std::postgres::acquire(p2, 1000))
+    std::postgres::close(y)
+    mostrar("p2_antes", std::postgres::pool_stats(p2))
+    std::postgres::pool_close(p2)
+    mostrar("p2_conn_viva", std::postgres::query(x, "SELECT 1::int8 AS x", []))
+    mostrar("p2_soltar", std::postgres::close(x))
+    let pm = std::postgres::pool("postgresql://md5user:mal@127.0.0.1:55432/tdb", 2, false)
+    mostrar("pool_mala_clave", std::try::catch(|| { std::postgres::acquire(pm, 100) }))
+    mostrar("pool_mala_stats", std::postgres::pool_stats(pm))
+    mostrar("pool_mala_health", std::postgres::pool_health(pm, 100))
+    std::postgres::pool_close(pm)
+    // migraciones
+    let db = std::postgres::connect("postgresql://postgres@127.0.0.1:55432/tdb")
+    std::postgres::execute(db, "DROP TABLE IF EXISTS m1", [])
+    std::postgres::execute(db, "DROP TABLE IF EXISTS _titan_migrations", [])
+    mostrar("mig_fallida", std::try::catch(|| { std::postgres::migrate(db, migs("CREATE TABLE m1(id INT)")) }))
+    mostrar("mig_tabla_tras_fallo", std::postgres::query(db, "SELECT count(*) AS n FROM _titan_migrations", []))
+    mostrar("mig_error_sql", std::try::catch(|| { std::postgres::migrate(db, migs("SELEC 1")) }))
+    mostrar("mig_ok", std::postgres::migrate(db, migs("INSERT INTO m1 VALUES (3)")))
+    mostrar("mig_repetida", std::postgres::migrate(db, migs("INSERT INTO m1 VALUES (3)")))
+    mostrar("mig_filas", std::postgres::query(db, "SELECT count(*) AS n FROM m1", []))
+    mostrar("mig_registro", std::postgres::query(db, "SELECT version, name, checksum FROM _titan_migrations ORDER BY version", []))
+    mostrar("mig_cambiada", std::try::catch(|| { std::postgres::migrate(db, migs("INSERT INTO m1 VALUES (4)")) }))
+    mostrar("mig_orden", std::try::catch(|| { std::postgres::migrate(db, [migs("x")[1], migs("x")[0]]) }))
+    mostrar("mig_cero", std::try::catch(|| { std::postgres::migrate(db, []) }))
+    std::postgres::begin(db)
+    mostrar("mig_en_tx", std::try::catch(|| { std::postgres::migrate(db, migs("INSERT INTO m1 VALUES (3)")) }))
+    std::postgres::rollback(db)
+    mostrar("mig_candado", std::postgres::query(db, "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory'", []))
+    mostrar("db_execute", std::db::execute(db, "SELECT 1", []))
+    mostrar("db_query", std::db::query(db, "SELECT 2::int4 AS x", []))
+    mostrar("db_begin", std::db::begin(db))
+    mostrar("db_rollback", std::db::rollback(db))
+    mostrar("db_commit_sin_tx", std::try::catch(|| { std::db::commit(db) }))
+    mostrar("db_migrate", std::db::migrate(db, migs("INSERT INTO m1 VALUES (3)")))
+    mostrar("db_ping", std::db::ping(db))
+    mostrar("db_close", std::db::close(db))
+    mostrar("db_close2", std::db::close(db))
+    // cierre con transacción abierta: el servidor la revierte
+    let e1 = std::postgres::connect("postgresql://postgres@127.0.0.1:55432/tdb")
+    std::postgres::begin(e1)
+    std::postgres::execute(e1, "INSERT INTO m1 VALUES (99)", [])
+    std::postgres::close(e1)
+    let e2 = std::postgres::connect("postgresql://postgres@127.0.0.1:55432/tdb")
+    mostrar("cierre_revierte", std::postgres::query(e2, "SELECT count(*) AS n FROM m1 WHERE id = 99", []))
+    std::postgres::close(e2)
+}

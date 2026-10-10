@@ -1,0 +1,21 @@
+fn main() {
+    println("1 inicio")
+    let c = std::process::spawn("echo hola-hijo")
+    println("2 spawn -> {c}")
+    let cw = std::process::spawn_wait(c)
+    println("3 wait")
+    println(std::map::get(cw, "stdout"))
+    let srv = std::server::start("127.0.0.1:19877")
+    println("4 server {srv}")
+    let client = std::process::spawn("curl -s -D- http://127.0.0.1:19877/hello")
+    println("5 client {client}")
+    let req = std::server::accept(srv, 5000)
+    println("6 accept {req}")
+    if req >= 0 {
+        println("7 method " + std::server::method(req))
+        std::server::respond(req, 200, "Hello")
+    }
+    let cw2 = std::process::spawn_wait(client)
+    println(std::map::get(cw2, "stdout"))
+    println("8 fin")
+}

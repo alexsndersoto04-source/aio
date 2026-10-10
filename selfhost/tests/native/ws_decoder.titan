@@ -1,0 +1,88 @@
+// Decodificador WebSocket con estado: fragmentos, ping intercalado, cierre y errores.
+fn hexb(s: string) -> bytes {
+    std::encoding::hex_decode(s)
+}
+
+fn mostrar(d: WebSocketDecoder, requiere: bool) {
+    match std::ws::decoder_next(d, requiere) {
+        Option::None => println("ninguno"),
+        Option::Some(m) => println(std::json::stringify(m)),
+    }
+}
+
+fn main() {
+    let d = std::ws::decoder(1024)
+    print(d)
+    // Mensaje de texto fragmentado con un ping en medio.
+    std::ws::decoder_push(d, hexb("010368656c"))
+    mostrar(d, false)
+    std::ws::decoder_push(d, hexb("890170"))
+    mostrar(d, false)
+    std::ws::decoder_push(d, hexb("80026c6f"))
+    mostrar(d, false)
+    mostrar(d, false)
+    // Marcos partidos en trozos de un byte.
+    let marco = hexb("82050102030405")
+    let mut i = 0
+    while i < std::bytes::length(marco) {
+        std::ws::decoder_push(d, std::bytes::slice(marco, i, i + 1))
+        mostrar(d, false)
+        i += 1
+    }
+    // Pong, binario y cierres.
+    std::ws::decoder_push(d, hexb("8a00"))
+    mostrar(d, false)
+    std::ws::decoder_push(d, hexb("880203e8"))
+    mostrar(d, false)
+    std::ws::decoder_push(d, hexb("880403e96f6b"))
+    mostrar(d, false)
+    std::ws::decoder_push(d, hexb("8800"))
+    mostrar(d, false)
+    // Mensajes enmascarados cuando se exige máscara.
+    std::ws::decoder_push(d, std::ws::encode(1, std::encoding::utf8_encode("enmascarado"), true))
+    mostrar(d, true)
+    std::ws::decoder_push(d, std::ws::encode(1, std::encoding::utf8_encode("sin mascara"), false))
+    print(std::try::catch(|| std::ws::decoder_next(d, true)))
+    // Errores del flujo.
+    let e1 = std::ws::decoder(1024)
+    std::ws::decoder_push(e1, hexb("8001ff"))
+    print(std::try::catch(|| std::ws::decoder_next(e1, false)))
+    let e2 = std::ws::decoder(1024)
+    std::ws::decoder_push(e2, hexb("00027869"))
+    print(std::try::catch(|| std::ws::decoder_next(e2, false)))
+    let e3 = std::ws::decoder(1024)
+    std::ws::decoder_push(e3, hexb("010161"))
+    mostrar(e3, false)
+    std::ws::decoder_push(e3, hexb("010162"))
+    print(std::try::catch(|| std::ws::decoder_next(e3, false)))
+    let e4 = std::ws::decoder(4)
+    std::ws::decoder_push(e4, hexb("0203313233"))
+    mostrar(e4, false)
+    std::ws::decoder_push(e4, hexb("80023435"))
+    print(std::try::catch(|| std::ws::decoder_next(e4, false)))
+    let e5 = std::ws::decoder(1024)
+    std::ws::decoder_push(e5, hexb("880203e7"))
+    print(std::try::catch(|| std::ws::decoder_next(e5, false)))
+    let e6 = std::ws::decoder(8)
+    print(std::try::catch(|| std::ws::decoder_push(e6, hexb("00000000000000000000000000000000000000000000000000000000000000000000000000000000"))))
+    let e7 = std::ws::decoder(1024)
+    std::ws::decoder_push(e7, hexb("c1"))
+    std::ws::decoder_push(e7, hexb("00"))
+    print(std::try::catch(|| std::ws::decoder_next(e7, false)))
+    let e8 = std::ws::decoder(1024)
+    std::ws::decoder_push(e8, hexb("8300"))
+    print(std::try::catch(|| std::ws::decoder_next(e8, false)))
+    let e9 = std::ws::decoder(1024)
+    std::ws::decoder_push(e9, hexb("8101ff"))
+    print(std::try::catch(|| std::ws::decoder_next(e9, false)))
+    let e10 = std::ws::decoder(1024)
+    std::ws::decoder_push(e10, hexb("8802e8e8"))
+    print(std::try::catch(|| std::ws::decoder_next(e10, false)))
+    let e11 = std::ws::decoder(1024)
+    std::ws::decoder_push(e11, hexb("827e0010"))
+    print(std::try::catch(|| std::ws::decoder_next(e11, false)))
+    print(std::try::catch(|| std::ws::decoder(0)))
+    print(std::try::catch(|| std::ws::decoder(67108865)))
+    print(e11 == e11)
+    print(e11 == e10)
+}

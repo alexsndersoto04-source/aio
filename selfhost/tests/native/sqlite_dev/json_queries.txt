@@ -1,0 +1,289 @@
+select json('{"a":1,"a":2}') r
+select json(' [1, 2.50 , -0, 1e5, 1E+2, "x\u00e9\/", true, null] ') r
+select json('{a:1}') r
+select json('[1,]') r
+select json('[1,2') r
+select json('') r
+select json(NULL) r
+select json(5) r
+select json('"a' || char(10) || 'b"') r
+select json('[1.0e5, .5, 5., +1, 0x10, Infinity, NaN]') r
+select json('// c' || char(10) || '[1]') r
+select json(x'5b315d') r
+select json_valid('[1]'), json_valid('{a:1}'), json_valid(NULL), json_valid(1), json_valid('') r
+select json_array(1, 2.5, 'a', NULL, x'00') r
+select json_array(1, 'a"b\c' || char(10,9,1) || 'é/') r
+select json_array(1e100, -1e-100, 1.0, 100000000000000.0, 1e15, 9.0e999, -9e999) r
+select json_object('a', 1, 'b', json('[1, 2]'), 'c', 'x') r
+select json_object('a') r
+select json_object(1, 2) r
+select json_object(NULL, 2) r
+select json_array(json_array(1)) r
+select json_array('[1]') r
+select json_extract('{"a":[1,2,{"b":null}],"c":"x","d":1.5,"e":true,"f":{"g":1}}', '$.a') r
+select json_extract('{"a":[1,2,{"b":null}]}', '$.a[2].b') a, json_extract('{"a":[1,2,{"b":null}]}', '$.a[#-1]') b, json_extract('{"c":"x","d":1.5,"e":true,"f":{"g":1}}','$.c', '$.d', '$.e', '$.f', '$.zz') r
+select json_extract('[1,2,3]', '$[1]') a, json_extract('[1,2,3]', '$[5]') b, json_extract('[1,2,3]','$[#-1]') c, json_extract('[1,2,3]','$[#]') d, json_extract('{"a b":1}', '$."a b"') e, json_extract('{"a b":1}', '$.a b') f
+select json_extract('[1]', 'a') r
+select json_extract('[1]', '$.') r
+select json_extract('[1]', '$[x]') r
+select json_extract('[1]', '$[') r
+select json_extract('{"a":1}', '$.a.b') r
+select json_extract('{bad', '$') r
+select json_extract('[1]', NULL) r
+select json_extract(NULL, '$') r
+select json_extract('{"a":9223372036854775807,"b":9223372036854775808}', '$.a','$.b') a, json_extract('{"a":9223372036854775807,"b":9223372036854775808}', '$.b') b, json_extract('{"c":1e2}','$.c') c, json_extract('{"d":-0}', '$.d') d, json_extract('{"e":"\u0041"}', '$.e') e
+select '{"a":{"b":[1,2]}}' -> '$.a' r1, '{"a":{"b":[1,2]}}' -> 'a' r2, '{"a":"x"}' -> 'a' r3, '{"a":"x"}' ->> 'a' r4, '[1,2]' -> 1 r5, '[1,2]' ->> 1 r6, '[1,2]' -> 5 r7, '{"a":null}' -> 'a' r8, '{"a":null}' ->> 'a' r9, '[1,2]' ->> -1 r10
+select '{"a":1}' -> '$.a.b' r
+select json_type('{"a":[1]}') a, json_type('{"a":[1]}', '$.a') b, json_type('{"a":[1.5]}', '$.a[0]') c, json_type('[true,false,null,"x",1]', '$[0]') d, json_type('[true,false,null,"x",1]', '$[1]') e, json_type('[true,false,null,"x",1]', '$[2]') f, json_type('[true,false,null,"x",1]', '$[3]') g, json_type('[true,false,null,"x",1]', '$[4]') h, json_type('[1]', '$[2]') i, json_type(NULL) j
+select json_array_length('[1,2,3]') a, json_array_length('{"a":[1,2]}', '$.a') b, json_array_length('{"a":1}') c, json_array_length('{"a":1}', '$.b') d, json_array_length('[]') e
+select json_quote(1) a, json_quote('a"b') b, json_quote(NULL) c, json_quote(json('[1]')) d, json_quote(1.5) e, json_quote(x'00') f
+select json_set('{"a":1}', '$.b', 2) r
+select json_set('{"a":1}', '$.a', 'x', '$.c', json('[1]'), '$.d', json_array(1)) r
+select json_insert('{"a":1}', '$.a', 2, '$.b', 3) r
+select json_replace('{"a":1}', '$.a', 2, '$.b', 3) r
+select json_set('[1,2]', '$[#]', 3) r
+select json_set('[1,2]', '$[5]', 3) r
+select json_set('[1,2]', '$[0]', NULL) r
+select json_set('{}', '$.a.b', 1) r
+select json_set('{"a":1}', '$', 5) r
+select json_set('{"a":1}', '$.a') r
+select json_set('{"a":1}') r
+select json_set('{"a":1}', '$.b', 1, '$.b', 2) r
+select json_remove('{"a":1,"b":2}', '$.a') r
+select json_remove('[1,2,3]', '$[0]', '$[0]') r
+select json_remove('[1,2,3]', '$') r
+select json_remove('[1,2,3]') r
+select json_remove('[1,2,3]', '$[9]') r
+select json_patch('{"a":1,"b":{"c":2}}', '{"b":{"c":null,"d":4},"a":null}') r
+select json_patch('[1]', '{"a":1}') r
+select json_patch('{"a":1}', '[2]') r
+select json_patch('{"a":[1]}', '{"a":{"b":1}}') r
+select json_patch('{"a":1}', 'x') r
+select json_group_array(a) r from (select 1 a union all select 'x' union all select null)
+select json_group_array(json_array(a)) r from (select 1 a union all select 2)
+select json_group_object(a, b) r from (select 'k' a, 1 b union all select 'j', json('[1]'))
+select json_group_object(a, json(b)) r from (select 'k' a, '[1]' b)
+select json_group_array(1) r from (select 1 where 0)
+select json_group_array(DISTINCT a) r from (select 1 a union all select 1)
+select json_array(a->'x') r from (select '{"x":[1]}' a)
+select json_array(a->>'x') r from (select '{"x":[1]}' a)
+select json_array(json_extract(a, '$.x')) r from (select '{"x":[1]}' a)
+select typeof(json_array(1)) a, length(json_array(1,2)) b
+select json_array(json_array(1) || 'x') r
+select json_array(1) = '[1]' r
+select * from json_each('[1,"a",null,true,1.5,{"x":1},[2]]')
+select key, value, type, atom, id, parent, fullkey, path from json_each('{"a":[1,2],"b":{"c":null}}')
+select key, value, type, atom, id, parent, fullkey, path from json_tree('{"a":[1,2],"b":{"c":null}}')
+select key, value, type, atom, id, parent, fullkey, path from json_each('{"a":[1,2],"b":{"c":null}}', '$.a')
+select key, value, fullkey, path from json_tree('{"a":[1,2],"b":{"c":null}}', '$.b')
+select key, value, fullkey, path from json_each('[5]', '$[0]')
+select value from json_each('[1,2,3]') where value > 1
+select sum(value) from json_each('[1,2,3]')
+select a.id, e.value from (select 1 id, '[10,20]' j union all select 2, '[30]') a, json_each(a.j) e
+select a.id, e.value from (select 1 id, '[10,20]' j union all select 2, '[30]') a join json_each(a.j) e order by 1,2
+select a.id, e.value from (select 1 id, '[10,20]' j union all select 2, '[]') a left join json_each(a.j) e order by 1,2
+select * from json_each('bad')
+select * from json_each(NULL)
+select * from json_each('[1]', '$.x')
+select * from json_each()
+select json_each.value, json_each.key from json_each('[7,8]')
+select e.json, e.root from json_each('[7]') e
+select * from json_each('[1,2]') e, json_each('[3]') f
+select count(*) from json_each('{}')
+select j.value from json_each('{"a":1}') j where j.key = 'a'
+select json_extract(value, '$.n') r from json_each('[{"n":1},{"n":2}]')
+select json_object('a', json_each.value) r from json_each('[1]')
+select json('[1,2]') -> 0 r
+select 1 -> 'a' r
+select json_array_length('[1,2') r
+select json_object('a', 1) ->> '$.a' r
+select json_extract('[1,2]', '$[0]', '$[1]') r
+select json_array_length(5) r
+select json_array_length('5') r
+select json_type(5) r
+select json_extract(5, '$') r
+select json_extract('"x"', '$') r
+select json_extract('[[1,2],[3]]', '$[0][1]') r
+select json_extract('{"a":{"b":{"c":5}}}', '$.a.b.c') r
+select json_set(NULL, '$.a', 1) r
+select json_array() a, json_object() b
+select json_extract('{"a":"\n\""}', '$.a') r
+select json('"\ud83d\ude00"') r
+select json_extract('"\ud83d\ude00"', '$') r
+select json('["\u0001"]') r
+select json_insert('[1]', '$[1]', 2) r
+select json_replace('[1]', '$[1]', 2) r
+select json_set('{"a":[1,2]}', '$.a[1]', 'z') r
+select json_set('{"a":1}', '$.b', json('{"c":[1,2]}')) r
+select json_set('{"a":1}', '$.b', 1.5, '$.c', x'ff') r
+select json_set('{"a":1}', '$.b', 'it''s') r
+select '[1,2]' ->> 0 r
+select '[1,2]' -> '1' r
+select '[1,2]' -> '[1]' r
+select '{"a b":1}' -> 'a b' r
+select '{"a.b":1}' -> 'a.b' r
+select '{"a":{"b":2}}' -> 'a.b' r
+select '{"a":{"b":2}}' -> '$.a.b' r
+select '{"a":{"b":2}}' -> '.a' r
+select '[1,2]' -> 1.0 r
+select '[1,2]' -> NULL r
+select NULL -> 'a' r
+select '{"a":1}' -> '' r
+select json_array(x'00') r
+select json_object('a', x'00') r
+select json_quote(x'00') r
+select json_set('{"a":1}', '$.b', 1.5, '$.c', 1) r
+select key, id, fullkey from json_tree('{"a b":1,"1":2,"":3,"é":4,"x_y":5,"a-b":6}')
+select key, id, parent, fullkey, path, value from json_each('{"a":[1,2],"b":{"c":null}}', '$.b')
+select id, parent, key, fullkey, path from json_tree('{"a":[1,2],"b":{"c":null}}', '$.b')
+select id, parent, key, fullkey, path from json_tree('[[1],2]', '$[0]')
+select id, key, type, value from json_each('[1.5, 12345678901234567890, "é\n", 1e3, -2]')
+select id, key, value from json_each('"x"')
+select id, key, value, path, fullkey from json_each('5')
+select id, key, value, path, fullkey from json_tree('5')
+select json_each.id from json_each('[1,2,3,4,5,6,7,8,9,10,11,12,13]')
+select json_each.id, json_each.key from json_each('{"abcdefghijklmnop":1,"b":[1,2,3,4,5,6,7,8,9,10,11,12]}')
+select json_extract('{"a":1}', '$.a', 5) r
+select json_extract('{"a":1}', 5) r
+select json_extract('[1,2,3]', '$[#-5]') r
+select json_extract('[1,2,3]', '$[#-0]') r
+select json_extract('[1,2,3]', '$[01]') r
+select json_extract('{"a":[1,2]}', '$."a"[1]') r
+select json_extract('{"a":{"b":1}}', '$.a.') r
+select json_extract('{"a":1}', '$a') r
+select json_extract('{"a":1}', '') r
+select json_extract('{"a":1}') r
+select json_set('[1]', '$[#-1]', 9) r
+select json_set('{"a":1}', '$.a.b', 9) r
+select json_set('{"a":[]}', '$.a[#]', 9, '$.a[#]', 10) r
+select json_insert('{"a":1}', '$.b.c', 1) r
+select json_remove('{"a":[1,2]}', '$.a[#-1]') r
+select json_remove('{"a":1}', '$.b.c') r
+select json_remove(NULL, '$') r
+select json_remove('{"a":1}', NULL) r
+select json_set('{"a":1}', NULL, 5) r
+select json_object('a', 1, 'a', 2) r
+select json_object('a', 'x'||char(0)||'y') r
+select json_object('a', 1 = 1) r
+select json('{"a":{"b":[ 1 , 2 ] } }') r
+select json('[1,2] x') r
+select json('[1,2] // c') r
+select json('/* c */ [1] ') r
+select json('[''a'', "b\x41", ''it\''s'', "q\"q"]') r
+select json('{"a":1, /* x */ b : 2, "c" : [ ], d: {},}') r
+select json('[-Infinity, +Infinity, -.5, +.5, 0xFF, -0x10, 1e5, 0.0, -0.0, 00]') r
+select json('[tru]') r
+select json('{"a" 1}') r
+select json('[1 2]') r
+select json('{"a":1,}') r
+select json('{,}') r
+select json('[,]') r
+select json('"abc') r
+select json('nul') r
+select json('[01]') r
+select json('[1.]') r
+select json('["\q"]') r
+select json('["\u12"]') r
+select json('["' || char(1) || '"]') r
+select json_valid('[1]', 1) a, json_valid('{a:1}', 2) b, json_valid('{a:1}', 6) c, json_valid('[1]', 4) d
+select json_valid('["' || char(9) || '"]') r
+select json_valid(' [1] ') r
+select json_valid('[1,]') r
+select json_array_length('[1,2]', '$') r
+select json_array_length('{"a":[1,2]}', '$.a', 5) r
+select json_type('1') a, json_type('1.5') b, json_type('"x"') c, json_type('true') d
+select json_type('[1]', NULL) r
+select json_quote('[1]') a, json_quote('{"a":1}') b, json_quote(json('{"a":1}')) c, json_quote(2) d, json_quote('1') e, json_quote(1e100) f
+select json_group_array(a) r from (select 1.5 a union all select 'é' union all select 'q"')
+select json_group_object(a, b) r from (select 'k' a, 1 b union all select 'j', null)
+select json_group_object(a, b) r from (select 1 a, 1 b)
+select json_group_object(a, b) r from (select null a, 1 b)
+select json_group_array(a) filter (where a > 1) r from (select 1 a union all select 2 union all select 3)
+select json_array(1,2) || json_array(3) r
+select json_array(1, json_array(2, json_object('a', json_array())), 'x') r
+select json_patch('{"a":{"b":1}}', '{"a":{"b":null,"c":2}}') r
+select json_patch('{"a":1}', 'null') r
+select json_patch('{"a":1}', '5') r
+select json_patch('{"a":1}', '{"a":{"x":null}}') r
+select json_patch('5', '{"a":1}') r
+select json_patch(NULL, '{"a":1}') r
+select json_patch('{"a":1}', NULL) r
+select json_patch('{"b":2,"a":1}', '{"c":3,"a":5}') r
+select json_remove('{"a":1,"b":2,"a":3}', '$.a') r
+select json_extract('{"a":1,"a":2}', '$.a') r
+select json_each.type from json_each('[1,"a",null,true,false,1.5,[],{}]')
+select * from json_each('[1]', '$[0]', 3)
+select * from json_each('{"a":1}', '$.a')
+select * from json_tree('{"a":1}', '$.a')
+select * from json_tree('[]')
+select count(*) from json_tree('{"a":[1,{"b":2}],"c":3}')
+select max(id) from json_tree('{"a":[1,{"b":2}],"c":3}')
+select fullkey from json_tree('{"a":[1,{"b":2}],"c":[[1]]}') where type not in ('object', 'array')
+select e.key, e.value from json_each('{"x":1,"y":[1,2]}') e where e.type = 'array'
+select json_each.key from json_each('[1]'), json_each('[1,2]') as j2
+select name from (select 1 as name) as t, json_each('[1]') as e
+select value from json_each(json_array(1, 2, 3))
+select value from json_each('[1,2,3]', '$') where key = 1
+select group_concat(value) from json_each('["a","b"]')
+select value from json_each('[3,1,2]') order by value desc
+select j.* from json_each('[1]') j
+select count(*) from json_each('[1,2]') a, json_each('[1,2]') b
+select value from json_tree('[1,[2,3]]') where atom is not null
+select typeof(value), typeof(atom), typeof(id), typeof(key) from json_each('[1.5]')
+select typeof(value), typeof(atom) from json_each('["x"]')
+select typeof(value), typeof(atom) from json_each('[true]')
+select typeof(value), typeof(atom) from json_each('[[1]]')
+select typeof(key) from json_each('{"a":1}')
+select json_set('{"a":1}', '$.a', json('2')) r
+select json_set('[]', '$[0]', 'x') r
+select json_set('[]', '$[#]', 'x') r
+select json_insert('{}', '$.a', 1, '$.a', 2) r
+select json_array(1, 2) -> 0 r
+select json_extract('{"a":[1,2]}', '$.a[0]') + 1 r
+select json_each.value from json_each('[1]') where value = 1
+select * from json_each('[1,2,3]') where key > 0 order by value desc
+select a.k, e.value from (select 'x' k, '[1,2]' j union all select 'y', '{"p":5}') a, json_each(a.j) e
+select a.k, e.key, e.fullkey from (select 'x' k, '[1,2]' j union all select 'y', '{"p":5}') a join json_each(a.j) e on e.value > 1
+select json_group_array(value) r from json_each('[3,1,2]')
+select json_group_array(json_object('k', key, 'v', value)) r from json_each('{"a":1,"b":"x"}')
+select json_object('a', json_group_array(value)) r from json_each('[1,2]')
+select count(*) from json_tree('[[1,2],[3,[4]]]') where type = 'integer'
+select path, fullkey from json_tree('{"a":{"b":[0,{"c":1}]}}') where key = 'c'
+select value from json_each('[1,2]') union all select value from json_each('[3]')
+select (select count(*) from json_each('[1,2,3]')) r
+select json_valid(json_array(1,2)) r
+select json_array_length(json_array(1,2,3)) r
+select json_type(json_object('a', 1), '$.a') r
+select json_extract(json_object('a', json_array(1,2)), '$.a[1]') r
+select json_set(json_object('a', 1), '$.b', json_array(2)) r
+select json_pretty('{"a":[1,2,{"b":null}],"c":{},"d":[]}') r
+select json_pretty('[]') r
+select json_pretty('5') r
+select json_error_position('[1]') r
+select json_insert('{"a":[1]}', '$.a[#]', 2, '$.b[0]', 5) r
+select json_set('{}', '$.a[0].b', 1) r
+select json_set('[[1]]', '$[0][#]', 2) r
+select json_remove('{"a":[1,{"b":2}]}', '$.a[1].b') r
+select json_extract('{"a":{"b":[10,20,30]}}', '$.a.b[#-2]') r
+select json_patch('{"a":[1,2],"b":{"c":{"d":1}}}', '{"a":null,"b":{"c":{"e":2}}}') r
+select json('  { "a" : [ 1 , { "b" : "x y" } ] }  ') r
+select json_object('k', json('{"a":  1}')) r
+select json_array(1.5e300, -2.5, 0.1, 1e-5, 123456789012345678) r
+select json_array(0.1 + 0.2, 1.0 / 3.0) r
+select json('1e5') r
+select json('"x"') r
+select json('true') r
+select json('[1,2,3]') ->> '$[2]' r
+select '{"a":[1,2,3]}' -> '$.a' ->> 1 r
+select '{"a":1}' ->> 'b' r
+select json_extract('{"a":true,"b":false}', '$.a', '$.b') r
+select json_extract('{"a":true}', '$.a') r
+select typeof(json_extract('{"a":1.0}', '$.a')) r
+select typeof(json_extract('{"a":1}', '$.a')) r
+select typeof(json_extract('{"a":"1"}', '$.a')) r
+select json_set('{"a":1}', '$.a', 1.0) r
+select json_set('{"a":1}', '$.a', 'true') r
+select json_set('{"a":1}', '$.a', true) r
+select json_quote(json_array(1)) r
+select json_array(json_quote('x')) r
+select json_group_array(json_quote(value)) r from json_each('["a"]')

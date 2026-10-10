@@ -1,0 +1,21 @@
+// Decodifica con engine_decode todos los archivos de fixtures/ y muestra el resultado (o el error).
+// Salida comparable entre la VM de Rust (`zett run`) y el binario nativo.
+fn main() {
+    let dir = "/home/user/aio/selfhost/tests/audio/fixtures/"
+    let mut names = std::fs::list_dir(dir)
+    let mut i = 1
+    while i < len(names) {
+        let mut j = i
+        while j > 0 && names[j - 1] > names[j] {
+            let t = names[j]
+            names = std::array::set(names, j, names[j - 1])
+            names = std::array::set(names, j - 1, t)
+            j -= 1
+        }
+        i += 1
+    }
+    for n in names {
+        let r = std::try::catch(|| { std::audio::engine_decode(n) })
+        println(std::text::replace(n, dir, "") + " => " + std::json::stringify(r))
+    }
+}

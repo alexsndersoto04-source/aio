@@ -1,0 +1,601 @@
+// Servidor DAP del ejecutable de depuración (`titan dap`, después de `configurationDone`).
+//
+// `titan dap` atiende initialize/launch/setBreakpoints y, en `configurationDone`, compila el
+// programa con el gancho de depuración (std_debug.titan, clase 1) y se reemplaza por él
+// (`exec_once`). Desde ahí este archivo habla el protocolo por el stdin/stdout heredados:
+//   - antes de cada instrucción `dap_poll` atiende las peticiones que ya llegaron (sin bloquear:
+//     `poll` con tiempo 0) y vuelca la salida del programa;
+//   - al parar (punto de interrupción o paso) `dap_stop` emite `stopped` y atiende peticiones
+//     hasta recibir un comando de reanudar;
+//   - al terminar `dap_terminated` emite `terminated` y sigue atendiendo hasta `disconnect`/EOF.
+// La salida del programa (`print`) va a una tubería (el descriptor 1 se redirige) y se reparte en
+// eventos `output` línea a línea, como hace `titan_dap` con el canal de la VM; los mensajes DAP
+// salen por una copia del stdout original. Las respuestas, eventos y errores son los de
+// crates/titan_dap/src/lib.rs (la parte común está en dap_core.titan).
+//
+// Ranuras de globales (ver std_debug.titan): +48 salida pendiente (texto)  +56 último marco
+// +64 siguiente seq  +72 entrada (bytes)  +88 stdout original  +96 lectura de la tubería
+// +104 contador  +112 activo (1 hasta `terminated`)  +120 `disconnect` recibido  +128 EOF.
+// Prefijo `dap_`.
+
+fn dap_init() {
+    let g = dbg_g()
+    let buf = rt_alloc(16)
+    // pipe2(fds, O_CLOEXEC | O_NONBLOCK)
+    let r = std::raw::syscall(293, buf, 526336, 0, 0, 0, 0)
+    if r < 0 {
+        rt_free_block(buf)
+        return
+    }
+    let fds = std::raw::load(buf)
+    let rd = fds & 4294967295
+    let wr = (fds / 4294967296) & 4294967295
+    rt_free_block(buf)
+    // La tubería admite 1 MiB: un `print` entre dos revisiones no la llena.
+    std::raw::syscall(72, wr, 1031, 1048576, 0, 0, 0)
+    // La escritura debe bloquear si se llena (un print enorme espera a que se vacíe).
+    std::raw::syscall(72, wr, 4, 0, 0, 0, 0)
+    let saved = std::raw::syscall(32, 1, 0, 0, 0, 0, 0)
+    std::raw::syscall(33, wr, 1, 0, 0, 0, 0)
+    std::raw::syscall(3, wr, 0, 0, 0, 0, 0)
+    std::raw::store(g + 88, saved)
+    std::raw::store(g + 96, rd)
+    std::raw::store(g + 104, 0)
+    std::raw::store(g + 112, 1)
+    std::raw::store(g + 120, 0)
+    std::raw::store(g + 128, 0)
+    std::raw::store(g + 56, 0)
+    dbg_put(48, 5, dbg_slice("x", 0, 0))
+    dbg_put(72, 6, std::encoding::utf8_encode(""))
+}
+
+// ------------------------------------------------------------ salida
+
+fn dap_write(bytes: any) {
+    let fd = std::raw::load(dbg_g() + 88)
+    if fd > 0 {
+        rt_write_all(fd, std::raw::bits(bytes) + 16, rt_slen(bytes))
+    }
+}
+
+fn dap_next_seq() -> int {
+    let g = dbg_g()
+    let seq = std::raw::load(g + 64)
+    std::raw::store(g + 64, seq + 1)
+    seq
+}
+
+fn dap_event(event: string, body: any) {
+    dap_write(dc_event(dap_next_seq(), event, body))
+}
+
+fn dap_ok(request_seq: int, command: string, body: any) {
+    dap_write(dc_response(dap_next_seq(), request_seq, command, true, body, nil))
+}
+
+fn dap_fail(request_seq: int, command: string, message: string) {
+    dap_write(dc_response(dap_next_seq(), request_seq, command, false, nil, message))
+}
+
+// Error de transporte: `titan-dap: <error>` y salida con 1 (como `titan dap`).
+fn dap_fatal(message: any) {
+    rt_write(2, rt_concat(rt_concat("titan-dap: ", message), "\n"))
+    dbg_exit(1)
+}
+
+// Vuelca lo que el programa imprimió: un evento `output` por línea. `last`: también el resto sin salto.
+fn dap_drain_output(last: bool) {
+    let g = dbg_g()
+    let rd = std::raw::load(g + 96)
+    let mut pending = dbg_get(48, 5)
+    if pending == nil {
+        pending = ""
+    }
+    let buf = rt_alloc(65552)
+    loop {
+        let n = std::raw::syscall(0, rd, buf, 65536, 0, 0, 0)
+        if n == -4 {
+            continue
+        }
+        if n <= 0 {
+            break
+        }
+        pending = rt_concat(pending, rt_bytes_to_str(buf, n))
+    }
+    rt_free_block(buf)
+    let parts = dbg_split(pending, 10)
+    let total = rt_seq_len(parts)
+    let mut i = 0
+    while i + 1 < total {
+        dap_event("output", dc_output_body("stdout", rt_concat(parts[i], "\n")))
+        i += 1
+    }
+    let rest = parts[total - 1]
+    if last && rt_slen(rest) > 0 {
+        dap_event("output", dc_output_body("stdout", rest))
+        dbg_put(48, 5, dbg_slice("x", 0, 0))
+    } else {
+        dbg_put(48, 5, rest)
+    }
+}
+
+// ------------------------------------------------------------ entrada
+
+// Añade lo que haya en stdin. block=false no espera. Devuelve los bytes añadidos, 0 si no había
+// nada y -1 al llegar al final del flujo.
+fn dap_read_more(block: bool) -> int {
+    let g = dbg_g()
+    if !block {
+        let pfd = rt_alloc(16)
+        // struct pollfd { int fd = 0; short events = POLLIN; short revents }
+        std::raw::store(pfd, 4294967296)
+        let r = std::raw::syscall(7, pfd, 1, 0, 0, 0, 0)
+        rt_free_block(pfd)
+        if r <= 0 {
+            return 0
+        }
+    }
+    let buf = rt_alloc(65552)
+    let mut n = 0
+    loop {
+        n = std::raw::syscall(0, 0, buf, 65536, 0, 0, 0)
+        if n != -4 {
+            break
+        }
+    }
+    if n <= 0 {
+        rt_free_block(buf)
+        std::raw::store(g + 128, 1)
+        return -1
+    }
+    let inbuf = dbg_get(72, 6)
+    dbg_put(72, 6, std::bytes::concat(inbuf, rt_bytes_from(buf, n)))
+    rt_free_block(buf)
+    n
+}
+
+fn dap_decode(bytes: any) -> any {
+    let r = std::try::catch(|| { std::encoding::utf8_decode(bytes) })
+    match r {
+        Result::Ok(t) => {
+            return t
+        },
+        Result::Err(e) => {
+            return nil
+        },
+    }
+}
+
+// Intenta sacar un mensaje del búfer de entrada: [0] falta información, [1, JSON] mensaje,
+// [2, error], [3] fin del flujo. Mismas reglas que `read_message` de titan_dap.
+fn dap_parse() -> any {
+    let g = dbg_g()
+    let eof = std::raw::load(g + 128) != 0
+    let inbuf = dbg_get(72, 6)
+    let n = std::bytes::length(inbuf)
+    let p = std::raw::bits(inbuf) + 16
+    let mut pos = 0
+    let mut length = -1
+    loop {
+        let mut nl = -1
+        let mut i = pos
+        while i < n {
+            if std::raw::load8(p + i) == 10 {
+                nl = i
+                break
+            }
+            i += 1
+        }
+        if nl < 0 {
+            if !eof {
+                return [0]
+            }
+            if pos >= n {
+                return [3]
+            }
+            let tail = dap_decode(std::bytes::slice(inbuf, pos, n))
+            if tail == nil {
+                return [2, "DAP I/O error: stream did not contain valid UTF-8"]
+            }
+            if dc_header_length(tail) == -2 {
+                return [2, "invalid DAP frame: invalid Content-Length"]
+            }
+            return [3]
+        }
+        let text = dap_decode(std::bytes::slice(inbuf, pos, nl + 1))
+        if text == nil {
+            return [2, "DAP I/O error: stream did not contain valid UTF-8"]
+        }
+        pos = nl + 1
+        if rt_str_eq(text, "\r\n") || rt_str_eq(text, "\n") {
+            break
+        }
+        let value = dc_header_length(text)
+        if value == -2 {
+            return [2, "invalid DAP frame: invalid Content-Length"]
+        }
+        if value >= 0 {
+            length = value
+        }
+    }
+    if length < 0 {
+        return [2, "invalid DAP frame: missing Content-Length"]
+    }
+    if length > 16777216 {
+        return [2, "invalid DAP frame: message exceeds 16 MiB"]
+    }
+    if n - pos < length {
+        if eof {
+            return [2, "DAP I/O error: failed to fill whole buffer"]
+        }
+        return [0]
+    }
+    let body = std::bytes::slice(inbuf, pos, pos + length)
+    dbg_put(72, 6, std::bytes::slice(inbuf, pos + length, n))
+    let text = dap_decode(body)
+    if text == nil {
+        return [2, "invalid DAP JSON: invalid UTF-8 in message body"]
+    }
+    let parsed = std::try::catch(|| { std::json::parse(text) })
+    match parsed {
+        Result::Ok(v) => {
+            return [1, v]
+        },
+        Result::Err(e) => {
+            return [2, rt_concat("invalid DAP JSON: ", dc_clean(e))]
+        },
+    }
+}
+
+// Siguiente mensaje. Con block=false devuelve [0] si todavía no hay uno completo.
+fn dap_next(block: bool) -> any {
+    loop {
+        let st = dap_parse()
+        if st[0] != 0 {
+            return st
+        }
+        let got = dap_read_more(block)
+        if got == 0 {
+            return [0]
+        }
+    }
+}
+
+// ------------------------------------------------------------ peticiones
+
+fn dap_type_name(t: int) -> string {
+    if t == 0 {
+        return "nil"
+    }
+    if t == 1 {
+        return "int"
+    }
+    if t == 2 {
+        return "float"
+    }
+    if t == 3 {
+        return "bool"
+    }
+    if t == 4 {
+        return "char"
+    }
+    if t == 5 {
+        return "string"
+    }
+    if t == 6 {
+        return "bytes"
+    }
+    if t == 7 {
+        return "array"
+    }
+    if t == 8 {
+        return "tuple"
+    }
+    if t == 9 {
+        return "map"
+    }
+    if t == 10 {
+        return "struct"
+    }
+    if t == 11 {
+        return "enum"
+    }
+    if t == 12 {
+        return "closure"
+    }
+    if t == 13 {
+        return "task"
+    }
+    if t == 14 {
+        return "sender"
+    }
+    if t == 15 {
+        return "receiver"
+    }
+    if t == 16 {
+        return "tcp-listener"
+    }
+    if t == 17 {
+        return "tcp-stream"
+    }
+    if t == 18 {
+        return "http-router"
+    }
+    if t == 19 {
+        return "tls-stream"
+    }
+    if t == 20 {
+        return "tls-server-config"
+    }
+    if t == 21 {
+        return "websocket-decoder"
+    }
+    if t == 22 {
+        return "websocket"
+    }
+    if t == 23 {
+        return "server-control"
+    }
+    if t == 24 {
+        return "sqlite"
+    }
+    if t == 25 {
+        return "sqlite-pool"
+    }
+    if t == 26 {
+        return "postgres"
+    }
+    if t == 27 {
+        return "postgres-pool"
+    }
+    if t == 28 {
+        return "mysql"
+    }
+    "mysql-pool"
+}
+
+fn dap_items(values: any) -> any {
+    let mut items = []
+    let n = rt_seq_len(values)
+    let mut i = 0
+    while i < n {
+        let v = values[i]
+        items = std::array::push(items, [rt_to_string(v), dap_type_name(std::raw::tag(v))])
+        i += 1
+    }
+    items
+}
+
+// Cambia el modo de ejecución como `command_mode` de titan_vm (la profundidad es la actual).
+fn dap_apply(command: string) {
+    let g = dbg_g()
+    let depth = std::raw::load(std::raw::globals() + 16) - 1
+    if command == "continue" {
+        std::raw::store(g + 16, 0)
+    } else if command == "next" {
+        std::raw::store(g + 16, 2)
+        std::raw::store(g + 24, depth)
+    } else if command == "stepOut" {
+        std::raw::store(g + 16, 3)
+        std::raw::store(g + 24, depth)
+    } else {
+        std::raw::store(g + 16, 1)
+    }
+}
+
+// setBreakpoints con el programa ya en marcha: como en titan_dap el módulo ya no está en la
+// sesión, ningún punto se verifica y no cambia nada.
+fn dap_set_breakpoints(request_seq: int, command: string, args: any) {
+    let source = dc_str(dc_get(dc_get(args, "source"), "path"))
+    if source == nil {
+        dap_fail(request_seq, command, "source.path is required")
+        return
+    }
+    let canon = std::try::catch(|| { std::path::canonical(source) })
+    let mut path = ""
+    match canon {
+        Result::Ok(c) => {
+            path = c
+        },
+        Result::Err(e) => {
+            dap_fail(request_seq, command, dc_clean(e))
+            return
+        },
+    }
+    let mut results = []
+    let wanted = dc_get(args, "breakpoints")
+    if dc_kind(wanted) == "a" {
+        for requested in wanted {
+            let line = dc_int(dc_get(requested, "line"))
+            if line == nil || line < 0 {
+                dap_fail(request_seq, command, "breakpoint.line is required")
+                return
+            }
+            results = std::array::push(results, dc_breakpoint(line, path, false))
+        }
+    }
+    dap_ok(request_seq, command, dc_set(dc_obj(), "breakpoints", results))
+}
+
+// Atiende una petición. Devuelve 1 si reanuda la ejecución (continue/next/stepIn/stepOut/pause).
+fn dap_handle(req: any) -> int {
+    let g = dbg_g()
+    let mut command = ""
+    let c = dc_str(dc_get(req, "command"))
+    if c != nil {
+        command = c
+    }
+    let mut request_seq = 0
+    let s = dc_int(dc_get(req, "seq"))
+    if s != nil {
+        request_seq = s
+    }
+    let args = dc_get(req, "arguments")
+    let active = std::raw::load(g + 112) != 0
+    if command == "initialize" {
+        dap_ok(request_seq, command, dc_capabilities())
+        dap_event("initialized", dc_obj())
+        return 0
+    }
+    if command == "launch" {
+        if dc_str(dc_get(args, "program")) == nil {
+            dap_fail(request_seq, command, "launch.program is required")
+        } else {
+            dap_fail(request_seq, command, "launch cannot be repeated once the debuggee has started")
+        }
+        return 0
+    }
+    if command == "setBreakpoints" {
+        dap_set_breakpoints(request_seq, command, args)
+        return 0
+    }
+    if command == "configurationDone" {
+        if active {
+            dap_fail(request_seq, command, "debuggee already started")
+        } else {
+            dap_fail(request_seq, command, "launch must be sent before configurationDone")
+        }
+        return 0
+    }
+    if command == "threads" {
+        dap_ok(request_seq, command, dc_threads())
+        return 0
+    }
+    if command == "stackTrace" {
+        let frame = dbg_get(56, 7)
+        dap_ok(request_seq, command, dc_stack_trace(frame))
+        return 0
+    }
+    if command == "scopes" {
+        dap_ok(request_seq, command, dc_scopes())
+        return 0
+    }
+    if command == "variables" {
+        let reference = dc_int(dc_get(args, "variablesReference"))
+        if reference == nil {
+            dap_fail(request_seq, command, "variablesReference is required")
+            return 0
+        }
+        let frame = dbg_get(56, 7)
+        let mut items = []
+        if frame != nil {
+            if reference == 100 {
+                items = dap_items(frame[7])
+            } else if reference == 101 {
+                items = dap_items(frame[8])
+            }
+        }
+        dap_ok(request_seq, command, dc_variables(items))
+        return 0
+    }
+    if command == "continue" || command == "next" || command == "stepIn" || command == "stepOut" || command == "pause" {
+        if !active {
+            dap_fail(request_seq, command, "debuggee is not running")
+            if command != "pause" {
+                dap_event("continued", dc_continued_body())
+            }
+            return 0
+        }
+        if command == "continue" {
+            dap_ok(request_seq, command, dc_set(dc_obj(), "allThreadsContinued", true))
+        } else {
+            dap_ok(request_seq, command, dc_obj())
+        }
+        if command != "pause" {
+            dap_event("continued", dc_continued_body())
+        }
+        dap_apply(command)
+        return 1
+    }
+    if command == "terminate" || command == "disconnect" {
+        dap_ok(request_seq, command, dc_obj())
+        if command == "disconnect" {
+            std::raw::store(g + 120, 1)
+        }
+        if active {
+            dbg_terminated("execution terminated by debugger")
+        }
+        if command == "disconnect" {
+            dbg_exit(0)
+        }
+        return 0
+    }
+    dap_fail(request_seq, command, rt_concat(rt_concat("unsupported DAP command '", command), "'"))
+    0
+}
+
+// ------------------------------------------------------------ ganchos (std_debug.titan)
+
+// Antes de cada instrucción: atiende lo que haya llegado, sin esperar.
+fn dap_poll(fid: int, ip: int, bp: int, sp: int) {
+    let g = dbg_g()
+    let c = std::raw::load(g + 104) + 1
+    std::raw::store(g + 104, c)
+    if (c & 31) != 0 {
+        return
+    }
+    dap_drain_output(false)
+    loop {
+        let r = dap_next(false)
+        if r[0] == 1 {
+            dap_handle(r[1])
+        } else if r[0] == 2 {
+            dap_fatal(r[1])
+        } else {
+            break
+        }
+        let seen = true
+    }
+}
+
+// Parada: emite `stopped` y atiende peticiones hasta que una reanude la ejecución.
+fn dap_stop(frame: any) {
+    dbg_put(56, 7, frame)
+    dap_drain_output(false)
+    dap_event("stopped", dc_stopped_body(frame[4]))
+    loop {
+        let r = dap_next(true)
+        if r[0] == 1 {
+            if dap_handle(r[1]) == 1 {
+                return
+            }
+        } else if r[0] == 2 {
+            dap_fatal(r[1])
+        } else {
+            // El cliente cerró la entrada con el programa parado: titan_dap se quedaría esperando
+            // para siempre; aquí se termina.
+            dbg_exit(0)
+        }
+        let seen = true
+    }
+}
+
+// El programa terminó (error = nil) o falló.
+fn dap_terminated(error: any) {
+    let g = dbg_g()
+    std::raw::store(g + 112, 0)
+    dap_drain_output(true)
+    if error != nil {
+        dap_event("output", dc_output_body("stderr", rt_concat(error, "\n")))
+    }
+    dap_event("terminated", dc_obj())
+    let old = std::raw::load(g + 56)
+    if old != 0 {
+        std::raw::store(g + 56, 0)
+        std::raw::release(7, old)
+    }
+    loop {
+        if std::raw::load(g + 120) != 0 {
+            dbg_exit(0)
+        }
+        let r = dap_next(true)
+        if r[0] == 1 {
+            dap_handle(r[1])
+        } else if r[0] == 2 {
+            dap_fatal(r[1])
+        } else {
+            dbg_exit(0)
+        }
+        let seen = true
+    }
+}

@@ -1,0 +1,47 @@
+// Interpolación de texto: cualquier expresión dentro de `{...}`.
+// Sale con código 0 si todo coincide; si no, imprime lo que falló y sale con 1.
+struct Punto { x: int, y: int }
+
+fn doble(n: int) -> int {
+    n * 2
+}
+
+fn comprobar(nombre: string, obtenido: string, esperado: string) -> int {
+    if obtenido == esperado {
+        return 0
+    }
+    println("FALLO " + nombre + ": se esperaba [" + esperado + "] y salió [" + obtenido + "]")
+    1
+}
+
+fn main() {
+    let n = 1234567890123
+    let v = [5, 3, 9]
+    let p = Punto { x: 3, y: 4 }
+    let nombre = "ana"
+    let mut fallos = 0
+    // forma antigua (sigue igual)
+    fallos += comprobar("variable", "a {nombre} b", "a ana b")
+    fallos += comprobar("llamada", "{doble(21)}", "42")
+    // expresiones nuevas
+    fallos += comprobar("division", "{n / 7} {n % 1000}", "176366841446 123")
+    fallos += comprobar("indice", "{v[0]} {v[1] + v[2] * 2}", "5 21")
+    fallos += comprobar("campo", "{p.x} {p.y} {p.x * p.x + p.y * p.y}", "3 4 25")
+    fallos += comprobar("llamada con expresion", "{doble(p.x + 1)} {doble(doble(2))}", "8 8")
+    fallos += comprobar("texto escapado", "{std::text::uppercase(\"hola\")}", "HOLA")
+    fallos += comprobar("closure", "{(|a| a + 1)(41)}", "42")
+    fallos += comprobar("if", "{if n > 5 { 1 } else { 0 }}", "1")
+    fallos += comprobar("comparacion", "{n > 5} {n == 3}", "true false")
+    // lo que sigue siendo texto literal
+    fallos += comprobar("json", "{\"a\": 1}", "{\"a\": 1}")
+    fallos += comprobar("regex", "a{2,3} {3} {x y}", "a{2,3} {3} {x y}")
+    fallos += comprobar("shell", "echo ${HOME-no}", "echo ${HOME-no}")
+    // un bloque de código escrito dentro del texto no es interpolación (las llaves no «pegan»)
+    fallos += comprobar("codigo", "fn main() {\n    print(\"hola\")\n}\n", "fn main() {\n    print(\"hola\")\n}\n")
+    fallos += comprobar("espacios", "{ n / 7 }", "{ n / 7 }")
+    fallos += comprobar("vacias", "{} y {  }", "{} y {  }")
+    if fallos == 0 {
+        println("interpolacion: todo bien")
+    }
+    std::process::exit(fallos)
+}

@@ -1,13 +1,16 @@
 # Audio — procesamiento, metadatos y motor de reproducción (`std::audio`)
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 > **Fase 42A:** Titan ahora también decodifica y suena por sí solo con
 > `std::audio::engine_*` (sin mpv ni ayudantes). Ver `docs/AUDIO_ENGINE.md`.
 > Este documento describe las capas Fase 9/41, que siguen vigentes.
 
 `std::audio` es la base para construir música y reproductores en TITAN.
-Todo es Rust puro, sin dependencias nativas de audio (no ALSA, no AAudio,
-no PulseAudio al compilar): el motor de reproducción **usa los
-reproductores que ya están instalados en el sistema**.
+Todo está escrito en Titan, sin bibliotecas de audio externas: el motor de reproducción
+**envía el audio a los reproductores que ya están instalados en el sistema** (`pw-cat`, `paplay`, `aplay`, `mpv`, `ffplay`).
 
 Tres capas:
 
@@ -152,7 +155,7 @@ exercitarse con él. Dos vías para probar `std::audio::player_*` igual:
 
    ```bash
    sudo cp scripts/mpv_shim.py /usr/local/bin/mpv && sudo chmod +x /usr/local/bin/mpv
-   zett run examples/reproductor_musica.titan
+   titan run examples/reproductor_musica.titan
    ```
 
    El shim registra cada comando recibido en `/tmp/mpv-shim-debug.log`
@@ -165,5 +168,5 @@ metadatos, escanea la biblioteca y reproduce con pausa/resume/volumen/
 cola/stop, degradando según el backend disponible:
 
 ```bash
-zett run examples/reproductor_musica.titan
+titan run examples/reproductor_musica.titan
 ```

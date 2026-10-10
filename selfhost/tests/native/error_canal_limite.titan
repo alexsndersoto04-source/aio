@@ -1,0 +1,8 @@
+fn main() {
+let mut i = 0
+while i < 1025 {
+    let (a, b) = channel(1)
+    i += 1
+}
+print(i)
+}

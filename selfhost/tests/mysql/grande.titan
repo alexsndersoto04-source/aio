@@ -1,0 +1,26 @@
+// puerto: 53305
+// std::mysql: paquetes de más de 16 MiB (parámetro enviado por partes y fila de respuesta partida).
+fn main() {
+    let db = std::mysql::connect("mysql://app:secret@127.0.0.1:53305/test?prefer_socket=false&max_allowed_packet=67108864")
+    let mut bloque = ""
+    let mut i = 0
+    while i < 1000 {
+        bloque = bloque + "0123456789abcdefghij0123456789ABCDEFGHIJ0123456789klmnopqrstuvwxyz0123456789KLMNOPQRSTUVWXYZ"
+        i += 1
+    }
+    let mut grande = ""
+    i = 0
+    while i < 190 {
+        grande = grande + bloque
+        i += 1
+    }
+    print(std::text::length(grande))
+    let r = std::mysql::query(db, "SELECT ? AS a", [grande])
+    print(std::text::length(r[0]["a"]))
+    print(r[0]["a"] == grande)
+    let r2 = std::mysql::query(db, "SELECT ? AS a, ? AS b", [grande, std::encoding::utf8_encode("tail")])
+    print(r2[0]["a"] == grande)
+    print(r2[0]["b"])
+    print(std::mysql::query(db, "SELECT 1 AS uno", []))
+    std::mysql::close(db)
+}

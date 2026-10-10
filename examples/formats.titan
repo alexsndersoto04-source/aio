@@ -1,5 +1,5 @@
 // Demo Fase 2: compresión, archivos, YAML y XML.
-// Ejecutar con:  cargo run -p titan_cli -- run examples/formats.titan
+// Ejecutar con:  titan run examples/formats.titan
 
 fn main() {
     // ---- Compresión gzip ----

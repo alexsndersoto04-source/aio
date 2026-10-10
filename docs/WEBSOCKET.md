@@ -1,5 +1,9 @@
 # TITAN WebSockets
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 TITAN implements the RFC 6455 handshake and frame codec. `accept_key` validates that the client nonce decodes to exactly 16 bytes and computes the standard SHA-1/GUID response. `upgrade_response` emits a complete 101 response with an optional validated subprotocol.
 
 `std::ws::encode(opcode, payload, masked)` builds minimally encoded frames. Client masking keys come from the operating system CSPRNG through `getrandom`; server frames remain unmasked. `std::ws::parse(bytes, require_mask, max_payload)` incrementally returns `Option`, unmasks payloads, reports consumed bytes, and enforces payload limits.
@@ -16,7 +20,7 @@ Messages are returned as maps with type-specific `text`, `data`, `code`, and `re
 
 `attach_tcp(stream, server_side, maximum)` and `attach_tls(...)` transfer ownership of an existing transport into a WebSocket handle. `send_text`, `send_binary`, `receive`, and `close` provide message-level I/O. Client frames use secure random masking; server frames do not. Receive automatically answers ping with pong, preserves fragmented-message state, and mirrors a peer close before returning it. Close is idempotent, validates code/reason, removes the handle, and releases the underlying transport.
 
-Transport locks are separate from decoder state so a blocking receive does not hold the global registry lock. The same connection object works over plain TCP or validated rustls streams.
+Transport locks are separate from decoder state so a blocking receive does not hold the global registry lock. The same connection object works over plain TCP or over TLS (Titan's own TLS implementation).
 
 ## High-level client
 

@@ -1,6 +1,6 @@
 // Demo Fase 16: generar un PDF real (factura A4).
 // Ejecutar con:
-//     zett run examples/invoice.titan
+//     titan run examples/invoice.titan
 //
 // Escribe ~/factura_titan.pdf. Abrilo con:
 //     termux-open ~/factura_titan.pdf

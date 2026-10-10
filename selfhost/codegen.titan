@@ -821,7 +821,7 @@ fn cg_compile_expr_inner(g0: G, e) -> Result {
         return Result::Ok(cg_emit(g2, cg_op_n("PushStr", id)))
     }
     if k == "template" {
-        return cg_compile_template(g, e.text)
+        return cg_compile_template(g, e)
     }
     if k == "ident" {
         return cg_compile_ident(g, e.text)
@@ -1340,57 +1340,29 @@ fn cg_push_piece(g0: G, text: string, has_output: bool) -> (G, bool) {
     return (g2, true)
 }
 
-fn cg_compile_template(g0: G, template: string) -> Result {
+fn cg_compile_template(g0: G, node) -> Result {
     let mut g = g0
-    let chars = std::text::chars(template)
-    let n = len(chars)
-    let mut pos = 0
     let mut has_output = false
-    while true {
-        let mut open = -1
-        let mut i = pos
-        while i < n {
-            if chars[i] == '{' {
-                open = i
-                break
-            }
-            i += 1
-        }
-        if open < 0 {
-            break
-        }
-        let literal = std::text::substring(template, pos, open)
-        if literal != "" {
-            let (g2, h) = cg_push_piece(g, literal, has_output)
+    for seg in node.list {
+        let k = seg.kind
+        if k == "tlit" {
+            let (g2, h) = cg_push_piece(g, seg.text, has_output)
             g = g2
             has_output = h
-        }
-        let mut close = -1
-        i = open + 1
-        while i < n {
-            if chars[i] == '}' {
-                close = i
-                break
-            }
-            i += 1
-        }
-        if close < 0 {
-            return Result::Err("invalid interpolation expression '" + template + "'")
-        }
-        g = cg_compile_interpolation(g, std::text::trim(std::text::substring(template, open + 1, close)))?
-        g = cg_emit(g, cg_op("ToString"))
-        if has_output {
-            g = cg_emit(g, cg_op("Add"))
         } else {
+            if k == "told" {
+                g = cg_compile_interpolation(g, seg.text)?
+            } else if k == "tnew" {
+                g = cg_compile_expr(g, seg.a)?
+            } else {
+                return Result::Err("invalid interpolation expression '" + seg.text + "'")
+            }
+            g = cg_emit(g, cg_op("ToString"))
+            if has_output {
+                g = cg_emit(g, cg_op("Add"))
+            }
             has_output = true
         }
-        pos = close + 1
-    }
-    let rest = std::text::substring(template, pos, n)
-    if rest != "" {
-        let (g2, h) = cg_push_piece(g, rest, has_output)
-        g = g2
-        has_output = h
     }
     if !has_output {
         let (g3, id) = cg_intern(g, "")

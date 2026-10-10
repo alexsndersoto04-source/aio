@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Depurador — Documentación de Titan</title>
+<meta name="description" content="Información de depuración y depurador interactivo.">
+<meta property="og:title" content="Depurador — Documentación de Titan">
+<meta property="og:description" content="Información de depuración y depurador interactivo.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html" class="on">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Herramientas</p><h1 id="titan-debug-information-and-debugger-roadmap">TITAN Debug Information and Debugger Roadmap</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p>The compiler now emits an instruction-aligned source map in every <code>BytecodeFunc</code>. Each <code>Op</code> has a parallel optional <code>SourceLocation</code> containing UTF-8 byte start/end plus one-based source line/column. Recursive expression compilation preserves parent locations while child operations receive their own spans.</p>
+<p>Source maps are serialized in <code>.tbc</code> artifacts and validated on load: a non-empty map must contain exactly one entry per instruction. Older version-1 artifacts with no map remain loadable through the serde default, while newly built artifacts carry maps.</p>
+<p>The VM debugger consumes these maps during real execution. <code>Vm::run_debug</code> invokes a hook before every instruction and emits immutable frame snapshots. <code>Debugger::channel</code> provides a thread-safe controller/event pair with:</p>
+<ul>
+<li>function/instruction and source-line breakpoints;</li>
+<li>breakpoints added or removed while paused/running;</li>
+<li>continue and terminate;</li>
+<li>step in, over and out using call depth;</li>
+<li>function ID/name, instruction pointer and source location;</li>
+<li>locals, captures (stored in local slots) and operand-stack inspection;</li>
+<li>structured stopped and terminated events, including runtime errors.</li>
+</ul>
+<p>The execution thread blocks while stopped and resumes only after a debugger command, so pause state is real rather than reconstructed after execution.</p>
+<h2 id="terminal-debugger">Terminal debugger</h2>
+<p><code>titan debug</code> compiles a source file/project, resolves canonical <code>path:line</code> breakpoints, starts the VM on a worker thread and controls it through the debugger channels:</p>
+<pre><code class="language-bash">titan debug . --break src/main.titan:4
+titan debug --sandbox . -b src/main.titan:4 -b src/math.titan:2
+</code></pre>
+<p>At every stop it displays source location, call depth, function identity, locals and operand stack. Interactive commands are <code>continue</code>, <code>step</code>, <code>next</code> (step over), <code>out</code>, <code>print</code>, and <code>quit</code>. With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.</p>
+<p>The project loader now assigns canonical source paths to every function and impl method before programs are merged. Paths propagate through named functions and nested closures into <code>.tbc</code>, debugger frames and <code>SourceLine</code> breakpoints. Two files can therefore use the same line number without colliding; the breakpoint matches both canonical source path and one-based line.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/DEBUGGER.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

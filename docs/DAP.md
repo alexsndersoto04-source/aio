@@ -1,5 +1,9 @@
 # TITAN Debug Adapter Protocol
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 `titan-dap` is a standalone Debug Adapter Protocol process using stdio and `Content-Length` framed JSON. It launches either a Titan project/source entry or a validated `.tbc` artifact and drives the real channel-based VM debugger.
 
 Implemented requests: `initialize`, `launch`, `setBreakpoints`, `configurationDone`, `threads`, `stackTrace`, `scopes`, `variables`, `continue`, `next`, `stepIn`, `stepOut`, `pause`, `terminate`, and `disconnect`.
@@ -23,8 +27,7 @@ Launch configuration example:
 Build and run the adapter:
 
 ```bash
-cargo build -p titan_dap --bin titan-dap --release
-./target/release/titan-dap
+titan dap
 ```
 
 Editors must launch it as a subprocess and communicate only through stdin/stdout. Diagnostic logs go to stderr.

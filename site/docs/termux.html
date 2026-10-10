@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Titan en Termux — Documentación de Titan</title>
+<meta name="description" content="Instalar y usar Titan en Android (ARM64).">
+<meta property="og:title" content="Titan en Termux — Documentación de Titan">
+<meta property="og:description" content="Instalar y usar Titan en Android (ARM64).">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html" class="on">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Empezar</p><h1 id="titan-en-termux-android-arm64">Titan en Termux (Android, ARM64)</h1>
+<p>Titan funciona en Linux ARM64. Termux usa el mismo núcleo Linux, así que el ejecutable ARM64 de Titan está pensado para correr ahí.</p>
+<blockquote>
+<p><strong>Estado honesto.</strong> El ejecutable ARM64 se probó en un servidor Linux ARM64 (GitHub Actions, <code>ubuntu-24.04-arm</code>): arranca,
+compila y ejecuta programas, y 95 programas de prueba dieron exactamente la misma salida que con el compilador x86-64
+(ver «Linux x86-64 y ARM64/Termux» en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>). <strong>No se ha probado todavía en un teléfono
+Android.</strong> Android puede filtrar algunas llamadas al sistema que un Linux normal permite; si algo falla en tu teléfono,
+ese dato es justo lo que falta saber.</p>
+</blockquote>
+<h2 id="antes-de-instalar-tu-termux-es-de-64-bits">Antes de instalar: ¿tu Termux es de 64 bits?</h2>
+<p>Titan solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>). <strong>No existe versión para ARM de 32 bits</strong>
+(<code>armv7l</code>, <code>armv8l</code>): ahí el instalador se detiene con «esta máquina es armv8l».</p>
+<pre><code class="language-sh">uname -m                              # debe decir: aarch64
+getprop ro.product.cpu.abilist        # debe incluir: arm64-v8a
+</code></pre>
+<ul>
+<li>Si dice <code>aarch64</code>, sigue con el paso 1.</li>
+<li>Si dice <code>armv7l</code> o <code>armv8l</code> pero <code>abilist</code> incluye <code>arm64-v8a</code>: tu teléfono es de 64 bits y tienes el Termux de 32 bits;
+  instala el Termux de 64 bits (APK <code>arm64-v8a</code>, de F-Droid o del GitHub oficial de Termux). Desinstalar el Termux actual borra
+  sus datos: guarda antes lo que quieras conservar.</li>
+<li>Si <code>abilist</code> solo trae <code>armeabi-v7a</code> y <code>armeabi</code>: tu teléfono es de 32 bits y <strong>no puede ejecutar este Titan</strong>. Soportarlo
+  exigiría un generador de código para ARM de 32 bits, que no existe.</li>
+</ul>
+<h2 id="1-instalar">1. Instalar</h2>
+<p>Necesitas el paquete <code>titan-v1.2.0-linux-aarch64.tar.gz</code>. Lo fabrica el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions
+(artefacto <code>paquetes</code> de la ejecución; también se publica como release cuando se crea una etiqueta <code>v*</code>).</p>
+<p>Con la release publicada:</p>
+<pre><code class="language-sh">pkg install -y curl
+curl -fLO https://raw.githubusercontent.com/alexsndersoto04-source/aio/main/selfhost/instalar-termux.sh
+bash instalar-termux.sh
+</code></pre>
+<p>Con un paquete que ya descargaste (por ejemplo el artefacto de Actions):</p>
+<pre><code class="language-sh">bash selfhost/instalar-termux.sh /ruta/a/titan-v1.2.0-linux-aarch64.tar.gz
+</code></pre>
+<p>Desde la versión 1.2.0 el paquete trae también <code>zett</code>, el gestor de paquetes (ver <a href="zett.html"><code>ZETT.md</code></a>); el script lo deja en el <code>PATH</code> junto a <code>titan</code>.</p>
+<p>El script instala <code>clang</code> (Titan en ARM64 genera LLVM IR y llama a <code>clang</code>/<code>lld</code> para producir el ejecutable) y deja <code>titan</code>
+en <code>$PREFIX/bin</code>. Comprueba:</p>
+<pre><code class="language-sh">titan version
+printf 'fn main() {\n    println(&quot;hola desde Termux&quot;)\n}\n' &gt; hola.titan
+titan run hola.titan
+</code></pre>
+<p>La primera compilación tarda más: genera una caché del runtime dentro de <code>native/</code> (junto al ejecutable).</p>
+<h2 id="2-que-esperar">2. Qué esperar</h2>
+<ul>
+<li><code>titan run</code> y <code>titan compile</code> están verificados en ARM64 Linux. Los demás subcomandos (<code>check</code>, <code>test</code>, <code>new</code>, <code>build</code>, <code>exec</code>, <code>repl</code>…) usan
+  el mismo código, pero no se probaron uno por uno en ARM64.</li>
+<li>Tareas (<code>spawn</code>), canales, servidor HTTP, procesos hijos, SQLite, TLS, regex, compresión: pasan las pruebas en ARM64 Linux.</li>
+<li><code>std::termux</code> (Termux:API), portapapeles, notificaciones, Wi-Fi: dependen de tener instalada la app y el paquete <code>termux-api</code>;
+  sin ellos dan el error correspondiente.</li>
+<li>Ventanas y GUI en vivo, audio con salida a dispositivo y <code>titan debug</code>/DAP: sin probar en ARM64.</li>
+</ul>
+<h2 id="3-compilar-titan-desde-las-fuentes">3. Compilar Titan desde las fuentes</h2>
+<p><code>bash selfhost/bootstrap.sh</code> usa una semilla x86-64, así que <strong>no sirve en ARM64</strong>. Para tener <code>titan</code> en un teléfono:</p>
+<ol>
+<li>Usa el paquete ARM64 ya fabricado, o</li>
+<li>en un PC x86-64, haz el bootstrap y compila la CLI para ARM64: <code>selfhost/titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64</code>
+   (necesita <code>clang</code> y <code>lld</code>, o <code>TITAN_CC="python3 -m ziglang cc"</code>). Después, en ARM64, <code>./titan-aarch64 compile selfhost/titan.titan -o titan</code>
+   compila la CLI en el propio dispositivo (en el runner ARM64 de pruebas tardó 2 min 17 s).</li>
+</ol>
+<h2 id="4-si-algo-falla">4. Si algo falla</h2>
+<p>Abre un issue con la salida de estos comandos:</p>
+<pre><code class="language-sh">uname -a
+titan version
+titan run hola.titan
+</code></pre><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_TERMUX.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

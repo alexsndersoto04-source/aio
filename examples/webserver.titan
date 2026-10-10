@@ -1,6 +1,6 @@
 // Demo Fase 11: servidor HTTP real y acotado (std::net + matchit).
 // Ejecutar en Termux con:
-//     zett run examples/webserver.titan
+//     titan run examples/webserver.titan
 //
 // Bindea 127.0.0.1:8080 y sirve varias rutas con path-params estilo axum.
 // Desde OTRA sesion de Termux (Sesiones -> Nueva) probalo con:

@@ -1,0 +1,17 @@
+// Servidor TLS de eco para probar con openssl: CERT, KEY y PORT se sustituyen en probar.sh.
+fn atender(l: any, cfg: any) {
+    let (c, peer) = std::tls::accept(l, cfg)
+    let b = std::tls::read(c, 1000)
+    std::tls::write(c, b)
+    std::tls::write(c, " hello")
+    std::tls::close(c)
+}
+
+fn main() {
+    let cfg = std::tls::server_config("@CERT@", "@KEY@")
+    let l = std::net::tcp_listen("127.0.0.1:@PORT@")
+    while true {
+        let r = std::try::catch(|| { atender(l, cfg) })
+        print(r)
+    }
+}

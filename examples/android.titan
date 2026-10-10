@@ -1,6 +1,6 @@
 // Demo Fase 5: acceso REAL al hardware/software de Android desde TITAN.
 // Ejecutar en Termux con:
-//     zett run examples/android.titan
+//     titan run examples/android.titan
 //
 // Requiere:
 //     1. Termux:API app instalada (Play Store o F-Droid).

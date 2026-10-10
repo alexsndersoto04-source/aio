@@ -6,73 +6,51 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
-
+# Titan se construye sin Rust: la semilla (selfhost/semilla/) compila el compilador, éste se compila a sí mismo
+# dos veces más y las tres generaciones tienen que ser idénticas (punto fijo). Ver selfhost/semilla/LEEME.md.
 jobs:
-  test:
-    name: cargo test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
+  bootstrap:
+    name: punto fijo + comprobaciones
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Bootstrap (semilla -> titanc1 == titanc2 == titanc3 -> titan)
+        run: bash selfhost/bootstrap.sh
 
-      # Fase 42A: el motor de audio nativo usa cpal/ALSA en Linux.
-      - name: System deps for native audio (cpal/ALSA)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: "Cobertura de la biblioteca estándar (funciones std con cuerpo en Titan)"
+        run: bash selfhost/native/cobertura.sh -v | tail -3
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-        continue-on-error: true   # formatting is advisory for now
-
-      - name: cargo check (default features)
-        run: cargo check --workspace --all-targets
-
-      - name: cargo test (default features)
-        run: cargo test --workspace --all-targets --no-fail-fast
-
-      # Fase 42A: los ejemplos de audio se verifican de verdad (check +
-      # run headless con degradación elegante, sin bocinas).
-      - name: audio examples end-to-end (headless)
+      - name: check de Moon y de los ejemplos
         run: |
-          cargo run -q -p titan_cli -- check examples/reproductor_hifi.titan
-          cargo run -q -p titan_cli -- run examples/reproductor_hifi.titan
-          cargo run -q -p titan_cli -- check examples/reproductor_musica.titan
-          cargo run -q -p titan_cli -- run examples/reproductor_musica.titan
-          cargo run -q -p titan_cli -- check examples/reproductor_nube.titan
-          cargo run -q -p titan_cli -- run examples/reproductor_nube.titan
+          selfhost/titan check projects/moon/src/main.titan
+          selfhost/titan check examples/modules/main.titan
+          selfhost/titan check examples/reproductor_hifi.titan
 
-      - name: cargo check (no default features)
-        run: cargo check --workspace --all-targets --no-default-features
+      - name: Un programa de verdad compilado y ejecutado
+        run: |
+          printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
+          test "$(selfhost/titan run /tmp/hola.titan)" = "respuesta 42"
 
-  aarch64-cross:
-    name: cross-check AArch64 (Termux target)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: "Lenguaje: interpolación de expresiones {expr}"
+        run: selfhost/titan run selfhost/tests/lenguaje/interpolacion.titan
 
-      - name: Install Rust stable + aarch64 target
-        uses: dtolnay/rust-toolchain@stable
+      - name: "Registro de paquetes: publicar, servir por HTTPS y usar con fetch (servidor local)"
+        run: bash selfhost/tests/pkg/registro/estatico.sh
+
+      - name: "Registro público: leer de verdad desde GitHub (raw.githubusercontent.com)"
+        run: |
+          mkdir -p /tmp/app
+          printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2026"\n[dependencies.hola-zett]\nversion = "^0.1"\n' > /tmp/app/Titan.toml
+          # la dirección apunta al commit exacto que se está probando
+          selfhost/titan fetch --registry "https://raw.githubusercontent.com/${{ github.event.pull_request.head.repo.full_name || github.repository }}/${{ github.event.pull_request.head.sha || github.sha }}/registro" --project /tmp/app
+          test -f /tmp/app/.titan/packages/hola-zett/0.1.0/src/lib.titan
+
+      - name: Guardar el compilador como artefacto
+        uses: actions/upload-artifact@v4
         with:
-          targets: aarch64-linux-android
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      # This just checks the code compiles for AArch64/Android – it does not
-      # link a full binary. Useful to catch regressions before they hit Termux.
-      - name: cargo check for aarch64-linux-android
-        run: cargo check --workspace --target aarch64-linux-android
-        continue-on-error: true
+          name: titan-linux-x86_64-${{ github.run_id }}
+          path: |
+            selfhost/titan
+            selfhost/titanc3
+          retention-days: 30

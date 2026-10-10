@@ -1,6 +1,6 @@
 // Demo Fase 36: Observabilidad Enterprise y Métricas Estándar (`std::metrics` v2).
 // Ejecutar con:
-//     zett run examples/enterprise_metrics.titan
+//     titan run examples/enterprise_metrics.titan
 //
 // Demuestra las funciones mejoradas de observabilidad para servidores de producción:
 // - Consulta puntual no destructiva de contadores y gauges

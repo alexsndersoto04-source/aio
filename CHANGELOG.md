@@ -1,5 +1,48 @@
 # Zett / TITAN — Changelog
 
+> Las entradas con número `1.x.0` de más abajo (hasta 1.3.0) usan la numeración interna del prototipo en Rust y no coinciden con las
+> etiquetas de las releases de GitHub (`v1.0.x` del prototipo; `v1.1.0` y posteriores, con Titan). Esas entradas describen el prototipo escrito en Rust, que se reemplazó por el compilador escrito en
+> Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
+> El estado real y vigente está en `selfhost/ESTADO.md`.
+
+## Sin publicar
+
+- **Lenguaje:** la interpolación de textos acepta cualquier expresión (`"{a / 7}"`, `"{v[0]}"`, `"{p.x}"`,
+  `"{f(a + 1)}"`, `"{if c { 1 } else { 0 }}"`). Las llaves que no son una expresión (JSON, CSS, `{2,3}`, `${VAR}`)
+  siguen siendo texto, y las llaves deben pegarse a la expresión (`{ a }` o un bloque de código dentro del texto no se
+  tocan). Comparado con el compilador anterior sobre una muestra de 131 programas (incluidos el propio compilador y Moon):
+  mismo bytecode; no se comparó el repositorio entero. Documentado en `docs/SPEC.md` (sección 9) y
+  `docs/TITAN_SYNTAX.md`; prueba en `selfhost/tests/lenguaje/interpolacion.titan`.
+- **Zett:** el registro por defecto era `https://registry.titan-lang.org`, que no existe. Ahora es un registro de ficheros
+  dentro del repositorio (`registro/`, servido por GitHub; el índice admite rutas relativas). Se añade versiones con
+  `selfhost/registro_agregar.titan`. Pruebas: `selfhost/tests/pkg/registro/estatico.sh` (servidor HTTPS local) y un paso
+  del CI que lee `registro/` de verdad desde GitHub. Primer paquete: `hola-zett` (ejemplo). Hasta que `registro/` llegue a
+  `main`, la dirección por defecto no responde.
+
+## v1.2.0 (2026-10) — Zett, el gestor de paquetes; arreglo del arranque por el PATH
+
+- **Zett:** `zett` es ahora el gestor de paquetes de Titan (`add`, `fetch`/`install`, `update`, `keygen`, `pack`, `publish`,
+  `version`). Es el mismo ejecutable que `titan`, invocado con el nombre `zett`: el paquete trae el enlace `zett → titan` y
+  `instalar-termux.sh` lo deja en el `PATH`. Documentación: `docs/ZETT.md`. Los comandos siguen disponibles como `titan add`, etc.
+- **Corregido:** `titan` buscaba su carpeta `native/` a partir de `argv[0]`; si se invocaba solo por el nombre (`titan run x.titan`
+  con el ejecutable en el `PATH`, como deja el instalador de Termux) fallaba con `No such file or directory`. Ahora usa
+  `/proc/self/exe`, que resuelve también los enlaces simbólicos.
+
+## v1.1.0 (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64
+
+- El compilador, el runtime nativo y la biblioteca estándar (812 funciones `std::*` en 73 espacios de nombres) están escritos en
+  Titan. El compilador se compila a sí mismo con punto fijo verificado (etapa 1 = 2 = 3, byte a byte) a partir de una semilla
+  (`selfhost/semilla/`). El código Rust se borró del repositorio (sigue en el historial, etiqueta `ultimo-con-rust`).
+- `titan run`/`compile` generan código nativo (x86-64 directo, o LLVM para x86-64 y ARM64); ya no hay VM al ejecutar.
+- Linux ARM64 (Termux): `titan compile --target aarch64`; el ejecutable `titan` ARM64 se prueba en un ARM64 real en CI
+  (95 programas con salida idéntica a la del backend x86-64). Paquetes `titan-v1.1.0-linux-{x86_64,aarch64}.tar.gz`
+  (`selfhost/empaquetar.sh`), instalador `selfhost/instalar-termux.sh`.
+- Backend LLVM: tareas y canales (fibras con cambio de pila en ensamblador x86-64/ARM64) y `map/filter/fold/find/any/all` como llamadas.
+- Corregido: el estado de `std::server` y de `std::window` (Wayland) estaba en globales que en ARM64 corrompía `ppoll` o que
+  compartía con las tareas.
+- Eliminado: `std::audio::cloud_*` (dependía de bibliotecas de Rust), `--sandbox`, `spawn_quota`.
+- macOS y Windows: sin paquete por ahora.
+
 ## 1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (`std::audio::cloud_*`) ☁️
 
 - Tus canciones viven en un canal privado de Telegram («Mi Música», se crea solo) y Titan las toca **directo de la nube**: solo viajan unos segundos por adelantado (MBs en memoria) y **nada se guarda en el teléfono**, salvo descarga explícita tuya. Como Spotify/YouTube.

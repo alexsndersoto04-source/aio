@@ -1,0 +1,159 @@
+fn norm(m: string) -> string {
+    let mut s = std::text::replace(m, "native function 'std::sqlite' failed: ", "")
+    return s
+}
+
+fn main() {
+    let db = std::sqlite::memory()
+    let (c0, e0) = cn_make(sqio_mem(), "")
+    let mut c = c0
+    // [modo (0 execute, 1 query, 2 begin, 3 commit, 4 rollback), sql, parámetros]
+    let ps = [[], [Sv::SInt(2)], [Sv::SInt(3)], [Sv::SInt(4)], [Sv::SInt(4), Sv::SInt(5)], [Sv::SInt(1), Sv::SInt(2)], [Sv::SReal(1.5)], [Sv::SText("s")], [Sv::SNull]]
+    let raw = [[Sv::SInt(2)]]
+    let cases = [
+        (0, "create table a(x); create table b(y)", 0),
+        (1, "select name from sqlite_master", 0),
+        (0, "", 0), (1, "", 0), (0, "   ", 0), (1, "-- hi", 0),
+        (0, "create table c(z);", 0), (0, "create table d(z); ", 0),
+        (0, "insert into c values (1)", 0),
+        (0, "insert into c values (?)", 1),
+        (0, "insert into c values (?1), (?1)", 2),
+        (0, "insert into c values (:a)", 3),
+        (0, "insert into c values (?, ?)", 3),
+        (0, "insert into c values (?)", 5),
+        (0, "insert into c values (?)", 6),
+        (0, "insert into c values (?)", 7),
+        (0, "insert into c values (?)", 8),
+        (1, "select z, typeof(z) t from c", 0),
+        (0, "insert into c values (7) returning z", 0),
+        (1, "insert into c values (8) returning z", 0),
+        (1, "insert into c values (9)", 0),
+        (1, "select * from c", 0),
+        (0, "select 1 where 0", 0),
+        (0, "pragma user_version", 0),
+        (0, "pragma user_version = 3", 0),
+        (1, "pragma user_version", 0),
+        (0, "begin", 0), (0, "begin", 0), (0, "rollback", 0),
+        (2, "", 0), (2, "", 0), (0, "commit", 0), (3, "", 0),
+        (0, "savepoint s1", 0), (0, "insert into c values (100)", 0), (0, "savepoint s2", 0), (0, "insert into c values (101)", 0),
+        (0, "rollback to s2", 0), (0, "release s1", 0), (0, "release s1", 0), (0, "rollback to nosuch", 0),
+        (1, "select max(z) from c", 0),
+        (0, "vacuum", 0), (0, "analyze", 0),
+        (1, "select last_insert_rowid(), changes(), total_changes()", 0),
+        (2, "", 0), (0, "insert into c values (200)", 0), (4, "", 0), (1, "select count(*) from c where z = 200", 0),
+        (4, "", 0), (3, "", 0),
+        (2, "", 0), (0, "create table e(a unique)", 0), (0, "insert into e values (1)", 0), (0, "insert into e values (1)", 0), (3, "", 0),
+        (1, "select * from e", 0)
+    ]
+    let mut bad = 0
+    for cs in cases {
+        let mode = cs.0
+        let sql = cs.1
+        let pi = cs.2
+        let p = ps[pi]
+        // oráculo
+        let mut op = []
+        for v in p {
+            match v {
+                Sv::SInt(i) => {
+                    op = std::array::push(op, i)
+                },
+                Sv::SReal(f) => {
+                    op = std::array::push(op, f)
+                },
+                Sv::SText(t) => {
+                    op = std::array::push(op, t)
+                },
+                _ => {
+                    op = std::array::push(op, nil)
+                },
+            }
+        }
+        let mut theirs = ""
+        if mode == 0 {
+            let r = std::try::catch(|| { std::sqlite::execute(db, sql, op) })
+            match r {
+                Result::Ok(n) => {
+                    theirs = "{n}"
+                },
+                Result::Err(m) => {
+                    theirs = "ERR " + norm(m)
+                },
+            }
+        }
+        if mode == 1 {
+            let r = std::try::catch(|| { std::sqlite::query(db, sql, op) })
+            match r {
+                Result::Ok(rs) => {
+                    theirs = "{rs}"
+                },
+                Result::Err(m) => {
+                    theirs = "ERR " + norm(m)
+                },
+            }
+        }
+        if mode >= 2 {
+            let r = std::try::catch(|| {
+                if mode == 2 {
+                    std::sqlite::begin(db)
+                } else if mode == 3 {
+                    std::sqlite::commit(db)
+                } else {
+                    std::sqlite::rollback(db)
+                }
+                0
+            })
+            match r {
+                Result::Ok(n) => {
+                    theirs = "ok"
+                },
+                Result::Err(m) => {
+                    theirs = "ERR " + norm(m)
+                },
+            }
+        }
+        // propio
+        let mut mine = ""
+        if mode <= 1 {
+            let (c2, names, rows, err) = cn_exec(c, sql, p, mode)
+            c = c2
+            if err != "" {
+                mine = "ERR SQLite error: " + err
+            } else if mode == 0 {
+                let nn = c.cx.changes
+                mine = "{nn}"
+            } else {
+                mine = rows_str(names, rows)
+            }
+        } else {
+            let mut c2 = c
+            let mut err = ""
+            if mode == 2 {
+                let (a, b) = cn_api_begin(c)
+                c2 = a
+                err = b
+            } else if mode == 3 {
+                let (a, b) = cn_api_end(c, "COMMIT")
+                c2 = a
+                err = b
+            } else {
+                let (a, b) = cn_api_end(c, "ROLLBACK")
+                c2 = a
+                err = b
+            }
+            c = c2
+            if err != "" {
+                mine = "ERR " + err
+            } else {
+                mine = "ok"
+            }
+        }
+        if mine != theirs {
+            print("DIFF", mode, sql)
+            print("  mine  =", mine)
+            print("  oracle=", theirs)
+            bad += 1
+        }
+    }
+    print("total", len(cases), "bad", bad)
+}

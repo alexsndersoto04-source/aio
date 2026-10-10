@@ -1,0 +1,4 @@
+fn main() {
+let t = spawn || { 1 }
+print(join_timeout(t, -1))
+}

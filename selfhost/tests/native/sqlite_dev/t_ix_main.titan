@@ -1,0 +1,149 @@
+fn rnd(s: int) -> int {
+    (s * 1103515245 + 12345) % 2147483648
+}
+
+fn mk_text(rowid: int, l: int) -> string {
+    let letters = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+    std::collections::join(std::array::filled(l, letters[(rowid * 7) % 26]), "")
+}
+
+fn master_rec(ty: string, name: string, tbl: string, root: int, sql: string) -> array {
+    sq_rec_enc([Sv::SText(ty), Sv::SText(name), Sv::SText(tbl), Sv::SInt(root), Sv::SText(sql)])
+}
+
+fn run(seed: int, nops: int, maxkey: int, path: string, big: bool, ins: int) -> int {
+    let (p0, err) = sqp_open(sqio_mem())
+    let mut p = sqp_begin(p0)
+    let (p1, root) = sqt_new_root(p, 13)
+    let (p2, r1) = sqt_new_root(p1, 10)
+    let (p3, r2) = sqt_new_root(p2, 10)
+    p = p3
+    p = sqt_t_put(p, 1, 1, master_rec("table", "t", "t", root, "CREATE TABLE t(a,b)"))
+    p = sqt_t_put(p, 1, 2, master_rec("index", "i1", "t", r1, "CREATE INDEX i1 ON t(a)"))
+    p = sqt_t_put(p, 1, 3, master_rec("index", "i2", "t", r2, "CREATE INDEX i2 ON t(b)"))
+    let mut model = std::map::new()
+    let colls = [0, 0]
+    let desc = [0, 0]
+    let mut s = seed
+    let mut i = 0
+    while i < nops {
+        s = rnd(s)
+        let k = 1 + (s / 16) % maxkey
+        s = rnd(s)
+        let act = (s / 16) % 10
+        let key = "{k}"
+        let old = std::map::get(model, key)
+        if old != nil {
+            // quitar entradas viejas
+            let oa = old[0]
+            let ol = old[1]
+            p = sqi_del(p, r1, [Sv::SInt(oa), Sv::SInt(k)], colls, desc)
+            p = sqi_del(p, r2, [Sv::SText(mk_text(oa, ol)), Sv::SInt(k)], colls, desc)
+            p = sqt_t_del(p, root, k)
+            model = std::map::remove(model, key)
+        }
+        if act < ins {
+            s = rnd(s)
+            let a = (s / 16) % 60
+            s = rnd(s)
+            let mut l = (s / 16) % 30
+            if big && (s / 16) % 7 == 0 {
+                l = 600 + (s / 16) % 3000
+            }
+            let b = mk_text(a, l)
+            p = sqt_t_put(p, root, k, sq_rec_enc([Sv::SInt(a), Sv::SText(b)]))
+            p = sqi_put(p, r1, [Sv::SInt(a), Sv::SInt(k)], colls, desc)
+            p = sqi_put(p, r2, [Sv::SText(b), Sv::SInt(k)], colls, desc)
+            model = std::map::insert(model, key, [a, l])
+        }
+        i += 1
+    }
+    // verificación con cursor del índice i1
+    let mut bad = 0
+    let mut cnt = 0
+    let mut cu = sqt_cu_first(p, r1)
+    let mut prev = -1
+    while len(cu) > 0 {
+        let v = sqi_cu_vals(p, cu)
+        match v[0] {
+            Sv::SInt(a) => {
+                match v[1] {
+                    Sv::SInt(k) => {
+                        let comp = a * 1000000 + k
+                        if comp <= prev {
+                            bad += 1
+                        }
+                        prev = comp
+                        let m = std::map::get(model, "{k}")
+                        if m == nil || m[0] != a {
+                            bad += 1
+                        }
+                    },
+                    _ => { bad += 1 },
+                }
+            },
+            _ => { bad += 1 },
+        }
+        cnt += 1
+        cu = sqt_cu_adv(p, cu)
+    }
+    let n = std::map::length(model)
+    if cnt != n {
+        bad += 1
+    }
+    // i2 recorrido y orden
+    let mut cu2 = sqt_cu_first(p, r2)
+    let mut c2 = 0
+    let mut pv = [Sv::SNull]
+    while len(cu2) > 0 {
+        let v = sqi_cu_vals(p, cu2)
+        if c2 > 0 {
+            if sqi_cmp(pv, v, 2, [0, 0], [0, 0]) >= 0 {
+                bad += 1
+            }
+        }
+        pv = v
+        c2 += 1
+        cu2 = sqt_cu_adv(p, cu2)
+    }
+    if c2 != n {
+        bad += 1
+    }
+    // búsquedas por prefijo en i1: contar entradas con a = x
+    let mut x = 0
+    while x < 60 {
+        let mut want = 0
+        for kk in std::map::keys(model) {
+            let m = std::map::get(model, kk)
+            if m[0] == x {
+                want += 1
+            }
+        }
+        let mut got = 0
+        let mut cs = sqi_seek(p, r1, [Sv::SInt(x)], 1, colls, desc)
+        while len(cs) > 0 {
+            let v = sqi_cu_vals(p, cs)
+            if sq_cmp(v[0], Sv::SInt(x), 0) != 0 {
+                break
+            }
+            got += 1
+            cs = sqt_cu_adv(p, cs)
+        }
+        if got != want {
+            bad += 1
+        }
+        x += 7
+    }
+    let q = sqp_commit(p, 0)
+    std::fs::write_bytes(path, q.io.img)
+    print("run", seed, "rows", n, "bad", bad, "pages", q.npages)
+    bad
+}
+
+fn main() {
+    run(1, 300, 100, "/tmp/sq_i1.db", false, 7)
+    run(2, 2000, 400, "/tmp/sq_i2.db", true, 7)
+    run(3, 3000, 300, "/tmp/sq_i3.db", true, 5)
+    run(4, 4000, 100000, "/tmp/sq_i4.db", false, 8)
+    run(5, 6000, 300, "/tmp/sq_i5.db", false, 3)
+}

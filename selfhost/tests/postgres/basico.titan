@@ -1,0 +1,98 @@
+// std::postgres contra un servidor real (PostgreSQL 16, puerto 55432 en 127.0.0.1).
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn doc1() -> any {
+    let mut c = std::map::new()
+    c = std::map::insert(c, "c", true)
+    let mut m = std::map::new()
+    m = std::map::insert(m, "a", [1, 2.5, "x", nil])
+    m = std::map::insert(m, "b", c)
+    m
+}
+
+fn doc2() -> any {
+    let mut z = std::map::new()
+    z = std::map::insert(z, "z", nil)
+    return [1, 2, z]
+}
+
+fn doc3() -> any {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "k", [true, nil])
+    m
+}
+
+fn main() {
+    let url = "postgresql://postgres@127.0.0.1:55432/tdb"
+    let db = std::postgres::connect(url)
+    print(db)
+    mostrar("ping", std::postgres::ping(db))
+    mostrar("drop", std::postgres::execute(db, "DROP TABLE IF EXISTS t1", []))
+    mostrar("create", std::postgres::execute(db, "CREATE TABLE t1(id BIGINT PRIMARY KEY, n INT, s SMALLINT, f4 REAL, f8 DOUBLE PRECISION, ok BOOLEAN, t TEXT, v VARCHAR(10), b BYTEA, j JSON, jb JSONB, c CHAR(4), nm NAME)", []))
+    mostrar("insert", std::postgres::execute(db, "INSERT INTO t1(id,f8,ok,t,v,b,j,jb) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", [1, 1.5, true, "héllo ñ", "abc", std::encoding::utf8_encode("by\ttes"), doc1(), doc2()]))
+    mostrar("insert_nulls", std::postgres::execute(db, "INSERT INTO t1(id) VALUES ($1)", [2]))
+    mostrar("insert_mas", std::postgres::execute(db, "INSERT INTO t1(id,t,ok) VALUES (3,'x',false),(4,'y',null),(5,'z',true)", []))
+    mostrar("update", std::postgres::execute(db, "UPDATE t1 SET t = 'u' WHERE id > $1", [2]))
+    let filas = std::postgres::query(db, "SELECT id, f8, ok, t, v, b, j, jb FROM t1 ORDER BY id", [])
+    for f in filas {
+        print(f)
+    }
+    mostrar("tipos", std::postgres::query(db, "SELECT 1::int2 AS a, 2::int4 AS b, 3::int8 AS c, 1.25::float4 AS d, 0.1::float4 AS e, -2.5::float8 AS f, 'x'::char(3) AS g, 'nm'::name AS h, '[1,2]'::json AS i, '{\"k\":1}'::jsonb AS j, true AS k, '\\xdead'::bytea AS l, (-32768)::int2 AS m, (-2147483648)::int4 AS n, (-9223372036854775807)::int8 AS o", []))
+    mostrar("float4", std::postgres::query(db, "SELECT 'Infinity'::float4 AS a, '-Infinity'::float4 AS b, 1e-40::float4 AS c, 3.4e38::float4 AS d, 0::float4 AS e, 16777216::float4 AS f", []))
+    mostrar("vacio", std::postgres::query(db, "SELECT * FROM t1 WHERE id = $1", [99]))
+    mostrar("numeric", std::try::catch(|| { std::postgres::query(db, "SELECT 1.5::numeric AS x", []) }))
+    mostrar("numeric_sin_filas", std::try::catch(|| { std::postgres::query(db, "SELECT 1.5::numeric AS x WHERE false", []) }))
+    mostrar("fecha", std::try::catch(|| { std::postgres::query(db, "SELECT now() AS x", []) }))
+    mostrar("array", std::try::catch(|| { std::postgres::query(db, "SELECT ARRAY[1,2] AS x", []) }))
+    mostrar("uuid", std::try::catch(|| { std::postgres::query(db, "SELECT gen_random_uuid() AS x", []) }))
+    mostrar("exec_sin_decodificar", std::try::catch(|| { std::postgres::execute(db, "SELECT now()", []) }))
+    mostrar("sintaxis", std::try::catch(|| { std::postgres::query(db, "SELEC 1", []) }))
+    mostrar("columna", std::try::catch(|| { std::postgres::query(db, "SELECT nada FROM t1", []) }))
+    mostrar("duplicada", std::try::catch(|| { std::postgres::execute(db, "INSERT INTO t1(id) VALUES (1)", []) }))
+    mostrar("tabla", std::try::catch(|| { std::postgres::query(db, "SELECT * FROM no_existe", []) }))
+    mostrar("hint", std::try::catch(|| { std::postgres::query(db, "SELECT idd FROM t1", []) }))
+    mostrar("parametros_pocos", std::try::catch(|| { std::postgres::query(db, "SELECT $1::int8, $2::int8", [1]) }))
+    mostrar("parametros_muchos", std::try::catch(|| { std::postgres::query(db, "SELECT 1", [1, 2]) }))
+    mostrar("tipo_int4", std::try::catch(|| { std::postgres::query(db, "SELECT $1::int4 AS x", [1]) }))
+    mostrar("tipo_texto_int", std::try::catch(|| { std::postgres::query(db, "SELECT $1::text AS x", [1]) }))
+    mostrar("tipo_nulo_int", std::try::catch(|| { std::postgres::query(db, "SELECT $1::int8 AS x", [nil]) }))
+    mostrar("tipo_nulo_texto", std::try::catch(|| { std::postgres::query(db, "SELECT $1::text AS x", [nil]) }))
+    mostrar("tipo_float_int", std::try::catch(|| { std::postgres::query(db, "SELECT $1::int8 AS x", [1.5]) }))
+    mostrar("tipo_bool", std::try::catch(|| { std::postgres::query(db, "SELECT $1::text AS x", [true]) }))
+    mostrar("tipo_json_int", std::try::catch(|| { std::postgres::query(db, "SELECT $1::int8 AS x", [[1]]) }))
+    mostrar("tipo_bytes_text", std::try::catch(|| { std::postgres::query(db, "SELECT $1::text AS x", [std::encoding::utf8_encode("a")]) }))
+    mostrar("tipo_numeric", std::try::catch(|| { std::postgres::query(db, "SELECT $1::numeric AS x", [1.5]) }))
+    mostrar("param_closure", std::try::catch(|| { std::postgres::query(db, "SELECT 1", [|x| { x }]) }))
+    mostrar("jsonb_param", std::postgres::query(db, "SELECT $1::jsonb AS x, $2::json AS y", [[1, 2], doc3()]))
+    mostrar("texto_param", std::postgres::query(db, "SELECT $1::text AS x, $2::varchar AS y, $3::bpchar AS z", ["a", "b", "c"]))
+    mostrar("bytea_param", std::postgres::query(db, "SELECT $1::bytea AS x", [std::encoding::utf8_encode("hola")]))
+    mostrar("float_param", std::postgres::query(db, "SELECT $1::float8 AS x", [-0.1]))
+    mostrar("int_param", std::postgres::query(db, "SELECT $1::int8 AS x", [-9223372036854775807]))
+    // transacciones
+    mostrar("commit_sin_tx", std::try::catch(|| { std::postgres::commit(db) }))
+    mostrar("rollback_sin_tx", std::try::catch(|| { std::postgres::rollback(db) }))
+    mostrar("begin", std::postgres::begin(db))
+    mostrar("begin2", std::try::catch(|| { std::postgres::begin(db) }))
+    std::postgres::execute(db, "INSERT INTO t1(id) VALUES (100)", [])
+    mostrar("rollback", std::postgres::rollback(db))
+    mostrar("tras_rollback", std::postgres::query(db, "SELECT count(*) AS n FROM t1 WHERE id = 100", []))
+    std::postgres::begin(db)
+    std::postgres::execute(db, "INSERT INTO t1(id) VALUES (101)", [])
+    mostrar("error_en_tx", std::try::catch(|| { std::postgres::execute(db, "INSERT INTO t1(id) VALUES (101)", []) }))
+    mostrar("tx_abortada", std::try::catch(|| { std::postgres::query(db, "SELECT 1", []) }))
+    mostrar("rollback2", std::postgres::rollback(db))
+    std::postgres::begin(db)
+    std::postgres::execute(db, "INSERT INTO t1(id) VALUES (102)", [])
+    mostrar("commit", std::postgres::commit(db))
+    mostrar("tras_commit", std::postgres::query(db, "SELECT count(*) AS n FROM t1 WHERE id = 102", []))
+    // cierre
+    mostrar("cancel", std::postgres::cancel(db))
+    mostrar("ping2", std::postgres::ping(db))
+    mostrar("close", std::postgres::close(db))
+    mostrar("close2", std::postgres::close(db))
+    mostrar("usar_cerrada", std::try::catch(|| { std::postgres::query(db, "SELECT 1", []) }))
+    mostrar("ping_cerrada", std::try::catch(|| { std::postgres::ping(db) }))
+    mostrar("db_cerrada", std::try::catch(|| { std::db::ping(db) }))
+}

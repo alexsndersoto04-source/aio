@@ -14,7 +14,7 @@
 //    expresion valida en Titan.
 //
 // Ejecutar con:
-//     zett run examples/const_and_maps.titan
+//     titan run examples/const_and_maps.titan
 
 // ---------------- Constantes con arrays ----------------
 

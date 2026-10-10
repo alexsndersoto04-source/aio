@@ -16,7 +16,7 @@
 //   std::http_full::get_json(url, headers, opts)   -> Value directo, ya parseado
 //
 // Ejecutar con:
-//     zett run examples/json_api.titan
+//     titan run examples/json_api.titan
 //
 // Requiere internet. Si estas offline, salta la parte de la API
 // (arranca en el cartel "---- API remota ----" y avisa el error).

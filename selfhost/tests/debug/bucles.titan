@@ -1,0 +1,26 @@
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    fib(n - 1) + fib(n - 2)
+}
+fn suma(xs: array) -> int {
+    let mut t = 0
+    for x in xs {
+        t += x
+    }
+    t
+}
+fn main() {
+    let mut i = 0
+    let mut acc = []
+    while i < 4 {
+        acc = std::array::push(acc, i * i)
+        i += 1
+    }
+    let r = fib(5)
+    let s = suma(acc)
+    let m = acc.map(|v| v + 10)
+    print("r={r} s={s}")
+    m
+}

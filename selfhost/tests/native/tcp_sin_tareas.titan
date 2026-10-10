@@ -1,0 +1,18 @@
+// Sin tareas: el backlog del núcleo permite conectar y escribir antes de aceptar.
+fn texto(b: bytes) -> string {
+    std::encoding::utf8_decode(b)
+}
+
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let c = std::net::tcp_connect(std::net::tcp_local_addr(l))
+    std::net::tcp_write(c, "ping")
+    let (s, peer) = std::net::tcp_accept(l)
+    print(texto(std::net::tcp_read(s, 16)))
+    std::net::tcp_write(s, "pong")
+    print(texto(std::net::tcp_read(c, 16)))
+    std::net::tcp_close(c)
+    print(std::bytes::length(std::net::tcp_read(s, 16)))
+    std::net::tcp_close(s)
+    std::net::tcp_close(l)
+}

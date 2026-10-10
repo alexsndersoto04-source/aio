@@ -1,0 +1,14 @@
+fn main() {
+    let servidor = std::server::start("127.0.0.1:8099")
+    print("escuchando en {std::server::local_addr(servidor)}")
+    let mut atendidas = 0
+    while atendidas < 2 {
+        let peticion = std::server::accept(servidor, 30000)
+        if peticion >= 0 {
+            let ruta = std::server::path(peticion)
+            std::server::respond(peticion, 200, "hola desde Titan, ruta {ruta}")
+            atendidas += 1
+        }
+    }
+    std::server::stop(servidor)
+}

@@ -1,5 +1,11 @@
 # Moon — Estado actual del proyecto
 
+> **Informe histórico (septiembre de 2026).** Se escribió cuando el compilador era el prototipo en Rust; los nombres
+> `titan_stdlib`, `titan_vm`, etc. de este informe son los de ese prototipo. Hoy el compilador y el runtime están en
+> `selfhost/` (ver `selfhost/ESTADO.md`) y `titan check projects/moon/src/main.titan` es la comprobación vigente.
+
+> **Documento histórico.** Se escribió cuando Titan era un prototipo en Rust (herramientas `zett`, `cargo`, VM). Se conserva como registro; lo vigente y verificado está en [`selfhost/ESTADO.md`](../../selfhost/ESTADO.md).
+
 **Fecha:** 2026-08-26
 **Método:** verificación estática contra el runtime de Titan (`titan_stdlib`, `titan_vm`, `titan_typechecker`, `titan_codegen`, `titan_lexer`) + build real del frontend (`vite build`). El sandbox no tiene toolchain Rust/crates.io, así que el backend Titan no se pudo *ejecutar* aquí: se validó contra el código fuente del runtime (firmas, aridad, tipos, escapes del lexer) y contra la release v1.0.0 que usa el Dockerfile.
 
@@ -39,7 +45,7 @@ Moon es ahora una **red social completa y real** (CERO SIMULACIÓN), escrita de 
 
 ### Verificaciones hechas (contra el runtime real)
 
-- ✅ **84 funciones `std::*`** usadas existen en `titan_stdlib/src/native.rs` / `titan_vm` (`std::postgres`, `std::server`, `std::image`, `std::email`, `std::jwt`, `std::password`, `std::router`, `std::metrics`, etc.) — cero inexistentes.
+- ✅ **84 funciones `std::*`** usadas existen en `selfhost/natives.titan` (`std::postgres`, `std::server`, `std::image`, `std::email`, `std::jwt`, `std::password`, `std::router`, `std::metrics`, etc.) — cero inexistentes.
 - ✅ **Aridad** de todas las funciones propias (script de parseo): OK.
 - ✅ **Firmas std::** verificadas una a una: `send_simple(host,port,user,pass,from,to,subject,body)`, `verify_hs256(token,secret,aud,iss)`, `respond_full(req,status,ct,headers,bytes)`, `parse_multipart(ct,body,max_parts,max_part)`, `pool(url,max,tls)`, `thumbnail(handle,w,h)`, `encode(handle,fmt)`…
 - ✅ **Tipos del driver Postgres**: solo BOOL/INT/FLOAT/TEXT/BYTEA/JSON/NULL; todas las columnas de fecha se castean con `::text` al leer (y se comparan desde SQL). Corregido `revoked_at` que faltaba.
@@ -84,7 +90,7 @@ Diseño minimalista blanco único (Inter, un solo acento tinta, tarjetas suaves)
 ## 3. Despliegue (Render)
 
 - `render.yaml`: servicios `moon-api` (Docker, health `/api/health`), `moon-db` (PostgreSQL 16 free, DATABASE_URL automática) y `moon-web` (Node, SPA).
-- `Dockerfile`: Ubuntu 24.04 + binario `zett` v1.0.0 de la release del repo + `CMD zett run src/main.titan`, con HEALTHCHECK real.
+- `Dockerfile`: construye `titan` desde las fuentes del repo (semilla + punto fijo, sin Rust) y arranca con `titan run src/main.titan`, con HEALTHCHECK real.
 - Variables a completar en Render: `CORS_ORIGIN`, `PUBLIC_BASE_URL`, `SMTP_*` (email real), `VITE_API_URL`.
 
 ---

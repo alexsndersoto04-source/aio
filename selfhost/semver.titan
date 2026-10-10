@@ -1,0 +1,631 @@
+// SemVer (crate `semver` 1.x de Rust): versiones y requisitos. Prefijo sv_.
+// Los números se guardan como cadenas decimales normalizadas (u64 completo, sin signo de i64).
+// Los mensajes de error son los del crate (comprobados contra `zett add`).
+
+struct SvVer {
+    major: string,
+    minor: string,
+    patch: string,
+    pre: string,
+    build: string,
+}
+
+// op: "=", ">", ">=", "<", "<=", "~", "^" o "*" (comodín); minor/patch: nil si faltan.
+struct SvCmp {
+    op: string,
+    major: string,
+    minor: any,
+    patch: any,
+    pre: string,
+}
+
+fn sv_quote(c: int) -> string {
+    "'" + std::text::from_char_code(c) + "'"
+}
+
+fn sv_codes(s: string) -> array {
+    let mut out = []
+    for c in std::text::chars(s) {
+        out = std::array::push(out, std::text::char_code(c))
+    }
+    out
+}
+
+fn sv_text(cs: array, from: int, to: int) -> string {
+    let mut out = ""
+    let mut i = from
+    while i < to {
+        out += std::text::from_char_code(cs[i])
+        i += 1
+    }
+    out
+}
+
+fn sv_at(cs: array, i: int) -> int {
+    if i < len(cs) {
+        return cs[i]
+    }
+    -1
+}
+
+fn sv_is_wild(c: int) -> bool {
+    c == 42 || c == 120 || c == 88
+}
+
+// Números: cadena decimal sin ceros a la izquierda.
+fn sv_numcmp(a: string, b: string) -> int {
+    let la = std::text::length(a)
+    let lb = std::text::length(b)
+    if la != lb {
+        if la < lb {
+            return -1
+        }
+        return 1
+    }
+    if a == b {
+        return 0
+    }
+    // misma longitud: orden léxico de dígitos
+    let ca = sv_codes(a)
+    let cb = sv_codes(b)
+    let mut i = 0
+    while i < len(ca) {
+        if ca[i] != cb[i] {
+            if ca[i] < cb[i] {
+                return -1
+            }
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn sv_u64_max() -> string {
+    "18446744073709551615"
+}
+
+// numeric_identifier: Ok([valor, nueva posición]).
+fn sv_num(cs: array, pos: int, label: string) -> Result {
+    let n = len(cs)
+    let mut i = pos
+    let mut value = ""
+    while i < n {
+        let c = cs[i]
+        if c < 48 || c > 57 {
+            break
+        }
+        if value == "0" {
+            return Result::Err("invalid leading zero in " + label)
+        }
+        value += std::text::from_char_code(c)
+        if std::text::length(value) > 20 || (std::text::length(value) == 20 && sv_numcmp(value, sv_u64_max()) > 0) {
+            return Result::Err("value of " + label + " exceeds u64::MAX")
+        }
+        i += 1
+    }
+    if i > pos {
+        return Result::Ok([value, i])
+    }
+    if pos < n {
+        return Result::Err("unexpected character " + sv_quote(cs[pos]) + " while parsing " + label)
+    }
+    Result::Err("unexpected end of input while parsing " + label)
+}
+
+// identifier (pre-release o build): Ok([texto, nueva posición]); texto vacío si no hay identificador.
+fn sv_ident(cs: array, pos: int, is_pre: bool, label: string) -> Result {
+    let mut acc = 0
+    let mut seg = 0
+    let mut nondigit = false
+    loop {
+        let c = sv_at(cs, pos + acc + seg)
+        let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45
+        let digit = c >= 48 && c <= 57
+        if alpha || digit {
+            seg += 1
+            if alpha {
+                nondigit = true
+            }
+            continue
+        }
+        if seg == 0 {
+            if acc == 0 && c != 46 {
+                return Result::Ok(["", pos])
+            }
+            return Result::Err("empty identifier segment in " + label)
+        }
+        if is_pre && seg > 1 && !nondigit && cs[pos + acc] == 48 {
+            return Result::Err("invalid leading zero in " + label)
+        }
+        acc += seg
+        if c != 46 {
+            return Result::Ok([sv_text(cs, pos, pos + acc), pos + acc])
+        }
+        acc += 1
+        seg = 0
+        nondigit = false
+    }
+    Result::Ok(["", pos])
+}
+
+fn sv_pre_ident(cs: array, pos: int) -> Result {
+    let r = sv_ident(cs, pos, true, "pre-release identifier")?
+    if r[0] == "" {
+        return Result::Err("empty identifier segment in pre-release identifier")
+    }
+    Result::Ok(r)
+}
+
+fn sv_build_ident(cs: array, pos: int) -> Result {
+    let r = sv_ident(cs, pos, false, "build metadata")?
+    if r[0] == "" {
+        return Result::Err("empty identifier segment in build metadata")
+    }
+    Result::Ok(r)
+}
+
+fn sv_dot(cs: array, pos: int, label: string) -> Result {
+    if sv_at(cs, pos) == 46 {
+        return Result::Ok(pos + 1)
+    }
+    if pos < len(cs) {
+        return Result::Err("unexpected character " + sv_quote(cs[pos]) + " after " + label)
+    }
+    Result::Err("unexpected end of input while parsing " + label)
+}
+
+// Version::parse
+fn sv_parse(s: string) -> Result {
+    if s == "" {
+        return Result::Err("empty string, expected a semver version")
+    }
+    let cs = sv_codes(s)
+    let a = sv_num(cs, 0, "major version number")?
+    let p1 = sv_dot(cs, a[1], "major version number")?
+    let b = sv_num(cs, p1, "minor version number")?
+    let p2 = sv_dot(cs, b[1], "minor version number")?
+    let c = sv_num(cs, p2, "patch version number")?
+    let mut pos = c[1]
+    let mut pre = ""
+    let mut build = ""
+    if sv_at(cs, pos) == 45 {
+        let r = sv_pre_ident(cs, pos + 1)?
+        pre = r[0]
+        pos = r[1]
+    }
+    if sv_at(cs, pos) == 43 {
+        let r = sv_build_ident(cs, pos + 1)?
+        build = r[0]
+        pos = r[1]
+    }
+    if pos < len(cs) {
+        return Result::Err("unexpected character " + sv_quote(cs[pos]) + " after patch version number")
+    }
+    Result::Ok(SvVer { major: a[0], minor: b[0], patch: c[0], pre: pre, build: build })
+}
+
+// Comparación de listas de identificadores separados por puntos.
+fn sv_isnum(s: string) -> bool {
+    for c in sv_codes(s) {
+        if c < 48 || c > 57 {
+            return false
+        }
+    }
+    s != ""
+}
+
+fn sv_split(s: string) -> array {
+    let mut parts = []
+    let mut cur = ""
+    for c in sv_codes(s) {
+        if c == 46 {
+            parts = std::array::push(parts, cur)
+            cur = ""
+        } else {
+            cur += std::text::from_char_code(c)
+        }
+    }
+    std::array::push(parts, cur)
+}
+
+fn sv_strcmp(a: string, b: string) -> int {
+    let ca = sv_codes(a)
+    let cb = sv_codes(b)
+    let mut i = 0
+    while i < len(ca) && i < len(cb) {
+        if ca[i] != cb[i] {
+            if ca[i] < cb[i] {
+                return -1
+            }
+            return 1
+        }
+        i += 1
+    }
+    if len(ca) < len(cb) {
+        return -1
+    }
+    if len(ca) > len(cb) {
+        return 1
+    }
+    0
+}
+
+fn sv_idcmp(a: string, b: string) -> int {
+    let pa = sv_split(a)
+    let pb = sv_split(b)
+    let mut i = 0
+    while i < len(pa) && i < len(pb) {
+        let x = pa[i]
+        let y = pb[i]
+        let nx = sv_isnum(x)
+        let ny = sv_isnum(y)
+        let mut r = 0
+        if nx && ny {
+            r = sv_numcmp(x, y)
+        } else if nx {
+            r = -1
+        } else if ny {
+            r = 1
+        } else {
+            r = sv_strcmp(x, y)
+        }
+        if r != 0 {
+            return r
+        }
+        i += 1
+    }
+    if len(pa) < len(pb) {
+        return -1
+    }
+    if len(pa) > len(pb) {
+        return 1
+    }
+    0
+}
+
+// Prerelease: vacío es mayor que no vacío.
+fn sv_precmp(a: string, b: string) -> int {
+    if a == "" {
+        if b == "" {
+            return 0
+        }
+        return 1
+    }
+    if b == "" {
+        return -1
+    }
+    sv_idcmp(a, b)
+}
+
+// BuildMetadata: vacío es menor.
+fn sv_buildcmp(a: string, b: string) -> int {
+    if a == "" {
+        if b == "" {
+            return 0
+        }
+        return -1
+    }
+    if b == "" {
+        return 1
+    }
+    sv_idcmp(a, b)
+}
+
+fn sv_cmp(a: SvVer, b: SvVer) -> int {
+    let mut r = sv_numcmp(a.major, b.major)
+    if r != 0 {
+        return r
+    }
+    r = sv_numcmp(a.minor, b.minor)
+    if r != 0 {
+        return r
+    }
+    r = sv_numcmp(a.patch, b.patch)
+    if r != 0 {
+        return r
+    }
+    r = sv_precmp(a.pre, b.pre)
+    if r != 0 {
+        return r
+    }
+    sv_buildcmp(a.build, b.build)
+}
+
+// ------------------------------------------------------------ requisitos
+
+fn sv_skip_spaces(cs: array, pos: int) -> int {
+    let mut i = pos
+    while sv_at(cs, i) == 32 {
+        i += 1
+    }
+    i
+}
+
+// comparator: Ok([SvCmp, posición del último componente (etiqueta), nueva posición])
+fn sv_comparator(cs: array, pos0: int) -> Result {
+    let mut op = "^"
+    let mut p = pos0
+    let c0 = sv_at(cs, p)
+    let mut default_op = true
+    if c0 == 61 {
+        op = "="
+        p += 1
+        default_op = false
+    } else if c0 == 62 {
+        if sv_at(cs, p + 1) == 61 {
+            op = ">="
+            p += 2
+        } else {
+            op = ">"
+            p += 1
+        }
+        default_op = false
+    } else if c0 == 60 {
+        if sv_at(cs, p + 1) == 61 {
+            op = "<="
+            p += 2
+        } else {
+            op = "<"
+            p += 1
+        }
+        default_op = false
+    } else if c0 == 126 {
+        op = "~"
+        p += 1
+        default_op = false
+    } else if c0 == 94 {
+        op = "^"
+        p += 1
+        default_op = false
+    }
+    p = sv_skip_spaces(cs, p)
+    let mut label = "major version number"
+    let major = sv_num(cs, p, label)?
+    p = major[1]
+    let mut has_wild = false
+    let mut minor: any = nil
+    let mut patch: any = nil
+    if sv_at(cs, p) == 46 {
+        label = "minor version number"
+        p += 1
+        if sv_is_wild(sv_at(cs, p)) {
+            has_wild = true
+            if default_op {
+                op = "*"
+            }
+            p += 1
+        } else {
+            let m = sv_num(cs, p, label)?
+            minor = m[0]
+            p = m[1]
+        }
+    }
+    if sv_at(cs, p) == 46 {
+        label = "patch version number"
+        p += 1
+        if sv_is_wild(sv_at(cs, p)) {
+            if default_op {
+                op = "*"
+            }
+            has_wild = true
+            p += 1
+        } else if has_wild {
+            return Result::Err("unexpected character after wildcard in version req")
+        } else {
+            let m = sv_num(cs, p, label)?
+            patch = m[0]
+            p = m[1]
+        }
+    }
+    let mut pre = ""
+    if patch != nil && sv_at(cs, p) == 45 {
+        label = "pre-release identifier"
+        let r = sv_pre_ident(cs, p + 1)?
+        pre = r[0]
+        p = r[1]
+    }
+    if patch != nil && sv_at(cs, p) == 43 {
+        label = "build metadata"
+        let r = sv_build_ident(cs, p + 1)?
+        p = r[1]
+    }
+    p = sv_skip_spaces(cs, p)
+    Result::Ok([SvCmp { op: op, major: major[0], minor: minor, patch: patch, pre: pre }, label, p])
+}
+
+// VersionReq::parse -> Ok(array de SvCmp) (vacío = `*`).
+fn sv_parse_req(s: string) -> Result {
+    let cs = sv_codes(s)
+    let mut p = sv_skip_spaces(cs, 0)
+    let first = sv_at(cs, p)
+    if sv_is_wild(first) {
+        let rest = sv_skip_spaces(cs, p + 1)
+        if rest >= len(cs) {
+            return Result::Ok([])
+        }
+        if cs[rest] == 44 {
+            return Result::Err("wildcard req (" + std::text::from_char_code(first) + ") must be the only comparator in the version req")
+        }
+        return Result::Err("unexpected character after wildcard in version req")
+    }
+    let mut out = []
+    loop {
+        let r = sv_comparator(cs, p)?
+        out = std::array::push(out, r[0])
+        p = r[2]
+        if p >= len(cs) {
+            break
+        }
+        let c = cs[p]
+        if c != 44 {
+            return Result::Err("expected comma after " + r[1] + ", found " + sv_quote(c))
+        }
+        p = sv_skip_spaces(cs, p + 1)
+        if sv_is_wild(sv_at(cs, p)) {
+            // El crate solo da este error cuando el comodín está solo (fin o coma); si lo sigue
+            // otra cosa, el error es el normal de "carácter inesperado" al leer la versión mayor.
+            let rest = sv_skip_spaces(cs, p + 1)
+            if rest >= len(cs) || cs[rest] == 44 {
+                return Result::Err("wildcard req (" + std::text::from_char_code(sv_at(cs, p)) + ") must be the only comparator in the version req")
+            }
+            return Result::Err("unexpected character " + sv_quote(sv_at(cs, p)) + " while parsing major version number")
+        }
+        if len(out) >= 255 {
+            return Result::Err("excessive number of version comparators")
+        }
+    }
+    Result::Ok(out)
+}
+
+fn sv_match_exact(c: SvCmp, v: SvVer) -> bool {
+    if sv_numcmp(v.major, c.major) != 0 {
+        return false
+    }
+    if c.minor != nil && sv_numcmp(v.minor, c.minor) != 0 {
+        return false
+    }
+    if c.patch != nil && sv_numcmp(v.patch, c.patch) != 0 {
+        return false
+    }
+    v.pre == c.pre
+}
+
+fn sv_match_greater(c: SvCmp, v: SvVer) -> bool {
+    let r = sv_numcmp(v.major, c.major)
+    if r != 0 {
+        return r > 0
+    }
+    if c.minor == nil {
+        return false
+    }
+    let m = sv_numcmp(v.minor, c.minor)
+    if m != 0 {
+        return m > 0
+    }
+    if c.patch == nil {
+        return false
+    }
+    let p = sv_numcmp(v.patch, c.patch)
+    if p != 0 {
+        return p > 0
+    }
+    sv_precmp(v.pre, c.pre) > 0
+}
+
+fn sv_match_less(c: SvCmp, v: SvVer) -> bool {
+    let r = sv_numcmp(v.major, c.major)
+    if r != 0 {
+        return r < 0
+    }
+    if c.minor == nil {
+        return false
+    }
+    let m = sv_numcmp(v.minor, c.minor)
+    if m != 0 {
+        return m < 0
+    }
+    if c.patch == nil {
+        return false
+    }
+    let p = sv_numcmp(v.patch, c.patch)
+    if p != 0 {
+        return p < 0
+    }
+    sv_precmp(v.pre, c.pre) < 0
+}
+
+fn sv_match_tilde(c: SvCmp, v: SvVer) -> bool {
+    if sv_numcmp(v.major, c.major) != 0 {
+        return false
+    }
+    if c.minor != nil && sv_numcmp(v.minor, c.minor) != 0 {
+        return false
+    }
+    if c.patch != nil {
+        let p = sv_numcmp(v.patch, c.patch)
+        if p != 0 {
+            return p > 0
+        }
+    }
+    sv_precmp(v.pre, c.pre) >= 0
+}
+
+fn sv_match_caret(c: SvCmp, v: SvVer) -> bool {
+    if sv_numcmp(v.major, c.major) != 0 {
+        return false
+    }
+    if c.minor == nil {
+        return true
+    }
+    let major_pos = c.major != "0"
+    if c.patch == nil {
+        if major_pos {
+            return sv_numcmp(v.minor, c.minor) >= 0
+        }
+        return sv_numcmp(v.minor, c.minor) == 0
+    }
+    let m = sv_numcmp(v.minor, c.minor)
+    let p = sv_numcmp(v.patch, c.patch)
+    if major_pos {
+        if m != 0 {
+            return m > 0
+        } else if p != 0 {
+            return p > 0
+        }
+    } else if c.minor != "0" {
+        if m != 0 {
+            return false
+        } else if p != 0 {
+            return p > 0
+        }
+    } else if m != 0 || p != 0 {
+        return false
+    }
+    sv_precmp(v.pre, c.pre) >= 0
+}
+
+fn sv_match_one(c: SvCmp, v: SvVer) -> bool {
+    let op = c.op
+    if op == "=" || op == "*" {
+        return sv_match_exact(c, v)
+    }
+    if op == ">" {
+        return sv_match_greater(c, v)
+    }
+    if op == "<" {
+        return sv_match_less(c, v)
+    }
+    if op == ">=" {
+        return sv_match_exact(c, v) || sv_match_greater(c, v)
+    }
+    if op == "<=" {
+        return sv_match_exact(c, v) || sv_match_less(c, v)
+    }
+    if op == "~" {
+        return sv_match_tilde(c, v)
+    }
+    sv_match_caret(c, v)
+}
+
+fn sv_pre_compatible(c: SvCmp, v: SvVer) -> bool {
+    c.pre != "" && c.minor != nil && c.patch != nil && sv_numcmp(c.major, v.major) == 0 && sv_numcmp(c.minor, v.minor) == 0 && sv_numcmp(c.patch, v.patch) == 0
+}
+
+// VersionReq::matches
+fn sv_matches(req: array, v: SvVer) -> bool {
+    for c in req {
+        if !sv_match_one(c, v) {
+            return false
+        }
+    }
+    if v.pre == "" {
+        return true
+    }
+    for c in req {
+        if sv_pre_compatible(c, v) {
+            return true
+        }
+    }
+    false
+}

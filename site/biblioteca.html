@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Biblioteca estándar — Titan</title>
+<meta name="description" content="Las 812 funciones de la biblioteca estándar de Titan, agrupadas en 73 espacios de nombres.">
+<meta property="og:title" content="Biblioteca estándar — Titan">
+<meta property="og:description" content="Las 812 funciones de la biblioteca estándar de Titan, agrupadas en 73 espacios de nombres.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="index.html"><img src="zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="index.html#lenguaje">Lenguaje</a>
+    <a href="index.html#instalar">Instalación</a>
+    <a href="index.html#plataformas">Plataformas</a>
+    <a href="biblioteca.html" aria-current="page">Biblioteca</a>
+    <a href="documentacion.html" data-a="docs">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<section><div class="wrap">
+  <h1 style="font-size:2rem">Biblioteca estándar</h1>
+  <p class="sub">812 funciones en 73 espacios de nombres. Todas están escritas en Titan y se compilan junto con el programa. La tabla de firmas está en <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/natives.titan">selfhost/natives.titan</a>; las limitaciones de cada pieza, en <a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">selfhost/ESTADO.md</a>.</p>
+  <label for="f" class="sub">Filtrar:</label><br>
+  <input id="f" class="filter" type="search" placeholder="por ejemplo: json, audio, sqlite…" autocomplete="off">
+  <table id="t">
+    <thead><tr><th>Espacio de nombres</th><th style="text-align:right">Funciones</th><th>Contenido</th></tr></thead>
+    <tbody>
+<tr><td><code>std::archive</code></td><td class="num">5</td><td>TAR y ZIP (leer y escribir)</td></tr>
+<tr><td><code>std::array</code></td><td class="num">7</td><td>operaciones sobre arrays</td></tr>
+<tr><td><code>std::audio</code></td><td class="num">62</td><td>WAV, decodificación (WAV, FLAC, Ogg Vorbis), etiquetas, biblioteca, síntesis y motor de reproducción</td></tr>
+<tr><td><code>std::bytes</code></td><td class="num">7</td><td>lector/escritor binario con límites</td></tr>
+<tr><td><code>std::checksum</code></td><td class="num">3</td><td>FNV-1a, CRC-32, comparación en tiempo constante</td></tr>
+<tr><td><code>std::clipboard</code></td><td class="num">2</td><td>portapapeles (Termux/Linux)</td></tr>
+<tr><td><code>std::collections</code></td><td class="num">57</td><td>listas, conjuntos, agrupar, particionar, ventanas…</td></tr>
+<tr><td><code>std::compress</code></td><td class="num">8</td><td>gzip, zlib, deflate y zstd (comprimir y descomprimir)</td></tr>
+<tr><td><code>std::crypto</code></td><td class="num">13</td><td>ChaCha20-Poly1305, AES-GCM, Argon2id, bcrypt</td></tr>
+<tr><td><code>std::csv</code></td><td class="num">2</td><td>CSV con comillas</td></tr>
+<tr><td><code>std::datetime</code></td><td class="num">49</td><td>fechas, zonas horarias, formatos RFC 3339/2822</td></tr>
+<tr><td><code>std::dirs</code></td><td class="num">18</td><td>carpetas del usuario (home, config, caché…)</td></tr>
+<tr><td><code>std::dns</code></td><td class="num">7</td><td>consultas DNS</td></tr>
+<tr><td><code>std::email</code></td><td class="num">3</td><td>SMTP</td></tr>
+<tr><td><code>std::encoding</code></td><td class="num">8</td><td>hex, Base64, UTF-8, porcentaje</td></tr>
+<tr><td><code>std::env</code></td><td class="num">3</td><td>variables de entorno</td></tr>
+<tr><td><code>std::freestanding</code></td><td class="num">6</td><td>programas sin sistema operativo (aarch64-none)</td></tr>
+<tr><td><code>std::freestanding_cpu</code></td><td class="num">7</td><td>CPU en modo sin sistema operativo</td></tr>
+<tr><td><code>std::freestanding_memory</code></td><td class="num">7</td><td>memoria en modo sin sistema operativo</td></tr>
+<tr><td><code>std::freestanding_mmio</code></td><td class="num">7</td><td>MMIO en modo sin sistema operativo</td></tr>
+<tr><td><code>std::fs</code></td><td class="num">18</td><td>archivos y carpetas</td></tr>
+<tr><td><code>std::fswatch</code></td><td class="num">4</td><td>vigilar cambios en archivos</td></tr>
+<tr><td><code>std::game</code></td><td class="num">5</td><td>bucle de juego 2D y colisiones</td></tr>
+<tr><td><code>std::gui</code></td><td class="num">11</td><td>árbol de widgets y rasterizador por software</td></tr>
+<tr><td><code>std::hash</code></td><td class="num">11</td><td>SHA-2, SHA-3, BLAKE3, HMAC</td></tr>
+<tr><td><code>std::http</code></td><td class="num">13</td><td>cliente HTTP/HTTPS</td></tr>
+<tr><td><code>std::http_full</code></td><td class="num">4</td><td>HTTP (funciones extendidas)</td></tr>
+<tr><td><code>std::image</code></td><td class="num">21</td><td>PNG, JPEG, WebP, BMP, GIF (leer y escribir)</td></tr>
+<tr><td><code>std::input</code></td><td class="num">8</td><td>estado de teclado, ratón y táctil</td></tr>
+<tr><td><code>std::io</code></td><td class="num">2</td><td>lectura limitada de texto/bytes</td></tr>
+<tr><td><code>std::json</code></td><td class="num">6</td><td>JSON (parse, pretty, pointer, merge patch)</td></tr>
+<tr><td><code>std::jwt</code></td><td class="num">5</td><td>JWT</td></tr>
+<tr><td><code>std::kv</code></td><td class="num">17</td><td>almacén clave-valor</td></tr>
+<tr><td><code>std::map</code></td><td class="num">9</td><td>mapas</td></tr>
+<tr><td><code>std::math</code></td><td class="num">14</td><td>funciones matemáticas</td></tr>
+<tr><td><code>std::metrics</code></td><td class="num">8</td><td>contadores, gauges, histogramas</td></tr>
+<tr><td><code>std::mobile</code></td><td class="num">3</td><td>ciclo de vida de apps móviles</td></tr>
+<tr><td><code>std::net</code></td><td class="num">1</td><td>TCP</td></tr>
+<tr><td><code>std::notify</code></td><td class="num">1</td><td>notificaciones</td></tr>
+<tr><td><code>std::onnx</code></td><td class="num">14</td><td>motor ONNX propio (BERT y modelos pequeños)</td></tr>
+<tr><td><code>std::password</code></td><td class="num">4</td><td>hash y verificación de contraseñas</td></tr>
+<tr><td><code>std::path</code></td><td class="num">8</td><td>rutas</td></tr>
+<tr><td><code>std::pdf</code></td><td class="num">9</td><td>generar PDF</td></tr>
+<tr><td><code>std::plot</code></td><td class="num">5</td><td>gráficos SVG</td></tr>
+<tr><td><code>std::process</code></td><td class="num">23</td><td>procesos hijos, pipes, tiempo límite</td></tr>
+<tr><td><code>std::procfs</code></td><td class="num">18</td><td>información del sistema (/proc)</td></tr>
+<tr><td><code>std::progress</code></td><td class="num">7</td><td>barras de progreso</td></tr>
+<tr><td><code>std::qrcode</code></td><td class="num">5</td><td>códigos QR</td></tr>
+<tr><td><code>std::random</code></td><td class="num">8</td><td>aleatorios y generadores deterministas</td></tr>
+<tr><td><code>std::readline</code></td><td class="num">4</td><td>línea de comandos con historial</td></tr>
+<tr><td><code>std::redis</code></td><td class="num">21</td><td>cliente Redis</td></tr>
+<tr><td><code>std::regex</code></td><td class="num">7</td><td>expresiones regulares</td></tr>
+<tr><td><code>std::router</code></td><td class="num">5</td><td>enrutador de rutas HTTP</td></tr>
+<tr><td><code>std::server</code></td><td class="num">23</td><td>servidor HTTP</td></tr>
+<tr><td><code>std::signals</code></td><td class="num">3</td><td>señales POSIX</td></tr>
+<tr><td><code>std::stats</code></td><td class="num">5</td><td>estadística</td></tr>
+<tr><td><code>std::term</code></td><td class="num">15</td><td>terminal (colores, teclas, TUI)</td></tr>
+<tr><td><code>std::termux</code></td><td class="num">23</td><td>Termux:API</td></tr>
+<tr><td><code>std::testing</code></td><td class="num">2</td><td>aserciones</td></tr>
+<tr><td><code>std::text</code></td><td class="num">28</td><td>texto y Unicode</td></tr>
+<tr><td><code>std::time</code></td><td class="num">3</td><td>tiempo y pausas</td></tr>
+<tr><td><code>std::tokenize</code></td><td class="num">10</td><td>tokenizadores estilo HuggingFace</td></tr>
+<tr><td><code>std::try</code></td><td class="num">1</td><td>`std::try::catch`</td></tr>
+<tr><td><code>std::url</code></td><td class="num">10</td><td>URLs</td></tr>
+<tr><td><code>std::uuid</code></td><td class="num">5</td><td>UUID v4 y v7</td></tr>
+<tr><td><code>std::vector</code></td><td class="num">8</td><td>vectores numéricos</td></tr>
+<tr><td><code>std::wasm</code></td><td class="num">14</td><td>WebAssembly: memoria y source maps</td></tr>
+<tr><td><code>std::web</code></td><td class="num">53</td><td>navegador: DOM, eventos, fetch, WebSocket, Canvas 2D, WebGL2 (solo con host JS)</td></tr>
+<tr><td><code>std::wifi</code></td><td class="num">4</td><td>Wi-Fi (Termux)</td></tr>
+<tr><td><code>std::window</code></td><td class="num">12</td><td>ventanas</td></tr>
+<tr><td><code>std::ws</code></td><td class="num">6</td><td>WebSocket</td></tr>
+<tr><td><code>std::xml</code></td><td class="num">4</td><td>XML</td></tr>
+<tr><td><code>std::yaml</code></td><td class="num">3</td><td>YAML</td></tr>
+    </tbody>
+  </table>
+  <p>Las funciones se llaman con su ruta completa, sin importar nada: <code>std::hash::sha256(datos)</code>, <code>std::json::parse(texto)</code>, <code>std::server::start("127.0.0.1:8080")</code>.</p>
+  <p><a href="index.html">← Volver al inicio</a></p>
+</div></section>
+<script>
+(function(){
+  var f=document.getElementById('f'), rows=document.querySelectorAll('#t tbody tr');
+  f.addEventListener('input',function(){
+    var q=f.value.trim().toLowerCase();
+    rows.forEach(function(r){ r.style.display = r.textContent.toLowerCase().indexOf(q)>-1 ? '' : 'none'; });
+  });
+})();
+</script>
+</main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="documentacion.html">Índice</a>
+      <a href="biblioteca.html">Biblioteca estándar</a>
+      <a href="docs/estado.html">Estado verificado</a>
+      <a href="docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

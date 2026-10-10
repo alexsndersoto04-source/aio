@@ -1,5 +1,5 @@
 // Demo Fase 4: cripto moderna.
-// Ejecutar con:  cargo run -p titan_cli -- run examples/security.titan
+// Ejecutar con:  titan run examples/security.titan
 //
 // Muestra:
 //  1. Cifrar y descifrar con ChaCha20-Poly1305 y AES-256-GCM.

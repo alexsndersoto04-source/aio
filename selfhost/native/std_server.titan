@@ -1,14 +1,36 @@
-// std::server — HTTP/1.1 server + WebSocket using raw TCP sockets.
-// Matches crates/titan_stdlib/src/server_mod.rs behavior and limits.
-// Uses raw Linux syscalls like std_net.titan and std_redis.titan.
-// All mutable state is in raw memory allocations (no mutable Titan arrays).
+// std::server — servidor HTTP/1.1 y WebSocket sobre sockets TCP reales
+// (llamadas al sistema de Linux: socket/bind/listen/accept4/poll/read/sendto).
 //
-// Prefix: sv_
+// Port fiel de crates/titan_stdlib/src/server_mod.rs (+ los envoltorios de la
+// VM en crates/titan_vm/src/native.rs). Se reproduce:
+//   * handles: un contador compartido desde 1 para servidores, peticiones y
+//     WebSockets; un handle solo se asigna cuando la operación tiene éxito;
+//   * límites por handles VIVOS (8 servidores, 256 peticiones, 64 WebSockets)
+//     y el mismo texto de error ("{recurso} exceeds limit {n}");
+//   * errores como errores (rt_native_fail), con el mismo texto que Rust;
+//     nunca se devuelve un mensaje de error como valor;
+//   * plazos de E/S de 5 s con poll(2), accept sin bloqueo con sondeo de 5 ms;
+//   * parseo estricto de la petición, cuerpo fijo y chunked con trailers,
+//     validación de respuestas, upgrade WebSocket y decodificador de mensajes
+//     (fragmentación, UTF-8, máscara obligatoria, límite de tamaño).
+// Reutiliza std_net.titan (direcciones IPv4/IPv6 como Rust) y std_ws.titan
+// (SHA-1, clave de aceptación, codificador de marcos).
+//
+// Desviaciones conocidas (ver selfhost/ESTADO.md): no se reproduce el límite de
+// 8 operaciones concurrentes (`reserve_operation`) porque el nativo no tiene
+// hilos que puedan solaparse, y las peticiones nunca se marcan "closed"
+// (solo ocurre en `cleanup_runtime` de Rust, que el nativo no necesita); y tras
+// un error de escritura en un WebSocket la entrada queda registrada (cerrada)
+// hasta `ws_close`.
+//
+// Prefijo: sv_
 
-// ---- Limits matching Rust ----
 const SV_MAX_SERVERS: int = 8
 const SV_MAX_REQUESTS: int = 256
 const SV_MAX_WS: int = 64
+const SV_MAX_METADATA: int = 16777216
+const SV_MAX_BIND_BYTES: int = 4096
+const SV_MAX_ACCEPT_MS: int = 30000
 const SV_MAX_HEAD_BYTES: int = 65536
 const SV_MAX_TARGET_BYTES: int = 16384
 const SV_MAX_HEADERS: int = 128
@@ -18,30 +40,82 @@ const SV_MAX_OUTPUT_BYTES: int = 65536
 const SV_MAX_BODY_BYTES: int = 8388608
 const SV_MAX_RESPONSE_BYTES: int = 8388608
 const SV_MAX_CT_BYTES: int = 1024
+const SV_MAX_CHUNK_LINE: int = 8192
+const SV_MAX_TRAILER_BYTES: int = 16384
+const SV_MAX_TRAILERS: int = 32
 const SV_MAX_WS_MSG: int = 4194304
+const SV_MAX_WS_IDLE: int = 120
+const SV_MAX_CLOSE_REASON: int = 123
 const SV_IO_MS: int = 5000
-const SV_ACCEPT_POLL_MS: int = 5
-const SV_MAX_ACCEPT_MS: int = 30000
+const SV_POLL_MS: int = 5
 
-// Global state offset (single pointer to allocated block).
-// Layout of the allocated block (4096 bytes):
-//   next_server(8) next_req(8) next_ws(8)
-//   servers[8*16] = {fd, closed} per server
-//   req_ptrs[256*8] = pointer to request entry per handle
-//   ws[64*16] = {fd, max_msg} per ws handle
-const SV_OFF: int = 3592
+// Bloque global de este módulo (puntero a un bloque de 4096 bytes a cero):
+//   +0     siguiente handle (0 = aún sin usar, empieza en 1)
+//   +64    servidores: 8 × {id, fd}
+//   +256   peticiones: 256 punteros a entrada (0 = libre)
+//   +2304  WebSockets: 64 punteros a entrada (0 = libre)
+// El puntero al estado vive en rtm_state() + 64 (ver std_runtime.titan). Antes estaba en globals + 3592,
+// que en ARM64 es la zona de trabajo de rt_sys_arm64 (sa_scratch): ppoll escribía ahí el tiempo restante.
+const SV_OFF: int = 64
+const SV_SERV_BASE: int = 64
+const SV_REQ_BASE: int = 256
+const SV_WS_BASE: int = 2304
 
 fn sv_st() -> int {
-    let g = std::raw::globals() + SV_OFF
+    let g = rtm_state() + SV_OFF
     let mut s = std::raw::load(g)
     if s == 0 {
-        s = rt_alloc_zero(8192)
+        s = rt_alloc_zero(4096)
         std::raw::store(g, s)
     }
     s
 }
 
-// ---- Syscall wrappers ----
+fn sv_next_id() -> int {
+    let st = sv_st()
+    let mut n = std::raw::load(st)
+    if n == 0 {
+        n = 1
+    }
+    std::raw::store(st, n + 1)
+    n
+}
+
+// ------------------------------------------------------------------ errores
+// Todos terminan la ejecución con el texto exacto de ServerError de Rust.
+
+fn sv_fail(f: string, msg: any) {
+    rt_native_fail(f, msg)
+}
+
+fn sv_fail_limit(f: string, resource: string, limit: int) {
+    rt_native_fail(f, rt_concat(rt_concat(resource, " exceeds limit "), rt_int_to_str(limit)))
+}
+
+fn sv_fail_invalid(f: string, msg: string) {
+    rt_native_fail(f, rt_concat("invalid HTTP request: ", msg))
+}
+
+fn sv_fail_arg(f: string, msg: string) {
+    rt_native_fail(f, rt_concat("invalid server argument: ", msg))
+}
+
+// Mensaje de un error de E/S de socket: -3 plazo vencido, -2 fin de la
+// conexión, <= -1000 errno (-(1000 + errno)).
+fn sv_io_msg(code: int, op: string) -> any {
+    if code == -3 {
+        return rt_concat(op, " timed out")
+    }
+    if code <= -1000 {
+        if code == -1011 || code == -1110 {
+            return rt_concat(op, " timed out")
+        }
+        return rt_concat("i/o error: ", rt_os_error(0 - (code + 1000)))
+    }
+    rt_concat("i/o error: ", "unexpected end of file")
+}
+
+// ------------------------------------------------------------------ sistema
 
 fn sv_close(fd: int) {
     std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
@@ -56,1264 +130,2283 @@ fn sv_now_ms() -> int {
     s * 1000 + ns / 1000000
 }
 
-fn sv_write_all(fd: int, buf: int, n: int, dl: int) -> int {
-    let mut done = 0
-    while done < n {
-        if sv_now_ms() >= dl { return -110 }
-        let w = std::raw::syscall(44, fd, buf + done, n - done, 16384, 0, 0)
-        if w < 0 {
-            if w == -4 || w == -11 { continue }
-            return w
+fn sv_sleep_ms(ms: int) {
+    let ts = rt_alloc_zero(16)
+    std::raw::store(ts, ms / 1000)
+    std::raw::store(ts + 8, (ms % 1000) * 1000000)
+    std::raw::syscall(35, ts, ts, 0, 0, 0, 0)
+    rt_free_block(ts)
+}
+
+// poll(2) de un descriptor hasta `ms`: >0 listo, 0 plazo vencido, <0 errno.
+fn sv_poll(fd: int, events: int, ms: int) -> int {
+    let pf = rt_alloc_zero(16)
+    loop {
+        std::raw::store(pf, 0)
+        std::raw::store8(pf, fd & 255)
+        std::raw::store8(pf + 1, std::raw::shr(fd, 8) & 255)
+        std::raw::store8(pf + 2, std::raw::shr(fd, 16) & 255)
+        std::raw::store8(pf + 3, std::raw::shr(fd, 24) & 255)
+        std::raw::store8(pf + 4, events & 255)
+        std::raw::store8(pf + 5, 0)
+        std::raw::store8(pf + 6, 0)
+        std::raw::store8(pf + 7, 0)
+        let r = std::raw::syscall(7, pf, 1, ms, 0, 0, 0)
+        if r == -4 {
+            continue
         }
-        done = done + w
+        rt_free_block(pf)
+        return r
     }
     0
 }
 
-fn sv_read_some(fd: int, buf: int, n: int, dl: int) -> int {
+// Plazo restante en ms (redondeado hacia arriba); 0 si ya venció.
+fn sv_remaining(dl: int) -> int {
+    let r = dl - sv_now_ms()
+    if r < 0 {
+        return 0
+    }
+    r
+}
+
+// read(2) con plazo. >0 bytes, 0 fin de conexión, -3 plazo, <= -1000 errno.
+fn sv_read_dl(fd: int, buf: int, n: int, dl: int) -> int {
     loop {
-        if sv_now_ms() >= dl { return -110 }
+        let rem = sv_remaining(dl)
+        if rem <= 0 {
+            return -3
+        }
+        let pr = sv_poll(fd, 1, rem)
+        if pr == 0 {
+            return -3
+        }
+        if pr < 0 {
+            return -1000 + pr
+        }
         let r = std::raw::syscall(0, fd, buf, n, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
         if r < 0 {
-            if r == -4 || r == -11 { continue }
-            return r
+            return -1000 + r
         }
         return r
     }
+    0
 }
 
-fn sv_read_exact(fd: int, buf: int, n: int, dl: int) -> int {
+// write_all con plazo (sendto con MSG_NOSIGNAL). 0 correcto, -3 plazo,
+// <= -1000 errno.
+fn sv_write_dl(fd: int, buf: int, n: int, dl: int) -> int {
     let mut done = 0
     while done < n {
-        if sv_now_ms() >= dl { return -110 }
-        let r = std::raw::syscall(0, fd, buf + done, n - done, 0, 0, 0)
-        if r == 0 { return -104 }
-        if r < 0 {
-            if r == -4 || r == -11 { continue }
-            return r
+        let rem = sv_remaining(dl)
+        if rem <= 0 {
+            return -3
         }
-        done = done + r
+        let pr = sv_poll(fd, 4, rem)
+        if pr == 0 {
+            return -3
+        }
+        if pr < 0 {
+            return -1000 + pr
+        }
+        let w = std::raw::syscall(44, fd, buf + done, n - done, 16384, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w < 0 {
+            return -1000 + w
+        }
+        done += w
     }
     0
 }
 
-// ---- Raw string helpers ----
+// Escribe un valor string/bytes completo. 0 o código de error.
+fn sv_write_val(fd: int, v: any, dl: int) -> int {
+    sv_write_dl(fd, rt_bdata(v), rt_slen(v), dl)
+}
 
+fn sv_shutdown(fd: int) {
+    std::raw::syscall(48, fd, 2, 0, 0, 0, 0)
+}
+
+// ------------------------------------------------------------------ bytes/texto
+
+fn sv_ct(c: int) -> int {
+    // ASCII en minúsculas
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    c
+}
+
+// Igualdad ASCII sin distinguir mayúsculas entre dos regiones.
 fn sv_eq_ci(a: int, al: int, b: int, bl: int) -> bool {
-    if al != bl { return false }
+    if al != bl {
+        return false
+    }
     let mut i = 0
     while i < al {
-        let mut ca = std::raw::load8(a + i)
-        let mut cb = std::raw::load8(b + i)
-        if ca >= 65 && ca <= 90 { ca = ca + 32 }
-        if cb >= 65 && cb <= 90 { cb = cb + 32 }
-        if ca != cb { return false }
-        i = i + 1
+        if sv_ct(std::raw::load8(a + i)) != sv_ct(std::raw::load8(b + i)) {
+            return false
+        }
+        i += 1
     }
     true
 }
 
+// Igualdad exacta con un literal.
+fn sv_eq_lit(a: int, al: int, lit: string) -> bool {
+    if al != rt_slen(lit) {
+        return false
+    }
+    let b = rt_bdata(lit)
+    let mut i = 0
+    while i < al {
+        if std::raw::load8(a + i) != std::raw::load8(b + i) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn sv_eq_ci_lit(a: int, al: int, lit: string) -> bool {
+    sv_eq_ci(a, al, rt_bdata(lit), rt_slen(lit))
+}
+
+// Copia p[0..n) a un string de Titan (UTF-8 ya validado por quien llama).
+fn sv_to_str(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    rt_copy(s + 16, p, n)
+    rt_sval(s)
+}
+
+fn sv_to_bytes(p: int, n: int) -> any {
+    rt_bytes_from(p, n)
+}
+
+// Byte de token HTTP (is_header_name de Rust).
 fn sv_tchar(c: int) -> bool {
-    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
-    c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 ||
-    c == 42 || c == 43 || c == 45 || c == 46 || c == 94 || c == 95 ||
-    c == 96 || c == 124 || c == 126
-}
-
-fn sv_hdr_ok(p: int, n: int) -> bool {
-    if n == 0 { return false }
-    let mut i = 0
-    while i < n {
-        if !sv_tchar(std::raw::load8(p + i)) { return false }
-        i = i + 1
+    if c >= 48 && c <= 57 {
+        return true
     }
-    true
-}
-
-fn sv_val_ok(p: int, n: int) -> bool {
-    let mut i = 0
-    while i < n {
-        let c = std::raw::load8(p + i)
-        if !(c == 9 || c == 32 || (c >= 33 && c <= 126)) { return false }
-        i = i + 1
+    if c >= 65 && c <= 90 {
+        return true
     }
-    true
-}
-
-fn sv_has_ctrl(p: int, n: int) -> bool {
-    let mut i = 0
-    while i < n {
-        let c = std::raw::load8(p + i)
-        if c < 32 || c == 127 { return true }
-        i = i + 1
+    if c >= 97 && c <= 122 {
+        return true
+    }
+    if c == 33 || c == 35 || c == 36 || c == 37 || c == 38 || c == 39 || c == 42 || c == 43 {
+        return true
+    }
+    if c == 45 || c == 46 || c == 94 || c == 95 || c == 96 || c == 124 || c == 126 {
+        return true
     }
     false
 }
 
-fn sv_to_str(p: int, n: int) -> any {
-    rt_bytes_from(p, n)
-}
-
-fn sv_send400(fd: int, dl: int) {
-    let msg = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    sv_write_all(fd, rt_bdata(msg), rt_slen(msg), dl)
-}
-
-// ---- Reason phrases ----
-
-fn sv_reason(s: int) -> string {
-    if s == 100 { return "Continue" }
-    if s == 200 { return "OK" }
-    if s == 201 { return "Created" }
-    if s == 202 { return "Accepted" }
-    if s == 204 { return "No Content" }
-    if s == 206 { return "Partial Content" }
-    if s == 301 { return "Moved Permanently" }
-    if s == 302 { return "Found" }
-    if s == 304 { return "Not Modified" }
-    if s == 307 { return "Temporary Redirect" }
-    if s == 308 { return "Permanent Redirect" }
-    if s == 400 { return "Bad Request" }
-    if s == 401 { return "Unauthorized" }
-    if s == 403 { return "Forbidden" }
-    if s == 404 { return "Not Found" }
-    if s == 405 { return "Method Not Allowed" }
-    if s == 408 { return "Request Timeout" }
-    if s == 409 { return "Conflict" }
-    if s == 413 { return "Payload Too Large" }
-    if s == 415 { return "Unsupported Media Type" }
-    if s == 422 { return "Unprocessable Content" }
-    if s == 429 { return "Too Many Requests" }
-    if s == 500 { return "Internal Server Error" }
-    if s == 501 { return "Not Implemented" }
-    if s == 502 { return "Bad Gateway" }
-    if s == 503 { return "Service Unavailable" }
-    if s == 504 { return "Gateway Timeout" }
-    return "Status"
-}
-
-// ---- Server handle management ----
-
-fn sv_serv_fd(h: int) -> int {
-    std::raw::load(sv_st() + 64 + h * 16)
-}
-fn sv_serv_closed(h: int) -> int {
-    std::raw::load(sv_st() + 64 + h * 16 + 8)
-}
-fn sv_serv_set(h: int, fd: int, closed: int) {
-    std::raw::store(sv_st() + 64 + h * 16, fd)
-    std::raw::store(sv_st() + 64 + h * 16 + 8, closed)
-}
-
-// Request entry layout (160 bytes per entry, allocated):
-//  +0:   fd
-//  +8:   method_p, +16: method_l
-//  +24:  target_p, +32: target_l
-//  +40:  version_p, +48: version_l
-//  +56:  remote_p, +64: remote_l
-//  +72:  hdr_arr_p  (raw block of {name_p,name_l,val_p,val_l}*count)
-//  +80:  hdr_count
-//  +88:  body_mode (0=empty,1=fixed,2=chunked)
-//  +96:  body_left (for fixed)
-//  +104: body_consumed
-//  +112: closed
-//  +120: expect_cont
-//  +128: leftover_p
-//  +136: leftover_l
-//  +144: header_buf (the buffer holding header text - freed on cleanup)
-//  +152: remote_buf (the buffer holding remote addr string - freed on cleanup)
-
-fn sv_req_ptr(h: int) -> int {
-    std::raw::load(sv_st() + 256 + h * 8)
-}
-fn sv_req_set_ptr(h: int, p: int) {
-    std::raw::store(sv_st() + 256 + h * 8, p)
-}
-
-fn sv_ws_fd(h: int) -> int {
-    std::raw::load(sv_st() + 2304 + h * 16)
-}
-fn sv_ws_max(h: int) -> int {
-    std::raw::load(sv_st() + 2304 + h * 16 + 8)
-}
-fn sv_ws_set(h: int, fd: int, maxm: int) {
-    std::raw::store(sv_st() + 2304 + h * 16, fd)
-    std::raw::store(sv_st() + 2304 + h * 16 + 8, maxm)
-}
-
-// ---- Parse HTTP request and store into raw entry ----
-// Returns entry pointer or 0 on error.
-
-fn sv_parse(fd: int, rp: int, rl: int) -> int {
-    let dl = sv_now_ms() + SV_IO_MS
-    let buf = rt_alloc_zero(SV_MAX_HEAD_BYTES + 4)
-    let mut got = 0
-    let mut hdr_end = -1
-
-    // Read until \r\n\r\n
-    loop {
-        if got >= SV_MAX_HEAD_BYTES {
-            sv_send400(fd, dl)
-            rt_free_block(buf)
-            return 0
-        }
-        let left = SV_MAX_HEAD_BYTES - got
-        let chunk = if 4096 < left { 4096 } else { left }
-        let r = sv_read_some(fd, buf + got, chunk, dl)
-        if r <= 0 {
-            rt_free_block(buf)
-            return 0
-        }
-        got = got + r
-        // Scan for \r\n\r\n
-        let mut j = got - r - 3
-        if j < 0 { j = 0 }
-        while j <= got - 4 {
-            if std::raw::load8(buf + j) == 13 && std::raw::load8(buf + j + 1) == 10 &&
-               std::raw::load8(buf + j + 2) == 13 && std::raw::load8(buf + j + 3) == 10 {
-                hdr_end = j
-                break
-            }
-            j = j + 1
-        }
-        if hdr_end >= 0 { break }
+fn sv_hdr_ok(p: int, n: int) -> bool {
+    if n == 0 {
+        return false
     }
-
-    // Save leftover bytes after headers
-    let loff = hdr_end + 4
-    let llen = got - loff
-    let mut leftover_p = 0
-    if llen > 0 {
-        leftover_p = rt_alloc_zero(llen)
-        rt_copy(leftover_p, buf + loff, llen)
-    }
-
-    // Parse request line: find first \r\n
-    let mut l1_end = 0
     let mut i = 0
-    while i < hdr_end {
-        if std::raw::load8(buf + i) == 13 && (i + 1) < hdr_end && std::raw::load8(buf + i + 1) == 10 {
-            l1_end = i
-            break
+    while i < n {
+        if !sv_tchar(std::raw::load8(p + i)) {
+            return false
         }
-        i = i + 1
-    }
-    if l1_end == 0 {
-        sv_send400(fd, dl)
-        if leftover_p != 0 { rt_free_block(leftover_p) }
-        rt_free_block(buf)
-        return 0
-    }
-
-    // Find spaces in request line
-    let mut sp1 = -1
-    let mut sp2 = -1
-    i = 0
-    while i < l1_end {
-        if std::raw::load8(buf + i) == 32 {
-            if sp1 < 0 { sp1 = i } else if sp2 < 0 { sp2 = i }
-        }
-        i = i + 1
-    }
-    if sp1 < 0 {
-        sv_send400(fd, dl)
-        if leftover_p != 0 { rt_free_block(leftover_p) }
-        rt_free_block(buf)
-        return 0
-    }
-
-    let meth_p = buf
-    let meth_l = sp1
-    let tgt_p = buf + sp1 + 1
-    let mut tgt_l = l1_end - sp1 - 1
-    let mut ver_p = rt_bdata("HTTP/1.1")
-    let mut ver_l = 8
-    if sp2 >= 0 {
-        tgt_l = sp2 - sp1 - 1
-        ver_p = buf + sp2 + 1
-        ver_l = l1_end - sp2 - 1
-    }
-
-    // Validate
-    if meth_l > 32 || !sv_hdr_ok(meth_p, meth_l) {
-        sv_send400(fd, dl)
-        if leftover_p != 0 { rt_free_block(leftover_p) }
-        rt_free_block(buf)
-        return 0
-    }
-    if tgt_l == 0 || tgt_l > SV_MAX_TARGET_BYTES || sv_has_ctrl(tgt_p, tgt_l) {
-        sv_send400(fd, dl)
-        if leftover_p != 0 { rt_free_block(leftover_p) }
-        rt_free_block(buf)
-        return 0
-    }
-    if ver_l == 8 && std::raw::load8(ver_p) == 72 {
-        // starts with H - check HTTP/1.x
-        let is10 = ver_l == 8
-        let is11 = ver_l == 8
-        // Just check version string
-        let vs = sv_to_str(ver_p, ver_l)
-        if vs != "HTTP/1.0" && vs != "HTTP/1.1" {
-            sv_send400(fd, dl)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-    }
-
-    // Parse headers
-    let hdr_arr = rt_alloc_zero(SV_MAX_HEADERS * 32)
-    let mut hdr_cnt = 0
-    let mut host_n = 0
-    let mut cl_p = 0
-    let mut cl_l = 0
-    let mut te_p = 0
-    let mut te_l = 0
-    let mut expect = false
-
-    let mut pos = l1_end + 2
-    while pos < hdr_end && hdr_cnt < SV_MAX_HEADERS {
-        let ls = pos
-        let mut le = pos
-        while le < hdr_end {
-            if std::raw::load8(buf + le) == 13 && (le + 1) < hdr_end && std::raw::load8(buf + le + 1) == 10 {
-                break
-            }
-            le = le + 1
-        }
-        if le == ls { break }
-        let fc = std::raw::load8(buf + ls)
-        if fc == 32 || fc == 9 {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        // Find colon
-        let mut col = -1
-        let mut k = ls
-        while k < le {
-            if std::raw::load8(buf + k) == 58 { col = k; break }
-            k = k + 1
-        }
-        if col < 0 {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        let np = buf + ls
-        let nl = col - ls
-        // Trim value
-        let mut vp = col + 1
-        let mut vl = le - col - 1
-        while vl > 0 && (std::raw::load8(buf + vp) == 32 || std::raw::load8(buf + vp) == 9) {
-            vp = vp + 1
-            vl = vl - 1
-        }
-        while vl > 0 && (std::raw::load8(buf + vp + vl - 1) == 32 || std::raw::load8(buf + vp + vl - 1) == 9) {
-            vl = vl - 1
-        }
-        let valp = buf + vp
-        if nl > SV_MAX_NAME_BYTES || vl > SV_MAX_VALUE_BYTES {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        if !sv_hdr_ok(np, nl) || !sv_val_ok(valp, vl) {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        let off = hdr_cnt * 32
-        std::raw::store(hdr_arr + off, np)
-        std::raw::store(hdr_arr + off + 8, nl)
-        std::raw::store(hdr_arr + off + 16, valp)
-        std::raw::store(hdr_arr + off + 24, vl)
-        hdr_cnt = hdr_cnt + 1
-
-        // Track special headers
-        if sv_eq_ci(np, nl, rt_bdata("Host"), 4) { host_n = host_n + 1 }
-        if sv_eq_ci(np, nl, rt_bdata("Content-Length"), 14) {
-            if cl_l != 0 {
-                sv_send400(fd, dl)
-                rt_free_block(hdr_arr)
-                if leftover_p != 0 { rt_free_block(leftover_p) }
-                rt_free_block(buf)
-                return 0
-            }
-            cl_p = valp
-            cl_l = vl
-        }
-        if sv_eq_ci(np, nl, rt_bdata("Transfer-Encoding"), 17) {
-            if te_l != 0 {
-                sv_send400(fd, dl)
-                rt_free_block(hdr_arr)
-                if leftover_p != 0 { rt_free_block(leftover_p) }
-                rt_free_block(buf)
-                return 0
-            }
-            te_p = valp
-            te_l = vl
-        }
-        if sv_eq_ci(np, nl, rt_bdata("Expect"), 6) {
-            if !sv_eq_ci(valp, vl, rt_bdata("100-continue"), 12) {
-                sv_send400(fd, dl)
-                rt_free_block(hdr_arr)
-                if leftover_p != 0 { rt_free_block(leftover_p) }
-                rt_free_block(buf)
-                return 0
-            }
-            expect = true
-        }
-        pos = le + 2
-    }
-
-    // HTTP/1.1 requires Host
-    let vs = sv_to_str(ver_p, ver_l)
-    if vs == "HTTP/1.1" && host_n != 1 {
-        sv_send400(fd, dl)
-        rt_free_block(hdr_arr)
-        if leftover_p != 0 { rt_free_block(leftover_p) }
-        rt_free_block(buf)
-        return 0
-    }
-
-    // Body mode
-    let mut bm = 0
-    let mut bl = 0
-    if te_l > 0 {
-        if cl_l > 0 {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        if !sv_eq_ci(te_p, te_l, rt_bdata("chunked"), 7) {
-            sv_send400(fd, dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        bm = 2
-    } else if cl_l > 0 {
-        let mut cv = 0
-        let mut ci = 0
-        let mut ok = true
-        while ci < cl_l {
-            let cc = std::raw::load8(cl_p + ci)
-            if cc >= 48 && cc <= 57 {
-                cv = cv * 10 + (cc - 48)
-            } else if cc != 32 && cc != 9 {
-                ok = false
-            }
-            ci = ci + 1
-        }
-        if !ok || cv > SV_MAX_BODY_BYTES {
-            let msg = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            sv_write_all(fd, rt_bdata(msg), rt_slen(msg), dl)
-            rt_free_block(hdr_arr)
-            if leftover_p != 0 { rt_free_block(leftover_p) }
-            rt_free_block(buf)
-            return 0
-        }
-        if cv > 0 { bm = 1; bl = cv }
-    }
-
-    // Allocate entry (160 bytes)
-    let e = rt_alloc_zero(160)
-    std::raw::store(e, fd)
-    std::raw::store(e + 8, meth_p)
-    std::raw::store(e + 16, meth_l)
-    std::raw::store(e + 24, tgt_p)
-    std::raw::store(e + 32, tgt_l)
-    std::raw::store(e + 40, ver_p)
-    std::raw::store(e + 48, ver_l)
-    std::raw::store(e + 56, rp)
-    std::raw::store(e + 64, rl)
-    std::raw::store(e + 72, hdr_arr)
-    std::raw::store(e + 80, hdr_cnt)
-    std::raw::store(e + 88, bm)
-    std::raw::store(e + 96, bl)
-    std::raw::store(e + 104, 0)
-    std::raw::store(e + 112, 0)
-    std::raw::store(e + 120, if expect && bm != 0 { 1 } else { 0 })
-    std::raw::store(e + 128, leftover_p)
-    std::raw::store(e + 136, llen)
-    std::raw::store(e + 144, buf)  // header text buffer (owns method/target/etc.)
-    // remote string: we allocate a copy
-    let rbuf = rt_alloc_zero(rl)
-    if rl > 0 { rt_copy(rbuf, rp, rl) }
-    std::raw::store(e + 152, rbuf)
-    e
-}
-
-fn sv_free_entry(e: int) {
-    if e == 0 { return }
-    let lp = std::raw::load(e + 128)
-    if lp != 0 { rt_free_block(lp) }
-    let ha = std::raw::load(e + 72)
-    if ha != 0 { rt_free_block(ha) }
-    let hb = std::raw::load(e + 144)
-    if hb != 0 { rt_free_block(hb) }
-    let rb = std::raw::load(e + 152)
-    if rb != 0 { rt_free_block(rb) }
-    rt_free_block(e)
-}
-
-fn sv_close_req(e: int) {
-    if e == 0 { return }
-    if std::raw::load(e + 112) != 0 { return }
-    std::raw::store(e + 112, 1)
-    let fd = std::raw::load(e)
-    if fd > 0 {
-        std::raw::syscall(48, fd, 2, 0, 0, 0, 0)
-    }
-}
-
-// ---- Public API: start ----
-
-fn std__server__start(addr: string) -> int {
-    let al = rt_slen(addr)
-    let ap = rt_bdata(addr)
-    // Find last ':'
-    let mut col = -1
-    let mut i = al - 1
-    while i >= 0 {
-        if std::raw::load8(ap + i) == 58 { col = i; break }
-        i = i - 1
-    }
-    if col < 0 { return -1 }
-    // Parse port
-    let mut port = 0
-    i = col + 1
-    while i < al {
-        let c = std::raw::load8(ap + i)
-        if c >= 48 && c <= 57 { port = port * 10 + (c - 48) }
-        i = i + 1
-    }
-    if port <= 0 || port > 65535 { return -1 }
-    // IPv6?
-    let mut v6 = false
-    i = 0
-    while i < col {
-        if std::raw::load8(ap + i) == 58 { v6 = true }
-        i = i + 1
-    }
-    let fam = if v6 { 10 } else { 2 }
-    // socket(fam, SOCK_STREAM|SOCK_CLOEXEC, 0) — blocking
-    let fd = std::raw::syscall(41, fam, 524289 | 1, 0, 0, 0, 0)
-    if fd < 0 { return -1 }
-    // SO_REUSEADDR
-    let one = rt_alloc_zero(4)
-    std::raw::store8(one, 1)
-    std::raw::syscall(54, fd, 1, 2, one, 4, 0)
-    rt_free_block(one)
-    // Build sockaddr and bind
-    if fam == 2 {
-        let sa = rt_alloc_zero(16)
-        std::raw::store8(sa, 2)
-        std::raw::store8(sa + 2, (port / 256) & 255)
-        std::raw::store8(sa + 3, port & 255)
-        // Parse 4 octets
-        let mut oct = rt_alloc_zero(32) // 4 ints
-        let mut oi = 0
-        let mut j = 0
-        while j <= col {
-            let mut c = 0
-            if j < col { c = std::raw::load8(ap + j) }
-            if c == 46 || j == col {
-                oi = oi + 1
-            } else if c >= 48 && c <= 57 && oi < 4 {
-                let cur = std::raw::load(oct + oi * 8)
-                std::raw::store(oct + oi * 8, cur * 10 + (c - 48))
-            }
-            j = j + 1
-        }
-        std::raw::store8(sa + 4, std::raw::load(oct))
-        std::raw::store8(sa + 5, std::raw::load(oct + 8))
-        std::raw::store8(sa + 6, std::raw::load(oct + 16))
-        std::raw::store8(sa + 7, std::raw::load(oct + 24))
-        rt_free_block(oct)
-        let br = std::raw::syscall(49, fd, sa, 16, 0, 0, 0)
-        rt_free_block(sa)
-        if br < 0 { sv_close(fd); return -1 }
-    } else {
-        let sa = rt_alloc_zero(28)
-        std::raw::store8(sa, 10)
-        std::raw::store8(sa + 2, (port / 256) & 255)
-        std::raw::store8(sa + 3, port & 255)
-        let h = std::text::substring(addr, 0, col)
-        if std::text::contains(h, "1") {
-            std::raw::store8(sa + 23, 1)
-        }
-        let br = std::raw::syscall(49, fd, sa, 28, 0, 0, 0)
-        rt_free_block(sa)
-        if br < 0 { sv_close(fd); return -1 }
-    }
-    // listen
-    if std::raw::syscall(50, fd, 128, 0, 0, 0, 0) < 0 { sv_close(fd); return -1 }
-    // Allocate handle
-    let st = sv_st()
-    let next = std::raw::load(st)
-    if next >= SV_MAX_SERVERS { sv_close(fd); return -1 }
-    std::raw::store(st, next + 1)
-    sv_serv_set(next, fd, 0)
-    next
-}
-
-fn std__server__local_addr(h: int) -> string {
-    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return "" }
-    let fd = sv_serv_fd(h)
-    if fd <= 0 { return "" }
-    let sa = rt_alloc_zero(28)
-    let lp = rt_alloc_zero(8)
-    std::raw::store8(lp, 28)
-    if std::raw::syscall(51, fd, sa, lp, 0, 0, 0) < 0 {
-        rt_free_block(sa); rt_free_block(lp); return ""
-    }
-    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
-    let p = 256 * std::raw::load8(sa + 2) + std::raw::load8(sa + 3)
-    let mut out = ""
-    if fam == 2 {
-        out = rt_int_to_str(std::raw::load8(sa + 4))
-        out = rt_concat(out, ".")
-        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 5)))
-        out = rt_concat(out, ".")
-        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 6)))
-        out = rt_concat(out, ".")
-        out = rt_concat(out, rt_int_to_str(std::raw::load8(sa + 7)))
-    } else {
-        out = "::1"
-    }
-    rt_free_block(sa)
-    rt_free_block(lp)
-    rt_concat(rt_concat(out, ":"), rt_int_to_str(p))
-}
-
-fn std__server__accept(h: int, tms: int) -> int {
-    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return -1 }
-    if tms > SV_MAX_ACCEPT_MS { return -1 }
-    let fd = sv_serv_fd(h)
-    if fd <= 0 { return -1 }
-    // Set SO_RCVTIMEO for timeout on blocking accept
-    let tv = rt_alloc_zero(16)
-    std::raw::store(tv, tms / 1000)
-    std::raw::store(tv + 8, (tms - (tms / 1000) * 1000) * 1000000)
-    std::raw::syscall(54, fd, 1, 20, tv, 16, 0)
-    rt_free_block(tv)
-    // accept(fd, sockaddr, addrlen)
-    let sa = rt_alloc_zero(28)
-    let lp = rt_alloc_zero(8)
-    std::raw::store8(lp, 28)
-    let mut r = std::raw::syscall(43, fd, sa, lp, 0, 0, 0)
-    // Retry on EINTR
-    while r == -4 {
-        r = std::raw::syscall(43, fd, sa, lp, 0, 0, 0)
-    }
-    // Clear SO_RCVTIMEO
-    let tv2 = rt_alloc_zero(16)
-    std::raw::syscall(54, fd, 1, 20, tv2, 16, 0)
-    rt_free_block(tv2)
-    if r <= 0 {
-        rt_free_block(sa)
-        rt_free_block(lp)
-        // Return the negative errno so caller can diagnose
-        return r
-    }
-    let cfd = r
-    std::raw::syscall(72, cfd, 2, 1, 0, 0, 0)  // FD_CLOEXEC
-    // TCP_NODELAY
-    let nd = rt_alloc_zero(4)
-    std::raw::store8(nd, 1)
-    std::raw::syscall(54, cfd, 6, 1, nd, 4, 0)
-    rt_free_block(nd)
-    // Remote address
-    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
-    let rp = 256 * std::raw::load8(sa + 2) + std::raw::load8(sa + 3)
-    let mut remote = ""
-    if fam == 2 {
-        remote = rt_int_to_str(std::raw::load8(sa + 4))
-        remote = rt_concat(remote, ".")
-        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 5)))
-        remote = rt_concat(remote, ".")
-        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 6)))
-        remote = rt_concat(remote, ".")
-        remote = rt_concat(remote, rt_int_to_str(std::raw::load8(sa + 7)))
-    } else {
-        remote = "::1"
-    }
-    remote = rt_concat(remote, ":")
-    remote = rt_concat(remote, rt_int_to_str(rp))
-    rt_free_block(sa)
-    rt_free_block(lp)
-    let entry = sv_parse(cfd, rt_bdata(remote), rt_slen(remote))
-    if entry == 0 { return -1 }
-    let st = sv_st()
-    let rn = std::raw::load(st + 8)
-    if rn >= SV_MAX_REQUESTS {
-        sv_free_entry(entry)
-        return -1
-    }
-    std::raw::store(st + 8, rn + 1)
-    sv_req_set_ptr(rn, entry)
-    rn
-}
-
-fn std__server__stop(h: int) {
-    if h < 0 || h >= SV_MAX_SERVERS || sv_serv_closed(h) != 0 { return }
-    let fd = sv_serv_fd(h)
-    sv_serv_set(h, 0, 1)
-    if fd > 0 { sv_close(fd) }
-}
-
-// ---- Request accessors ----
-
-fn sv_e(h: int) -> int {
-    let e = sv_req_ptr(h)
-    if e == 0 || std::raw::load(e + 112) != 0 { return 0 }
-    e
-}
-
-fn std__server__method(h: int) -> string {
-    let e = sv_e(h)
-    if e == 0 { return "" }
-    sv_to_str(std::raw::load(e + 8), std::raw::load(e + 16))
-}
-
-fn std__server__url(h: int) -> string {
-    let e = sv_e(h)
-    if e == 0 { return "" }
-    sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
-}
-
-fn std__server__path(h: int) -> string {
-    let e = sv_e(h)
-    if e == 0 { return "" }
-    let t = sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
-    let tp = rt_bdata(t)
-    let tn = rt_slen(t)
-    let mut qi = -1
-    let mut i = 0
-    while i < tn {
-        if std::raw::load8(tp + i) == 63 { qi = i; break }
-        i = i + 1
-    }
-    if qi >= 0 { return std::text::substring(t, 0, qi) }
-    t
-}
-
-fn std__server__query(h: int) -> string {
-    let e = sv_e(h)
-    if e == 0 { return "" }
-    let t = sv_to_str(std::raw::load(e + 24), std::raw::load(e + 32))
-    let tp = rt_bdata(t)
-    let tn = rt_slen(t)
-    let mut qi = -1
-    let mut i = 0
-    while i < tn {
-        if std::raw::load8(tp + i) == 63 { qi = i; break }
-        i = i + 1
-    }
-    if qi >= 0 { return std::text::substring(t, qi + 1, tn) }
-    ""
-}
-
-fn std__server__remote_addr(h: int) -> string {
-    let e = sv_e(h)
-    if e == 0 { return "" }
-    let rb = std::raw::load(e + 152)
-    if rb == 0 { return "" }
-    sv_to_str(rb, std::raw::load(e + 64))
-}
-
-fn std__server__header(h: int, name: string) -> any {
-    let e = sv_e(h)
-    if e == 0 { return nil }
-    let arr = std::raw::load(e + 72)
-    let cnt = std::raw::load(e + 80)
-    let np = rt_bdata(name)
-    let nl = rt_slen(name)
-    let mut i = 0
-    while i < cnt {
-        let off = i * 32
-        let hnp = std::raw::load(arr + off)
-        let hnl = std::raw::load(arr + off + 8)
-        if sv_eq_ci(hnp, hnl, np, nl) {
-            return sv_to_str(std::raw::load(arr + off + 16), std::raw::load(arr + off + 24))
-        }
-        i = i + 1
-    }
-    nil
-}
-
-fn std__server__headers(h: int) -> any {
-    let e = sv_e(h)
-    if e == 0 { return nil }
-    let arr = std::raw::load(e + 72)
-    let cnt = std::raw::load(e + 80)
-    let mut m = std::map::new()
-    let mut ob = 0
-    let mut i = 0
-    while i < cnt {
-        let off = i * 32
-        let nm = sv_to_str(std::raw::load(arr + off), std::raw::load(arr + off + 8))
-        let vl = sv_to_str(std::raw::load(arr + off + 16), std::raw::load(arr + off + 24))
-        let lo = std::text::lowercase(nm)
-        let ex = std::map::get(m, lo)
-        let mut nv = vl
-        if ex != nil {
-            nv = rt_concat(rt_concat(ex, ", "), vl)
-        }
-        ob = ob + rt_slen(lo) + rt_slen(nv) + 2
-        if ob > SV_MAX_OUTPUT_BYTES { return nil }
-        m = std::map::insert(m, lo, nv)
-        i = i + 1
-    }
-    m
-}
-
-// ---- Body reading ----
-
-fn sv_read_fixed(fd: int, lp: int, ll: int, want: int, dl: int) -> any {
-    let body = rt_alloc_zero(want)
-    let mut done = 0
-    if ll > 0 {
-        let n = if ll < want { ll } else { want }
-        rt_copy(body, lp, n)
-        done = n
-    }
-    while done < want {
-        let r = sv_read_some(fd, body + done, want - done, dl)
-        if r <= 0 { rt_free_block(body); return "" }
-        done = done + r
-    }
-    let s = rt_bytes_from(body, want)
-    rt_free_block(body)
-    s
-}
-
-fn sv_read_chunked(fd: int, dl: int) -> any {
-    let buf = rt_alloc_zero(SV_MAX_BODY_BYTES)
-    let mut total = 0
-    // Read one byte at a time from fd
-    let tmp = rt_alloc_zero(1)
-    loop {
-        // Read chunk size line
-        let mut cs = 0
-        let mut seen_digit = false
-        loop {
-            let r = sv_read_exact(fd, tmp, 1, dl)
-            if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
-            let b = std::raw::load8(tmp)
-            if b == 13 { continue }
-            if b == 10 {
-                if !seen_digit {
-                    rt_free_block(buf); rt_free_block(tmp); return nil
-                }
-                break
-            }
-            if b == 59 || b == 32 {
-                // Skip rest of line
-                loop {
-                    let r2 = sv_read_exact(fd, tmp, 1, dl)
-                    if r2 < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
-                    if std::raw::load8(tmp) == 10 { break }
-                }
-                break
-            }
-            let mut digit = -1
-            if b >= 48 && b <= 57 { digit = b - 48 }
-            else if b >= 65 && b <= 70 { digit = b - 55 }
-            else if b >= 97 && b <= 102 { digit = b - 87 }
-            if digit < 0 {
-                rt_free_block(buf); rt_free_block(tmp); return nil
-            }
-            cs = cs * 16 + digit
-            seen_digit = true
-        }
-        if cs == 0 {
-            // Terminal: skip trailers
-            loop {
-                let mut empty = true
-                loop {
-                    let r = sv_read_exact(fd, tmp, 1, dl)
-                    if r < 0 { break }
-                    let b = std::raw::load8(tmp)
-                    if b == 13 { continue }
-                    if b == 10 {
-                        if empty {
-                            let s = rt_bytes_from(buf, total)
-                            rt_free_block(buf)
-                            rt_free_block(tmp)
-                            return s
-                        }
-                        empty = true
-                        continue
-                    }
-                    empty = false
-                }
-            }
-        }
-        // Read cs bytes
-        if total + cs > SV_MAX_BODY_BYTES {
-            rt_free_block(buf); rt_free_block(tmp); return nil
-        }
-        let r = sv_read_exact(fd, buf + total, cs, dl)
-        if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
-        total = total + cs
-        // Skip CRLF
-        let mut got_lf = 0
-        while got_lf < 2 {
-            let r = sv_read_exact(fd, tmp, 1, dl)
-            if r < 0 { rt_free_block(buf); rt_free_block(tmp); return nil }
-            let b = std::raw::load8(tmp)
-            if b == 13 { continue }
-            if b == 10 { got_lf = got_lf + 1 }
-        }
-    }
-    rt_free_block(buf)
-    rt_free_block(tmp)
-    nil
-}
-
-fn std__server__body(h: int) -> any {
-    let e = sv_e(h)
-    if e == 0 { return nil }
-    if std::raw::load(e + 104) != 0 {
-        return "request body has already been consumed"
-    }
-    std::raw::store(e + 104, 1)
-    let bm = std::raw::load(e + 88)
-    if bm == 0 { return "" }
-    let dl = sv_now_ms() + SV_IO_MS
-    if std::raw::load(e + 120) != 0 {
-        let c = "HTTP/1.1 100 Continue\r\n\r\n"
-        sv_write_all(std::raw::load(e), rt_bdata(c), rt_slen(c), dl)
-    }
-    if bm == 1 {
-        return sv_read_fixed(std::raw::load(e), std::raw::load(e + 128), std::raw::load(e + 136), std::raw::load(e + 96), dl)
-    }
-    if bm == 2 {
-        return sv_read_chunked(std::raw::load(e), dl)
-    }
-    ""
-}
-
-fn std__server__body_text(h: int) -> string {
-    std__server__body(h)
-}
-
-// ---- Response ----
-
-fn sv_send_resp(h: int, status: int, ct: string, extra: any, body: string) -> any {
-    if status < 100 || status > 599 || status == 101 {
-        return "invalid HTTP response: status must be between 100 and 599; 101 is reserved for WebSocket upgrade"
-    }
-    let e = sv_e(h)
-    if e == 0 { return nil }
-    let fd = std::raw::load(e)
-    let blen = rt_slen(body)
-    let mut pl = blen
-    if status >= 100 && status <= 199 { pl = 0 }
-    if status == 204 || status == 304 { pl = 0 }
-    if pl > SV_MAX_RESPONSE_BYTES {
-        return "invalid HTTP response: HTTP response body bytes exceeds limit 8388608"
-    }
-    let mut head = "HTTP/1.1 "
-    head = rt_concat(head, rt_int_to_str(status))
-    head = rt_concat(head, " ")
-    head = rt_concat(head, sv_reason(status))
-    head = rt_concat(head, "\r\nContent-Length: ")
-    head = rt_concat(head, rt_int_to_str(pl))
-    head = rt_concat(head, "\r\nConnection: close\r\n")
-    if ct != "" {
-        head = rt_concat(head, "Content-Type: ")
-        head = rt_concat(head, ct)
-        head = rt_concat(head, "\r\n")
-    }
-    if extra != nil {
-        let n = rt_slen(extra)
-        let mut i = 0
-        while i < n {
-            let pair = extra[i]
-            head = rt_concat(head, pair[0])
-            head = rt_concat(head, ": ")
-            head = rt_concat(head, pair[1])
-            head = rt_concat(head, "\r\n")
-            i = i + 1
-        }
-    }
-    head = rt_concat(head, "\r\n")
-    let deadline = sv_now_ms() + SV_IO_MS
-    let r = sv_write_all(fd, rt_bdata(head), rt_slen(head), deadline)
-    if r < 0 {
-        sv_close_req(e)
-        return rt_concat("i/o error: ", rt_os_error(0 - r))
-    }
-    let meth = std__server__method(h)
-    if meth != "HEAD" && pl > 0 {
-        let r2 = sv_write_all(fd, rt_bdata(body), pl, deadline)
-        if r2 < 0 {
-            sv_close_req(e)
-            return rt_concat("i/o error: ", rt_os_error(0 - r2))
-        }
-    }
-    sv_close_req(e)
-    nil
-}
-
-fn std__server__respond(h: int, status: int, body: string) -> any {
-    sv_send_resp(h, status, "text/plain; charset=utf-8", nil, body)
-}
-
-fn std__server__respond_html(h: int, status: int, html: string) -> any {
-    sv_send_resp(h, status, "text/html; charset=utf-8", nil, html)
-}
-
-fn std__server__respond_json(h: int, status: int, body: string) -> any {
-    sv_send_resp(h, status, "application/json; charset=utf-8", nil, body)
-}
-
-fn std__server__respond_bytes(h: int, status: int, ct: string, data: any) -> any {
-    sv_send_resp(h, status, ct, nil, data)
-}
-
-fn std__server__respond_full(h: int, status: int, ct: string, extra: any, data: any) -> any {
-    sv_send_resp(h, status, ct, extra, data)
-}
-
-// ---- WebSocket upgrade ----
-
-fn std__server__upgrade_websocket(h: int, maxm: int) -> int {
-    if maxm <= 0 || maxm > SV_MAX_WS_MSG { return -1 }
-    let e = sv_e(h)
-    if e == 0 { return -1 }
-    let meth = std__server__method(h)
-    let ver = sv_to_str(std::raw::load(e + 40), std::raw::load(e + 48))
-    if meth != "GET" || ver != "HTTP/1.1" { return -1 }
-    // Check Upgrade: websocket
-    let upg = std__server__header(h, "Upgrade")
-    if upg == nil { return -1 }
-    if !sv_eq_ci(rt_bdata(upg), rt_slen(upg), rt_bdata("websocket"), 9) { return -1 }
-    // Check Connection contains Upgrade
-    let conn = std__server__header(h, "Connection")
-    if conn == nil { return -1 }
-    let mut found = false
-    let cl = rt_slen(conn)
-    let cp = rt_bdata(conn)
-    let mut ci = 0
-    while ci <= cl - 7 {
-        if sv_eq_ci(cp + ci, 7, rt_bdata("Upgrade"), 7) { found = true; break }
-        ci = ci + 1
-    }
-    if !found { return -1 }
-    // Sec-WebSocket-Key and Version
-    let key = std__server__header(h, "Sec-WebSocket-Key")
-    if key == nil || key == "" { return -1 }
-    let wsv = std__server__header(h, "Sec-WebSocket-Version")
-    if wsv == nil || wsv != "13" { return -1 }
-    // SHA-1 accept key
-    let magic = "258EAFA5-E914-47DA-95CA-5AB5DC1165AE"
-    let combined = rt_concat(key, magic)
-    let sha = wk_sha1(rt_bdata(combined), rt_slen(combined))
-    let accept = std::encoding::base64_encode(sha)
-    // Build 101 response
-    let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
-    let resp = rt_concat(resp, accept)
-    let resp = rt_concat(resp, "\r\n\r\n")
-    let fd = std::raw::load(e)
-    let dl = sv_now_ms() + SV_IO_MS
-    let r = sv_write_all(fd, rt_bdata(resp), rt_slen(resp), dl)
-    if r < 0 { sv_close_req(e); return -1 }
-    // Allocate WS handle
-    let st = sv_st()
-    let wn = std::raw::load(st + 16)
-    if wn >= SV_MAX_WS { sv_close_req(e); return -1 }
-    std::raw::store(st + 16, wn + 1)
-    sv_ws_set(wn, fd, maxm)
-    // Transfer fd from request to WS
-    std::raw::store(e, 0)
-    sv_close_req(e)
-    wn
-}
-
-// ---- WebSocket recv ----
-
-fn std__server__ws_recv(h: int) -> any {
-    if h < 0 || h >= SV_MAX_WS { return nil }
-    let fd = sv_ws_fd(h)
-    let maxm = sv_ws_max(h)
-    if fd <= 0 { return nil }
-    let dl = sv_now_ms() + 60000
-    let hdr = rt_alloc_zero(14)
-    if sv_read_exact(fd, hdr, 2, dl) < 0 { rt_free_block(hdr); return nil }
-    let b0 = std::raw::load8(hdr)
-    let b1 = std::raw::load8(hdr + 1)
-    let op = b0 & 15
-    let masked = (b1 / 128) & 1
-    let mut pl = b1 & 127
-    if pl == 126 {
-        if sv_read_exact(fd, hdr + 2, 2, dl) < 0 { rt_free_block(hdr); return nil }
-        pl = 256 * std::raw::load8(hdr + 2) + std::raw::load8(hdr + 3)
-    } else if pl == 127 {
-        if sv_read_exact(fd, hdr + 2, 8, dl) < 0 { rt_free_block(hdr); return nil }
-        pl = 16777216 * std::raw::load8(hdr + 6) + 65536 * std::raw::load8(hdr + 7) +
-             256 * std::raw::load8(hdr + 8) + std::raw::load8(hdr + 9)
-    }
-    rt_free_block(hdr)
-    if pl > maxm { return nil }
-    // Mask key
-    let mask = rt_alloc_zero(4)
-    if masked == 1 {
-        if sv_read_exact(fd, mask, 4, dl) < 0 { rt_free_block(mask); return nil }
-    }
-    // Payload
-    let mut payload = 0
-    if pl > 0 {
-        payload = rt_alloc_zero(pl)
-        if sv_read_exact(fd, payload, pl, dl) < 0 { rt_free_block(mask); rt_free_block(payload); return nil }
-    }
-    // Unmask
-    if masked == 1 && pl > 0 {
-        let mut mi = 0
-        while mi < pl {
-            let b = std::raw::load8(payload + mi)
-            let m = std::raw::load8(mask + (mi - (mi / 4) * 4))
-            // XOR: for bytes, (b|m) - (b&m) works same as XOR
-            let x = (b | m) - (b & m)
-            std::raw::store8(payload + mi, x & 255)
-            mi = mi + 1
-        }
-    }
-    rt_free_block(mask)
-    // Handle opcodes
-    if op == 8 {
-        let mut cc = 1005
-        let mut cr = ""
-        if pl >= 2 {
-            cc = 256 * std::raw::load8(payload) + std::raw::load8(payload + 1)
-            if pl > 2 { cr = rt_bytes_from(payload + 2, pl - 2) }
-        }
-        if payload != 0 { rt_free_block(payload) }
-        sv_close(fd)
-        sv_ws_set(h, 0, 0)
-        return ["close", cr, nil]
-    }
-    if op == 9 {
-        // Ping -> Pong
-        let pong = rt_alloc_zero(2 + pl)
-        std::raw::store8(pong, 138)
-        std::raw::store8(pong + 1, pl)
-        if pl > 0 { rt_copy(pong + 2, payload, pl) }
-        sv_write_all(fd, pong, 2 + pl, dl)
-        rt_free_block(pong)
-        if payload != 0 { rt_free_block(payload) }
-        return ["ping", "", nil]
-    }
-    if op == 10 {
-        if payload != 0 { rt_free_block(payload) }
-        return ["pong", "", nil]
-    }
-    if op == 1 || op == 2 {
-        let mut text = ""
-        if pl > 0 { text = rt_bytes_from(payload, pl) }
-        if payload != 0 { rt_free_block(payload) }
-        let mut kind = "text"
-        if op == 2 { kind = "binary" }
-        return [kind, text, nil]
-    }
-    if payload != 0 { rt_free_block(payload) }
-    nil
-}
-
-// ---- WebSocket send ----
-
-fn sv_ws_frame(h: int, op: int, data: string) -> bool {
-    if h < 0 || h >= SV_MAX_WS { return false }
-    let fd = sv_ws_fd(h)
-    let maxm = sv_ws_max(h)
-    if fd <= 0 { return false }
-    let len = rt_slen(data)
-    if len > maxm { return false }
-    let dl = sv_now_ms() + SV_IO_MS
-    if len <= 125 {
-        let hdr = rt_alloc_zero(2)
-        std::raw::store8(hdr, 128 + op)
-        std::raw::store8(hdr + 1, len)
-        let r = sv_write_all(fd, hdr, 2, dl)
-        rt_free_block(hdr)
-        if r < 0 { return false }
-    } else if len <= 65535 {
-        let hdr = rt_alloc_zero(4)
-        std::raw::store8(hdr, 128 + op)
-        std::raw::store8(hdr + 1, 126)
-        std::raw::store8(hdr + 2, (len / 256) & 255)
-        std::raw::store8(hdr + 3, len & 255)
-        let r = sv_write_all(fd, hdr, 4, dl)
-        rt_free_block(hdr)
-        if r < 0 { return false }
-    } else {
-        let hdr = rt_alloc_zero(10)
-        std::raw::store8(hdr, 128 + op)
-        std::raw::store8(hdr + 1, 127)
-        std::raw::store8(hdr + 6, (len / 16777216) & 255)
-        std::raw::store8(hdr + 7, (len / 65536) & 255)
-        std::raw::store8(hdr + 8, (len / 256) & 255)
-        std::raw::store8(hdr + 9, len & 255)
-        let r = sv_write_all(fd, hdr, 10, dl)
-        rt_free_block(hdr)
-        if r < 0 { return false }
-    }
-    if len > 0 {
-        let r = sv_write_all(fd, rt_bdata(data), len, dl)
-        if r < 0 { return false }
+        i += 1
     }
     true
 }
 
-fn std__server__ws_send_text(h: int, text: string) -> any {
-    if !sv_ws_frame(h, 1, text) { return "websocket error: send failed" }
+// is_header_value: tab o 0x20..=0x7e.
+fn sv_val_ok(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c != 9 && (c < 32 || c > 126) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// Algún byte de control ASCII (0..=31, 127).
+fn sv_has_ctrl(p: int, n: int) -> bool {
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 32 || c == 127 {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+fn sv_find_byte(p: int, from: int, to: int, c: int) -> int {
+    let mut i = from
+    while i < to {
+        if std::raw::load8(p + i) == c {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Posición de "\r\n" en p[from..to), o -1.
+fn sv_find_crlf(p: int, from: int, to: int) -> int {
+    let mut i = from
+    while i + 1 < to {
+        if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// ------------------------------------------------------------------ buffers crecientes
+// Bloque de 24 bytes {datos, longitud, capacidad}.
+
+fn sv_gb_new() -> int {
+    rt_alloc_zero(24)
+}
+
+fn sv_gb_free(gb: int) {
+    let p = std::raw::load(gb)
+    if p != 0 {
+        rt_free_block(p)
+    }
+    rt_free_block(gb)
+}
+
+fn sv_gb_reserve(gb: int, extra: int) {
+    let len = std::raw::load(gb + 8)
+    let cap = std::raw::load(gb + 16)
+    if len + extra <= cap {
+        return
+    }
+    let mut ncap = cap * 2
+    if ncap < 256 {
+        ncap = 256
+    }
+    while ncap < len + extra {
+        ncap = ncap * 2
+    }
+    let np = rt_alloc(ncap)
+    let old = std::raw::load(gb)
+    if old != 0 {
+        rt_copy(np, old, len)
+        rt_free_block(old)
+    }
+    std::raw::store(gb, np)
+    std::raw::store(gb + 16, ncap)
+}
+
+fn sv_gb_push(gb: int, src: int, n: int) {
+    if n <= 0 {
+        return
+    }
+    sv_gb_reserve(gb, n)
+    rt_copy(std::raw::load(gb) + std::raw::load(gb + 8), src, n)
+    std::raw::store(gb + 8, std::raw::load(gb + 8) + n)
+}
+
+// Quita los primeros n bytes.
+fn sv_gb_drain(gb: int, n: int) {
+    let len = std::raw::load(gb + 8)
+    let p = std::raw::load(gb)
+    if n >= len {
+        std::raw::store(gb + 8, 0)
+        return
+    }
+    let mut i = 0
+    while i < len - n {
+        std::raw::store8(p + i, std::raw::load8(p + n + i))
+        i += 1
+    }
+    std::raw::store(gb + 8, len - n)
+}
+
+// ------------------------------------------------------------------ direcciones
+
+// u16 de un puerto como lo lee SocketAddr::from_str: solo dígitos (con ceros a
+// la izquierda), valor <= 65535. -1 si no es válido.
+fn sv_parse_port(p: int, n: int) -> int {
+    if n == 0 {
+        return -1
+    }
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 {
+            return -1
+        }
+        v = v * 10 + (c - 48)
+        if v > 65535 {
+            return -1
+        }
+        i += 1
+    }
+    v
+}
+
+// Interpreta "a.b.c.d:puerto" o "[ipv6(%scope)]:puerto" como SocketAddr.
+// Rellena sa (32 bytes a cero) y devuelve su longitud (16 o 28); 0 si no vale.
+fn sv_sockaddr(p: int, n: int, sa: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    let a = rt_alloc_zero(16)
+    let mut len = 0
+    if std::raw::load8(p) == 91 {
+        let close = sv_find_byte(p, 0, n, 93)
+        if close > 0 && close + 1 < n && std::raw::load8(p + close + 1) == 58 {
+            let port = sv_parse_port(p + close + 2, n - close - 2)
+            let mut ipn = close - 1
+            let mut scope = 0
+            let mut scope_ok = true
+            let pct = sv_find_byte(p, 1, close, 37)
+            if pct >= 0 {
+                ipn = pct - 1
+                let sn = close - pct - 1
+                if sn == 0 {
+                    scope_ok = false
+                }
+                let mut i = 0
+                while i < sn && scope_ok {
+                    let c = std::raw::load8(p + pct + 1 + i)
+                    if c < 48 || c > 57 {
+                        scope_ok = false
+                    } else {
+                        scope = scope * 10 + (c - 48)
+                        if scope > 4294967295 {
+                            scope_ok = false
+                        }
+                    }
+                    i += 1
+                }
+            }
+            if port >= 0 && scope_ok && nt_rust_v6(p + 1, ipn, a) {
+                nt_sin6(sa, port, a, 0, scope)
+                len = 28
+            }
+        }
+    } else {
+        let colon = sv_find_byte(p, 0, n, 58)
+        if colon > 0 {
+            let port = sv_parse_port(p + colon + 1, n - colon - 1)
+            if port >= 0 && nt_rust_v4(p, colon, a) {
+                nt_sin(sa, port, a)
+                len = 16
+            }
+        }
+    }
+    rt_free_block(a)
+    len
+}
+
+// Texto de un sockaddr como SocketAddr::to_string de Rust.
+fn sv_fmt_sockaddr(sa: int) -> any {
+    let fam = std::raw::load8(sa) + 256 * std::raw::load8(sa + 1)
+    let port = std::raw::load8(sa + 2) * 256 + std::raw::load8(sa + 3)
+    if fam == 2 {
+        return rt_concat(rt_concat(dn_ipv4_str(sa + 4), ":"), rt_int_to_str(port))
+    }
+    let mut scope = std::raw::load8(sa + 24)
+    scope = scope + 256 * std::raw::load8(sa + 25)
+    scope = scope + 65536 * std::raw::load8(sa + 26)
+    scope = scope + 16777216 * std::raw::load8(sa + 27)
+    let mut out = rt_concat("[", dn_ipv6_str(sa + 8))
+    if scope != 0 {
+        out = rt_concat(rt_concat(out, "%"), rt_int_to_str(scope))
+    }
+    rt_concat(rt_concat(out, "]:"), rt_int_to_str(port))
+}
+
+// ------------------------------------------------------------------ registro
+// Servidores: 8 × {id, fd}.
+
+fn sv_serv_slot(h: int) -> int {
+    if h <= 0 {
+        return -1
+    }
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_SERVERS {
+        if std::raw::load(st + SV_SERV_BASE + 16 * i) == h {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn sv_serv_count() -> int {
+    let st = sv_st()
+    let mut n = 0
+    let mut i = 0
+    while i < SV_MAX_SERVERS {
+        if std::raw::load(st + SV_SERV_BASE + 16 * i) != 0 {
+            n += 1
+        }
+        i += 1
+    }
+    n
+}
+
+fn sv_serv_free_slot() -> int {
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_SERVERS {
+        if std::raw::load(st + SV_SERV_BASE + 16 * i) == 0 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Entrada de petición (puntero; 0 = no existe).
+//   +0 id        +8 fd          +16 cabecera copiada   +24 su longitud
+//   +32 método   +40 long.      +48 objetivo           +56 long.
+//   +64 HTTP/1.1 (1/0)   +72 remote_addr (bytes)   +80 su longitud
+//   +88 cabeceras (128 × {nombre, long., valor, long.})   +96 cuántas
+//   +104 modo del cuerpo (0 vacío, 1 fijo, 2 chunked)   +112 longitud fija
+//   +120 cuerpo ya consumido   +128 Expect: 100-continue
+//   +136 bytes ya leídos tras la cabecera   +144 su longitud   +152 posición
+//   +160 bytes de metadatos
+fn sv_req_find(h: int) -> int {
+    if h <= 0 {
+        return 0
+    }
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_REQUESTS {
+        let e = std::raw::load(st + SV_REQ_BASE + 8 * i)
+        if e != 0 {
+            if std::raw::load(e) == h {
+                return e
+            }
+        }
+        i += 1
+    }
+    0
+}
+
+fn sv_req_count() -> int {
+    let st = sv_st()
+    let mut n = 0
+    let mut i = 0
+    while i < SV_MAX_REQUESTS {
+        if std::raw::load(st + SV_REQ_BASE + 8 * i) != 0 {
+            n += 1
+        }
+        i += 1
+    }
+    n
+}
+
+fn sv_req_meta_total() -> int {
+    let st = sv_st()
+    let mut n = 0
+    let mut i = 0
+    while i < SV_MAX_REQUESTS {
+        let e = std::raw::load(st + SV_REQ_BASE + 8 * i)
+        if e != 0 {
+            n += std::raw::load(e + 160)
+        }
+        i += 1
+    }
+    n
+}
+
+fn sv_req_put(e: int) {
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_REQUESTS {
+        if std::raw::load(st + SV_REQ_BASE + 8 * i) == 0 {
+            std::raw::store(st + SV_REQ_BASE + 8 * i, e)
+            return
+        }
+        i += 1
+    }
+}
+
+// Quita la petición del registro (sin liberar). 0 si no existe.
+fn sv_req_unlink(h: int) -> int {
+    if h <= 0 {
+        return 0
+    }
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_REQUESTS {
+        let e = std::raw::load(st + SV_REQ_BASE + 8 * i)
+        if e != 0 {
+            if std::raw::load(e) == h {
+                std::raw::store(st + SV_REQ_BASE + 8 * i, 0)
+                return e
+            }
+        }
+        i += 1
+    }
+    0
+}
+
+// Libera la memoria de una entrada (no cierra el descriptor).
+fn sv_req_free(e: int) {
+    let a = std::raw::load(e + 16)
+    if a != 0 {
+        rt_free_block(a)
+    }
+    let b = std::raw::load(e + 72)
+    if b != 0 {
+        rt_free_block(b)
+    }
+    let c = std::raw::load(e + 88)
+    if c != 0 {
+        rt_free_block(c)
+    }
+    let d = std::raw::load(e + 136)
+    if d != 0 {
+        rt_free_block(d)
+    }
+    rt_free_block(e)
+}
+
+fn sv_req_get(f: string, h: int) -> int {
+    let e = sv_req_find(h)
+    if e == 0 {
+        rt_native_fail(f, rt_concat("unknown request handle ", rt_int_to_str(h)))
+    }
+    e
+}
+
+// ------------------------------------------------------------------ start / local_addr / stop
+
+fn std__server__start(addr: string) -> int {
+    let f = "std::server::start"
+    let n = rt_slen(addr)
+    if n > SV_MAX_BIND_BYTES {
+        sv_fail_limit(f, "HTTP bind address bytes", SV_MAX_BIND_BYTES)
+    }
+    let sa = rt_alloc_zero(32)
+    let salen = sv_sockaddr(rt_bdata(addr), n, sa)
+    if salen == 0 {
+        rt_free_block(sa)
+        sv_fail_arg(f, "bind address must be a numeric IP and port, such as 127.0.0.1:8080 or [::1]:8080")
+        return 0
+    }
+    if sv_serv_count() >= SV_MAX_SERVERS {
+        rt_free_block(sa)
+        sv_fail_limit(f, "HTTP server handles", SV_MAX_SERVERS)
+        return 0
+    }
+    let fam = std::raw::load8(sa)
+    // socket(SOCK_STREAM | SOCK_CLOEXEC), SO_REUSEADDR como TcpListener::bind
+    let fd = std::raw::syscall(41, fam, 524289, 0, 0, 0, 0)
+    if fd < 0 {
+        rt_free_block(sa)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - fd)))
+        return 0
+    }
+    let one = rt_alloc_zero(8)
+    std::raw::store(one, 1)
+    std::raw::syscall(54, fd, 1, 2, one, 4, 0)
+    rt_free_block(one)
+    let b = std::raw::syscall(49, fd, sa, salen, 0, 0, 0)
+    if b < 0 {
+        rt_free_block(sa)
+        sv_close(fd)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - b)))
+        return 0
+    }
+    let l = std::raw::syscall(50, fd, 128, 0, 0, 0, 0)
+    if l < 0 {
+        rt_free_block(sa)
+        sv_close(fd)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - l)))
+        return 0
+    }
+    // set_nonblocking(true): fcntl(F_SETFL, O_NONBLOCK)
+    let nb = std::raw::syscall(72, fd, 4, 2048, 0, 0, 0)
+    rt_free_block(sa)
+    if nb < 0 {
+        sv_close(fd)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - nb)))
+        return 0
+    }
+    let slot = sv_serv_free_slot()
+    let id = sv_next_id()
+    let st = sv_st()
+    std::raw::store(st + SV_SERV_BASE + 16 * slot, id)
+    std::raw::store(st + SV_SERV_BASE + 16 * slot + 8, fd)
+    id
+}
+
+fn std__server__local_addr(h: int) -> string {
+    let f = "std::server::local_addr"
+    let slot = sv_serv_slot(h)
+    if slot < 0 {
+        sv_fail(f, rt_concat("unknown server handle ", rt_int_to_str(h)))
+        return ""
+    }
+    let fd = std::raw::load(sv_st() + SV_SERV_BASE + 16 * slot + 8)
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    std::raw::store(lenp, 32)
+    let r = std::raw::syscall(51, fd, sa, lenp, 0, 0, 0)
+    if r < 0 {
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - r)))
+        return ""
+    }
+    let out = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    rt_free_block(lenp)
+    out
+}
+
+// Idempotente: un handle desconocido no es un error.
+fn std__server__stop(h: int) {
+    let slot = sv_serv_slot(h)
+    if slot < 0 {
+        return
+    }
+    let st = sv_st()
+    let fd = std::raw::load(st + SV_SERV_BASE + 16 * slot + 8)
+    std::raw::store(st + SV_SERV_BASE + 16 * slot, 0)
+    std::raw::store(st + SV_SERV_BASE + 16 * slot + 8, 0)
+    sv_shutdown(fd)
+    sv_close(fd)
+}
+
+// ------------------------------------------------------------------ parseo de la petición
+
+// Lee hasta "\r\n\r\n". Devuelve la posición del fin de cabecera (>= 0) y deja
+// en raw[SV_MAX_HEAD_BYTES] los bytes leídos; o -1 límite de cabecera, -2 la
+// conexión se cerró, -3 plazo, <= -1000 errno.
+fn sv_read_head(cfd: int, raw: int, dl: int) -> int {
+    let mut got = 0
+    let mut scan = 0
+    let tmp = rt_alloc(4096)
+    loop {
+        let e = sv_find_crlf2(raw, scan, got)
+        if e >= 0 {
+            rt_free_block(tmp)
+            std::raw::store(raw + SV_MAX_HEAD_BYTES, got)
+            if e + 4 > SV_MAX_HEAD_BYTES {
+                return -1
+            }
+            return e
+        }
+        if got >= SV_MAX_HEAD_BYTES {
+            rt_free_block(tmp)
+            return -1
+        }
+        if got >= 3 {
+            scan = got - 3
+        }
+        let mut cap = SV_MAX_HEAD_BYTES - got
+        if cap > 4096 {
+            cap = 4096
+        }
+        let r = sv_read_dl(cfd, tmp, cap, dl)
+        if r == 0 {
+            rt_free_block(tmp)
+            return -2
+        }
+        if r < 0 {
+            rt_free_block(tmp)
+            return r
+        }
+        rt_copy(raw + got, tmp, r)
+        got += r
+    }
+    -1
+}
+
+// "\r\n\r\n" en p[from..to): posición o -1.
+fn sv_find_crlf2(p: int, from: int, to: int) -> int {
+    let mut i = from
+    while i + 3 < to {
+        if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 && std::raw::load8(p + i + 2) == 13 && std::raw::load8(p + i + 3) == 10 {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Content-Length como parse_content_length de Rust: longitud >= 0, o un
+// mensaje completo de error en `err` (puntero a 8 bytes: 0 si todo va bien,
+// 1 "invalid Content-Length", 2 límite del cuerpo).
+fn sv_content_length(p: int, n: int) -> int {
+    if n == 0 {
+        return -1
+    }
+    let mut i = 0
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c < 48 || c > 57 {
+            return -1
+        }
+        i += 1
+    }
+    let mut z = 0
+    while z < n && std::raw::load8(p + z) == 48 {
+        z += 1
+    }
+    let sig = n - z
+    if sig > 20 {
+        return -1
+    }
+    if sig == 20 {
+        let max = "18446744073709551615"
+        let mb = rt_bdata(max)
+        let mut k = 0
+        while k < 20 {
+            let a = std::raw::load8(p + z + k)
+            let b = std::raw::load8(mb + k)
+            if a > b {
+                return -1
+            }
+            if a < b {
+                break
+            }
+            k += 1
+        }
+    }
+    if sig >= 9 {
+        return -2
+    }
+    let mut v = 0
+    let mut j = z
+    while j < n {
+        v = v * 10 + (std::raw::load8(p + j) - 48)
+        j += 1
+    }
+    if v > SV_MAX_BODY_BYTES {
+        return -2
+    }
+    v
+}
+
+// Cuenta cabeceras con ese nombre (sin distinguir mayúsculas) y devuelve la
+// posición de la primera en first[0] (o -1).
+fn sv_hdr_count(e: int, name: string, firstp: int) -> int {
+    let arr = std::raw::load(e + 88)
+    let cnt = std::raw::load(e + 96)
+    let nb = rt_bdata(name)
+    let nl = rt_slen(name)
+    let mut found = 0
+    std::raw::store(firstp, -1)
+    let mut i = 0
+    while i < cnt {
+        let h = arr + 32 * i
+        if sv_eq_ci(std::raw::load(h), std::raw::load(h + 8), nb, nl) {
+            if found == 0 {
+                std::raw::store(firstp, i)
+            }
+            found += 1
+        }
+        i += 1
+    }
+    found
+}
+
+// Analiza la cabecera copiada en e+16 (e+24 bytes). Devuelve "" si es válida o
+// el mensaje completo del error de Rust. Rellena el resto de la entrada.
+fn sv_parse_head(e: int) -> any {
+    let head = std::raw::load(e + 16)
+    let hn = std::raw::load(e + 24)
+    if !rt_valid_utf8(head, hn) {
+        return "invalid HTTP request: request headers are not UTF-8/ASCII"
+    }
+    let mut k = 0
+    while k < hn {
+        if std::raw::load8(head + k) >= 128 {
+            return "invalid HTTP request: request headers contain non-ASCII bytes"
+        }
+        k += 1
+    }
+    // primera línea
+    let mut line_end = sv_find_crlf(head, 0, hn)
+    if line_end < 0 {
+        line_end = hn
+    }
+    let m_end = sv_find_byte(head, 0, line_end, 32)
+    let mut mend = m_end
+    if mend < 0 {
+        mend = line_end
+    }
+    if mend == 0 || mend > 32 || !sv_hdr_ok(head, mend) {
+        return "invalid HTTP request: invalid HTTP method"
+    }
+    if m_end < 0 {
+        return "invalid HTTP request: invalid request target"
+    }
+    let t_start = m_end + 1
+    let mut t_end = sv_find_byte(head, t_start, line_end, 32)
+    let t_more = t_end >= 0
+    if t_end < 0 {
+        t_end = line_end
+    }
+    if t_end == t_start {
+        return "invalid HTTP request: invalid request target"
+    }
+    if !t_more {
+        return "invalid HTTP request: unsupported HTTP version"
+    }
+    let v_start = t_end + 1
+    let mut v_end = sv_find_byte(head, v_start, line_end, 32)
+    let v_more = v_end >= 0
+    if v_end < 0 {
+        v_end = line_end
+    }
+    let vl = v_end - v_start
+    let mut v11 = 0
+    if sv_eq_lit(head + v_start, vl, "HTTP/1.1") {
+        v11 = 1
+    } else if !sv_eq_lit(head + v_start, vl, "HTTP/1.0") {
+        return "invalid HTTP request: unsupported HTTP version"
+    }
+    if v_more {
+        return "invalid HTTP request: malformed request line"
+    }
+    let tl = t_end - t_start
+    if tl > SV_MAX_TARGET_BYTES {
+        return "HTTP request target bytes exceeds limit 16384"
+    }
+    if sv_has_ctrl(head + t_start, tl) {
+        return "invalid HTTP request: request target contains control bytes"
+    }
+    std::raw::store(e + 32, head)
+    std::raw::store(e + 40, mend)
+    std::raw::store(e + 48, head + t_start)
+    std::raw::store(e + 56, tl)
+    std::raw::store(e + 64, v11)
+    // cabeceras
+    let arr = rt_alloc_zero(32 * SV_MAX_HEADERS)
+    std::raw::store(e + 88, arr)
+    let mut count = 0
+    let mut pos = line_end + 2
+    while line_end < hn && pos <= hn {
+        if count >= SV_MAX_HEADERS {
+            return "HTTP request headers exceeds limit 128"
+        }
+        let mut le = sv_find_crlf(head, pos, hn)
+        if le < 0 {
+            le = hn
+        }
+        if le > pos {
+            let c0 = std::raw::load8(head + pos)
+            if c0 == 32 || c0 == 9 {
+                return "invalid HTTP request: folded HTTP headers are not accepted"
+            }
+        }
+        let colon = sv_find_byte(head, pos, le, 58)
+        if colon < 0 {
+            return "invalid HTTP request: malformed HTTP header"
+        }
+        let nl = colon - pos
+        let mut vs = colon + 1
+        let mut ve = le
+        while vs < ve && (std::raw::load8(head + vs) == 32 || std::raw::load8(head + vs) == 9) {
+            vs += 1
+        }
+        while ve > vs && (std::raw::load8(head + ve - 1) == 32 || std::raw::load8(head + ve - 1) == 9) {
+            ve -= 1
+        }
+        if nl > SV_MAX_NAME_BYTES {
+            return "HTTP header name bytes exceeds limit 256"
+        }
+        if ve - vs > SV_MAX_VALUE_BYTES {
+            return "HTTP header value bytes exceeds limit 8192"
+        }
+        if !sv_hdr_ok(head + pos, nl) || !sv_val_ok(head + vs, ve - vs) {
+            return "invalid HTTP request: invalid HTTP header"
+        }
+        let h = arr + 32 * count
+        std::raw::store(h, head + pos)
+        std::raw::store(h + 8, nl)
+        std::raw::store(h + 16, head + vs)
+        std::raw::store(h + 24, ve - vs)
+        count += 1
+        std::raw::store(e + 96, count)
+        pos = le + 2
+        if le >= hn {
+            break
+        }
+    }
+    std::raw::store(e + 96, count)
+    let fp = rt_alloc_zero(8)
+    let hosts = sv_hdr_count(e, "Host", fp)
+    if v11 == 1 {
+        let mut bad = hosts != 1
+        if !bad {
+            let hh = arr + 32 * std::raw::load(fp)
+            if std::raw::load(hh + 24) == 0 {
+                bad = true
+            }
+        }
+        if bad {
+            rt_free_block(fp)
+            return "invalid HTTP request: HTTP/1.1 requires exactly one nonempty Host header"
+        }
+    }
+    let cls = sv_hdr_count(e, "Content-Length", fp)
+    let clpos = std::raw::load(fp)
+    let tes = sv_hdr_count(e, "Transfer-Encoding", fp)
+    let tepos = std::raw::load(fp)
+    if cls > 1 {
+        rt_free_block(fp)
+        return "invalid HTTP request: multiple Content-Length headers are not accepted"
+    }
+    if tes > 1 || (cls > 0 && tes > 0) {
+        rt_free_block(fp)
+        return "invalid HTTP request: ambiguous request body framing"
+    }
+    let mut mode = 0
+    if tes > 0 {
+        let th = arr + 32 * tepos
+        if !sv_eq_ci_lit(std::raw::load(th + 16), std::raw::load(th + 24), "chunked") {
+            rt_free_block(fp)
+            return "invalid HTTP request: only chunked Transfer-Encoding is supported"
+        }
+        mode = 2
+    } else if cls > 0 {
+        let ch = arr + 32 * clpos
+        let len = sv_content_length(std::raw::load(ch + 16), std::raw::load(ch + 24))
+        if len == -1 {
+            rt_free_block(fp)
+            return "invalid HTTP request: invalid Content-Length"
+        }
+        if len == -2 {
+            rt_free_block(fp)
+            return "HTTP request body bytes exceeds limit 8388608"
+        }
+        if len > 0 {
+            mode = 1
+            std::raw::store(e + 112, len)
+        }
+    }
+    std::raw::store(e + 104, mode)
+    let ex = sv_hdr_count(e, "Expect", fp)
+    let expos = std::raw::load(fp)
+    rt_free_block(fp)
+    if ex > 1 {
+        return "invalid HTTP request: unsupported Expect header"
+    }
+    if ex == 1 {
+        let xh = arr + 32 * expos
+        if !sv_eq_ci_lit(std::raw::load(xh + 16), std::raw::load(xh + 24), "100-continue") {
+            return "invalid HTTP request: unsupported Expect header"
+        }
+        if mode != 0 {
+            std::raw::store(e + 128, 1)
+        }
+    }
+    ""
+}
+
+// ------------------------------------------------------------------ accept
+
+fn std__server__accept(h: int, tms: int) -> int {
+    let f = "std::server::accept"
+    if tms < 0 {
+        sv_fail(f, "timeout must be nonnegative")
+        return -1
+    }
+    if tms > SV_MAX_ACCEPT_MS {
+        sv_fail_limit(f, "HTTP accept timeout milliseconds", SV_MAX_ACCEPT_MS)
+        return -1
+    }
+    if sv_req_count() >= SV_MAX_REQUESTS {
+        sv_fail_limit(f, "pending HTTP request handles", SV_MAX_REQUESTS)
+        return -1
+    }
+    let slot = sv_serv_slot(h)
+    if slot < 0 {
+        sv_fail(f, rt_concat("unknown server handle ", rt_int_to_str(h)))
+        return -1
+    }
+    let lfd = std::raw::load(sv_st() + SV_SERV_BASE + 16 * slot + 8)
+    let dl = sv_now_ms() + tms
+    let sa = rt_alloc_zero(32)
+    let lenp = rt_alloc_zero(8)
+    let mut cfd = -1
+    loop {
+        std::raw::store(lenp, 32)
+        let r = std::raw::syscall(288, lfd, sa, lenp, 524288, 0, 0)
+        if r >= 0 {
+            cfd = r
+            break
+        }
+        if r == -4 {
+            continue
+        }
+        if r == -11 {
+            let rem = dl - sv_now_ms()
+            if rem <= 0 {
+                rt_free_block(sa)
+                rt_free_block(lenp)
+                return -1
+            }
+            let mut nap = SV_POLL_MS
+            if rem < nap {
+                nap = rem
+            }
+            sv_sleep_ms(nap)
+            continue
+        }
+        rt_free_block(sa)
+        rt_free_block(lenp)
+        sv_fail(f, rt_concat("i/o error: ", rt_os_error(0 - r)))
+        return -1
+    }
+    rt_free_block(lenp)
+    let remote = sv_fmt_sockaddr(sa)
+    rt_free_block(sa)
+    // set_nodelay(true)
+    let one = rt_alloc_zero(8)
+    std::raw::store(one, 1)
+    std::raw::syscall(54, cfd, 6, 1, one, 4, 0)
+    rt_free_block(one)
+    let io_dl = sv_now_ms() + SV_IO_MS
+    let raw = rt_alloc_zero(SV_MAX_HEAD_BYTES + 16)
+    let end = sv_read_head(cfd, raw, io_dl)
+    if end < 0 {
+        rt_free_block(raw)
+        sv_close(cfd)
+        if end == -1 {
+            sv_fail_limit(f, "HTTP request head bytes", SV_MAX_HEAD_BYTES)
+        }
+        if end == -2 {
+            sv_fail_invalid(f, "connection closed before request headers completed")
+        }
+        sv_fail(f, sv_io_msg(end, "read HTTP request headers"))
+        return -1
+    }
+    let total = std::raw::load(raw + SV_MAX_HEAD_BYTES)
+    let e = rt_alloc_zero(256)
+    std::raw::store(e + 8, cfd)
+    let head = rt_alloc(end + 1)
+    rt_copy(head, raw, end)
+    std::raw::store(e + 16, head)
+    std::raw::store(e + 24, end)
+    let extra = total - (end + 4)
+    if extra > 0 {
+        let lp = rt_alloc(extra)
+        rt_copy(lp, raw + end + 4, extra)
+        std::raw::store(e + 136, lp)
+        std::raw::store(e + 144, extra)
+    }
+    rt_free_block(raw)
+    let rb = rt_bdata(remote)
+    let rn = rt_slen(remote)
+    let rp = rt_alloc(rn + 1)
+    rt_copy(rp, rb, rn)
+    std::raw::store(e + 72, rp)
+    std::raw::store(e + 80, rn)
+    let msg = sv_parse_head(e)
+    if rt_slen(msg) != 0 {
+        sv_req_free(e)
+        sv_close(cfd)
+        sv_fail(f, msg)
+        return -1
+    }
+    let meta = end + 4 + rn
+    std::raw::store(e + 160, meta)
+    if sv_req_meta_total() + meta > SV_MAX_METADATA {
+        sv_req_free(e)
+        sv_close(cfd)
+        sv_fail_limit(f, "HTTP request metadata bytes per runtime", SV_MAX_METADATA)
+        return -1
+    }
+    let id = sv_next_id()
+    std::raw::store(e, id)
+    sv_req_put(e)
+    id
+}
+
+// ------------------------------------------------------------------ accesores
+
+fn std__server__method(h: int) -> string {
+    let e = sv_req_get("std::server::method", h)
+    sv_to_str(std::raw::load(e + 32), std::raw::load(e + 40))
+}
+
+fn std__server__url(h: int) -> string {
+    let e = sv_req_get("std::server::url", h)
+    sv_to_str(std::raw::load(e + 48), std::raw::load(e + 56))
+}
+
+fn std__server__path(h: int) -> string {
+    let e = sv_req_get("std::server::path", h)
+    let t = std::raw::load(e + 48)
+    let n = std::raw::load(e + 56)
+    let q = sv_find_byte(t, 0, n, 63)
+    if q < 0 {
+        return sv_to_str(t, n)
+    }
+    sv_to_str(t, q)
+}
+
+fn std__server__query(h: int) -> string {
+    let e = sv_req_get("std::server::query", h)
+    let t = std::raw::load(e + 48)
+    let n = std::raw::load(e + 56)
+    let q = sv_find_byte(t, 0, n, 63)
+    if q < 0 {
+        return ""
+    }
+    sv_to_str(t + q + 1, n - q - 1)
+}
+
+fn std__server__remote_addr(h: int) -> string {
+    let e = sv_req_get("std::server::remote_addr", h)
+    sv_to_str(std::raw::load(e + 72), std::raw::load(e + 80))
+}
+
+// Primera cabecera con ese nombre, o nil.
+fn std__server__header(h: int, name: string) -> any {
+    let f = "std::server::header"
+    let nn = rt_slen(name)
+    if nn > SV_MAX_NAME_BYTES {
+        sv_fail_limit(f, "HTTP header lookup name bytes", SV_MAX_NAME_BYTES)
+        return nil
+    }
+    let nb = rt_bdata(name)
+    if !sv_hdr_ok(nb, nn) {
+        sv_fail_arg(f, "invalid HTTP header name")
+        return nil
+    }
+    let e = sv_req_get(f, h)
+    let arr = std::raw::load(e + 88)
+    let cnt = std::raw::load(e + 96)
+    let mut i = 0
+    while i < cnt {
+        let x = arr + 32 * i
+        if sv_eq_ci(std::raw::load(x), std::raw::load(x + 8), nb, nn) {
+            return sv_to_str(std::raw::load(x + 16), std::raw::load(x + 24))
+        }
+        i += 1
+    }
     nil
+}
+
+fn sv_lower(p: int, n: int) -> any {
+    let s = rt_str_alloc(n)
+    let mut i = 0
+    while i < n {
+        std::raw::store8(s + 16 + i, sv_ct(std::raw::load8(p + i)))
+        i += 1
+    }
+    rt_sval(s)
+}
+
+// Mapa nombre en minúsculas -> valores (los repetidos se unen con ", ").
+fn std__server__headers(h: int) -> any {
+    let f = "std::server::headers"
+    let e = sv_req_get(f, h)
+    let arr = std::raw::load(e + 88)
+    let cnt = std::raw::load(e + 96)
+    let mut m = std__map__new()
+    let mut total = 0
+    let mut i = 0
+    while i < cnt {
+        let x = arr + 32 * i
+        total += std::raw::load(x + 8) + std::raw::load(x + 24) + 2
+        if total > SV_MAX_OUTPUT_BYTES {
+            sv_fail_limit(f, "rendered HTTP request header bytes", SV_MAX_OUTPUT_BYTES)
+            return nil
+        }
+        let key = sv_lower(std::raw::load(x), std::raw::load(x + 8))
+        let mut val = sv_to_str(std::raw::load(x + 16), std::raw::load(x + 24))
+        if std__map__contains(m, key) {
+            val = rt_concat(rt_concat(std__map__get(m, key), ", "), val)
+        }
+        m = std__map__insert(m, key, val)
+        i += 1
+    }
+    m
+}
+
+// ------------------------------------------------------------------ cuerpo
+
+// Lee hasta n bytes: primero los que llegaron junto a la cabecera, luego del
+// socket con plazo. >0 bytes, 0 fin de la conexión, -3 plazo, <= -1000 errno.
+fn sv_br_some(e: int, out: int, n: int, dl: int) -> int {
+    let lp = std::raw::load(e + 136)
+    let ll = std::raw::load(e + 144)
+    let off = std::raw::load(e + 152)
+    if off < ll {
+        let mut c = ll - off
+        if c > n {
+            c = n
+        }
+        rt_copy(out, lp + off, c)
+        std::raw::store(e + 152, off + c)
+        return c
+    }
+    sv_read_dl(std::raw::load(e + 8), out, n, dl)
+}
+
+// 0 si lee n bytes; -2 conexión cerrada antes de terminar el cuerpo; -3; errno.
+fn sv_br_exact(e: int, out: int, n: int, dl: int) -> int {
+    let mut got = 0
+    while got < n {
+        let r = sv_br_some(e, out + got, n - got, dl)
+        if r == 0 {
+            return -2
+        }
+        if r < 0 {
+            return r
+        }
+        got += r
+    }
+    0
+}
+
+// Línea terminada en CRLF (sin el CRLF) en `line`: su longitud, o -4 si supera
+// el límite, o el código de sv_br_exact.
+fn sv_br_line(e: int, line: int, dl: int) -> int {
+    let mut len = 0
+    loop {
+        if len >= SV_MAX_CHUNK_LINE {
+            return -4
+        }
+        let r = sv_br_exact(e, line + len, 1, dl)
+        if r != 0 {
+            return r
+        }
+        len += 1
+        if len >= 2 && std::raw::load8(line + len - 2) == 13 && std::raw::load8(line + len - 1) == 10 {
+            return len - 2
+        }
+    }
+    -1
+}
+
+fn sv_body_msg(code: int, op: string) -> any {
+    if code == -2 {
+        return "invalid HTTP request: connection closed before request body completed"
+    }
+    if code == -4 {
+        return "HTTP chunk or trailer line bytes exceeds limit 8192"
+    }
+    sv_io_msg(code, op)
+}
+
+fn sv_is_hex(c: int) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn sv_hex_val(c: int) -> int {
+    if c <= 57 {
+        return c - 48
+    }
+    if c <= 70 {
+        return c - 55
+    }
+    c - 87
+}
+
+// Cuerpo chunked como read_chunked_body. Deja los datos en el buffer gb.
+// Devuelve "" o el mensaje de error.
+fn sv_read_chunked(e: int, gb: int, dl: int) -> any {
+    let line = rt_alloc(SV_MAX_CHUNK_LINE + 8)
+    loop {
+        let n = sv_br_line(e, line, dl)
+        if n < 0 {
+            rt_free_block(line)
+            return sv_body_msg(n, "read HTTP chunk header")
+        }
+        if !rt_valid_utf8(line, n) {
+            rt_free_block(line)
+            return "invalid HTTP request: chunk length is not ASCII"
+        }
+        let mut sn = n
+        let semi = sv_find_byte(line, 0, n, 59)
+        if semi >= 0 {
+            sn = semi
+        }
+        let sz = std__text__trim(sv_to_str(line, sn))
+        let zp = rt_bdata(sz)
+        let zl = rt_slen(sz)
+        let mut ok = zl > 0 && zl <= 16
+        let mut i = 0
+        while ok && i < zl {
+            if !sv_is_hex(std::raw::load8(zp + i)) {
+                ok = false
+            }
+            i += 1
+        }
+        if !ok {
+            rt_free_block(line)
+            return "invalid HTTP request: invalid HTTP chunk length"
+        }
+        let mut z = 0
+        while z < zl && std::raw::load8(zp + z) == 48 {
+            z += 1
+        }
+        let mut big = zl - z > 8
+        let mut chunk = 0
+        if !big {
+            let mut j = z
+            while j < zl {
+                chunk = chunk * 16 + sv_hex_val(std::raw::load8(zp + j))
+                j += 1
+            }
+        }
+        let cur = std::raw::load(gb + 8)
+        if big || cur + chunk > SV_MAX_BODY_BYTES {
+            rt_free_block(line)
+            return "HTTP request body bytes exceeds limit 8388608"
+        }
+        if chunk == 0 {
+            let mut tb = 0
+            let mut t = 0
+            while t <= SV_MAX_TRAILERS {
+                let tn = sv_br_line(e, line, dl)
+                if tn < 0 {
+                    rt_free_block(line)
+                    return sv_body_msg(tn, "read HTTP trailers")
+                }
+                if tn == 0 {
+                    rt_free_block(line)
+                    return ""
+                }
+                tb += tn
+                if tb > SV_MAX_TRAILER_BYTES {
+                    rt_free_block(line)
+                    return "HTTP trailer bytes exceeds limit 16384"
+                }
+                if !rt_valid_utf8(line, tn) {
+                    rt_free_block(line)
+                    return "invalid HTTP request: trailer is not ASCII"
+                }
+                let colon = sv_find_byte(line, 0, tn, 58)
+                if colon < 0 {
+                    rt_free_block(line)
+                    return "invalid HTTP request: malformed HTTP trailer"
+                }
+                let tv = std__text__trim(sv_to_str(line + colon + 1, tn - colon - 1))
+                if !sv_hdr_ok(line, colon) || !sv_val_ok(rt_bdata(tv), rt_slen(tv)) {
+                    rt_free_block(line)
+                    return "invalid HTTP request: invalid HTTP trailer"
+                }
+                t += 1
+            }
+            rt_free_block(line)
+            return "HTTP trailers exceeds limit 32"
+        }
+        sv_gb_reserve(gb, chunk)
+        let r = sv_br_exact(e, std::raw::load(gb) + cur, chunk, dl)
+        if r != 0 {
+            rt_free_block(line)
+            return sv_body_msg(r, "read HTTP request chunk")
+        }
+        std::raw::store(gb + 8, cur + chunk)
+        let term = rt_alloc(8)
+        let r2 = sv_br_exact(e, term, 2, dl)
+        if r2 != 0 {
+            rt_free_block(term)
+            rt_free_block(line)
+            return sv_body_msg(r2, "read HTTP chunk terminator")
+        }
+        let good = std::raw::load8(term) == 13 && std::raw::load8(term + 1) == 10
+        rt_free_block(term)
+        if !good {
+            rt_free_block(line)
+            return "invalid HTTP request: HTTP chunk is missing CRLF terminator"
+        }
+    }
+    ""
+}
+
+// Cuerpo de la petición (body y body_text comparten esto; f es el nombre de la
+// nativa que informa los errores).
+fn sv_body(f: string, h: int) -> any {
+    let e = sv_req_get(f, h)
+    if std::raw::load(e + 120) != 0 {
+        sv_fail(f, "request body has already been consumed")
+        return nil
+    }
+    std::raw::store(e + 120, 1)
+    let fd = std::raw::load(e + 8)
+    if std::raw::load(e + 128) != 0 {
+        let c = "HTTP/1.1 100 Continue\r\n\r\n"
+        let r = sv_write_dl(fd, rt_bdata(c), rt_slen(c), sv_now_ms() + SV_IO_MS)
+        if r != 0 {
+            sv_fail(f, sv_io_msg(r, "write HTTP 100 Continue response"))
+            return nil
+        }
+    }
+    let mode = std::raw::load(e + 104)
+    let gb = sv_gb_new()
+    let dl = sv_now_ms() + SV_IO_MS
+    let mut msg = ""
+    if mode == 1 {
+        let len = std::raw::load(e + 112)
+        sv_gb_reserve(gb, len)
+        let r = sv_br_exact(e, std::raw::load(gb), len, dl)
+        if r != 0 {
+            msg = sv_body_msg(r, "read HTTP request body")
+        } else {
+            std::raw::store(gb + 8, len)
+        }
+    } else if mode == 2 {
+        msg = sv_read_chunked(e, gb, dl)
+    }
+    if rt_slen(msg) != 0 {
+        sv_gb_free(gb)
+        sv_fail(f, msg)
+        return nil
+    }
+    let out = rt_bytes_from(std::raw::load(gb), std::raw::load(gb + 8))
+    sv_gb_free(gb)
+    out
+}
+
+fn std__server__body(h: int) -> any {
+    sv_body("std::server::body", h)
+}
+
+fn std__server__body_text(h: int) -> string {
+    let f = "std::server::body_text"
+    let b = sv_body(f, h)
+    let n = rt_slen(b)
+    if !rt_valid_utf8(rt_bdata(b), n) {
+        sv_fail(f, "request body is not valid UTF-8")
+        return ""
+    }
+    sv_to_str(rt_bdata(b), n)
+}
+
+// ------------------------------------------------------------------ respuestas
+
+fn sv_reason(status: int) -> string {
+    if status == 100 { return "Continue" }
+    if status == 200 { return "OK" }
+    if status == 201 { return "Created" }
+    if status == 202 { return "Accepted" }
+    if status == 204 { return "No Content" }
+    if status == 206 { return "Partial Content" }
+    if status == 301 { return "Moved Permanently" }
+    if status == 302 { return "Found" }
+    if status == 304 { return "Not Modified" }
+    if status == 307 { return "Temporary Redirect" }
+    if status == 308 { return "Permanent Redirect" }
+    if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
+    if status == 403 { return "Forbidden" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 408 { return "Request Timeout" }
+    if status == 409 { return "Conflict" }
+    if status == 413 { return "Payload Too Large" }
+    if status == 415 { return "Unsupported Media Type" }
+    if status == 422 { return "Unprocessable Content" }
+    if status == 429 { return "Too Many Requests" }
+    if status == 500 { return "Internal Server Error" }
+    if status == 501 { return "Not Implemented" }
+    if status == 502 { return "Bad Gateway" }
+    if status == 503 { return "Service Unavailable" }
+    if status == 504 { return "Gateway Timeout" }
+    "Status"
+}
+
+// Conversión a u16 del envoltorio de la VM.
+fn sv_status_range(f: string, status: int) {
+    if status < 0 || status > 65535 {
+        sv_fail(f, "status out of range")
+    }
+}
+
+fn sv_fail_resp(f: string, msg: string) {
+    rt_native_fail(f, rt_concat("invalid HTTP response: ", msg))
+}
+
+// Valida estado, cuerpo, Content-Type y cabeceras extra (mapa ordenado por
+// clave, o nil) como validate_response_parts. Falla con el mensaje de Rust.
+fn sv_validate_response(f: string, status: int, ct: any, hdrs: any, body_len: int) {
+    if status < 100 || status > 599 || status == 101 {
+        sv_fail_resp(f, "status must be between 100 and 599; 101 is reserved for WebSocket upgrade")
+    }
+    if body_len > SV_MAX_RESPONSE_BYTES {
+        sv_fail_limit(f, "HTTP response body bytes", SV_MAX_RESPONSE_BYTES)
+    }
+    if (status <= 199 || status == 204 || status == 304) && body_len != 0 {
+        sv_fail_resp(f, "this HTTP status cannot carry a response body")
+    }
+    let cl = rt_slen(ct)
+    if cl > SV_MAX_CT_BYTES {
+        sv_fail_limit(f, "HTTP Content-Type bytes", SV_MAX_CT_BYTES)
+    }
+    if !sv_val_ok(rt_bdata(ct), cl) {
+        sv_fail_resp(f, "invalid Content-Type")
+    }
+    if std::raw::tag(hdrs) != 9 {
+        return
+    }
+    let keys = std__map__keys(hdrs)
+    let kn = rt_seq_len(keys)
+    if kn > SV_MAX_HEADERS {
+        sv_fail_limit(f, "HTTP response headers", SV_MAX_HEADERS)
+    }
+    let mut total = cl
+    let mut i = 0
+    while i < kn {
+        let k = rt_seq_get(keys, i)
+        let v = std__map__get(hdrs, k)
+        let knl = rt_slen(k)
+        let vl = rt_slen(v)
+        if knl > SV_MAX_NAME_BYTES {
+            sv_fail_limit(f, "HTTP response header name bytes", SV_MAX_NAME_BYTES)
+        }
+        if vl > SV_MAX_VALUE_BYTES {
+            sv_fail_limit(f, "HTTP response header value bytes", SV_MAX_VALUE_BYTES)
+        }
+        if !sv_hdr_ok(rt_bdata(k), knl) || !sv_val_ok(rt_bdata(v), vl) {
+            sv_fail_resp(f, "invalid HTTP response header")
+        }
+        let kb = rt_bdata(k)
+        if sv_eq_ci_lit(kb, knl, "content-length") || sv_eq_ci_lit(kb, knl, "transfer-encoding") || sv_eq_ci_lit(kb, knl, "connection") || sv_eq_ci_lit(kb, knl, "content-type") {
+            sv_fail_resp(f, "framing and Content-Type headers are managed by TITAN")
+        }
+        total += knl + vl + 4
+        if total > SV_MAX_OUTPUT_BYTES {
+            sv_fail_limit(f, "HTTP response header bytes", SV_MAX_OUTPUT_BYTES)
+        }
+        i += 1
+    }
+}
+
+// send_response de Rust: valida, quita la petición del registro, escribe la
+// respuesta con plazo de 5 s, cierra la conexión.
+fn sv_respond(f: string, h: int, status: int, ct: any, hdrs: any, data: any) -> any {
+    let bl = rt_slen(data)
+    sv_validate_response(f, status, ct, hdrs, bl)
+    let e = sv_req_unlink(h)
+    if e == 0 {
+        sv_fail(f, rt_concat("unknown request handle ", rt_int_to_str(h)))
+        return nil
+    }
+    let fd = std::raw::load(e + 8)
+    let mut payload = bl
+    if status <= 199 || status == 204 || status == 304 {
+        payload = 0
+    }
+    let mut head = rt_concat("HTTP/1.1 ", rt_int_to_str(status))
+    head = rt_concat(head, " ")
+    head = rt_concat(head, sv_reason(status))
+    head = rt_concat(head, "\r\nContent-Length: ")
+    head = rt_concat(head, rt_int_to_str(payload))
+    head = rt_concat(head, "\r\nConnection: close\r\n")
+    if rt_slen(ct) != 0 {
+        head = rt_concat(head, "Content-Type: ")
+        head = rt_concat(head, ct)
+        head = rt_concat(head, "\r\n")
+    }
+    if std::raw::tag(hdrs) == 9 {
+        let keys = std__map__keys(hdrs)
+        let kn = rt_seq_len(keys)
+        let mut i = 0
+        while i < kn {
+            let k = rt_seq_get(keys, i)
+            head = rt_concat(head, k)
+            head = rt_concat(head, ": ")
+            head = rt_concat(head, std__map__get(hdrs, k))
+            head = rt_concat(head, "\r\n")
+            i += 1
+        }
+    }
+    head = rt_concat(head, "\r\n")
+    let is_head = sv_eq_lit(std::raw::load(e + 32), std::raw::load(e + 40), "HEAD")
+    let mut msg = ""
+    if rt_slen(head) > SV_MAX_OUTPUT_BYTES {
+        msg = "HTTP response header bytes exceeds limit 65536"
+    }
+    if rt_slen(msg) == 0 {
+        let dl = sv_now_ms() + SV_IO_MS
+        let r = sv_write_val(fd, head, dl)
+        if r != 0 {
+            msg = sv_io_msg(r, "write HTTP response headers")
+        } else if !is_head && payload != 0 {
+            let r2 = sv_write_val(fd, data, dl)
+            if r2 != 0 {
+                msg = sv_io_msg(r2, "write HTTP response body")
+            }
+        }
+    }
+    if rt_slen(msg) == 0 {
+        sv_shutdown(fd)
+    }
+    sv_close(fd)
+    sv_req_free(e)
+    if rt_slen(msg) != 0 {
+        sv_fail(f, msg)
+    }
+    nil
+}
+
+fn std__server__respond(h: int, status: int, body: string) -> any {
+    let f = "std::server::respond"
+    sv_status_range(f, status)
+    sv_respond(f, h, status, "text/plain; charset=utf-8", nil, body)
+}
+
+fn std__server__respond_html(h: int, status: int, html: string) -> any {
+    let f = "std::server::respond_html"
+    sv_status_range(f, status)
+    sv_respond(f, h, status, "text/html; charset=utf-8", nil, html)
+}
+
+fn std__server__respond_json(h: int, status: int, body: string) -> any {
+    let f = "std::server::respond_json"
+    sv_status_range(f, status)
+    sv_respond(f, h, status, "application/json; charset=utf-8", nil, body)
+}
+
+fn std__server__respond_bytes(h: int, status: int, ct: string, data: any) -> any {
+    let f = "std::server::respond_bytes"
+    sv_status_range(f, status)
+    rt_expect_bytes(data, f)
+    sv_respond(f, h, status, ct, nil, data)
+}
+
+fn std__server__respond_full(h: int, status: int, ct: string, extra: any, data: any) -> any {
+    let f = "std::server::respond_full"
+    sv_status_range(f, status)
+    rt_expect_map(extra, f)
+    // Preflight del envoltorio de la VM (native.rs).
+    let keys = std__map__keys(extra)
+    let kn = rt_seq_len(keys)
+    if kn > SV_MAX_HEADERS {
+        sv_fail(f, "too many HTTP response headers (limit 128)")
+    }
+    let mut hb = 0
+    let mut i = 0
+    while i < kn {
+        let k = rt_seq_get(keys, i)
+        let v = std__map__get(extra, k)
+        rt_expect_str(v, f)
+        if rt_slen(k) > SV_MAX_NAME_BYTES || rt_slen(v) > SV_MAX_VALUE_BYTES {
+            sv_fail(f, "HTTP response header exceeds its size limit")
+        }
+        hb += rt_slen(k) + rt_slen(v)
+        if hb > SV_MAX_OUTPUT_BYTES {
+            sv_fail(f, "HTTP response headers exceed 64 KiB")
+        }
+        i += 1
+    }
+    rt_expect_bytes(data, f)
+    sv_respond(f, h, status, ct, extra, data)
+}
+
+// ------------------------------------------------------------------ upgrade WebSocket
+
+// Número de cabeceras con ese nombre; first[0] = posición de la primera.
+fn sv_upg_one(f: string, e: int, name: string, fp: int) -> int {
+    let n = sv_hdr_count(e, name, fp)
+    if n != 1 {
+        rt_native_fail(f, "websocket upgrade failed: required WebSocket header must appear exactly once")
+        return -1
+    }
+    std::raw::load(fp)
+}
+
+fn sv_ws_get(f: string, h: int) -> int {
+    let w = sv_ws_find(h)
+    if w == 0 {
+        rt_native_fail(f, rt_concat("unknown websocket handle ", rt_int_to_str(h)))
+    }
+    if std::raw::load(w + 48) != 0 {
+        rt_native_fail(f, rt_concat(rt_concat("websocket handle ", rt_int_to_str(h)), " is closing or closed"))
+    }
+    w
+}
+
+fn sv_ws_find(h: int) -> int {
+    if h <= 0 {
+        return 0
+    }
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_WS {
+        let w = std::raw::load(st + SV_WS_BASE + 8 * i)
+        if w != 0 {
+            if std::raw::load(w) == h {
+                return w
+            }
+        }
+        i += 1
+    }
+    0
+}
+
+fn sv_ws_count() -> int {
+    let st = sv_st()
+    let mut n = 0
+    let mut i = 0
+    while i < SV_MAX_WS {
+        if std::raw::load(st + SV_WS_BASE + 8 * i) != 0 {
+            n += 1
+        }
+        i += 1
+    }
+    n
+}
+
+fn sv_ws_put(w: int) {
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_WS {
+        if std::raw::load(st + SV_WS_BASE + 8 * i) == 0 {
+            std::raw::store(st + SV_WS_BASE + 8 * i, w)
+            return
+        }
+        i += 1
+    }
+}
+
+// Quita el WebSocket del registro (sin liberar). 0 si no existe.
+fn sv_ws_unlink(h: int) -> int {
+    if h <= 0 {
+        return 0
+    }
+    let st = sv_st()
+    let mut i = 0
+    while i < SV_MAX_WS {
+        let w = std::raw::load(st + SV_WS_BASE + 8 * i)
+        if w != 0 {
+            if std::raw::load(w) == h {
+                std::raw::store(st + SV_WS_BASE + 8 * i, 0)
+                return w
+            }
+        }
+        i += 1
+    }
+    0
+}
+
+// Cierra el descriptor y libera la memoria de un WebSocket ya fuera del registro.
+// Entrada: +0 id +8 fd +16 máximo +24 buffer del decodificador +32 opcode del
+// mensaje fragmentado (0 ninguno) +40 buffer de fragmentos +48 cerrado
+// +56 vueltas sin actividad +64 bytes llegados con el upgrade (o 0)
+fn sv_ws_destroy(w: int) {
+    sv_shutdown(std::raw::load(w + 8))
+    sv_close(std::raw::load(w + 8))
+    sv_gb_free(std::raw::load(w + 24))
+    sv_gb_free(std::raw::load(w + 40))
+    let pre = std::raw::load(w + 64)
+    if pre != 0 {
+        sv_gb_free(pre)
+    }
+    rt_free_block(w)
+}
+
+fn std__server__upgrade_websocket(h: int, maxm: int) -> int {
+    let f = "std::server::upgrade_websocket"
+    if maxm < 0 {
+        sv_fail(f, "expected nonnegative integer")
+        return -1
+    }
+    if maxm == 0 || maxm > SV_MAX_WS_MSG {
+        sv_fail_limit(f, "server WebSocket message bytes", SV_MAX_WS_MSG)
+        return -1
+    }
+    let e = sv_req_get(f, h)
+    let v11 = std::raw::load(e + 64)
+    if !sv_eq_lit(std::raw::load(e + 32), std::raw::load(e + 40), "GET") || v11 != 1 {
+        sv_fail(f, "websocket upgrade failed: WebSocket upgrade requires GET over HTTP/1.1")
+        return -1
+    }
+    if std::raw::load(e + 104) != 0 {
+        sv_fail(f, "websocket upgrade failed: WebSocket upgrade request must not contain a body")
+        return -1
+    }
+    let fp = rt_alloc_zero(8)
+    let arr = std::raw::load(e + 88)
+    let up = sv_upg_one(f, e, "Upgrade", fp)
+    let mut bad = !sv_eq_ci_lit(std::raw::load(arr + 32 * up + 16), std::raw::load(arr + 32 * up + 24), "websocket")
+    if !bad {
+        let cn = sv_upg_one(f, e, "Connection", fp)
+        let cv = arr + 32 * cn
+        // contains_token: tokens separados por coma, sin espacios Unicode
+        let vp = std::raw::load(cv + 16)
+        let vn = std::raw::load(cv + 24)
+        let mut found = false
+        let mut s = 0
+        while s <= vn && !found {
+            let mut c = sv_find_byte(vp, s, vn, 44)
+            if c < 0 {
+                c = vn
+            }
+            let tok = std__text__trim(sv_to_str(vp + s, c - s))
+            if sv_eq_ci_lit(rt_bdata(tok), rt_slen(tok), "upgrade") {
+                found = true
+            }
+            s = c + 1
+        }
+        bad = !found
+    }
+    if !bad {
+        let vn2 = sv_upg_one(f, e, "Sec-WebSocket-Version", fp)
+        let vv = arr + 32 * vn2
+        bad = !sv_eq_lit(std::raw::load(vv + 16), std::raw::load(vv + 24), "13")
+    }
+    if bad {
+        rt_free_block(fp)
+        sv_fail(f, "websocket upgrade failed: invalid WebSocket upgrade headers")
+        return -1
+    }
+    let kn = sv_upg_one(f, e, "Sec-WebSocket-Key", fp)
+    rt_free_block(fp)
+    let kh = arr + 32 * kn
+    let key = sv_to_str(std::raw::load(kh + 16), std::raw::load(kh + 24))
+    if rt_slen(key) > 128 {
+        sv_fail_limit(f, "Sec-WebSocket-Key bytes", 128)
+        return -1
+    }
+    let dec = wk_b64_or_nil(std__text__trim(key))
+    if std::raw::tag(dec) == 0 {
+        sv_fail(f, "websocket upgrade failed: invalid Sec-WebSocket-Key")
+        return -1
+    }
+    if rt_slen(dec) != 16 {
+        sv_fail(f, "websocket upgrade failed: invalid Sec-WebSocket-Key")
+        return -1
+    }
+    let accept = wk_accept_key(key, f)
+    if sv_ws_count() >= SV_MAX_WS {
+        sv_fail_limit(f, "server WebSocket handles", SV_MAX_WS)
+        return -1
+    }
+    let e2 = sv_req_unlink(h)
+    let fd = std::raw::load(e2 + 8)
+    let mut resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+    resp = rt_concat(resp, accept)
+    resp = rt_concat(resp, "\r\n\r\n")
+    let r = sv_write_val(fd, resp, sv_now_ms() + SV_IO_MS)
+    if r != 0 {
+        sv_close(fd)
+        sv_req_free(e2)
+        sv_fail(f, sv_io_msg(r, "write WebSocket upgrade response"))
+        return -1
+    }
+    let w = rt_alloc_zero(128)
+    std::raw::store(w + 8, fd)
+    std::raw::store(w + 16, maxm)
+    std::raw::store(w + 24, sv_gb_new())
+    std::raw::store(w + 40, sv_gb_new())
+    let ll = std::raw::load(e2 + 144)
+    let off = std::raw::load(e2 + 152)
+    if ll > off {
+        let pre = sv_gb_new()
+        sv_gb_push(pre, std::raw::load(e2 + 136) + off, ll - off)
+        std::raw::store(w + 64, pre)
+    }
+    sv_req_free(e2)
+    let id = sv_next_id()
+    std::raw::store(w, id)
+    sv_ws_put(w)
+    id
+}
+
+// ------------------------------------------------------------------ WebSocket: decodificador
+
+fn sv_wsp(msg: string) -> any {
+    rt_concat("websocket protocol error: ", msg)
+}
+
+fn sv_is_timeout(code: int) -> bool {
+    code == -3 || code == -1011 || code == -1110
+}
+
+// parse_frame de websocket.rs sobre p[0..n) con máscara obligatoria.
+// out: +0 listo (0/1) +8 fin +16 opcode +24 consumidos +32 payload (reservado)
+// +40 longitud. Devuelve "" o el mensaje de error de Rust.
+fn sv_ws_parse(p: int, n: int, maxp: int, out: int) -> any {
+    std::raw::store(out, 0)
+    if n < 2 {
+        return ""
+    }
+    let first = std::raw::load8(p)
+    let second = std::raw::load8(p + 1)
+    if (first & 112) != 0 {
+        return sv_wsp("reserved WebSocket bits are set")
+    }
+    let fin = std::raw::shr(first, 7) & 1
+    let opcode = first & 15
+    let masked = std::raw::shr(second, 7) & 1
+    if masked != 1 {
+        return sv_wsp("WebSocket masking policy violation")
+    }
+    let marker = second & 127
+    let mut off = 2
+    let mut length = 0
+    if marker <= 125 {
+        length = marker
+    } else if marker == 126 {
+        if n < 4 {
+            return ""
+        }
+        off = 4
+        length = std::raw::load8(p + 2) * 256 + std::raw::load8(p + 3)
+        if length < 126 {
+            return sv_wsp("WebSocket frame length is not minimally encoded")
+        }
+    } else {
+        if n < 10 {
+            return ""
+        }
+        off = 10
+        if std::raw::load8(p + 2) >= 128 {
+            return sv_wsp("WebSocket frame length is not minimally encoded")
+        }
+        let mut v = 0
+        let mut k = 0
+        while k < 8 {
+            v = std::raw::shl(v, 8) | std::raw::load8(p + 2 + k)
+            k += 1
+        }
+        if v < 65536 {
+            return sv_wsp("WebSocket frame length is not minimally encoded")
+        }
+        length = v
+    }
+    if length > maxp {
+        return sv_wsp("WebSocket payload exceeds configured limit")
+    }
+    if n < off + 4 {
+        return ""
+    }
+    let mk = p + off
+    off += 4
+    if n < off + length {
+        return ""
+    }
+    let pay = rt_alloc(length + 1)
+    let mut i = 0
+    while i < length {
+        std::raw::store8(pay + i, std::raw::load8(p + off + i) ^ std::raw::load8(mk + (i & 3)))
+        i += 1
+    }
+    // validate_opcode
+    if opcode >= 3 && opcode <= 7 || opcode >= 11 {
+        rt_free_block(pay)
+        return sv_wsp(rt_concat("unsupported WebSocket opcode ", rt_int_to_str(opcode)))
+    }
+    if opcode >= 8 {
+        if fin == 0 || length > 125 || (opcode == 8 && length == 1) {
+            rt_free_block(pay)
+            return sv_wsp("WebSocket control frame is invalid")
+        }
+    }
+    if opcode == 1 && fin == 1 && !rt_valid_utf8(pay, length) {
+        rt_free_block(pay)
+        return sv_wsp("WebSocket text payload is not UTF-8")
+    }
+    std::raw::store(out, 1)
+    std::raw::store(out + 8, fin)
+    std::raw::store(out + 16, opcode)
+    std::raw::store(out + 24, off + length)
+    std::raw::store(out + 32, pay)
+    std::raw::store(out + 40, length)
+    ""
+}
+
+fn sv_close_code_ok(c: int) -> bool {
+    (c >= 1000 && c <= 1003) || (c >= 1007 && c <= 1014) || (c >= 3000 && c <= 4999)
+}
+
+// MessageDecoder::next. out: +48 tipo (0 ninguno, 1 texto, 2 binario, 3 ping,
+// 4 pong, 5 close) +56 payload (reservado, lo libera quien llama) +64 longitud.
+// Devuelve "" o el mensaje de error.
+fn sv_ws_next(w: int, out: int) -> any {
+    let gb = std::raw::load(w + 24)
+    let maxp = std::raw::load(w + 16)
+    let fb = std::raw::load(w + 40)
+    let fr = rt_alloc_zero(64)
+    std::raw::store(out + 48, 0)
+    loop {
+        let msg = sv_ws_parse(std::raw::load(gb), std::raw::load(gb + 8), maxp, fr)
+        if rt_slen(msg) != 0 {
+            rt_free_block(fr)
+            return msg
+        }
+        if std::raw::load(fr) == 0 {
+            rt_free_block(fr)
+            return ""
+        }
+        let fin = std::raw::load(fr + 8)
+        let op = std::raw::load(fr + 16)
+        let pay = std::raw::load(fr + 32)
+        let pl = std::raw::load(fr + 40)
+        sv_gb_drain(gb, std::raw::load(fr + 24))
+        let mut kind = 0
+        let mut data = pay
+        let mut dlen = pl
+        let mut done = false
+        if op == 0 {
+            let fop0 = std::raw::load(w + 32)
+            if fop0 == 0 {
+                rt_free_block(pay)
+                rt_free_block(fr)
+                return sv_wsp("unexpected WebSocket continuation frame")
+            }
+            if std::raw::load(fb + 8) + pl > maxp {
+                rt_free_block(pay)
+                rt_free_block(fr)
+                return sv_wsp("WebSocket payload exceeds configured limit")
+            }
+            sv_gb_push(fb, pay, pl)
+            rt_free_block(pay)
+            if fin == 1 {
+                dlen = std::raw::load(fb + 8)
+                data = rt_alloc(dlen + 1)
+                rt_copy(data, std::raw::load(fb), dlen)
+                std::raw::store(fb + 8, 0)
+                std::raw::store(w + 32, 0)
+                kind = fop0
+                done = true
+            }
+        } else if op == 1 || op == 2 {
+            if std::raw::load(w + 32) != 0 {
+                rt_free_block(pay)
+                rt_free_block(fr)
+                return sv_wsp("new data frame received during fragmented message")
+            }
+            if fin == 1 {
+                kind = op
+                done = true
+            } else {
+                std::raw::store(w + 32, op)
+                if std::raw::load(fb + 8) + pl > maxp {
+                    rt_free_block(pay)
+                    rt_free_block(fr)
+                    return sv_wsp("WebSocket payload exceeds configured limit")
+                }
+                sv_gb_push(fb, pay, pl)
+                rt_free_block(pay)
+            }
+        } else if op == 8 {
+            kind = 5
+            done = true
+            if pl >= 2 {
+                let code = std::raw::load8(pay) * 256 + std::raw::load8(pay + 1)
+                if !sv_close_code_ok(code) || !rt_valid_utf8(pay + 2, pl - 2) {
+                    rt_free_block(pay)
+                    rt_free_block(fr)
+                    return sv_wsp("invalid WebSocket close code or reason")
+                }
+            }
+        } else if op == 9 {
+            kind = 3
+            done = true
+        } else {
+            kind = 4
+            done = true
+        }
+        if done {
+            if kind == 1 && !rt_valid_utf8(data, dlen) {
+                rt_free_block(data)
+                rt_free_block(fr)
+                return sv_wsp("WebSocket text payload is not UTF-8")
+            }
+            // los mensajes de datos fragmentados traen el opcode original en kind
+            std::raw::store(out + 48, kind)
+            std::raw::store(out + 56, data)
+            std::raw::store(out + 64, dlen)
+            rt_free_block(fr)
+            return ""
+        }
+    }
+    ""
+}
+
+fn std__server__ws_recv(h: int) -> any {
+    let f = "std::server::ws_recv"
+    let w = sv_ws_get(f, h)
+    let fd = std::raw::load(w + 8)
+    let gb = std::raw::load(w + 24)
+    let maxp = std::raw::load(w + 16)
+    let mut msg = ""
+    let mut code = 0
+    let pre = std::raw::load(w + 64)
+    if pre != 0 {
+        std::raw::store(w + 64, 0)
+        if std::raw::load(gb + 8) + std::raw::load(pre + 8) > maxp + 14 {
+            msg = sv_wsp("WebSocket payload exceeds configured limit")
+        } else {
+            sv_gb_push(gb, std::raw::load(pre), std::raw::load(pre + 8))
+        }
+        sv_gb_free(pre)
+    }
+    let dl = sv_now_ms() + SV_IO_MS
+    let out = rt_alloc_zero(96)
+    let tmp = rt_alloc(16384)
+    let mut result: any = nil
+    while rt_slen(msg) == 0 && std::raw::tag(result) == 0 {
+        msg = sv_ws_next(w, out)
+        if rt_slen(msg) != 0 {
+            break
+        }
+        let kind = std::raw::load(out + 48)
+        let pay = std::raw::load(out + 56)
+        let pl = std::raw::load(out + 64)
+        if kind == 0 {
+            let r = sv_read_dl(fd, tmp, 16384, dl)
+            if r == 0 {
+                msg = "i/o error: WebSocket peer closed"
+            } else if r < 0 {
+                code = r
+                msg = sv_io_msg(r, "read WebSocket message")
+            } else if std::raw::load(gb + 8) + r > maxp + 14 {
+                msg = sv_wsp("WebSocket payload exceeds configured limit")
+            } else {
+                sv_gb_push(gb, tmp, r)
+            }
+        } else if kind == 1 {
+            result = ["text", sv_to_str(pay, pl), rt_bytes_from(pay, pl)]
+            rt_free_block(pay)
+        } else if kind == 2 {
+            result = ["binary", "", rt_bytes_from(pay, pl)]
+            rt_free_block(pay)
+        } else if kind == 3 {
+            let pv = rt_bytes_from(pay, pl)
+            rt_free_block(pay)
+            let pong = wk_encode(1, 10, pv, 0, f)
+            let r = sv_write_val(fd, pong, dl)
+            if r != 0 {
+                code = r
+                msg = sv_io_msg(r, "write WebSocket pong")
+            } else {
+                result = ["ping", "", pv]
+            }
+        } else if kind == 4 {
+            result = ["pong", "", rt_bytes_from(pay, pl)]
+            rt_free_block(pay)
+        } else {
+            let pv = rt_bytes_from(pay, pl)
+            let mut reason = ""
+            if pl >= 2 {
+                reason = sv_to_str(pay + 2, pl - 2)
+            }
+            rt_free_block(pay)
+            let echo = wk_encode(1, 8, pv, 0, f)
+            sv_write_dl(fd, rt_bdata(echo), rt_slen(echo), dl)
+            result = ["close", reason, pv]
+        }
+    }
+    rt_free_block(out)
+    rt_free_block(tmp)
+    if rt_slen(msg) == 0 {
+        std::raw::store(w + 56, 0)
+        return result
+    }
+    if sv_is_timeout(code) {
+        let idle = std::raw::load(w + 56) + 1
+        std::raw::store(w + 56, idle)
+        if idle > SV_MAX_WS_IDLE {
+            let x = sv_ws_unlink(h)
+            if x != 0 {
+                sv_ws_destroy(x)
+            }
+            sv_fail(f, "read WebSocket message timed out")
+            return nil
+        }
+        return ["timeout", "", rt_bytes_from(0, 0)]
+    }
+    let x = sv_ws_unlink(h)
+    if x != 0 {
+        sv_ws_destroy(x)
+    }
+    sv_fail(f, msg)
+    nil
+}
+
+fn sv_ws_send(f: string, h: int, opcode: int, data: any) -> any {
+    if rt_slen(data) > SV_MAX_WS_MSG {
+        sv_fail_limit(f, "server WebSocket outbound message bytes", SV_MAX_WS_MSG)
+        return nil
+    }
+    let w = sv_ws_get(f, h)
+    let frame = wk_encode(1, opcode, data, 0, f)
+    let fd = std::raw::load(w + 8)
+    let r = sv_write_val(fd, frame, sv_now_ms() + SV_IO_MS)
+    if r != 0 {
+        // un plazo vencido a mitad de marco deja el flujo desincronizado
+        std::raw::store(w + 48, 1)
+        sv_shutdown(fd)
+        sv_fail(f, sv_io_msg(r, "write WebSocket message"))
+    }
+    nil
+}
+
+fn std__server__ws_send_text(h: int, text: string) -> any {
+    sv_ws_send("std::server::ws_send_text", h, 1, text)
 }
 
 fn std__server__ws_send_binary(h: int, data: any) -> any {
-    if !sv_ws_frame(h, 2, data) { return "websocket error: send failed" }
-    nil
+    let f = "std::server::ws_send_binary"
+    rt_expect_bytes(data, f)
+    sv_ws_send(f, h, 2, data)
 }
 
 fn std__server__ws_close(h: int, code: int, reason: string) -> any {
-    if h < 0 || h >= SV_MAX_WS { return nil }
-    let fd = sv_ws_fd(h)
-    if fd <= 0 { return nil }
-    let dl = sv_now_ms() + SV_IO_MS
-    let rlen = rt_slen(reason)
-    let plen = 2 + rlen
-    let hdr_len = if plen <= 125 { 2 } else { 4 }
-    let frame = rt_alloc_zero(hdr_len + plen)
-    if plen <= 125 {
-        std::raw::store8(frame, 136)
-        std::raw::store8(frame + 1, plen)
-    } else {
-        std::raw::store8(frame, 136)
-        std::raw::store8(frame + 1, 126)
-        std::raw::store8(frame + 2, (plen / 256) & 255)
-        std::raw::store8(frame + 3, plen & 255)
+    let f = "std::server::ws_close"
+    if code < 0 {
+        sv_fail(f, "close code must be nonnegative")
+        return nil
     }
-    std::raw::store8(frame + hdr_len, (code / 256) & 255)
-    std::raw::store8(frame + hdr_len + 1, code & 255)
-    if rlen > 0 { rt_copy(frame + hdr_len + 2, rt_bdata(reason), rlen) }
-    sv_write_all(fd, frame, hdr_len + plen, dl)
-    rt_free_block(frame)
-    sv_close(fd)
-    sv_ws_set(h, 0, 0)
+    if code > 65535 {
+        sv_fail(f, "close code out of range")
+        return nil
+    }
+    let rn = rt_slen(reason)
+    if code != 0 && !sv_close_code_ok(code) {
+        sv_fail_arg(f, "invalid WebSocket close code")
+        return nil
+    }
+    if code == 0 && rn != 0 {
+        sv_fail_arg(f, "WebSocket close reason requires a close code")
+        return nil
+    }
+    if rn > SV_MAX_CLOSE_REASON {
+        sv_fail_limit(f, "WebSocket close reason bytes", SV_MAX_CLOSE_REASON)
+        return nil
+    }
+    let mut hdr = 0
+    if code != 0 {
+        hdr = 2
+    }
+    let pp = rt_alloc(hdr + rn + 1)
+    if code != 0 {
+        std::raw::store8(pp, std::raw::shr(code, 8) & 255)
+        std::raw::store8(pp + 1, code & 255)
+    }
+    rt_copy(pp + hdr, rt_bdata(reason), rn)
+    let pv = rt_bytes_from(pp, hdr + rn)
+    rt_free_block(pp)
+    let frame = wk_encode(1, 8, pv, 0, f)
+    let w = sv_ws_unlink(h)
+    if w != 0 {
+        let fd = std::raw::load(w + 8)
+        sv_write_val(fd, frame, sv_now_ms() + SV_IO_MS)
+        sv_ws_destroy(w)
+    }
     nil
 }

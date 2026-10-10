@@ -4,7 +4,7 @@
 // esperado, la limpieza esta completa.
 //
 // Ejecutar con:
-//     zett run examples/fixes_v032.titan
+//     titan run examples/fixes_v032.titan
 
 // ---------------- FIX 1: tipos funcion como anotaciones ----------------
 // Antes: type Handler = fn(int) -> string  daba parse error.

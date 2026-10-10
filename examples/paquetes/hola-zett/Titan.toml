@@ -1,0 +1,6 @@
+[package]
+name = "hola-zett"
+version = "0.1.0"
+edition = "2026"
+description = "Paquete de ejemplo: un saludo. Sirve para comprobar el registro de Zett."
+license = "MIT"

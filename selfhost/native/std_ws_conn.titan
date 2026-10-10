@@ -1,0 +1,832 @@
+// std::ws con estado: decodificador de mensajes (WsDecoder*) y conexiones
+// WebSocket (WsConnect, WsAttachTcp, WsSend*, WsReceive, WsClose) del backend nativo.
+// Reproduce crates/titan_stdlib/src/websocket.rs (MessageDecoder) y las funciones
+// websocket_* de crates/titan_vm/src/lib.rs. Prefijos `wd_` (decodificador) y `wsx_`.
+//
+// Decodificador (etiqueta 21, objeto [cuenta][id][ptr]), bloque de 64 bytes:
+//   +0 buffer {ptr, +8 longitud, +16 capacidad}   +24 opcode del mensaje fragmentado (0 = ninguno)
+//   +32 fragmentos {ptr, +40 longitud, +48 capacidad}   +56 máximo
+// Conexión (etiqueta 22), bloque de 88 bytes:
+//   +0 transporte (1 TCP)  +8 fd  +16 decodificador  +24 exige máscara  +32 enmascara salida
+//   +40 cierre enviado  +48 plazo de lectura/escritura en ms (0 = sin plazo)  +56 cerrada
+//   +64 máximo  +72 handshake en curso (connect)
+// Como en la VM, cerrar (close, o recibir un Close) quita la conexión del registro: el
+// handle sigue existiendo pero cualquier uso da «unknown WebSocket N», se cierra el fd y
+// se libera el cupo de handles de red. Un decodificador gasta un handle para siempre.
+// Mensajes (mapas): {text,type} {data,type} (binary/ping/pong) {code,reason,type} (close).
+// wss:// y attach_tls usan std_tls; +80 de la conexión = estado TLS (0 si no hay).
+
+// ------------------------------------------------------------ decodificador
+
+fn wd_new(maximum: int) -> int {
+    let d = rt_alloc_zero(64)
+    std::raw::store(d + 56, maximum)
+    d
+}
+
+// Añade n bytes a la lista {ptr,len,cap} que empieza en d+off.
+fn wd_append(d: int, off: int, src: int, n: int) {
+    let len = std::raw::load(d + off + 8)
+    let cap = std::raw::load(d + off + 16)
+    if len + n > cap {
+        let mut nc = cap * 2
+        if nc < 256 {
+            nc = 256
+        }
+        while nc < len + n {
+            nc = nc * 2
+        }
+        let np = rt_alloc(nc)
+        let old = std::raw::load(d + off)
+        if old != 0 {
+            rt_copy(np, old, len)
+            rt_free_block(old)
+        }
+        std::raw::store(d + off, np)
+        std::raw::store(d + off + 16, nc)
+    }
+    rt_copy(std::raw::load(d + off) + len, src, n)
+    std::raw::store(d + off + 8, len + n)
+}
+
+fn wd_push(d: int, p: int, n: int, function: string) {
+    if std::raw::load(d + 8) + n > std::raw::load(d + 56) + 14 {
+        rt_native_fail(function, "WebSocket payload exceeds configured limit")
+    }
+    wd_append(d, 0, p, n)
+}
+
+// Mensaje: {+0 clase (1 text, 2 binary, 3 ping, 4 pong, 5 close), +8 código (-1 ninguno),
+// +16 datos, +24 longitud}; los datos son una copia propia.
+fn wd_msg(kind: int, code: int, p: int, n: int) -> int {
+    let m = rt_alloc(32)
+    std::raw::store(m, kind)
+    std::raw::store(m + 8, code)
+    let data = rt_alloc(n + 1)
+    rt_copy(data, p, n)
+    std::raw::store(m + 16, data)
+    std::raw::store(m + 24, n)
+    m
+}
+
+fn wd_msg_free(m: int) {
+    rt_free_block(std::raw::load(m + 16))
+    rt_free_block(m)
+}
+
+fn wd_decode_data(opcode: int, p: int, n: int, function: string) -> int {
+    if opcode == 1 {
+        if !rt_valid_utf8(p, n) {
+            rt_native_fail(function, "WebSocket text payload is not UTF-8")
+        }
+        return wd_msg(1, -1, p, n)
+    }
+    wd_msg(2, -1, p, n)
+}
+
+fn wd_decode_close(p: int, n: int, function: string) -> int {
+    if n == 0 {
+        return wd_msg(5, -1, p, 0)
+    }
+    if n < 2 {
+        rt_native_fail(function, "invalid WebSocket close code or reason")
+    }
+    let code = wk_be16(p)
+    let ok = (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999)
+    if !ok {
+        rt_native_fail(function, "invalid WebSocket close code or reason")
+    }
+    if !rt_valid_utf8(p + 2, n - 2) {
+        rt_native_fail(function, "invalid WebSocket close code or reason")
+    }
+    wd_msg(5, code, p + 2, n - 2)
+}
+
+fn wd_fragment(d: int, p: int, n: int, function: string) {
+    if std::raw::load(d + 40) + n > std::raw::load(d + 56) {
+        rt_native_fail(function, "WebSocket payload exceeds configured limit")
+    }
+    wd_append(d, 32, p, n)
+}
+
+fn wd_frag_reset(d: int) {
+    let f = std::raw::load(d + 32)
+    if f != 0 {
+        rt_free_block(f)
+    }
+    std::raw::store(d + 24, 0)
+    std::raw::store(d + 32, 0)
+    std::raw::store(d + 40, 0)
+    std::raw::store(d + 48, 0)
+}
+
+// Siguiente mensaje completo, o 0 si faltan datos (MessageDecoder::next).
+fn wd_next(d: int, reqm: int, function: string) -> int {
+    loop {
+        let len = std::raw::load(d + 8)
+        let rec = wk_parse_raw(std::raw::load(d), len, reqm, std::raw::load(d + 56), function)
+        if rec == 0 {
+            return 0
+        }
+        let consumed = std::raw::load(rec)
+        rt_copy(std::raw::load(d), std::raw::load(d) + consumed, len - consumed)
+        std::raw::store(d + 8, len - consumed)
+        let fin = std::raw::load(rec + 8)
+        let opcode = std::raw::load(rec + 16)
+        let pay = std::raw::load(rec + 24)
+        let plen = std::raw::load(rec + 32)
+        if opcode == 0 {
+            let fo = std::raw::load(d + 24)
+            if fo == 0 {
+                wk_rec_free(rec)
+                rt_native_fail(function, "unexpected WebSocket continuation frame")
+            }
+            wd_fragment(d, pay, plen, function)
+            wk_rec_free(rec)
+            if fin != 0 {
+                let m = wd_decode_data(fo, std::raw::load(d + 32), std::raw::load(d + 40), function)
+                wd_frag_reset(d)
+                return m
+            }
+        } else if opcode <= 2 {
+            if std::raw::load(d + 24) != 0 {
+                wk_rec_free(rec)
+                rt_native_fail(function, "new data frame received during fragmented message")
+            }
+            if fin != 0 {
+                let m = wd_decode_data(opcode, pay, plen, function)
+                wk_rec_free(rec)
+                return m
+            }
+            std::raw::store(d + 24, opcode)
+            wd_fragment(d, pay, plen, function)
+            wk_rec_free(rec)
+        } else if opcode == 8 {
+            let m = wd_decode_close(pay, plen, function)
+            wk_rec_free(rec)
+            return m
+        } else {
+            let mut kind = 3
+            if opcode == 10 {
+                kind = 4
+            }
+            let m = wd_msg(kind, -1, pay, plen)
+            wk_rec_free(rec)
+            return m
+        }
+    }
+    0
+}
+
+fn wd_str(p: int, n: int) -> any {
+    let raw = rt_str_alloc(n)
+    rt_copy(raw + 16, p, n)
+    rt_sval(raw)
+}
+
+// Mensaje como valor de Titan; libera el registro.
+fn wd_msg_value(m: int) -> any {
+    let kind = std::raw::load(m)
+    let p = std::raw::load(m + 16)
+    let n = std::raw::load(m + 24)
+    let mut out = std::map::new()
+    if kind == 1 {
+        out = std::map::insert(out, "type", "text")
+        out = std::map::insert(out, "text", wd_str(p, n))
+    }
+    if kind == 2 || kind == 3 || kind == 4 {
+        let mut name = "binary"
+        if kind == 3 {
+            name = "ping"
+        }
+        if kind == 4 {
+            name = "pong"
+        }
+        out = std::map::insert(out, "type", name)
+        out = std::map::insert(out, "data", rt_bytes_from(p, n))
+    }
+    if kind == 5 {
+        out = std::map::insert(out, "type", "close")
+        let code = std::raw::load(m + 8)
+        if code < 0 {
+            out = std::map::insert(out, "code", nil)
+        } else {
+            out = std::map::insert(out, "code", code)
+        }
+        out = std::map::insert(out, "reason", wd_str(p, n))
+    }
+    wd_msg_free(m)
+    out
+}
+
+fn wsx_decoder(v: any, what: string) -> int {
+    if std::raw::tag(v) != 21 {
+        rt_fatal(rt_concat("type error: ", what))
+    }
+    std::raw::load(std::raw::bits(v) + 16)
+}
+
+fn rt_ws_decoder_new(maximum: any) -> any {
+    let n = rtm_positive(maximum, "WebSocket decoder maximum")
+    tcp_reserve()
+    let st = tcp_st()
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    std::raw::store(st + 8, std::raw::load(st + 8) + 1)
+    tk_handle(21, id, wd_new(n))
+}
+
+fn rt_ws_decoder_push(d: any, data: any) -> any {
+    if std::raw::tag(data) != 6 {
+        rt_fatal("type error: decoder_push requires bytes")
+    }
+    let dec = wsx_decoder(d, "decoder_push requires decoder")
+    wd_push(dec, rt_bdata(data), rt_slen(data), "std::ws::decoder_push")
+    nil
+}
+
+fn rt_ws_decoder_next(d: any, require: any) -> any {
+    if std::raw::tag(require) != 3 {
+        rt_fatal("type error: decoder_next mask policy must be bool")
+    }
+    let dec = wsx_decoder(d, "decoder_next requires decoder")
+    let mut reqm = 0
+    if std::raw::bits(require) != 0 {
+        reqm = 1
+    }
+    let m = wd_next(dec, reqm, "std::ws::decoder_next")
+    if m == 0 {
+        return wk_none()
+    }
+    wk_some(wd_msg_value(m))
+}
+
+// ------------------------------------------------------------ conexión
+
+fn wsx_new(fd: int, server_side: int, maximum: int, timeout: int) -> int {
+    let w = rt_alloc_zero(88)
+    std::raw::store(w, 1)
+    std::raw::store(w + 8, fd)
+    std::raw::store(w + 16, wd_new(maximum))
+    std::raw::store(w + 24, server_side)
+    std::raw::store(w + 32, 1 - server_side)
+    std::raw::store(w + 48, timeout)
+    std::raw::store(w + 64, maximum)
+    w
+}
+
+fn wsx_timeout(w: int) -> int {
+    let t = std::raw::load(w + 48)
+    if t == 0 {
+        return -1
+    }
+    t
+}
+
+// Durante el handshake de connect (+72 = 1) cualquier fallo cierra antes el fd.
+fn wsx_abort(w: int) {
+    if std::raw::load(w + 72) != 0 {
+        std::raw::store(w + 72, 0)
+        std::raw::syscall(3, std::raw::load(w + 8), 0, 0, 0, 0, 0)
+    }
+}
+
+// Escribe todo (write_all); errores como network_error("std::ws", ..).
+fn wsx_write(w: int, p: int, n: int) {
+    let tls = std::raw::load(w + 80)
+    if tls != 0 {
+        tl_write_all(tls, 23, p, n)
+        return
+    }
+    let fd = std::raw::load(w + 8)
+    let mut done = 0
+    while done < n {
+        if tcp_wait(fd, 4, wsx_timeout(w)) == 0 {
+            wsx_abort(w)
+            rt_native_fail("std::ws", rt_os_error(11))
+        }
+        let r = std::raw::syscall(44, fd, p + done, n - done, 16384, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            wsx_abort(w)
+            rt_native_fail("std::ws", rt_os_error(0 - r))
+        }
+        done += r
+    }
+}
+
+fn wsx_read(w: int, buf: int, max: int) -> int {
+    let tls = std::raw::load(w + 80)
+    if tls != 0 {
+        return tl_read_app(tls, buf, max)
+    }
+    let fd = std::raw::load(w + 8)
+    loop {
+        if tcp_wait(fd, 1, wsx_timeout(w)) == 0 {
+            wsx_abort(w)
+            rt_native_fail("std::ws", rt_os_error(11))
+        }
+        let r = std::raw::syscall(0, fd, buf, max, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r < 0 {
+            wsx_abort(w)
+            rt_native_fail("std::ws", rt_os_error(0 - r))
+        }
+        return r
+    }
+    0
+}
+
+// Conexión de un valor WebSocket; error de la VM si no lo es o si ya se cerró.
+fn wsx_conn(v: any, what: string) -> int {
+    if std::raw::tag(v) != 22 {
+        rt_fatal(rt_concat("type error: ", what))
+    }
+    let w = std::raw::load(std::raw::bits(v) + 16)
+    if std::raw::load(w + 56) != 0 {
+        rt_fatal(rt_concat("type error: unknown WebSocket ", rt_int_to_str(std::raw::load(std::raw::bits(v) + 8))))
+    }
+    w
+}
+
+// Quita la conexión del registro: cierra el fd y libera el cupo.
+fn wsx_remove(w: int) {
+    std::raw::store(w + 56, 1)
+    std::raw::syscall(3, std::raw::load(w + 8), 0, 0, 0, 0, 0)
+    if std::raw::load(w + 80) != 0 {
+        tl_state_free(std::raw::load(w + 80))
+        std::raw::store(w + 80, 0)
+    }
+    let st = tcp_st()
+    std::raw::store(st + 8, std::raw::load(st + 8) - 1)
+}
+
+fn wsx_random(n: int) -> int {
+    let p = rt_alloc(n)
+    let mut done = 0
+    while done < n {
+        let r = std::raw::syscall(318, p + done, n - done, 0, 0, 0, 0)
+        if r == -4 {
+            continue
+        }
+        if r <= 0 {
+            rt_free_block(p)
+            rt_native_fail("std::ws::connect", "secure random masking key generation failed")
+        }
+        done += r
+    }
+    p
+}
+
+// encode_frame_with_policy: marco final con máscara aleatoria si la conexión enmascara.
+fn wsx_frame(w: int, opcode: int, payload: any, function: string) -> any {
+    let mut maskp = 0
+    if std::raw::load(w + 32) != 0 {
+        maskp = wk_rand4(function)
+    }
+    let out = wk_encode(1, opcode, payload, maskp, function)
+    if maskp != 0 {
+        rt_free_block(maskp)
+    }
+    out
+}
+
+fn wsx_send(w: int, opcode: int, payload: any) {
+    if std::raw::load(w + 40) != 0 {
+        rt_fatal("type error: WebSocket is closing")
+    }
+    let frame = wsx_frame(w, opcode, payload, "std::ws")
+    wsx_write(w, rt_bdata(frame), rt_slen(frame))
+}
+
+// websocket_close: valida, envía el marco Close una sola vez.
+fn wsx_close_frame(w: int, code: int, reason: any) {
+    let ok = (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999)
+    if !ok || rt_slen(reason) > 123 {
+        rt_fatal("type error: invalid WebSocket close code or reason")
+    }
+    if std::raw::load(w + 40) != 0 {
+        return
+    }
+    std::raw::store(w + 40, 1)
+    let n = rt_slen(reason)
+    let buf = rt_alloc(n + 2)
+    wk_put_be16(buf, code)
+    rt_copy(buf + 2, rt_bdata(reason), n)
+    let payload = rt_bytes_from(buf, n + 2)
+    rt_free_block(buf)
+    let frame = wsx_frame(w, 8, payload, "std::ws::close")
+    wsx_write(w, rt_bdata(frame), rt_slen(frame))
+}
+
+fn rt_ws_send_text(v: any, text: any) -> any {
+    if std::raw::tag(text) != 5 {
+        rt_fatal("type error: send_text requires string")
+    }
+    let w = wsx_conn(v, "operation requires WebSocket")
+    wsx_send(w, 1, text)
+    nil
+}
+
+fn rt_ws_send_binary(v: any, data: any) -> any {
+    if std::raw::tag(data) != 6 {
+        rt_fatal("type error: send_binary requires bytes")
+    }
+    let w = wsx_conn(v, "operation requires WebSocket")
+    wsx_send(w, 2, data)
+    nil
+}
+
+fn rt_ws_receive(v: any) -> any {
+    if std::raw::tag(v) != 22 {
+        rt_fatal("type error: receive requires WebSocket")
+    }
+    let w = wsx_conn(v, "operation requires WebSocket")
+    let d = std::raw::load(w + 16)
+    let buf = rt_alloc(8192)
+    loop {
+        let m = wd_next(d, std::raw::load(w + 24), "std::ws::receive")
+        if m != 0 {
+            let kind = std::raw::load(m)
+            if kind == 3 {
+                let payload = rt_bytes_from(std::raw::load(m + 16), std::raw::load(m + 24))
+                wd_msg_free(m)
+                let frame = wsx_frame(w, 10, payload, "std::ws::receive")
+                wsx_write(w, rt_bdata(frame), rt_slen(frame))
+                continue
+            }
+            if kind == 5 {
+                if std::raw::load(w + 40) == 0 {
+                    let mut code = std::raw::load(m + 8)
+                    if code < 0 {
+                        code = 1000
+                    }
+                    wsx_close_frame(w, code, wd_str(std::raw::load(m + 16), std::raw::load(m + 24)))
+                }
+                rt_free_block(buf)
+                let out = wd_msg_value(m)
+                wsx_remove(w)
+                return out
+            }
+            rt_free_block(buf)
+            return wd_msg_value(m)
+        }
+        let n = wsx_read(w, buf, 8192)
+        if n == 0 {
+            rt_free_block(buf)
+            rt_fatal("WebSocket transport disconnected")
+        }
+        wd_push(d, buf, n, "std::ws::receive")
+    }
+    nil
+}
+
+fn rt_ws_close(v: any, code: any, reason: any) -> any {
+    if std::raw::tag(reason) != 5 {
+        rt_fatal("type error: close reason must be string")
+    }
+    if std::raw::tag(code) != 1 {
+        rt_fatal("type error: close code must be int")
+    }
+    let c = std::raw::bits(code)
+    if c < 0 || c > 65535 {
+        rt_fatal("type error: close code out of range")
+    }
+    let w = wsx_conn(v, "close requires WebSocket")
+    wsx_close_frame(w, c, reason)
+    wsx_remove(w)
+    nil
+}
+
+fn rt_ws_attach_tcp(stream: any, server_side: any, maximum: any) -> any {
+    let n = rtm_positive(maximum, "WebSocket maximum")
+    if std::raw::tag(server_side) != 3 {
+        rt_fatal("type error: WebSocket server_side must be bool")
+    }
+    if std::raw::tag(stream) != 17 {
+        rt_fatal("type error: attach_tcp requires TCP stream")
+    }
+    let e = tcp_stream_entry(stream, "attach_tcp")
+    let fd = std::raw::load(e + 16)
+    let timeout = std::raw::load(e + 24)
+    // El stream sale de la tabla pero su cupo de handle pasa a la conexión.
+    std::raw::store(e, 0)
+    let mut side = 0
+    if std::raw::bits(server_side) != 0 {
+        side = 1
+    }
+    let w = wsx_new(fd, side, n, timeout)
+    let st = tcp_st()
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    tk_handle(22, id, w)
+}
+
+fn rt_ws_attach_tls(stream: any, server_side: any, maximum: any) -> any {
+    let n = rtm_positive(maximum, "WebSocket maximum")
+    if std::raw::tag(server_side) != 3 {
+        rt_fatal("type error: WebSocket server_side must be bool")
+    }
+    if std::raw::tag(stream) != 19 {
+        rt_fatal("type error: attach_tls requires TLS stream")
+    }
+    let id = tcp_handle_id(stream)
+    let e = tcp_entry(id)
+    if e == 0 || std::raw::load(e + 8) != 3 {
+        rt_fatal(rt_concat("type error: unknown TLS stream ", rt_int_to_str(id)))
+    }
+    let fd = std::raw::load(e + 16)
+    let timeout = std::raw::load(e + 24)
+    let ts = std::raw::load(e + 32)
+    tl_ss(ts, TS_FN, 5)
+    tl_ss(ts, TS_LENIENT, 1)
+    std::raw::store(e, 0)
+    let mut side = 0
+    if std::raw::bits(server_side) != 0 {
+        side = 1
+    }
+    let w = wsx_new(fd, side, n, timeout)
+    std::raw::store(w + 80, ts)
+    let st = tcp_st()
+    let wid = std::raw::load(st)
+    std::raw::store(st, wid + 1)
+    tk_handle(22, wid, w)
+}
+
+// ------------------------------------------------------------ conectar
+
+fn wsx_bad_url() {
+    rt_native_fail("std::ws::connect", "invalid WebSocket URL")
+}
+
+// parse_url: (seguro, host, puerto, ruta, autoridad).
+fn wsx_parse_url(url: any) -> (int, any, int, any, any) {
+    let p = rt_bdata(url)
+    let n = rt_slen(url)
+    let mut secure = 0
+    let mut off = 0
+    if n >= 5 && std::raw::load8(p) == 119 && std::raw::load8(p + 1) == 115 && std::raw::load8(p + 2) == 58 && std::raw::load8(p + 3) == 47 && std::raw::load8(p + 4) == 47 {
+        off = 5
+    } else if n >= 6 && std::raw::load8(p) == 119 && std::raw::load8(p + 1) == 115 && std::raw::load8(p + 2) == 115 && std::raw::load8(p + 3) == 58 && std::raw::load8(p + 4) == 47 && std::raw::load8(p + 5) == 47 {
+        off = 6
+        secure = 1
+    } else {
+        wsx_bad_url()
+    }
+    let mut i = off
+    let mut slash = -1
+    while i < n {
+        let c = std::raw::load8(p + i)
+        if c == 64 || c == 35 {
+            wsx_bad_url()
+        }
+        if c == 47 && slash < 0 {
+            slash = i
+        }
+        i += 1
+    }
+    let mut aend = n
+    let mut path = "/"
+    if slash >= 0 {
+        aend = slash
+        path = rt_substr_bytes(url, slash, n)
+    }
+    let alen = aend - off
+    if alen == 0 {
+        wsx_bad_url()
+    }
+    let ap = p + off
+    let mut hstart = 0
+    let mut hend = alen
+    let mut port = 80
+    if secure != 0 {
+        port = 443
+    }
+    if std::raw::load8(ap) == 91 {
+        let mut close = -1
+        let mut k = 0
+        while k < alen && close < 0 {
+            if std::raw::load8(ap + k) == 93 {
+                close = k
+            }
+            k += 1
+        }
+        if close < 0 {
+            wsx_bad_url()
+        }
+        hstart = 1
+        hend = close
+        if alen > close + 1 {
+            if std::raw::load8(ap + close + 1) != 58 {
+                wsx_bad_url()
+            }
+            port = tcp_port(ap + close + 2, alen - close - 2)
+            if port < 0 {
+                wsx_bad_url()
+            }
+        }
+    } else {
+        let colon = tcp_last_colon(ap, alen)
+        if colon >= 0 {
+            hend = colon
+            port = tcp_port(ap + colon + 1, alen - colon - 1)
+            if port < 0 {
+                wsx_bad_url()
+            }
+        }
+    }
+    if hend - hstart == 0 || port == 0 {
+        wsx_bad_url()
+    }
+    let plen = rt_slen(path)
+    let pp = rt_bdata(path)
+    let mut j = 0
+    while j < plen {
+        let c = std::raw::load8(pp + j)
+        if c < 32 || c == 127 {
+            wsx_bad_url()
+        }
+        j += 1
+    }
+    let host = rt_substr_bytes(url, off + hstart, off + hend)
+    let authority = rt_substr_bytes(url, off, off + alen)
+    return (secure, host, port, path, authority)
+}
+
+fn wsx_has_colon(s: any) -> bool {
+    let p = rt_bdata(s)
+    let n = rt_slen(s)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 58 {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// validate_subprotocol_response: sin cabecera Sec-WebSocket-Protocol si protocol es "",
+// y exactamente una con ese valor si no.
+fn wsx_subprotocol_ok(resp: any, end: int, protocol: any) -> bool {
+    let p = rt_bdata(resp)
+    let mut count = 0
+    let mut matched = 0
+    let mut i = 0
+    let mut start = 0
+    let mut first = 1
+    while i <= end {
+        let mut crlf = 0
+        if i + 1 < end {
+            if std::raw::load8(p + i) == 13 && std::raw::load8(p + i + 1) == 10 {
+                crlf = 1
+            }
+        }
+        if i == end || crlf != 0 {
+            if first != 0 {
+                first = 0
+            } else {
+                let line = rt_substr_bytes(resp, start, i)
+                let ln = rt_slen(line)
+                let lp = rt_bdata(line)
+                let mut colon = -1
+                let mut k = 0
+                while k < ln && colon < 0 {
+                    if std::raw::load8(lp + k) == 58 {
+                        colon = k
+                    }
+                    k += 1
+                }
+                if colon >= 0 {
+                    let name = rt_substr_bytes(line, 0, colon)
+                    if wk_ieq(name, "Sec-WebSocket-Protocol") != 0 {
+                        count += 1
+                        let value = std__text__trim(rt_substr_bytes(line, colon + 1, ln))
+                        if value == protocol {
+                            matched += 1
+                        }
+                    }
+                }
+            }
+            if i == end {
+                break
+            }
+            i += 2
+            start = i
+            continue
+        }
+        i += 1
+    }
+    if rt_slen(protocol) == 0 {
+        return count == 0
+    }
+    count == 1 && matched == 1
+}
+
+fn rt_ws_connect(url: any, protocol: any, maximum: any) -> any {
+    let f = "std::ws::connect"
+    let n = rtm_positive(maximum, "WebSocket maximum")
+    if std::raw::tag(protocol) != 5 {
+        rt_fatal("type error: WebSocket protocol must be string")
+    }
+    if std::raw::tag(url) != 5 {
+        rt_fatal("type error: WebSocket URL must be string")
+    }
+    tcp_reserve()
+    let (secure, host, port, path, authority) = wsx_parse_url(url)
+    let mut address = rt_concat(rt_concat(host, ":"), rt_int_to_str(port))
+    if wsx_has_colon(host) {
+        address = rt_concat(rt_concat(rt_concat("[", host), "]:"), rt_int_to_str(port))
+    }
+    let fd = tcp_connect_fd(f, address)
+    // Plazos de 10 s en lectura y escritura, como la VM.
+    let w = wsx_new(fd, 0, n, 10000)
+    std::raw::store(w + 72, 1)
+    if secure != 0 {
+        let ts = tl_state_new(fd, 1, 10000, 5)
+        tl_ss(ts, TS_LENIENT, 1)
+        tl_client_handshake(ts, std::raw::bits(host) + 16, rt_slen(host))
+        tl_ss(ts, TS_HS, 1)
+        std::raw::store(w + 80, ts)
+    }
+    let kb = wsx_random(16)
+    let key = std__encoding__base64_encode(rt_bytes_from(kb, 16))
+    rt_free_block(kb)
+    let b = sb_new(256)
+    sb_str(b, "GET ")
+    sb_str(b, path)
+    sb_str(b, " HTTP/1.1\r\nHost: ")
+    sb_str(b, authority)
+    sb_str(b, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ")
+    sb_str(b, key)
+    sb_str(b, "\r\n")
+    if rt_slen(protocol) > 0 {
+        sb_str(b, "Sec-WebSocket-Protocol: ")
+        sb_str(b, protocol)
+        sb_str(b, "\r\n")
+    }
+    sb_str(b, "\r\n")
+    let request = sb_finish_bytes(b)
+    wsx_write(w, rt_bdata(request), rt_slen(request))
+    let d = std::raw::load(w + 16)
+    // La respuesta se acumula en el búfer del decodificador (+32 lo usa para fragmentos;
+    // aquí aún no hay mensajes, así que se usa uno propio).
+    let mut resp = rt_alloc(4096)
+    let mut cap = 4096
+    let mut len = 0
+    let chunk = rt_alloc(4096)
+    loop {
+        if wk_find_crlf2(resp, len) >= 0 {
+            break
+        }
+        if len > 65536 {
+            wsx_abort(w)
+            rt_fatal("type error: WebSocket handshake headers too large")
+        }
+        let got = wsx_read(w, chunk, 4096)
+        if got == 0 {
+            wsx_abort(w)
+            rt_fatal("WebSocket transport disconnected")
+        }
+        if len + got > cap {
+            let bigger = rt_alloc(cap * 2)
+            rt_copy(bigger, resp, len)
+            rt_free_block(resp)
+            resp = bigger
+            cap = cap * 2
+        }
+        rt_copy(resp + len, chunk, got)
+        len += got
+    }
+    rt_free_block(chunk)
+    let rv = rt_bytes_from(resp, len)
+    rt_free_block(resp)
+    let consumed = wk_accept_core(rv, key, f, 1)
+    if consumed < 0 {
+        wsx_abort(w)
+        rt_native_fail(f, "invalid WebSocket server handshake")
+    }
+    if !wsx_subprotocol_ok(rv, consumed - 4, protocol) {
+        wsx_abort(w)
+        rt_native_fail(f, "invalid WebSocket server handshake")
+    }
+    if len > consumed {
+        if std::raw::load(d + 8) + (len - consumed) > std::raw::load(d + 56) + 14 {
+            wsx_abort(w)
+        }
+        wd_push(d, rt_bdata(rv) + consumed, len - consumed, f)
+    }
+    std::raw::store(w + 72, 0)
+    if std::raw::load(w + 80) != 0 {
+        tl_ss(std::raw::load(w + 80), TS_HS, 0)
+    }
+    let st = tcp_st()
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    std::raw::store(st + 8, std::raw::load(st + 8) + 1)
+    tk_handle(22, id, w)
+}

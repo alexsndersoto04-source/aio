@@ -1,0 +1,19 @@
+fn main() {
+    let mut m = std::map::new()
+    m = std::map::insert(m, "uno", 1)
+    m = std::map::insert(m, "dos", 2)
+    m = std::map::insert(m, "tres", 3)
+    m = std::map::insert(m, "dos", 22)
+    m = std::map::insert_new(m, "cuatro", 4)
+    let removed = std::map::remove(m, "uno")
+    let ks = std::map::keys(removed)
+    let vs = std::map::values(removed)
+    let mut t = 0
+    for v in vs {
+        t += v
+    }
+    if std::map::contains(m, "uno") && !std::map::contains(removed, "uno") {
+        t += std::map::get(m, "dos")
+    }
+    t + std::map::length(m) + len(ks)
+}

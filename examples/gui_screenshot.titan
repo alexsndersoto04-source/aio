@@ -6,7 +6,7 @@
 // macOS.
 //
 // Ejecutar con:
-//     zett run examples/gui_screenshot.titan
+//     titan run examples/gui_screenshot.titan
 // Genera `mi_primera_gui.png` en el directorio actual.
 
 fn main() {

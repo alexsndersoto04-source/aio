@@ -1,0 +1,1282 @@
+// titan: la CLI única de Titan, escrita en Titan (sustituye a crates/titan_cli).
+//
+//   titan new <ruta>                      crea un proyecto con Titan.toml y src/main.titan
+//   titan check [entrada]                 analiza y revisa tipos sin producir nada
+//   titan run [entrada] [args...]         compila a un ejecutable nativo temporal y lo ejecuta
+//   titan test [entrada]                  compila y ejecuta cada tests/**/*.titan
+//   titan compile [entrada] [-o salida] [--target x86_64|aarch64]   compila a un ejecutable nativo Linux (aarch64 pasa por LLVM: necesita clang)
+//   titan wasm [entrada] [-o salida]      compila a WebAssembly con mapas de fuente
+//   titan bytecode <entrada>              imprime el bytecode (el que genera zett)
+//   titan version
+//
+// El ejecutable tiene que estar en selfhost/ (o junto a un directorio native/
+// con runtime.titan): el runtime nativo se busca en <ejecutable>/native/.
+// Los mensajes de error siguen el formato de la CLI de Rust: `ETIQUETA: causa`
+// en stderr y código de salida 1.
+//
+//   titan build [entrada] [-o salida]     escribe el artefacto .tbc (idéntico al de zett)
+//   titan exec [artefacto.tbc]            valida el artefacto, lo compila a nativo y lo ejecuta
+//
+//   titan add <paquete> [requisito]       añade una dependencia remota a Titan.toml
+//   titan fetch [--offline]               resuelve, descarga, verifica e instala (Titan.remote.lock)
+//   titan update                          vuelve a resolver y actualiza
+//   titan keygen <ruta>                   genera una clave Ed25519 de firma
+//   titan pack --key K --output O         crea un .tpkg determinista y firmado
+//   titan publish --key K                 empaqueta, firma y sube (TITAN_REGISTRY_TOKEN)
+//   titan lsp                             servidor LSP por stdin/stdout (lsp.titan)
+//   titan dap                             servidor DAP por stdin/stdout (dap.titan, native/std_dap.titan)
+//   titan repl                            REPL (cl_repl)
+//   titan debug [-b ruta:línea]… [entrada]  depurador interactivo (std_debug.titan)
+//
+// Lo que NO hace: `--sandbox` (debug) ni `sandbox: true` (dap): los ejecutables nativos no se sandboxean.
+import args
+import loader
+import codegen
+import frontend
+import native_build
+import llvm_build
+import cli_util
+import artifact
+import wasm_cmd
+import pkg
+import lsp
+import debug_table
+import dap
+import native::dap_core
+
+fn cl_version() -> string {
+    "1.2.0"
+}
+
+// Bytes crudos en stdout / stderr (print siempre añade un salto de línea).
+fn cl_out(data: any) {
+    if std::bytes::length(data) == 0 {
+        return
+    }
+    // Descriptor 1 de verdad (con /dev/stdout en modo append, una salida redirigida a un archivo
+    // se pisaba con lo que escribía `print` por el descriptor 1).
+    let r = std::try::catch(|| {
+        std::io::write_stdout(data)
+    })
+    match r {
+        Result::Ok(v) => {
+            return
+        },
+        Result::Err(e) => {},
+    }
+    let text = cl_text(data)
+    if std::text::ends_with(text, "\n") {
+        print(std::text::substring(text, 0, len(text) - 1))
+    } else {
+        print(text)
+    }
+}
+
+fn cl_err_raw(data: any) {
+    if std::bytes::length(data) == 0 {
+        return
+    }
+    if !cl_write_fd("/dev/stderr", data) {
+        cl_out(data)
+    }
+}
+
+fn cl_is_space(c: char) -> bool {
+    c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+
+// split_whitespace + join(" ")
+fn cl_flat(message: string) -> string {
+    let mut out = ""
+    let mut pending = false
+    for c in std::text::chars(message) {
+        if cl_is_space(c) {
+            if out != "" {
+                pending = true
+            }
+        } else {
+            if pending {
+                out += " "
+                pending = false
+            }
+            out += c
+        }
+    }
+    out
+}
+
+// fatal_message de la CLI de Rust: la primera línea lleva el mensaje aplanado
+// y, si era multilínea, se repite debajo con su formato.
+fn cl_fatal(label: string, message: string) {
+    let flat = cl_flat(message)
+    cl_eprint(label + ": " + flat)
+    if std::text::trim(message) != flat {
+        cl_eprint(message)
+    }
+    if cl_env("GITHUB_ACTIONS") != "" {
+        let escaped = std::text::replace(std::text::replace(flat, "%", "%25"), "\r", "%0D")
+        cl_eprint("::error title=" + label + "::" + escaped)
+    }
+    std::process::exit(1)
+}
+
+fn cl_mkdirs(path: string) {
+    if path == "" || std::fs::is_dir(path) {
+        return
+    }
+    cl_mkdirs(std::path::parent(path))
+    std::fs::create_dir(path)
+}
+
+// ------------------------------------------------------------ compilación
+
+// Cargar el proyecto, escribir Titan.lock si hay manifiesto, revisar tipos y
+// generar el bytecode (sin optimizar). Result::Ok((proyecto, g)) o Err(mensaje).
+fn cl_compile(input: string) -> Result {
+    let entry = ld_default_entry(input)
+    let project = ld_load_project(entry)?
+    if project.has_manifest {
+        let wrote = ld_write_lock(project)?
+    }
+    let diags = check_program(project.items)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_line(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    let g = cg_compile_program(cg_new(cg_native_names()), project.items)?
+    Result::Ok((project, g))
+}
+
+// args.titan toma `titan run x.titan` por una invocación bajo la VM
+// (`zett run x.titan`); aquí el ejecutable es la propia CLI, así que solo se
+// considera la VM si el programa es titan.titan.
+fn cl_under_vm() -> bool {
+    let a = std::env::args()
+    len(a) >= 3 && a[1] == "run" && std::path::file_name(a[2]) == "titan.titan"
+}
+
+fn cl_args() -> array {
+    let a = std::env::args()
+    if cl_under_vm() {
+        return std::array::slice(a, 3, len(a))
+    }
+    std::array::slice(a, 1, len(a))
+}
+
+// Ruta del ejecutable de `titan`. En Linux se pregunta al sistema (/proc/self/exe, ya con los enlaces
+// simbólicos resueltos): así funciona aunque se invoque por el PATH (`titan run x.titan`, donde argv[0]
+// es solo «titan») o mediante un enlace como `zett -> titan`. Si no se puede, se usa argv[0].
+fn cl_program() -> string {
+    let a = std::env::args()
+    if cl_under_vm() {
+        return a[2]
+    }
+    let r = std::try::catch(|| {
+        std::path::canonical("/proc/self/exe")
+    })
+    match r {
+        Result::Ok(p) => p,
+        _ => a[0],
+    }
+}
+
+fn cl_runtime_path() -> string {
+    let here = std::path::parent(std::path::canonical(cl_program()))
+    std::path::join(std::path::join(here, "native"), "runtime.titan")
+}
+
+// Arquitectura de esta máquina: "aarch64" (ARM64) o "x86_64".
+fn cl_host_arch() -> string {
+    let r = std::try::catch(|| {
+        std::process::run_timeout("uname", ["-m"], 5000)
+    })
+    match r {
+        Result::Ok(m) => {
+            let out = std::encoding::utf8_decode(std::map::get(m, "stdout"))
+            if std::text::starts_with(out, "aarch64") || std::text::starts_with(out, "arm64") {
+                return "aarch64"
+            }
+            "x86_64"
+        },
+        _ => "x86_64",
+    }
+}
+
+// Compila `input` a un ejecutable nativo en `target` para la arquitectura de esta máquina.
+fn cl_native(input: string, target: string) -> Result {
+    cl_native_arch(input, target, cl_host_arch())
+}
+
+// Compila `input` a un ejecutable Linux de `arch` ("x86_64" o "aarch64"). x86_64 usa el backend propio (no
+// necesita nada externo, ni siquiera en una máquina ARM64); aarch64 pasa por LLVM (llvm_build.titan).
+fn cl_native_arch(input: string, target: string, arch: string) -> Result {
+    let compiled = cl_compile(input)?
+    let (project, g) = compiled
+    if arch == "aarch64" {
+        let parent = std::path::parent(target)
+        if parent != "" {
+            cl_mkdirs(parent)
+        }
+        lb_compile(project.entry, cl_runtime_path(), cl_program(), target, arch, cl_host_arch())?
+        return Result::Ok(project)
+    }
+    let built = build(project.entry, cl_runtime_path(), cl_program())?
+    let (bytes, symbols) = built
+    let parent = std::path::parent(target)
+    if parent != "" {
+        cl_mkdirs(parent)
+    }
+    el_write_executable(target, bytes)
+    Result::Ok(project)
+}
+
+// Lo mismo a partir de bytecode ya generado (el de un artefacto .tbc): se
+// optimiza y se enlaza con el runtime como cualquier programa.
+fn cl_native_g(g: G, target: string) -> Result {
+    let host = cl_host_arch()
+    if host == "aarch64" {
+        let parent = std::path::parent(target)
+        if parent != "" {
+            cl_mkdirs(parent)
+        }
+        lb_compile_g(g, cl_runtime_path(), cl_program(), target, host, host)?
+        return Result::Ok(true)
+    }
+    let gr = build_runtime(cl_runtime_path(), cl_program())?
+    let built = bk_build(ot_optimize(g, true), gr)?
+    let (bytes, symbols) = built
+    let parent = std::path::parent(target)
+    if parent != "" {
+        cl_mkdirs(parent)
+    }
+    el_write_executable(target, bytes)
+    Result::Ok(true)
+}
+
+// Reparte los argumentos en (posicionales, salida, bandera --sandbox).
+struct ClArgs {
+    positional: array,
+    output: string,
+    sandbox: bool,
+    target: string,
+}
+
+fn cl_parse(args: array, label: string) -> ClArgs {
+    let mut positional = []
+    let mut output = ""
+    let mut sandbox = false
+    let mut target = ""
+    let mut i = 0
+    while i < len(args) {
+        let a = args[i]
+        if a == "--target" {
+            if i + 1 >= len(args) {
+                cl_fatal("error", "--target needs x86_64 or aarch64")
+            }
+            target = args[i + 1]
+            i += 2
+        } else if a == "--output" || a == "-o" {
+            if i + 1 >= len(args) {
+                cl_fatal("error", a + " needs a path")
+            }
+            output = args[i + 1]
+            i += 2
+        } else if a == "--sandbox" {
+            sandbox = true
+            i += 1
+        } else {
+            positional = std::array::push(positional, a)
+            i += 1
+        }
+    }
+    ClArgs { positional: positional, output: output, sandbox: sandbox, target: target }
+}
+
+fn cl_first(parsed: ClArgs) -> string {
+    if len(parsed.positional) > 0 {
+        return parsed.positional[0]
+    }
+    "."
+}
+
+// ------------------------------------------------------------ comandos
+
+fn cl_valid_name(name: string) -> bool {
+    if name == "" {
+        return false
+    }
+    let mut first = true
+    for c in std::text::chars(name) {
+        let code = std::text::char_code(c)
+        let alpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+        let digit = code >= 48 && code <= 57
+        if first && !alpha {
+            return false
+        }
+        if !alpha && !digit && c != '_' && c != '-' {
+            return false
+        }
+        first = false
+    }
+    true
+}
+
+fn cl_new(args: array) {
+    if len(args) < 1 {
+        cl_fatal("error", "the following required arguments were not provided: <PATH>")
+    }
+    let path = args[0]
+    let mut name = std::path::file_name(path)
+    if name == "" {
+        name = path
+    }
+    if !cl_valid_name(name) {
+        cl_fatal("PROJECT ERROR", "invalid project name '" + name + "'")
+    }
+    if std::fs::exists(path) {
+        if !std::fs::is_dir(path) || len(std::fs::list_dir(path)) > 0 {
+            cl_fatal("PROJECT ERROR", "project already exists at " + path)
+        }
+    }
+    let src = std::path::join(path, "src")
+    cl_mkdirs(src)
+    let manifest = "[package]\nname = \"" + name + "\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n\n[dependencies]\n"
+    std::fs::write_text(std::path::join(path, "Titan.toml"), manifest)
+    std::fs::write_text(std::path::join(src, "main.titan"), "fn main() {\n    print(\"Hello from Titan!\")\n}\n")
+    print("Created Titan project '" + name + "' at " + path)
+}
+
+fn cl_check(args: array) {
+    let parsed = cl_parse(args, "check")
+    match cl_compile(cl_first(parsed)) {
+        Result::Ok(r) => {
+            let (project, g) = r
+            let files = project.files
+            let funcs = len(g.funcs)
+            print("CHECK OK: {files} files, {funcs} functions")
+        },
+        Result::Err(message) => {
+            cl_fatal("CHECK FAILED", message)
+        },
+    }
+}
+
+fn cl_bytecode(args: array) {
+    let parsed = cl_parse(args, "bytecode")
+    match cl_compile(cl_first(parsed)) {
+        Result::Ok(r) => {
+            let (project, g) = r
+            let dump = cg_dump_module(g)
+            // print() añade el salto de línea final que ya trae el volcado.
+            print(std::text::substring(dump, 0, len(dump) - 1))
+        },
+        Result::Err(message) => {
+            cl_fatal("COMPILATION FAILED", message)
+        },
+    }
+}
+
+fn cl_build(args: array) {
+    let parsed = cl_parse(args, "build")
+    if parsed.sandbox {
+        cl_fatal("error", "unexpected argument '--sandbox' found")
+    }
+    let input = cl_first(parsed)
+    match cl_compile(input) {
+        Result::Ok(r) => {
+            let (project, g) = r
+            let mut target = parsed.output
+            if target == "" {
+                let mut name = std::path::file_name(project.root)
+                if name == "" {
+                    name = "program"
+                }
+                target = std::path::join(std::path::join(project.root, "target"), name + ".tbc")
+            }
+            let parent = std::path::parent(target)
+            if parent != "" {
+                cl_mkdirs(parent)
+            }
+            match ac_encode(g) {
+                Result::Ok(bytes) => {
+                    std::fs::write_bytes(target, bytes)
+                },
+                Result::Err(message) => {
+                    cl_fatal("BUILD ERROR", message)
+                },
+            }
+            print("BUILD: " + project.entry + " → " + target)
+            let files = project.files
+            print("  Sources: {files}")
+            let nf = len(g.funcs)
+            print("  Functions: {nf}")
+            for f in g.funcs {
+                let ops = len(f.code)
+                let locals = f.locals
+                print("  fn " + f.name + " ({ops} ops, {locals} locals)")
+            }
+            let entry = g.entry
+            print("  Entry: fn[{entry}]")
+        },
+        Result::Err(message) => {
+            cl_fatal("COMPILATION FAILED", message)
+        },
+    }
+}
+
+fn cl_compile_cmd(args: array) {
+    let parsed = cl_parse(args, "compile")
+    if parsed.sandbox {
+        cl_fatal("error", "--sandbox only applies to the VM; native executables are not sandboxed")
+    }
+    let input = cl_first(parsed)
+    let mut target = parsed.output
+    if target == "" {
+        // Igual que el artefacto por omisión de `build`: <raíz>/target/<nombre>.
+        let probe = ld_load_project(ld_default_entry(input))
+        match probe {
+            Result::Ok(p) => {
+                let mut name = std::path::file_name(p.root)
+                if name == "" {
+                    name = "program"
+                }
+                target = std::path::join(std::path::join(p.root, "target"), name)
+            },
+            Result::Err(message) => {
+                cl_fatal("COMPILATION FAILED", message)
+            },
+        }
+    }
+    let mut arch = cl_host_arch()
+    if parsed.target != "" {
+        if parsed.target != "x86_64" && parsed.target != "aarch64" {
+            cl_fatal("error", "--target must be x86_64 or aarch64, got '" + parsed.target + "'")
+        }
+        arch = parsed.target
+    }
+    match cl_native_arch(input, target, arch) {
+        Result::Ok(project) => {
+            print("COMPILE: " + project.entry + " -> " + target)
+        },
+        Result::Err(message) => {
+            cl_fatal("COMPILATION FAILED", message)
+        },
+    }
+}
+
+fn cl_tmp_dir() -> string {
+    let t = cl_env("TMPDIR")
+    if t != "" && std::fs::is_dir(t) {
+        return t
+    }
+    "/tmp"
+}
+
+struct ClRun {
+    code: int,
+    out: any,
+    err: any,
+}
+
+// Compila `input` a un ejecutable temporal, lo ejecuta con `argv` y lo borra.
+// Result::Ok(ClRun) o Err(mensaje de compilación / de lanzamiento).
+fn cl_exec(input: string, argv: array) -> Result {
+    let pid = std::process::self_pid()
+    let now = std::time::unix_millis()
+    let exe = std::path::join(cl_tmp_dir(), "titan-run-{pid}-{now}")
+    let built = cl_native(input, exe)
+    match built {
+        Result::Ok(project) => {
+            let done = project
+        },
+        Result::Err(message) => {
+            return Result::Err(message)
+        },
+    }
+    cl_launch(exe, argv)
+}
+
+// Ejecuta `exe` con `argv`, lo borra y devuelve su salida.
+fn cl_launch(exe: string, argv: array) -> Result {
+    // Sin límite práctico de tiempo (≈34 años): `run` no mata el programa.
+    let launched = std::try::catch(|| {
+        std::process::run_timeout(exe, argv, 1099511627776)
+    })
+    std::fs::remove_file(exe)
+    match launched {
+        Result::Ok(m) => {
+            let mut code = 1
+            let status = std::map::get(m, "status")
+            if status != nil {
+                code = status
+            }
+            Result::Ok(ClRun { code: code, out: std::map::get(m, "stdout"), err: std::map::get(m, "stderr") })
+        },
+        Result::Err(e) => {
+            Result::Err("{e}")
+        },
+    }
+}
+
+// Posición de `needle` en `text`, o -1.
+fn cl_find(text: string, needle: string) -> int {
+    let mut i = 0
+    while i + len(needle) <= len(text) {
+        if std::text::substring(text, i, i + len(needle)) == needle {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// titan exec [artefacto.tbc]: decodifica y valida el artefacto, lo compila a un
+// ejecutable nativo temporal (no hay intérprete) y lo ejecuta.
+fn cl_exec_tbc(args: array) {
+    let mut input = "target/program.tbc"
+    let mut have_input = false
+    for a in args {
+        if a == "--sandbox" {
+            cl_fatal("error", "--sandbox only applies to the VM; native executables are not sandboxed")
+        }
+        if !have_input {
+            input = a
+            have_input = true
+        }
+    }
+    let read = std::try::catch(|| {
+        std::fs::read_bytes(input)
+    })
+    let mut bytes: any = nil
+    match read {
+        Result::Ok(b) => {
+            bytes = b
+        },
+        Result::Err(e) => {
+            let mut text = "{e}"
+            let marker = "failed: "
+            let at = cl_find(text, marker)
+            if at >= 0 {
+                text = std::text::substring(text, at + len(marker), len(text))
+            }
+            cl_fatal("ARTIFACT READ ERROR", text)
+        },
+    }
+    match ac_decode(bytes) {
+        Result::Ok(g) => {
+            let pid = std::process::self_pid()
+            let now = std::time::unix_millis()
+            let exe = std::path::join(cl_tmp_dir(), "titan-exec-{pid}-{now}")
+            match cl_native_g(g, exe) {
+                Result::Ok(done) => {
+                    match cl_launch(exe, []) {
+                        Result::Ok(r) => {
+                            cl_out(r.out)
+                            cl_err_raw(r.err)
+                            if r.code != 0 {
+                                std::process::exit(r.code)
+                            }
+                        },
+                        Result::Err(message) => {
+                            cl_fatal("RUNTIME ERROR", message)
+                        },
+                    }
+                },
+                Result::Err(message) => {
+                    cl_fatal("COMPILATION FAILED", message)
+                },
+            }
+        },
+        Result::Err(message) => {
+            cl_fatal("INVALID ARTIFACT", message)
+        },
+    }
+}
+
+fn cl_run(args: array) {
+    // titan run [entrada] [--sandbox] [args...]: lo que sigue a la entrada va al programa.
+    let mut input = "."
+    let mut rest = []
+    let mut have_input = false
+    for a in args {
+        if !have_input && a != "--sandbox" {
+            input = a
+            have_input = true
+        } else if a == "--sandbox" && !have_input {
+            cl_fatal("error", "--sandbox only applies to the VM; native executables are not sandboxed")
+        } else {
+            rest = std::array::push(rest, a)
+        }
+        let consumed = true
+    }
+    match cl_exec(input, rest) {
+        Result::Ok(r) => {
+            cl_out(r.out)
+            cl_err_raw(r.err)
+            if r.code != 0 {
+                std::process::exit(r.code)
+            }
+        },
+        Result::Err(message) => {
+            cl_fatal("COMPILATION FAILED", message)
+        },
+    }
+}
+
+fn cl_discover(dir: string, acc: array) -> array {
+    let mut found = acc
+    if !std::fs::is_dir(dir) {
+        return found
+    }
+    // list_dir devuelve rutas completas; el orden es por nombre, como en Rust.
+    for full in cl_sort(std::fs::list_dir(dir)) {
+        if std::fs::is_dir(full) {
+            found = cl_discover(full, found)
+        } else if std::path::extension(full) == "titan" {
+            found = std::array::push(found, full)
+        }
+    }
+    found
+}
+
+fn cl_sort(items: array) -> array {
+    let mut out = []
+    for item in items {
+        let mut placed = false
+        let mut next = []
+        for other in out {
+            if !placed && std::path::file_name(item) < std::path::file_name(other) {
+                next = std::array::push(next, item)
+                placed = true
+            }
+            next = std::array::push(next, other)
+        }
+        if !placed {
+            next = std::array::push(next, item)
+        }
+        out = next
+    }
+    out
+}
+
+fn cl_strip(path: string, root: string) -> string {
+    let prefix = root + "/"
+    if std::text::starts_with(path, prefix) {
+        return std::text::substring(path, len(prefix), len(path))
+    }
+    path
+}
+
+fn cl_test(args: array) {
+    let parsed = cl_parse(args, "test")
+    if parsed.sandbox {
+        cl_fatal("error", "--sandbox only applies to the VM; native executables are not sandboxed")
+    }
+    let input = cl_first(parsed)
+    let found = ld_find_project_root(input)
+    let mut root = input
+    if found != nil {
+        root = found
+    }
+    let tests_root = std::path::join(root, "tests")
+    let files = cl_discover(tests_root, [])
+    if len(files) == 0 {
+        cl_fatal("TEST ERROR", "no .titan tests found under " + tests_root)
+    }
+    let mut passed = 0
+    for file in files {
+        let shown = "test " + cl_strip(file, root) + " ... "
+        match cl_exec(file, []) {
+            Result::Ok(r) => {
+                cl_out(r.out)
+                if r.code == 0 {
+                    passed += 1
+                    print(shown + "ok")
+                } else {
+                    let detail = std::text::trim(cl_text(r.err))
+                    print(shown + "FAILED")
+                    if detail != "" {
+                        print("  " + detail)
+                    } else {
+                        let rc = r.code
+                        print("  exit status {rc}")
+                    }
+                }
+            },
+            Result::Err(message) => {
+                print(shown + "FAILED")
+                print("  " + message)
+            },
+        }
+    }
+    let total = len(files)
+    let failed = total - passed
+    let mut verdict = "ok"
+    if passed != total {
+        verdict = "FAILED"
+    }
+    print("\ntest result: {verdict}. {passed} passed; {failed} failed")
+    if passed != total {
+        std::process::exit(1)
+    }
+}
+
+fn cl_usage() {
+    print("TITAN language compiler (self-hosted CLI)")
+    print("")
+    print("usage: titan <command> [args]")
+    print("")
+    print("commands:")
+    print("  new <path>                       create a project with Titan.toml and src/main.titan")
+    print("  check [input]                    parse and type-check without producing an artifact")
+    print("  run [input] [args...]            compile to a temporary native executable and run it")
+    print("  test [input]                     compile and run every .titan under tests/")
+    print("  compile [input] [-o output]      compile to a native Linux executable (--target x86_64|aarch64; aarch64 needs clang)")
+    print("  wasm [input] [-o output]         compile to WebAssembly plus source maps")
+    print("  build [input] [-o output]        compile to an inspectable .tbc bytecode artifact")
+    print("  exec [artifact.tbc]              compile an artifact to native code and run it")
+    print("  bytecode <input>                 print the bytecode")
+    print("  add <package> [requirement]      add a remote dependency requirement to Titan.toml")
+    print("  fetch                            resolve, download, verify, and install remote dependencies")
+    print("  update                           re-resolve and update remote dependencies")
+    print("  keygen <path>                    generate a private Ed25519 package signing key")
+    print("  pack                             build and sign a deterministic .tpkg archive")
+    print("  publish                          build, sign, and upload a package")
+    print("  lsp                              run the language server on stdin/stdout")
+    print("  dap                              run the debug adapter on stdin/stdout")
+    print("  version                          print version details")
+}
+
+// Comandos del gestor de paquetes (selfhost/pkg.titan).
+// Con el nombre `zett`, las líneas «Usage: titan <comando>» de la ayuda y de los errores dicen «Usage: zett …».
+fn cl_rename_usage(text: string) -> string {
+    if !cl_is_zett() {
+        return text
+    }
+    let key = "Usage: titan "
+    let at = cl_find(text, key)
+    if at < 0 {
+        return text
+    }
+    std::text::substring(text, 0, at) + "Usage: zett " + std::text::substring(text, at + len(key), len(text))
+}
+
+fn cl_pkg(command: string, rest: array) {
+    match pk_run(command, rest) {
+        Result::Ok(text) => {
+            print(cl_rename_usage(text))
+        },
+        Result::Err(f) => {
+            if f.label == "" {
+                cl_eprint(cl_rename_usage(f.message))
+                std::process::exit(f.code)
+            }
+            cl_fatal(f.label, f.message)
+        },
+    }
+}
+
+// Servidor LSP: `titan lsp` (equivale al binario `titan-lsp` de Rust).
+fn cl_lsp() {
+    match lsp_serve() {
+        Result::Ok(_) => {},
+        Result::Err(message) => {
+            cl_eprint("titan-lsp: " + message)
+            std::process::exit(1)
+        },
+    }
+}
+
+// ------------------------------------------------------------------ repl
+
+// Una línea del REPL como `fn main() { línea }`: léxico, parseo (solo el primer error, como el
+// parser de Rust), tipos y bytecode optimizado. Err(mensaje) con el mismo texto que el REPL de Rust.
+fn cl_repl_compile(source: string) -> Result {
+    let (tokens, lex_errors) = tokenize(source)
+    if len(lex_errors) > 0 {
+        return Result::Err(ld_join(lex_errors, "\n"))
+    }
+    let (items, parse_errors) = parse_program(tokens)
+    if len(parse_errors) > 0 {
+        return Result::Err(parse_errors[0])
+    }
+    let diags = check_program(items)
+    if len(diags) > 0 {
+        let mut lines = []
+        for d in diags {
+            lines = std::array::push(lines, diag_line(d))
+        }
+        return Result::Err(ld_join(lines, "\n"))
+    }
+    let g = cg_compile_program(cg_new(cg_native_names()), items)?
+    Result::Ok(ot_optimize(g, true))
+}
+
+fn cl_prompt(text: string) {
+    std::io::write_stdout(std::encoding::utf8_encode(text))
+}
+
+// Lee una línea de stdin. nil = fin del flujo, error de lectura o UTF-8 inválido (el REPL de Rust sale).
+fn cl_read_line() -> any {
+    match ls_read_line() {
+        Result::Ok(bytes) => {
+            if std::bytes::length(bytes) == 0 {
+                return nil
+            }
+            let decoded = std::try::catch(|| { std::encoding::utf8_decode(bytes) })
+            match decoded {
+                Result::Ok(text) => {
+                    return text
+                },
+                Result::Err(e) => {
+                    return nil
+                },
+            }
+        },
+        Result::Err(e) => {
+            return nil
+        },
+    }
+}
+
+// Cada línea se compila a un ejecutable nativo temporal y se ejecuta; el runtime y su caché se
+// cargan una sola vez para toda la sesión.
+fn cl_repl() {
+    print("TITAN REPL v" + cl_version())
+    print("Type Titan code. :q quits; :h shows help.")
+    let mut gr: any = nil
+    let mut loaded = false
+    loop {
+        cl_prompt("titan> ")
+        let raw = cl_read_line()
+        if raw == nil {
+            break
+        }
+        let line = std::text::trim(raw)
+        if line == "" {
+            continue
+        }
+        if line == ":q" || line == ":quit" {
+            break
+        }
+        if line == ":h" || line == ":help" {
+            print(":q quit  :h help  :v version")
+            continue
+        }
+        if line == ":v" {
+            print("TITAN Language Compiler v" + cl_version())
+            continue
+        }
+        if std::text::starts_with(line, ":") {
+            print("Unknown command: " + line)
+            continue
+        }
+        let source = "fn main() { " + line + " }"
+        match cl_repl_compile(source) {
+            Result::Err(message) => {
+                cl_eprint("Error: " + message)
+            },
+            Result::Ok(g) => {
+                if !loaded {
+                    match build_runtime(cl_runtime_path(), cl_program()) {
+                        Result::Ok(r) => {
+                            gr = r
+                            loaded = true
+                        },
+                        Result::Err(message) => {
+                            cl_fatal("COMPILATION FAILED", message)
+                        },
+                    }
+                }
+                match bk_build(g, gr) {
+                    Result::Err(message) => {
+                        cl_eprint("Error: " + message)
+                    },
+                    Result::Ok(built) => {
+                        let (bytes, symbols) = built
+                        let pid = std::process::self_pid()
+                        let now = std::time::unix_millis()
+                        let exe = std::path::join(cl_tmp_dir(), "titan-repl-{pid}-{now}")
+                        el_write_executable(exe, bytes)
+                        match cl_launch(exe, []) {
+                            Result::Ok(r) => {
+                                cl_out(r.out)
+                                let marker = "RUNTIME ERROR: "
+                                let text = cl_text(r.err)
+                                if r.code != 0 && std::text::starts_with(text, marker) {
+                                    cl_eprint("Error: " + std::text::trim(std::text::substring(text, len(marker), len(text))))
+                                } else {
+                                    cl_err_raw(r.err)
+                                    if r.code != 0 {
+                                        std::process::exit(r.code)
+                                    }
+                                }
+                            },
+                            Result::Err(message) => {
+                                cl_eprint("Error: " + message)
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    }
+}
+
+// ------------------------------------------------------------------ debug
+
+// Compila `g` a un ejecutable de depuración (gancho antes de cada instrucción) con `table` y
+// devuelve su ruta temporal. Err(mensaje) si no se puede.
+fn cl_debug_build(g: G, table: string) -> Result {
+    let gr = build_runtime(cl_runtime_path(), cl_program())?
+    let built = bk_build_with(g, gr, table)?
+    let (bytes, symbols) = built
+    let pid = std::process::self_pid()
+    let now = std::time::unix_millis()
+    let exe = std::path::join(cl_tmp_dir(), "titan-debug-{pid}-{now}")
+    el_write_executable(exe, bytes)
+    Result::Ok(exe)
+}
+
+// Mensaje de un error de E/S sin el prefijo "`función` failed: ".
+fn cl_io_message(e: any) -> string {
+    let text = "{e}"
+    let marker = "failed: "
+    let at = cl_find(text, marker)
+    if at >= 0 {
+        return std::text::substring(text, at + len(marker), len(text))
+    }
+    text
+}
+
+// `ruta:línea` -> línea "B|s|archivo|línea" (como cmd_debug de Rust: ruta relativa a la raíz del
+// proyecto y canonicalizada).
+fn cl_breakpoint_line(spec: string, root: string) -> string {
+    let mut colon = -1
+    let mut i = 0
+    while i < len(spec) {
+        if std::text::substring(spec, i, i + 1) == ":" {
+            colon = i
+        }
+        i += 1
+    }
+    if colon < 0 {
+        cl_fatal("DEBUG ERROR", "breakpoints must use path:line")
+    }
+    let path = std::text::substring(spec, 0, colon)
+    let digits = std::text::substring(spec, colon + 1, len(spec))
+    let mut line = 0
+    let mut valid = true
+    if len(digits) == 0 || len(digits) > 18 {
+        valid = false
+    }
+    for c in digits {
+        let d = std::text::char_code(c)
+        if d < 48 || d > 57 {
+            valid = false
+        } else {
+            line = line * 10 + (d - 48)
+        }
+        let seen = true
+    }
+    if !valid || line <= 0 {
+        cl_fatal("DEBUG ERROR", "breakpoint line must be a positive integer")
+    }
+    let mut full = path
+    if !std::text::starts_with(path, "/") {
+        full = std::path::join(root, path)
+    }
+    let canon = std::try::catch(|| {
+        std::path::canonical(full)
+    })
+    match canon {
+        Result::Ok(c) => {
+            return "B|s|" + dt_esc(c) + "|{line}"
+        },
+        Result::Err(e) => {
+            cl_fatal("DEBUG ERROR", cl_io_message(e))
+        },
+    }
+    ""
+}
+
+fn cl_debug(args: array) {
+    let mut input = "."
+    let mut have_input = false
+    let mut specs = []
+    let mut i = 0
+    let count = len(args)
+    while i < count {
+        let a: string = args[i]
+        i += 1
+        let short_b = std::text::starts_with(a, "-b") && len(a) > 2
+        if a == "--sandbox" {
+            cl_fatal("error", "--sandbox only applies to the VM; native executables are not sandboxed")
+        } else if a == "-b" || a == "--breakpoints" {
+            if i >= count {
+                cl_eprint("error: a value is required for '--breakpoints <BREAKPOINTS>' but none was supplied")
+                std::process::exit(2)
+            }
+            specs = std::array::push(specs, args[i])
+            i += 1
+        } else if std::text::starts_with(a, "--breakpoints=") {
+            specs = std::array::push(specs, std::text::substring(a, 14, len(a)))
+        } else if short_b {
+            specs = std::array::push(specs, std::text::substring(a, 2, len(a)))
+        } else if !have_input {
+            input = a
+            have_input = true
+        } else {
+            cl_eprint("error: unexpected argument '" + a + "' found")
+            std::process::exit(2)
+        }
+        let consumed = true
+    }
+    match cl_compile(input) {
+        Result::Err(message) => {
+            cl_fatal("COMPILATION FAILED", message)
+        },
+        Result::Ok(compiled) => {
+            let (project, g) = compiled
+            let mut lines = []
+            for spec in specs {
+                lines = std::array::push(lines, cl_breakpoint_line(spec, project.root))
+            }
+            if len(lines) == 0 {
+                let entry = g.entry
+                lines = ["B|i|{entry}|0"]
+            }
+            match cl_debug_build(g, dt_table(g, "K|cli", lines)) {
+                Result::Err(message) => {
+                    cl_fatal("COMPILATION FAILED", message)
+                },
+                Result::Ok(exe) => {
+                    let launched = std::try::catch(|| {
+                        std::process::exec_once(exe, [exe])
+                    })
+                    match launched {
+                        Result::Ok(v) => {},
+                        Result::Err(e) => {
+                            cl_fatal("DEBUG ERROR", cl_io_message(e))
+                        },
+                    }
+                },
+            }
+        },
+    }
+}
+
+// ------------------------------------------------------------------ dap
+
+// Servidor DAP por stdin/stdout. Hasta `configurationDone` lo atiende este proceso (dap.titan);
+// ahí compila el ejecutable de depuración y se reemplaza por él (native/std_dap.titan).
+fn cl_dap_fail(seq: int, request_seq: int, command: string, message: string) {
+    dp_send_response(seq, request_seq, command, false, nil, message)
+}
+
+fn cl_dap() {
+    let mut seq = 1
+    let mut sess = DpSess { g: nil, bps: [] }
+    let mut running = true
+    while running {
+        let read = dp_read_message()
+        match read {
+            Result::Err(e) => {
+                cl_eprint("titan-dap: " + e)
+                std::process::exit(1)
+            },
+            Result::Ok(items) => {
+                if len(items) == 0 {
+                    running = false
+                } else {
+                    let req = items[0]
+                    let mut command = ""
+                    let named = lj_str(lj_get(req, "command"))
+                    if named != nil {
+                        command = named
+                    }
+                    let mut request_seq = 0
+                    let given = lj_get(req, "seq")
+                    if given != nil && lj_kind(given) == "i" {
+                        request_seq = given
+                    }
+                    let args = lj_get(req, "arguments")
+                    if command == "configurationDone" {
+                        if sess.g == nil {
+                            cl_dap_fail(seq, request_seq, command, "launch must be sent before configurationDone")
+                            seq += 1
+                        } else {
+                            let mut lines = []
+                            for b in sess.bps {
+                                let file = b[0]
+                                let line = b[1]
+                                lines = std::array::push(lines, "B|s|" + dt_esc(file) + "|{line}")
+                            }
+                            let next = seq + 1
+                            let g: G = sess.g
+                            match cl_debug_build(g, dt_table(g, "K|dap|{next}", lines)) {
+                                Result::Err(message) => {
+                                    cl_dap_fail(seq, request_seq, command, message)
+                                    seq += 1
+                                },
+                                Result::Ok(exe) => {
+                                    dp_send_response(seq, request_seq, command, true, dc_obj(), nil)
+                                    let launched = std::try::catch(|| {
+                                        std::process::exec_once(exe, [exe])
+                                    })
+                                    match launched {
+                                        Result::Ok(v) => {},
+                                        Result::Err(e) => {
+                                            cl_eprint("titan-dap: DAP I/O error: " + cl_io_message(e))
+                                            std::process::exit(1)
+                                        },
+                                    }
+                                },
+                            }
+                        }
+                    } else {
+                        let (res, updated) = dp_handle(command, args, sess)
+                        sess = updated
+                        match res {
+                            Result::Ok(body) => {
+                                dp_send_response(seq, request_seq, command, true, body, nil)
+                            },
+                            Result::Err(message) => {
+                                cl_dap_fail(seq, request_seq, command, message)
+                            },
+                        }
+                        seq += 1
+                        if command == "initialize" {
+                            dp_send_event(seq, "initialized", dc_obj())
+                            seq += 1
+                        }
+                        if command == "continue" || command == "next" || command == "stepIn" || command == "stepOut" {
+                            dp_send_event(seq, "continued", dc_continued_body())
+                            seq += 1
+                        }
+                        if command == "disconnect" {
+                            running = false
+                        }
+                    }
+                }
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// zett: el gestor de paquetes de Titan.
+//
+// `zett` es el mismo ejecutable que `titan`, invocado con el nombre `zett` (el paquete trae un
+// enlace simbólico `zett -> titan`). Con ese nombre solo ofrece la gestión de paquetes; el resto de
+// la herramienta (compilar, ejecutar, depurar...) sigue siendo `titan`.
+// ---------------------------------------------------------------------------
+fn cl_is_zett() -> bool {
+    let a = std::env::args()
+    if cl_under_vm() {
+        return false
+    }
+    std::path::file_name(a[0]) == "zett"
+}
+
+fn cl_zett_usage() {
+    print("zett: el gestor de paquetes de Titan")
+    print("")
+    print("uso: zett <comando> [argumentos]")
+    print("")
+    print("comandos:")
+    print("  add <paquete> [requisito]    añade una dependencia remota a Titan.toml")
+    print("  fetch [--offline]            resuelve, descarga, verifica e instala las dependencias")
+    print("  install [--offline]          igual que fetch")
+    print("  update                       vuelve a resolver y actualiza las dependencias")
+    print("  keygen <ruta>                genera una clave privada Ed25519 para firmar paquetes")
+    print("  pack --key K --output O      crea un paquete .tpkg determinista y firmado")
+    print("  publish --key K              empaqueta, firma y sube un paquete (TITAN_REGISTRY_TOKEN)")
+    print("  version                      muestra la versión")
+    print("")
+    print("Para compilar, ejecutar o depurar programas usa `titan`.")
+}
+
+fn cl_zett(args: array) {
+    if len(args) == 0 {
+        cl_zett_usage()
+        std::process::exit(2)
+    }
+    let command = args[0]
+    let rest = std::array::slice(args, 1, len(args))
+    if command == "add" || command == "fetch" || command == "update" || command == "keygen" || command == "pack" || command == "publish" {
+        cl_pkg(command, rest)
+    } else if command == "install" {
+        cl_pkg("fetch", rest)
+    } else if command == "version" {
+        print("zett (gestor de paquetes de Titan) v" + cl_version())
+    } else if command == "--version" || command == "-V" {
+        print("zett " + cl_version())
+    } else if command == "--help" || command == "-h" || command == "help" {
+        cl_zett_usage()
+    } else {
+        cl_eprint("error: comando de zett desconocido '" + command + "'")
+        cl_zett_usage()
+        std::process::exit(2)
+    }
+}
+
+fn cl_unsupported(command: string) {
+    cl_fatal("error", "command '" + command + "' is not implemented in the self-hosted CLI yet")
+}
+
+fn main() {
+    let args = cl_args()
+    if cl_is_zett() {
+        cl_zett(args)
+        std::process::exit(0)
+    }
+    if len(args) == 0 {
+        cl_usage()
+        std::process::exit(2)
+    }
+    let command = args[0]
+    let rest = std::array::slice(args, 1, len(args))
+    if command == "new" {
+        cl_new(rest)
+    } else if command == "check" {
+        cl_check(rest)
+    } else if command == "run" {
+        cl_run(rest)
+    } else if command == "test" {
+        cl_test(rest)
+    } else if command == "compile" {
+        cl_compile_cmd(rest)
+    } else if command == "wasm" {
+        wa_run(rest)
+    } else if command == "build" {
+        cl_build(rest)
+    } else if command == "exec" {
+        cl_exec_tbc(rest)
+    } else if command == "bytecode" {
+        cl_bytecode(rest)
+    } else if command == "version" {
+        print("TITAN Language Compiler v" + cl_version())
+    } else if command == "--version" || command == "-V" {
+        print("titan " + cl_version())
+    } else if command == "--help" || command == "-h" || command == "help" {
+        cl_usage()
+    } else if command == "add" || command == "fetch" || command == "update" || command == "keygen" || command == "pack" || command == "publish" {
+        cl_pkg(command, rest)
+    } else if command == "lsp" {
+        cl_lsp()
+    } else if command == "dap" {
+        cl_dap()
+    } else if command == "repl" {
+        cl_repl()
+    } else if command == "debug" {
+        cl_debug(rest)
+    } else {
+        cl_eprint("error: unrecognized subcommand '" + command + "'")
+        cl_usage()
+        std::process::exit(2)
+    }
+}

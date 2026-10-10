@@ -1,0 +1,11 @@
+fn suma(a: int, b: int) -> int {
+    let r = a + b
+    r
+}
+fn main() {
+    print("hola")
+    let x = suma(1, 2)
+    print("x =", x)
+    let y = suma(x, 10)
+    print("y =", y)
+}

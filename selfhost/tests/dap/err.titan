@@ -1,0 +1,8 @@
+fn divide(a: int, b: int) -> int {
+    a / b
+}
+fn main() {
+    print("antes")
+    let z = divide(1, 0)
+    print("nunca", z)
+}

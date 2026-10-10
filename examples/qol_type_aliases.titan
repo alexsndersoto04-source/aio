@@ -10,7 +10,7 @@
 //   fn passthru(x: any) -> any   // = Unknown, acepta y devuelve cualquier cosa
 //
 // Ejecutar con:
-//     zett run examples/qol_type_aliases.titan
+//     titan run examples/qol_type_aliases.titan
 
 fn main() {
     print("---- Fase 17 pt.3: aliases 'array' / 'map' / 'any' ----")

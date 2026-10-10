@@ -1,0 +1,1428 @@
+// std::sqlite en Titan, parte 8: conversiones, afinidad, aritmética, LIKE/GLOB, texto de flotantes
+// y printf de SQLite. Prefijo `sc`.
+
+// ------------------------------------------------------------ números grandes (base 10^7)
+
+fn sc_big_mul(a: array, k: int) -> array {
+    let mut out = []
+    let mut carry = 0
+    for limb in a {
+        let v = limb * k + carry
+        out = std::array::push(out, v % 10000000)
+        carry = v / 10000000
+    }
+    while carry > 0 {
+        out = std::array::push(out, carry % 10000000)
+        carry = carry / 10000000
+    }
+    out
+}
+
+fn sc_big_str(a: array) -> string {
+    let n = len(a)
+    let top = a[n - 1]
+    let mut parts = ["{top}"]
+    let mut i = n - 2
+    while i >= 0 {
+        let limb = a[i]
+        let s = "{limb}"
+        let pad = 7 - len(std::text::chars(s))
+        if pad > 0 {
+            parts = std::array::push(parts, std::collections::join(std::array::filled(pad, "0"), "") + s)
+        } else {
+            parts = std::array::push(parts, s)
+        }
+        i -= 1
+    }
+    std::collections::join(parts, "")
+}
+
+// Descompone un flotante positivo finito en (m, e2): valor = m * 2^e2.
+fn sc_decomp(x: float) -> (int, int) {
+    let b = sq_f2b(x)
+    let ef = (b[0] % 128) * 16 + b[1] / 16
+    let mut mant = b[1] % 16
+    let mut k = 2
+    while k < 8 {
+        mant = mant * 256 + b[k]
+        k += 1
+    }
+    if ef == 0 {
+        return (mant, -1074)
+    }
+    return (mant + 4503599627370496, ef - 1075)
+}
+
+// Dígitos decimales exactos de x > 0: (cadena de dígitos sin ceros a la izquierda, e10)
+// con valor = d0.d1d2... * 10^e10.
+fn sc_digits(x: float) -> (string, int) {
+    let (m, e2) = sc_decomp(x)
+    let mut limbs = [m % 10000000, (m / 10000000) % 10000000, m / 100000000000000]
+    let mut shift = 0
+    if e2 >= 0 {
+        let mut k = e2
+        while k >= 20 {
+            limbs = sc_big_mul(limbs, 1048576)
+            k -= 20
+        }
+        if k > 0 {
+            limbs = sc_big_mul(limbs, std::math::to_int(std::math::pow(2.0, std::math::to_float(k))))
+        }
+    } else {
+        let mut k = 0 - e2
+        shift = k
+        while k >= 13 {
+            limbs = sc_big_mul(limbs, 1220703125)
+            k -= 13
+        }
+        let mut f = 1
+        while k > 0 {
+            f = f * 5
+            k -= 1
+        }
+        if f > 1 {
+            limbs = sc_big_mul(limbs, f)
+        }
+    }
+    while len(limbs) > 1 && limbs[len(limbs) - 1] == 0 {
+        limbs = std::array::slice(limbs, 0, len(limbs) - 1)
+    }
+    let s = sc_big_str(limbs)
+    return (s, len(std::text::chars(s)) - 1 - shift)
+}
+
+// Redondea (medio hacia arriba) a nd dígitos significativos. Devuelve (dígitos de longitud nd, e10).
+fn sc_round_digits(d: string, e10: int, nd: int) -> (string, int) {
+    let cs = std::text::chars(d)
+    let n = len(cs)
+    if n <= nd {
+        return (d + std::collections::join(std::array::filled(nd - n, "0"), ""), e10)
+    }
+    let mut digs = []
+    let mut i = 0
+    while i < nd {
+        digs = std::array::push(digs, std::text::char_code(cs[i]) - 48)
+        i += 1
+    }
+    let up = std::text::char_code(cs[nd]) - 48 >= 5
+    let mut e = e10
+    if up {
+        let mut k = nd - 1
+        while k >= 0 {
+            if digs[k] == 9 {
+                digs = std::array::set(digs, k, 0)
+                k -= 1
+            } else {
+                digs = std::array::set(digs, k, digs[k] + 1)
+                break
+            }
+        }
+        if k < 0 {
+            digs = std::array::concat([1], std::array::slice(digs, 0, nd - 1))
+            e += 1
+        }
+    }
+    let mut out = []
+    for x in digs {
+        out = std::array::push(out, "{x}")
+    }
+    return (std::collections::join(out, ""), e)
+}
+
+fn sc_zeros_str(n: int) -> string {
+    if n <= 0 {
+        return ""
+    }
+    std::collections::join(std::array::filled(n, "0"), "")
+}
+
+fn sc_strip0(d: string) -> string {
+    let cs = std::text::chars(d)
+    let mut n = len(cs)
+    while n > 1 && std::text::char_code(cs[n - 1]) == 48 {
+        n -= 1
+    }
+    std::collections::join(std::array::slice(cs, 0, n), "")
+}
+
+// %!.15g
+fn sc_fmt_real(f: float) -> string {
+    if f > 1.7976931348623157e308 {
+        return "Inf"
+    }
+    if f < -1.7976931348623157e308 {
+        return "-Inf"
+    }
+    if f == 0.0 {
+        return "0.0"
+    }
+    let mut neg = ""
+    let mut x = f
+    if f < 0.0 {
+        neg = "-"
+        x = 0.0 - f
+    }
+    let (d0, e0) = sc_digits(x)
+    let (d1, e) = sc_round_digits(d0, e0, 15)
+    let d = sc_strip0(d1)
+    let dl = len(std::text::chars(d))
+    if e < -4 || e >= 15 {
+        let rest = std::text::substring(d, 1, dl)
+        let mut r = rest
+        if dl == 1 {
+            r = "0"
+        }
+        let mut ae = e
+        let mut sg = "+"
+        if e < 0 {
+            sg = "-"
+            ae = 0 - e
+        }
+        let mut es = "{ae}"
+        if ae < 10 {
+            es = "0" + es
+        }
+        return neg + std::text::substring(d, 0, 1) + "." + r + "e" + sg + es
+    }
+    if e >= 0 {
+        let mut ip = ""
+        let mut fp = ""
+        if dl <= e + 1 {
+            ip = d + sc_zeros_str(e + 1 - dl)
+            fp = "0"
+        } else {
+            ip = std::text::substring(d, 0, e + 1)
+            fp = std::text::substring(d, e + 1, dl)
+        }
+        return neg + ip + "." + fp
+    }
+    return neg + "0." + sc_zeros_str(0 - e - 1) + d
+}
+
+// ------------------------------------------------------------ texto <-> número
+
+fn sc_is_space(c: int) -> bool {
+    c == 32 || (c >= 9 && c <= 13)
+}
+
+// Analiza un prefijo numérico. Devuelve (valor, entero completo?, consumió todo salvo espacios?)
+// valor = SNull si no hay prefijo numérico.
+fn sc_scan_num(s: string) -> (Sv, bool) {
+    let cs = std::text::chars(s)
+    let cd = sql_codes(s)
+    let n = len(cd)
+    let mut i = 0
+    while i < n && sc_is_space(cd[i]) {
+        i += 1
+    }
+    let st = i
+    if i < n && (cd[i] == 43 || cd[i] == 45) {
+        i += 1
+    }
+    let ds = i
+    while i < n && cd[i] >= 48 && cd[i] <= 57 {
+        i += 1
+    }
+    let mut nd = i - ds
+    let mut isreal = false
+    if i < n && cd[i] == 46 {
+        let save = i
+        i += 1
+        let fs = i
+        while i < n && cd[i] >= 48 && cd[i] <= 57 {
+            i += 1
+        }
+        nd += i - fs
+        if nd == 0 {
+            i = save
+        }
+        if nd != 0 {
+            isreal = true
+        }
+    }
+    if nd == 0 {
+        return (Sv::SNull, false)
+    }
+    if i < n && (cd[i] == 101 || cd[i] == 69) {
+        let mut m = i + 1
+        if m < n && (cd[m] == 43 || cd[m] == 45) {
+            m += 1
+        }
+        if m < n && cd[m] >= 48 && cd[m] <= 57 {
+            while m < n && cd[m] >= 48 && cd[m] <= 57 {
+                m += 1
+            }
+            i = m
+            isreal = true
+        }
+    }
+    let end = i
+    let mut j = i
+    while j < n && sc_is_space(cd[j]) {
+        j += 1
+    }
+    let whole = j == n
+    let mut txt = std::collections::join(std::array::slice(cs, st, end), "")
+    if cd[st] == 43 {
+        txt = std::collections::join(std::array::slice(cs, st + 1, end), "")
+    }
+    if !isreal {
+        let r = std::text::parse_int(txt)
+        match r {
+            Option::Some(v) => {
+                return (Sv::SInt(v), whole)
+            },
+            _ => {},
+        }
+    }
+    let r = std::text::parse_float(txt)
+    match r {
+        Option::Some(v) => {
+            return (Sv::SReal(v), whole)
+        },
+        _ => {},
+    }
+    return (Sv::SNull, false)
+}
+
+fn sc_to_text(v: Sv) -> string {
+    match v {
+        Sv::SNull => "",
+        Sv::SInt(i) => "{i}",
+        Sv::SReal(f) => sc_fmt_real(f),
+        Sv::SText(s) => s,
+        Sv::SBlob(b) => sq_dec_text(std::bytes::to_array(b), 0, std::bytes::length(b)),
+        Sv::SErr(_) => "",
+    }
+}
+
+fn sc_real_to_int(f: float) -> int {
+    if f >= 9223372036854775807.0 {
+        return 9223372036854775807
+    }
+    if f <= -9223372036854775808.0 {
+        return -9223372036854775807 - 1
+    }
+    std::math::to_int(f)
+}
+
+// Valor numérico (entero o real) de un valor SQL (como en las operaciones aritméticas).
+fn sc_num(v: Sv) -> Sv {
+    match v {
+        Sv::SInt(_) => v,
+        Sv::SReal(_) => v,
+        Sv::SNull => v,
+        Sv::SText(s) => {
+            let (n, _) = sc_scan_num(s)
+            match n {
+                Sv::SNull => Sv::SInt(0),
+                _ => n,
+            }
+        },
+        Sv::SBlob(_) => sc_num(Sv::SText(sc_to_text(v))),
+        Sv::SErr(_) => v,
+    }
+}
+
+fn sc_to_float(v: Sv) -> float {
+    match sc_num(v) {
+        Sv::SInt(i) => std::math::to_float(i),
+        Sv::SReal(f) => f,
+        _ => 0.0,
+    }
+}
+
+fn sc_to_int(v: Sv) -> int {
+    match sc_num(v) {
+        Sv::SInt(i) => i,
+        Sv::SReal(f) => sc_real_to_int(f),
+        _ => 0,
+    }
+}
+
+// -1 nulo, 0 falso, 1 verdadero
+fn sc_truth(v: Sv) -> int {
+    match sc_num(v) {
+        Sv::SNull => -1,
+        Sv::SInt(i) => {
+            if i != 0 {
+                1
+            } else {
+                0
+            }
+        },
+        Sv::SReal(f) => {
+            if f != 0.0 {
+                1
+            } else {
+                0
+            }
+        },
+        _ => 0,
+    }
+}
+
+fn sc_bool(b: bool) -> Sv {
+    if b {
+        return Sv::SInt(1)
+    }
+    Sv::SInt(0)
+}
+
+// ------------------------------------------------------------ afinidad
+
+// Afinidad de una declaración de tipo: INTEGER, TEXT, BLOB, REAL, NUMERIC.
+fn sc_affinity(ty: string) -> string {
+    let u = sql_upper_ascii(ty)
+    if std::text::contains(u, "INT") {
+        return "INTEGER"
+    }
+    if std::text::contains(u, "CHAR") || std::text::contains(u, "CLOB") || std::text::contains(u, "TEXT") {
+        return "TEXT"
+    }
+    if u == "" || std::text::contains(u, "BLOB") {
+        return "BLOB"
+    }
+    if std::text::contains(u, "REAL") || std::text::contains(u, "FLOA") || std::text::contains(u, "DOUB") {
+        return "REAL"
+    }
+    "NUMERIC"
+}
+
+// Aplica NUMERIC: texto bien formado -> entero o real.
+fn sc_apply_numeric(s: string) -> Sv {
+    let (n, whole) = sc_scan_num(s)
+    match n {
+        Sv::SNull => Sv::SText(s),
+        Sv::SInt(_) => {
+            if whole {
+                return n
+            }
+            return Sv::SText(s)
+        },
+        Sv::SReal(f) => {
+            if !whole {
+                return Sv::SText(s)
+            }
+            if f >= -9007199254740992.0 && f <= 9007199254740992.0 && std::math::floor(f) == f {
+                return Sv::SInt(std::math::to_int(f))
+            }
+            return n
+        },
+        _ => Sv::SText(s),
+    }
+}
+
+fn sc_apply_aff(v: Sv, aff: string) -> Sv {
+    if aff == "BLOB" || aff == "" {
+        return v
+    }
+    match v {
+        Sv::SNull => v,
+        Sv::SBlob(_) => v,
+        Sv::SText(s) => {
+            if aff == "TEXT" {
+                return v
+            }
+            let r = sc_apply_numeric(s)
+            if aff == "REAL" {
+                match r {
+                    Sv::SInt(i) => {
+                        return Sv::SReal(std::math::to_float(i))
+                    },
+                    _ => {},
+                }
+            }
+            return r
+        },
+        Sv::SInt(i) => {
+            if aff == "TEXT" {
+                return Sv::SText("{i}")
+            }
+            if aff == "REAL" {
+                return Sv::SReal(std::math::to_float(i))
+            }
+            return v
+        },
+        Sv::SReal(f) => {
+            if aff == "TEXT" {
+                return Sv::SText(sc_fmt_real(f))
+            }
+            if aff == "INTEGER" || aff == "NUMERIC" {
+                if f >= -9007199254740992.0 && f <= 9007199254740992.0 && std::math::floor(f) == f {
+                    return Sv::SInt(std::math::to_int(f))
+                }
+            }
+            return v
+        },
+        Sv::SErr(_) => v,
+    }
+}
+
+fn sc_cast(v: Sv, ty: string) -> Sv {
+    let aff = sc_affinity(ty)
+    match v {
+        Sv::SNull => {
+            return v
+        },
+        _ => {},
+    }
+    if aff == "TEXT" {
+        return Sv::SText(sc_to_text(v))
+    }
+    if aff == "BLOB" {
+        match v {
+            Sv::SBlob(_) => {
+                return v
+            },
+            _ => {},
+        }
+        return Sv::SBlob(std::encoding::utf8_encode(sc_to_text(v)))
+    }
+    if aff == "INTEGER" {
+        match v {
+            Sv::SInt(_) => {
+                return v
+            },
+            Sv::SReal(f) => {
+                return Sv::SInt(sc_real_to_int(f))
+            },
+            _ => {},
+        }
+        let s = sc_to_text(v)
+        let (n, _) = sc_scan_num(s)
+        match n {
+            Sv::SInt(i) => {
+                return Sv::SInt(i)
+            },
+            Sv::SReal(f) => {
+                return Sv::SInt(sc_real_to_int(f))
+            },
+            _ => {},
+        }
+        return Sv::SInt(0)
+    }
+    if aff == "REAL" {
+        match v {
+            Sv::SInt(i) => {
+                return Sv::SReal(std::math::to_float(i))
+            },
+            Sv::SReal(_) => {
+                return v
+            },
+            _ => {},
+        }
+        let s = sc_to_text(v)
+        let (n, _) = sc_scan_num(s)
+        match n {
+            Sv::SInt(i) => {
+                return Sv::SReal(std::math::to_float(i))
+            },
+            Sv::SReal(f) => {
+                return Sv::SReal(f)
+            },
+            _ => {},
+        }
+        return Sv::SReal(0.0)
+    }
+    // NUMERIC
+    match v {
+        Sv::SInt(_) => {
+            return v
+        },
+        Sv::SReal(f) => {
+            if f >= -9007199254740992.0 && f <= 9007199254740992.0 && std::math::floor(f) == f {
+                return Sv::SInt(std::math::to_int(f))
+            }
+            return v
+        },
+        _ => {},
+    }
+    let s = sc_to_text(v)
+    let (n, _) = sc_scan_num(s)
+    match n {
+        Sv::SInt(_) => {
+            return n
+        },
+        Sv::SReal(f) => {
+            if f >= -9007199254740992.0 && f <= 9007199254740992.0 && std::math::floor(f) == f {
+                return Sv::SInt(std::math::to_int(f))
+            }
+            return n
+        },
+        _ => {},
+    }
+    return Sv::SInt(0)
+}
+
+// ------------------------------------------------------------ aritmética
+
+fn sc_add_ovf(a: int, b: int) -> bool {
+    (b > 0 && a > 9223372036854775807 - b) || (b < 0 && a < -9223372036854775807 - 1 - b)
+}
+
+fn sc_sub_ovf(a: int, b: int) -> bool {
+    (b < 0 && a > 9223372036854775807 + b) || (b > 0 && a < -9223372036854775807 - 1 + b)
+}
+
+fn sc_mul_ovf(a: int, b: int) -> bool {
+    if a == 0 || b == 0 {
+        return false
+    }
+    let mx = 9223372036854775807
+    let mn = -9223372036854775807 - 1
+    if a > 0 && b > 0 {
+        return a > mx / b
+    }
+    if a < 0 && b < 0 {
+        if a == mn || b == mn {
+            return true
+        }
+        return 0 - a > mx / (0 - b)
+    }
+    if a > 0 {
+        return b < mn / a
+    }
+    return a < mn / b
+}
+
+fn sc_arith(op: string, a: Sv, b: Sv) -> Sv {
+    let x = sc_num(a)
+    let y = sc_num(b)
+    match x {
+        Sv::SNull => {
+            return Sv::SNull
+        },
+        _ => {},
+    }
+    match y {
+        Sv::SNull => {
+            return Sv::SNull
+        },
+        _ => {},
+    }
+    let mut xi = 0
+    let mut yi = 0
+    let mut xr = false
+    let mut yr = false
+    let mut xf = 0.0
+    let mut yf = 0.0
+    match x {
+        Sv::SInt(i) => {
+            xi = i
+            xf = std::math::to_float(i)
+        },
+        Sv::SReal(f) => {
+            xr = true
+            xf = f
+        },
+        _ => {},
+    }
+    match y {
+        Sv::SInt(i) => {
+            yi = i
+            yf = std::math::to_float(i)
+        },
+        Sv::SReal(f) => {
+            yr = true
+            yf = f
+        },
+        _ => {},
+    }
+    let real = xr || yr
+    if op == "+" {
+        if !real && !sc_add_ovf(xi, yi) {
+            return Sv::SInt(xi + yi)
+        }
+        return sc_real_res(xf + yf)
+    }
+    if op == "-" {
+        if !real && !sc_sub_ovf(xi, yi) {
+            return Sv::SInt(xi - yi)
+        }
+        return sc_real_res(xf - yf)
+    }
+    if op == "*" {
+        if !real && !sc_mul_ovf(xi, yi) {
+            return Sv::SInt(xi * yi)
+        }
+        return sc_real_res(xf * yf)
+    }
+    if op == "/" {
+        if !real {
+            if yi == 0 {
+                return Sv::SNull
+            }
+            if xi == -9223372036854775807 - 1 && yi == -1 {
+                return Sv::SReal(9223372036854775808.0)
+            }
+            return Sv::SInt(xi / yi)
+        }
+        if yf == 0.0 {
+            return Sv::SNull
+        }
+        return sc_real_res(xf / yf)
+    }
+    // %
+    let mut a2 = xi
+    let mut b2 = yi
+    if xr {
+        a2 = sc_real_to_int(xf)
+    }
+    if yr {
+        b2 = sc_real_to_int(yf)
+    }
+    if b2 == 0 {
+        return Sv::SNull
+    }
+    let mut r = 0
+    if b2 == -1 {
+        r = 0
+    } else {
+        r = a2 % b2
+    }
+    if real {
+        return Sv::SReal(std::math::to_float(r))
+    }
+    return Sv::SInt(r)
+}
+
+// NaN -> NULL
+fn sc_real_res(f: float) -> Sv {
+    if f != f {
+        return Sv::SNull
+    }
+    Sv::SReal(f)
+}
+
+fn sc_pow2(n: int) -> int {
+    let mut r = 1
+    let mut i = 0
+    while i < n {
+        r = r * 2
+        i += 1
+    }
+    r
+}
+
+// operaciones de bits sobre enteros de 64 bits
+fn sc_bitop(op: string, a: int, b: int) -> int {
+    if op == "<<" || op == ">>" {
+        let mut n = b
+        let mut left = op == "<<"
+        if n < 0 {
+            n = 0 - n
+            left = !left
+        }
+        if n >= 64 {
+            if !left && a < 0 {
+                return -1
+            }
+            return 0
+        }
+        if left {
+            if n == 0 {
+                return a
+            }
+            let m = sc_pow2(64 - n)
+            let lowp = ((a % m) + m) % m
+            let hi = sc_pow2(n)
+            let v = lowp
+            // v * 2^n interpretado con signo
+            if lowp >= m / 2 {
+                return (lowp - m) * hi
+            }
+            return v * hi
+        }
+        // desplazamiento aritmético a la derecha: floor(a / 2^n)
+        let d = sc_pow2(n)
+        let mut q = a / d
+        if a < 0 && a % d != 0 {
+            q -= 1
+        }
+        return q
+    }
+    let x = sq_int_be(a, 8)
+    let y = sq_int_be(b, 8)
+    let mut out = []
+    let mut i = 0
+    while i < 8 {
+        let mut r = 0
+        let mut bit = 1
+        let mut k = 0
+        let p = x[i]
+        let q = y[i]
+        while k < 8 {
+            let pb = (p / bit) % 2
+            let qb = (q / bit) % 2
+            let mut rb = 0
+            if op == "&" {
+                if pb == 1 && qb == 1 {
+                    rb = 1
+                }
+            } else {
+                if pb == 1 || qb == 1 {
+                    rb = 1
+                }
+            }
+            r += rb * bit
+            bit = bit * 2
+            k += 1
+        }
+        out = std::array::push(out, r)
+        i += 1
+    }
+    let mut v = out[0]
+    if v >= 128 {
+        v = v - 256
+    }
+    let mut j = 1
+    while j < 8 {
+        v = v * 256 + out[j]
+        j += 1
+    }
+    v
+}
+
+fn sc_bitnot(a: int) -> int {
+    0 - a - 1
+}
+
+// ------------------------------------------------------------ LIKE y GLOB
+
+fn sc_lower_code(c: int) -> int {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    c
+}
+
+fn sc_like_m(p: array, pi: int, s: array, si: int, esc: int) -> bool {
+    let np = len(p)
+    let ns = len(s)
+    let mut i = pi
+    let mut j = si
+    while i < np {
+        let c = p[i]
+        if c == esc && esc >= 0 && i + 1 < np {
+            if j >= ns || sc_lower_code(s[j]) != sc_lower_code(p[i + 1]) {
+                return false
+            }
+            i += 2
+            j += 1
+            continue
+        }
+        if c == 37 {
+            while i < np && p[i] == 37 {
+                i += 1
+            }
+            if i == np {
+                return true
+            }
+            let mut k = j
+            while k <= ns {
+                if sc_like_m(p, i, s, k, esc) {
+                    return true
+                }
+                k += 1
+            }
+            return false
+        }
+        if j >= ns {
+            return false
+        }
+        if c == 95 {
+            i += 1
+            j += 1
+            continue
+        }
+        if sc_lower_code(c) != sc_lower_code(s[j]) {
+            return false
+        }
+        i += 1
+        j += 1
+    }
+    j == ns
+}
+
+fn sc_like(pat: string, s: string, esc: int) -> bool {
+    sc_like_m(sql_codes(pat), 0, sql_codes(s), 0, esc)
+}
+
+fn sc_glob_m(p: array, pi: int, s: array, si: int) -> bool {
+    let np = len(p)
+    let ns = len(s)
+    let mut i = pi
+    let mut j = si
+    while i < np {
+        let c = p[i]
+        if c == 42 {
+            while i < np && p[i] == 42 {
+                i += 1
+            }
+            if i == np {
+                return true
+            }
+            let mut k = j
+            while k <= ns {
+                if sc_glob_m(p, i, s, k) {
+                    return true
+                }
+                k += 1
+            }
+            return false
+        }
+        if j >= ns {
+            return false
+        }
+        if c == 63 {
+            i += 1
+            j += 1
+            continue
+        }
+        if c == 91 {
+            let mut m = i + 1
+            let mut neg = false
+            if m < np && p[m] == 94 {
+                neg = true
+                m += 1
+            }
+            let mut found = false
+            let mut first = true
+            while m < np && (p[m] != 93 || first) {
+                first = false
+                if m + 2 < np && p[m + 1] == 45 && p[m + 2] != 93 {
+                    if s[j] >= p[m] && s[j] <= p[m + 2] {
+                        found = true
+                    }
+                    m += 3
+                } else {
+                    if s[j] == p[m] {
+                        found = true
+                    }
+                    m += 1
+                }
+            }
+            if m >= np {
+                return false
+            }
+            if found == neg {
+                return false
+            }
+            i = m + 1
+            j += 1
+            continue
+        }
+        if c != s[j] {
+            return false
+        }
+        i += 1
+        j += 1
+    }
+    j == ns
+}
+
+fn sc_glob(pat: string, s: string) -> bool {
+    sc_glob_m(sql_codes(pat), 0, sql_codes(s), 0)
+}
+
+// ------------------------------------------------------------ printf
+
+fn sc_pad(s: string, width: int, left: bool, zero: bool) -> string {
+    let n = len(std::text::chars(s))
+    if n >= width {
+        return s
+    }
+    if left {
+        return s + sc_zeros_str(0) + std::collections::join(std::array::filled(width - n, " "), "")
+    }
+    if zero {
+        let mut sign = ""
+        let mut body = s
+        if n > 0 && (std::text::substring(s, 0, 1) == "-" || std::text::substring(s, 0, 1) == "+" || std::text::substring(s, 0, 1) == " ") {
+            sign = std::text::substring(s, 0, 1)
+            body = std::text::substring(s, 1, n)
+        }
+        return sign + sc_zeros_str(width - n) + body
+    }
+    std::collections::join(std::array::filled(width - n, " "), "") + s
+}
+
+// %f con precisión p
+fn sc_fmt_f(x: float, p: int) -> string {
+    if x > 1.7976931348623157e308 {
+        return "Inf"
+    }
+    if x < -1.7976931348623157e308 {
+        return "-Inf"
+    }
+    let mut neg = ""
+    let mut a = x
+    if x < 0.0 {
+        neg = "-"
+        a = 0.0 - x
+    }
+    if a == 0.0 {
+        if p == 0 {
+            return neg + "0"
+        }
+        return neg + "0." + sc_zeros_str(p)
+    }
+    let (d, e) = sc_digits(a)
+    // dígitos hasta la posición e + p (cuenta de dígitos significativos = e + 1 + p)
+    let nd = e + 1 + p
+    let mut digs = ""
+    let mut ee = e
+    if nd <= 0 {
+        // todo redondea a cero (o a 1 en la última posición)
+        let mut up = false
+        if nd == 0 {
+            up = std::text::char_code(std::text::chars(d)[0]) - 48 >= 5
+        }
+        if up {
+            digs = "1"
+            ee = e + 1
+            // un solo dígito significativo en la posición p
+            let ip = "0"
+            if p == 0 {
+                return neg + "1"
+            }
+            return neg + "0." + sc_zeros_str(p - 1) + "1"
+        }
+        if p == 0 {
+            return neg + "0"
+        }
+        return neg + "0." + sc_zeros_str(p)
+    }
+    let mut kd = nd
+    if kd > 16 {
+        kd = 16
+    }
+    let (rd0, re) = sc_round_digits(d, e, kd)
+    let rd = rd0 + sc_zeros_str(nd - kd)
+    // si hubo acarreo, re = e + 1 y rd tiene nd dígitos pero necesitamos nd + 1
+    let mut all = rd
+    if re > e {
+        all = rd + "0"
+    }
+    let ie = re
+    let total = ie + 1 + p
+    let cs = std::text::chars(all)
+    let mut ip = ""
+    let mut fp = ""
+    if ie >= 0 {
+        ip = std::text::substring(all, 0, ie + 1)
+        fp = std::text::substring(all, ie + 1, total)
+    } else {
+        ip = "0"
+        fp = sc_zeros_str(0 - ie - 1) + all
+        fp = std::text::substring(fp, 0, p)
+    }
+    if p == 0 {
+        return neg + ip
+    }
+    return neg + ip + "." + fp
+}
+
+// %e con precisión p
+fn sc_fmt_e(x: float, p: int, up: bool) -> string {
+    if x > 1.7976931348623157e308 {
+        return "Inf"
+    }
+    if x < -1.7976931348623157e308 {
+        return "-Inf"
+    }
+    let mut neg = ""
+    let mut a = x
+    if x < 0.0 {
+        neg = "-"
+        a = 0.0 - x
+    }
+    let mut d = ""
+    let mut e = 0
+    if a == 0.0 {
+        d = sc_zeros_str(p + 1)
+        e = 0
+    } else {
+        let (d0, e0) = sc_digits(a)
+        let mut kd = p + 1
+        if kd > 16 {
+            kd = 16
+        }
+        let (d1, e1) = sc_round_digits(d0, e0, kd)
+        d = d1 + sc_zeros_str(p + 1 - kd)
+        e = e1
+    }
+    let mut ae = e
+    let mut sg = "+"
+    if e < 0 {
+        sg = "-"
+        ae = 0 - e
+    }
+    let mut es = "{ae}"
+    if ae < 10 {
+        es = "0" + es
+    }
+    let mut mant = std::text::substring(d, 0, 1)
+    if p > 0 {
+        mant = mant + "." + std::text::substring(d, 1, p + 1)
+    }
+    let mut ch = "e"
+    if up {
+        ch = "E"
+    }
+    return neg + mant + ch + sg + es
+}
+
+// %g con precisión p (p>=1); alt = conservar ceros finales
+fn sc_fmt_g(x: float, p0: int, up: bool, alt: bool) -> string {
+    if x > 1.7976931348623157e308 {
+        return "Inf"
+    }
+    if x < -1.7976931348623157e308 {
+        return "-Inf"
+    }
+    let mut p = p0
+    if p == 0 {
+        p = 1
+    }
+    if x == 0.0 {
+        if alt {
+            return "0." + sc_zeros_str(p - 1)
+        }
+        return "0"
+    }
+    let mut neg = ""
+    let mut a = x
+    if x < 0.0 {
+        neg = "-"
+        a = 0.0 - x
+    }
+    let (d0, e0) = sc_digits(a)
+    let (d1, e) = sc_round_digits(d0, e0, p)
+    let mut d = d1
+    if !alt {
+        d = sc_strip0(d1)
+    }
+    let dl = len(std::text::chars(d))
+    if e < -4 || e >= p {
+        let mut mant = std::text::substring(d, 0, 1)
+        if dl > 1 {
+            mant = mant + "." + std::text::substring(d, 1, dl)
+        } else if alt {
+            mant = mant + "."
+        }
+        let mut ae = e
+        let mut sg = "+"
+        if e < 0 {
+            sg = "-"
+            ae = 0 - e
+        }
+        let mut es = "{ae}"
+        if ae < 10 {
+            es = "0" + es
+        }
+        let mut ch = "e"
+        if up {
+            ch = "E"
+        }
+        return neg + mant + ch + sg + es
+    }
+    if e >= 0 {
+        if dl <= e + 1 {
+            let mut r = d + sc_zeros_str(e + 1 - dl)
+            if alt {
+                r = r + "."
+            }
+            return neg + r
+        }
+        return neg + std::text::substring(d, 0, e + 1) + "." + std::text::substring(d, e + 1, dl)
+    }
+    return neg + "0." + sc_zeros_str(0 - e - 1) + d
+}
+
+fn sc_hexd(n: int, up: bool) -> string {
+    let lo = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+    let hi = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F"]
+    if up {
+        return hi[n]
+    }
+    lo[n]
+}
+
+// entero sin signo en base b (para valores negativos usa complemento a 2 de 64 bits)
+fn sc_radix(v: int, base: int, up: bool) -> string {
+    if v == 0 {
+        return "0"
+    }
+    let mut digs = []
+    if v > 0 {
+        let mut x = v
+        while x > 0 {
+            digs = std::array::push(digs, sc_hexd(x % base, up))
+            x = x / base
+        }
+    } else {
+        // 2^64 + v: se calcula con dos mitades
+        let bytes = sq_int_be(v, 8)
+        // convertir bytes a base `base` por división larga
+        let mut limbs = bytes
+        while len(limbs) > 0 {
+            let mut rem = 0
+            let mut q = []
+            let mut started = false
+            for b in limbs {
+                let cur = rem * 256 + b
+                let qd = cur / base
+                rem = cur % base
+                if qd > 0 || started {
+                    q = std::array::push(q, qd)
+                    started = true
+                }
+            }
+            digs = std::array::push(digs, sc_hexd(rem, up))
+            limbs = q
+        }
+    }
+    let mut out = []
+    let mut i = len(digs) - 1
+    while i >= 0 {
+        out = std::array::push(out, digs[i])
+        i -= 1
+    }
+    std::collections::join(out, "")
+}
+
+fn sc_quote_text(s: string, q: string) -> string {
+    std::text::replace(s, q, q + q)
+}
+
+fn sc_printf(fmt: string, args: array) -> string {
+    let cs = sql_chars(fmt)
+    let cd = sql_codes(fmt)
+    let n = len(cs)
+    let mut out = []
+    let mut i = 0
+    let mut ai = 0
+    while i < n {
+        if cd[i] != 37 {
+            let mut j = i
+            while j < n && cd[j] != 37 {
+                j += 1
+            }
+            out = std::array::push(out, std::collections::join(std::array::slice(cs, i, j), ""))
+            i = j
+            continue
+        }
+        i += 1
+        if i >= n {
+            break
+        }
+        let mut left = false
+        let mut plus = false
+        let mut space = false
+        let mut zero = false
+        let mut alt = false
+        let mut more = true
+        while more && i < n {
+            let c = cd[i]
+            if c == 45 {
+                left = true
+            } else if c == 43 {
+                plus = true
+            } else if c == 32 {
+                space = true
+            } else if c == 48 {
+                zero = true
+            } else if c == 35 {
+                alt = true
+            } else if c == 33 {
+                alt = true
+            } else {
+                more = false
+            }
+            if more {
+                i += 1
+            }
+        }
+        let mut width = 0
+        if i < n && cd[i] == 42 {
+            if ai < len(args) {
+                width = sc_to_int(args[ai])
+            }
+            ai += 1
+            if width < 0 {
+                left = true
+                width = 0 - width
+            }
+            i += 1
+        } else {
+            while i < n && cd[i] >= 48 && cd[i] <= 57 {
+                width = width * 10 + cd[i] - 48
+                i += 1
+            }
+        }
+        let mut prec = -1
+        if i < n && cd[i] == 46 {
+            i += 1
+            prec = 0
+            if i < n && cd[i] == 42 {
+                if ai < len(args) {
+                    prec = sc_to_int(args[ai])
+                }
+                ai += 1
+                i += 1
+            } else {
+                while i < n && cd[i] >= 48 && cd[i] <= 57 {
+                    prec = prec * 10 + cd[i] - 48
+                    i += 1
+                }
+            }
+        }
+        while i < n && (cd[i] == 108 || cd[i] == 104) {
+            i += 1
+        }
+        if i >= n {
+            break
+        }
+        let conv = cs[i]
+        i += 1
+        if conv == "%" {
+            out = std::array::push(out, "%")
+            continue
+        }
+        let mut arg = Sv::SNull
+        if ai < len(args) {
+            arg = args[ai]
+        }
+        ai += 1
+        let mut piece = ""
+        if conv == "d" || conv == "i" {
+            let v = sc_to_int(arg)
+            let mut digits = ""
+            if v == -9223372036854775807 - 1 {
+                digits = "9223372036854775808"
+            } else if v < 0 {
+                digits = "{0 - v}"
+            } else {
+                digits = "{v}"
+            }
+            if prec >= 0 && len(std::text::chars(digits)) < prec {
+                digits = sc_zeros_str(prec - len(std::text::chars(digits))) + digits
+            }
+            let mut sign = ""
+            if v < 0 {
+                sign = "-"
+            } else if plus {
+                sign = "+"
+            } else if space {
+                sign = " "
+            }
+            piece = sc_pad(sign + digits, width, left, zero && prec < 0)
+        } else if conv == "f" || conv == "e" || conv == "E" || conv == "g" || conv == "G" {
+            let x = sc_to_float(arg)
+            let mut p = prec
+            if p < 0 {
+                p = 6
+            }
+            let mut body = ""
+            if conv == "f" {
+                body = sc_fmt_f(x, p)
+            } else if conv == "e" {
+                body = sc_fmt_e(x, p, false)
+            } else if conv == "E" {
+                body = sc_fmt_e(x, p, true)
+            } else {
+                body = sc_fmt_g(x, p, conv == "G", alt)
+            }
+            if alt && p == 0 && conv == "f" {
+                body = body + "."
+            }
+            let mut sign = ""
+            if std::text::substring(body, 0, 1) == "-" {
+                sign = "-"
+                body = std::text::substring(body, 1, len(std::text::chars(body)))
+            } else if plus {
+                sign = "+"
+            } else if space {
+                sign = " "
+            }
+            piece = sc_pad(sign + body, width, left, zero)
+        } else if conv == "s" || conv == "z" {
+            let mut s = sc_to_text(arg)
+            match arg {
+                Sv::SNull => {
+                    s = ""
+                },
+                _ => {},
+            }
+            if prec >= 0 && len(std::text::chars(s)) > prec {
+                s = std::text::substring(s, 0, prec)
+            }
+            piece = sc_pad(s, width, left, false)
+        } else if conv == "c" {
+            let s = sc_to_text(arg)
+            let mut ch = ""
+            if len(std::text::chars(s)) > 0 {
+                ch = std::text::substring(s, 0, 1)
+            }
+            piece = sc_pad(ch, width, left, false)
+        } else if conv == "x" || conv == "X" || conv == "o" {
+            let v = sc_to_int(arg)
+            let mut base = 16
+            if conv == "o" {
+                base = 8
+            }
+            let mut digits = sc_radix(v, base, conv == "X")
+            if prec >= 0 && len(std::text::chars(digits)) < prec {
+                digits = sc_zeros_str(prec - len(std::text::chars(digits))) + digits
+            }
+            if alt && v != 0 {
+                if conv == "x" {
+                    digits = "0x" + digits
+                } else if conv == "X" {
+                    digits = "0X" + digits
+                } else {
+                    digits = "0" + digits
+                }
+            }
+            piece = sc_pad(digits, width, left, zero && prec < 0)
+        } else if conv == "u" {
+            let v = sc_to_int(arg)
+            piece = sc_pad(sc_radix(v, 10, false), width, left, zero)
+        } else if conv == "q" || conv == "Q" || conv == "w" {
+            let q = "'"
+            let mut qq = q
+            if conv == "w" {
+                qq = "\""
+            }
+            let mut isnull = false
+            match arg {
+                Sv::SNull => {
+                    isnull = true
+                },
+                _ => {},
+            }
+            if isnull && conv == "Q" {
+                piece = sc_pad("NULL", width, left, false)
+            } else {
+                let mut s = ""
+                if !isnull {
+                    s = sc_to_text(arg)
+                }
+                if prec >= 0 && len(std::text::chars(s)) > prec {
+                    s = std::text::substring(s, 0, prec)
+                }
+                s = sc_quote_text(s, qq)
+                if conv == "Q" {
+                    s = "'" + s + "'"
+                }
+                piece = sc_pad(s, width, left, false)
+            }
+        } else {
+            piece = "%" + conv
+        }
+        out = std::array::push(out, piece)
+    }
+    std::collections::join(out, "")
+}

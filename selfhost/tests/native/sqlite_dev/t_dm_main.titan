@@ -1,0 +1,228 @@
+fn run(db: any, cx: Cx, sql: string) -> (Cx, int) {
+    let (all, err) = ss_parse_all(sql)
+    if err != "" {
+        let r0 = std::try::catch(|| { std::sqlite::execute(db, sql, []) })
+        let mut t0 = ""
+        match r0 {
+            Result::Ok(n) => {
+                t0 = "{n}"
+            },
+            Result::Err(m) => {
+                t0 = "ERR " + std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+            },
+        }
+        if "ERR " + sy_fmt_err(sql, err) != t0 {
+            print("PARSE-DIFF", sql, err, t0)
+            return (cx, 1)
+        }
+        return (cx, 0)
+    }
+    let st = all[0][0]
+    let mut cx2 = cx
+    let mut names = []
+    let mut rows = []
+    let mut e2 = ""
+    let mut hasret = false
+    if st.k == "insert" {
+        let (a, b, c, d) = sw_insert(cx, st.v, [], [])
+        cx2 = a
+        names = b
+        rows = c
+        e2 = d
+        hasret = len(st.v.ret) > 0
+    }
+    if st.k == "update" {
+        let (a, b, c, d) = sw_update(cx, st.v, [], [])
+        cx2 = a
+        names = b
+        rows = c
+        e2 = d
+        hasret = len(st.v.ret) > 0
+    }
+    if st.k == "delete" {
+        let (a, b, c, d) = sw_delete(cx, st.v, [], [])
+        cx2 = a
+        names = b
+        rows = c
+        e2 = d
+        hasret = len(st.v.ret) > 0
+    }
+    let mut mine = ""
+    if e2 != "" {
+        mine = "ERR " + sy_fmt_err(sql, e2)
+    } else if hasret {
+        mine = rows_str(names, rows)
+    } else {
+        let nch = cx2.changes
+        mine = "{nch}"
+    }
+    let mut theirs = ""
+    if hasret {
+        let r = std::try::catch(|| { std::sqlite::query(db, sql, []) })
+        match r {
+            Result::Ok(rs) => {
+                theirs = "{rs}"
+            },
+            Result::Err(m) => {
+                theirs = "ERR " + std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+            },
+        }
+    } else {
+        let r = std::try::catch(|| { std::sqlite::execute(db, sql, []) })
+        match r {
+            Result::Ok(n) => {
+                theirs = "{n}"
+            },
+            Result::Err(m) => {
+                theirs = "ERR " + std::text::replace(m, "native function 'std::sqlite' failed: SQLite error: ", "")
+            },
+        }
+    }
+    let mut bad = 0
+    if mine != theirs {
+        print("DIFF", sql)
+        print("  mine  =", mine)
+        print("  oracle=", theirs)
+        return (cx2, 1)
+    }
+    for q in ["select rowid, * from t order by rowid", "select rowid, * from d order by rowid", "select rowid, * from w order by rowid", "select rowid, * from z order by rowid", "select * from sqlite_sequence order by name",
+              "select a from t where c = 3 order by a", "select a from t where c >= 8 and c <= 9 order by a", "select rowid from d where k = 2 order by rowid", "select id from w where name = 'bob'", "select id from w where name > 'b' order by id"] {
+        bad += check(db, cx2, q)
+        if bad > 0 {
+            return (cx2, bad)
+        }
+    }
+    return (cx2, bad)
+}
+
+fn main() {
+    let db = std::sqlite::memory()
+    let (p0, perr) = sqp_open(sqio_mem())
+    let mut p = sqp_begin(p0)
+    let t_sql = "CREATE TABLE t(a integer primary key, b text, c integer)"
+    let d_sql = "CREATE TABLE d(k, v)"
+    let w_sql = "CREATE TABLE w(id integer primary key, name text not null unique, n int default 5 check (n >= 0))"
+    let z_sql = "CREATE TABLE z(id integer primary key autoincrement, v)"
+    let s_sql = "CREATE TABLE sqlite_sequence(name,seq)"
+    std::sqlite::execute(db, t_sql, [])
+    std::sqlite::execute(db, d_sql, [])
+    std::sqlite::execute(db, w_sql, [])
+    std::sqlite::execute(db, z_sql, [])
+    let mut trows = []
+    let mut s = 7
+    let mut i = 1
+    while i <= 30 {
+        s = rnd(s)
+        let c = (s / 16) % 10
+        let im = i % 7
+        let b = "x{im}"
+        trows = std::array::push(trows, [Sv::SInt(i), Sv::SText(b), Sv::SInt(c)])
+        std::sqlite::execute(db, "insert into t values (?,?,?)", [i, b, c])
+        i += 1
+    }
+    let mut drows = []
+    i = 0
+    while i < 12 {
+        s = rnd(s)
+        let k = (s / 16) % 4
+        drows = std::array::push(drows, [Sv::SInt(k), Sv::SInt(i)])
+        std::sqlite::execute(db, "insert into d values (?,?)", [k, i])
+        i += 1
+    }
+    let wrows = [[Sv::SInt(1), Sv::SText("alice"), Sv::SInt(1)], [Sv::SInt(2), Sv::SText("bob"), Sv::SInt(2)]]
+    std::sqlite::execute(db, "insert into w values (1,'alice',1),(2,'bob',2)", [])
+    let (p1, m1, troot) = mk_table(p, 1, "t", t_sql, trows, 0)
+    let (p2, m2, droot) = mk_table(p1, m1, "d", d_sql, drows, -1)
+    let (p3, m3, wroot) = mk_table(p2, m2, "w", w_sql, wrows, 0)
+    let (p3b, m3b) = mk_index(p3, m3, "sqlite_autoindex_w_1", "w", Sv::SNull, wroot, [1], -1)
+    let (p3c, m3c, zroot) = mk_table(p3b, m3b, "z", z_sql, [], 0)
+    let (p3d, m3d, sroot) = mk_table(p3c, m3c, "sqlite_sequence", s_sql, [], -1)
+    std::sqlite::execute(db, "create index tc on t(c)", [])
+    std::sqlite::execute(db, "create index dk on d(k)", [])
+    let (p4, m4) = mk_index(p3d, m3d, "tc", "t", Sv::SText("CREATE INDEX tc on t(c)"), troot, [2], -1)
+    let (p5, m5) = mk_index(p4, m4, "dk", "d", Sv::SText("CREATE INDEX dk on d(k)"), droot, [0], -1)
+    let (sch, serr) = sh_load(p5)
+    if serr != "" {
+        print("SCHEMA ERR", serr)
+        return
+    }
+    let mut cx = Cx { sch: sch, pg: p5, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 0, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let stmts = [
+        "insert into t values (100, 'new', 5)",
+        "insert into t(b, c) values ('auto', 6)",
+        "insert into t(a, b) values (200, 'p'), (201, 'q'), (202, 'r')",
+        "insert into t values (100, 'dup', 1)",
+        "insert or ignore into t values (100, 'dup', 1)",
+        "insert or replace into t values (100, 'rep', 2)",
+        "replace into t values (101, 'rep2', 3)",
+        "insert into t(a) values ('77')",
+        "insert into t(a) values ('abc')",
+        "insert into t(a, b) select a + 1000, b from t where a < 5",
+        "insert into t default values",
+        "insert into t(rowid, b) values (5000, 'rid')",
+        "insert into t(b, nosuch) values (1, 2)",
+        "insert into t values (1, 2)",
+        "insert into t(b) values (1, 2)",
+        "insert into nosuch values (1)",
+        "insert into w(name) values ('carol')",
+        "insert into w(name) values ('carol')",
+        "insert into w(name, n) values ('dave', -1)",
+        "insert into w(name) values (null)",
+        "insert into w(id, name) values (50, 'alice')",
+        "insert or replace into w(id, name) values (50, 'alice')",
+        "insert or ignore into w(name) values ('bob')",
+        "insert into w(name) values ('eve') on conflict do nothing",
+        "insert into w(name) values ('eve') on conflict do nothing",
+        "insert into w(name, n) values ('eve', 9) on conflict(name) do update set n = n + excluded.n",
+        "insert into w(name, n) values ('eve', 9) on conflict(name) do update set n = n + excluded.n where n < 10",
+        "insert into w(name, n) values ('eve', 9) on conflict(name) do update set n = n + excluded.n where n < 10 returning id, name, n",
+        "insert into w(id, name) values (1, 'zed') on conflict(id) do update set name = excluded.name",
+        "insert into z(v) values ('a'), ('b'), ('c')",
+        "insert into z(id, v) values (10, 'ten')",
+        "insert into z(v) values ('after')",
+        "delete from z where id = 11",
+        "insert into z(v) values ('again')",
+        "insert into d values (1, 100), (2, 200), (null, 300) returning rowid, k, v",
+        "update t set c = c + 1 where a < 10",
+        "update t set c = 0 where c = 3",
+        "update t set b = 'u' || a where a between 5 and 8 returning a, b, c",
+        "update t set a = a + 500 where a < 4",
+        "update t set a = 7 where a = 8",
+        "update or ignore t set a = 7 where a = 8",
+        "update or replace t set a = 7 where a = 9",
+        "update t set a = null where a = 12",
+        "update t set nosuch = 1",
+        "update t set c = (select max(v) from d where d.k = t.c) where a < 20",
+        "update t set (b, c) = ('pair', 99) where a = 13",
+        "update w set name = 'bob' where id = 1",
+        "update w set n = -5 where id = 2",
+        "update w set name = null where id = 2",
+        "update w set name = name || '!' returning *",
+        "update d set k = k + 1 order by v desc limit 3",
+        "update d set v = v * 2 where k in (select a from t where a < 4)",
+        "update t set rowid = 900 where a = 10",
+        "delete from t where a > 300",
+        "delete from t where c = 99 returning a, b",
+        "delete from d where k = 1 and v < 5",
+        "delete from d where k is null",
+        "delete from d order by v desc limit 2",
+        "delete from d where v in (select v from d where v > 50)",
+        "delete from nosuch",
+        "delete from t",
+        "insert into t select * from t",
+        "insert into t values (1,'one',1),(2,'two',2)",
+        "insert into d select k, v from d",
+        "delete from d where rowid > 5"
+    ]
+    let mut bad = 0
+    for q in stmts {
+        let (c2, b) = run(db, cx, q)
+        cx = c2
+        bad += b
+        if bad > 0 {
+            print("stopped at", q)
+            break
+        }
+    }
+    print("total", len(stmts), "bad", bad)
+}

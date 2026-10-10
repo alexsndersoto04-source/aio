@@ -1,99 +1,108 @@
-# Titan Standard Library Host API
+# Biblioteca estándar
 
-The `titan_stdlib` crate provides memory-safe host capabilities for the compiler, VM embedders, and future native builtin bridge. APIs return `Result`/`Option` where operations can fail; malformed input is not silently accepted.
+Las funciones `std::*` están escritas en Titan (cuerpos en `selfhost/native/`) y se compilan junto con el programa; no hay
+código de otro lenguaje ni bibliotecas externas. La tabla de firmas es `selfhost/natives.titan` (la consulta el typechecker).
+Hoy son **812 funciones en 73 espacios de nombres**. Cuántas tienen cuerpo en Titan se mide con
+`bash selfhost/native/cobertura.sh -v`.
 
-> The native bridge is active. Registered functions are called from `.titan` with qualified names such as `std::text::reverse("Titan")`. The shared registry currently contains 694 functions; the type checker validates their arity/types, codegen emits `CallNative`, and the VM converts values and returns structured errors.
+Además de estas, `std::sqlite`, `std::postgres`, `std::mysql`, `std::db`, `std::tls`, `std::runtime` y parte de `std::ws`, `std::net`,
+`std::http` y `std::server` se compilan a instrucciones propias del bytecode (`selfhost/codegen_tables.titan`).
 
-## Modules
+| Espacio de nombres | Funciones | Contenido |
+|---|---|---|
+| `std::archive` | 5 | TAR y ZIP (leer y escribir) |
+| `std::array` | 7 | operaciones sobre arrays |
+| `std::audio` | 62 | WAV, decodificación (WAV, FLAC, Ogg Vorbis), etiquetas, biblioteca, síntesis y motor de reproducción |
+| `std::bytes` | 7 | lector/escritor binario con límites |
+| `std::checksum` | 3 | FNV-1a, CRC-32, comparación en tiempo constante |
+| `std::clipboard` | 2 | portapapeles (Termux/Linux) |
+| `std::collections` | 57 | listas, conjuntos, agrupar, particionar, ventanas… |
+| `std::compress` | 8 | gzip, zlib, deflate y zstd (comprimir y descomprimir) |
+| `std::crypto` | 13 | ChaCha20-Poly1305, AES-GCM, Argon2id, bcrypt |
+| `std::csv` | 2 | CSV con comillas |
+| `std::datetime` | 49 | fechas, zonas horarias, formatos RFC 3339/2822 |
+| `std::dirs` | 18 | carpetas del usuario (home, config, caché…) |
+| `std::dns` | 7 | consultas DNS |
+| `std::email` | 3 | SMTP |
+| `std::encoding` | 8 | hex, Base64, UTF-8, porcentaje |
+| `std::env` | 3 | variables de entorno |
+| `std::freestanding` | 6 | programas sin sistema operativo (aarch64-none) |
+| `std::freestanding_cpu` | 7 | CPU en modo sin sistema operativo |
+| `std::freestanding_memory` | 7 | memoria en modo sin sistema operativo |
+| `std::freestanding_mmio` | 7 | MMIO en modo sin sistema operativo |
+| `std::fs` | 18 | archivos y carpetas |
+| `std::fswatch` | 4 | vigilar cambios en archivos |
+| `std::game` | 5 | bucle de juego 2D y colisiones |
+| `std::gui` | 11 | árbol de widgets y rasterizador por software |
+| `std::hash` | 11 | SHA-2, SHA-3, BLAKE3, HMAC |
+| `std::http` | 13 | cliente HTTP/HTTPS |
+| `std::http_full` | 4 | HTTP (funciones extendidas) |
+| `std::image` | 21 | PNG, JPEG, WebP, BMP, GIF (leer y escribir) |
+| `std::input` | 8 | estado de teclado, ratón y táctil |
+| `std::io` | 2 | lectura limitada de texto/bytes |
+| `std::json` | 6 | JSON (parse, pretty, pointer, merge patch) |
+| `std::jwt` | 5 | JWT |
+| `std::kv` | 17 | almacén clave-valor |
+| `std::map` | 9 | mapas |
+| `std::math` | 14 | funciones matemáticas |
+| `std::metrics` | 8 | contadores, gauges, histogramas |
+| `std::mobile` | 3 | ciclo de vida de apps móviles |
+| `std::net` | 1 | TCP |
+| `std::notify` | 1 | notificaciones |
+| `std::onnx` | 14 | motor ONNX propio (BERT y modelos pequeños) |
+| `std::password` | 4 | hash y verificación de contraseñas |
+| `std::path` | 8 | rutas |
+| `std::pdf` | 9 | generar PDF |
+| `std::plot` | 5 | gráficos SVG |
+| `std::process` | 23 | procesos hijos, pipes, tiempo límite |
+| `std::procfs` | 18 | información del sistema (/proc) |
+| `std::progress` | 7 | barras de progreso |
+| `std::qrcode` | 5 | códigos QR |
+| `std::random` | 8 | aleatorios y generadores deterministas |
+| `std::readline` | 4 | línea de comandos con historial |
+| `std::redis` | 21 | cliente Redis |
+| `std::regex` | 7 | expresiones regulares |
+| `std::router` | 5 | enrutador de rutas HTTP |
+| `std::server` | 23 | servidor HTTP |
+| `std::signals` | 3 | señales POSIX |
+| `std::stats` | 5 | estadística |
+| `std::term` | 15 | terminal (colores, teclas, TUI) |
+| `std::termux` | 23 | Termux:API |
+| `std::testing` | 2 | aserciones |
+| `std::text` | 28 | texto y Unicode |
+| `std::time` | 3 | tiempo y pausas |
+| `std::tokenize` | 10 | tokenizadores estilo HuggingFace |
+| `std::try` | 1 | `std::try::catch` |
+| `std::url` | 10 | URLs |
+| `std::uuid` | 5 | UUID v4 y v7 |
+| `std::vector` | 8 | vectores numéricos |
+| `std::wasm` | 14 | WebAssembly: memoria y source maps |
+| `std::web` | 53 | navegador: DOM, eventos, fetch, WebSocket, Canvas 2D, WebGL2 (solo con host JS) |
+| `std::wifi` | 4 | Wi-Fi (Termux) |
+| `std::window` | 12 | ventanas |
+| `std::ws` | 6 | WebSocket |
+| `std::xml` | 4 | XML |
+| `std::yaml` | 3 | YAML |
 
-| Module | Capabilities |
-|---|---|
-| `audio` | WAV I/O + synthesis (hound); MP3/FLAC/OGG/WAV tags, library scanning and system-backend playback engine (`mpv`, `afplay`, `paplay`, `aplay`, `ffplay`) — Fase 41 · native engine: in-binary decode (symphonia) + direct output (cpal), gapless/crossfade queue, persistent settings, 32-bar visualizer — Fase 42A |
-| `bytes` | Bounds-checked endian binary reader/writer, numeric and length-prefixed string formats |
-| `cache` | Capacity-bounded LRU cache with deterministic eviction |
-| `checksum` | FNV-1a, CRC-32, constant-time byte comparison |
-| `collections` | Vec/map/set/deque/heap aliases; deduplication, frequency, grouping, partitioning, chunks, windows, zip, search |
-| `csv` | Quoted CSV parser, serializer and header-based table access |
-| `encoding` | Strict hex, Base64 and UTF-8 percent encoding/decoding |
-| `game` | Headless 2D frame loop with measured delta-time/FPS and AABB collision detection (Fase 1 graduated) |
-| `gui` | Retained-mode widget tree: containers, labels, buttons, text, click state and child traversal (Fase 2 graduated) |
-| `gui_raster` | Pure-Rust software rasterizer rendering the `gui` tree to RGBA buffers and PNG (Fase 2 graduated) |
-| `input` | Real keyboard/mouse/multi-touch hardware state for games and GUI (Fase 1 graduated) |
-| `io` | Text/bytes, bounded reads, lines, append, atomic writes, sorted directory listing and depth-limited walking |
-| `http` | Incremental HTTP/1.1 request parsing, anti-smuggling validation, keep-alive metadata and safe response construction |
-| `http_client` | Bounded HTTP/HTTPS requests, redirects, chunked transfer, timeouts and WebPKI validation |
-| `json` | Parsing, compact/pretty output, JSON Pointer, path queries, merge patch behavior and flattening |
-| `math` | Common floating-point functions and generic min/max |
-| `metrics` | Thread-safe counters, gauges, aggregate histograms and snapshots |
-| `mobile` | Android-style app lifecycle state machine: foreground/background, pause/resume (Fase 1 graduated) |
-| `multipart` | Bounded multipart/form-data parsing with safe upload metadata |
-| `net` | TCP client/server and parsed plaintext HTTP/1.1 responses |
-| `path` | Join, components, normalization, absolute/canonical paths and containment checks |
-| `process` | Shell-free command construction, environment/cwd, output capture and timeout with concurrent pipe draining |
-| `stats` | Welford streaming mean/variance, standard deviation, min/max, median and quantiles |
-| `sync` | Bounded thread pool, panic isolation, graceful join, channels and poison-aware shared state |
-| `testing` | Assertions for host-side library tests |
-| `text` | Unicode-scalar length/reverse, codepoints, truncation, padding, HTML escaping, slugification and Levenshtein distance |
-| `time` | Unix timestamps, checked duration construction, stopwatch and monotonic deadlines |
-| `window` | Logical window abstraction with a typed event queue and shared event formatting (Fase 2 graduated) |
-| `window_live` | Real OS windows at 60 fps via pure-Rust minifb (X11/Wayland/Win32/Cocoa), bridging real input into `std::input`; on headless boxes it honestly reports `-1`. **Fase 2 graduated 2026-07-31**: first live window ran 3,601 frames on a real 32-bit Android phone (armv7l, proot + Termux:X11) and closed cleanly |
-| `websocket` | RFC 6455 handshake, secure masking, incremental frame codec and protocol validation |
+## Cosas que hay que saber
 
-## Security boundaries
+- Las limitaciones concretas de cada pieza (qué formatos no se soportan, qué cosas no se han probado en dispositivos) están en
+  [`selfhost/ESTADO.md`](../selfhost/ESTADO.md). Algunos ejemplos: SQLite no tiene FTS, RTREE ni `ATTACH`; el audio no decodifica
+  MP3/AAC/Opus; `std::web` solo funciona con un host JavaScript (WebAssembly en el navegador).
+- **No hay sandbox ni sistema de permisos** en los ejecutables nativos: un programa Titan puede usar archivos, procesos y red
+  como cualquier otro programa. La opción `--sandbox` pertenecía al prototipo en Rust y ya no existe.
+- `std::checksum` no es criptografía. Para contraseñas, firmas y autenticación hay `std::crypto`, `std::hash`, `std::password` y `std::jwt`.
+- El texto cuenta valores escalares Unicode, no grupos de caracteres percibidos por el usuario.
 
-- `checksum` is **not cryptography**. It must not be used for passwords, authentication or signatures.
-- HTTPS is rejected by `net::http_get`; the library never pretends that plaintext TCP is TLS.
-- `process::CommandSpec` invokes a program directly and never passes input through a shell, reducing command-injection risk.
-- `io::read_limited` and VM range/instruction limits exist to bound untrusted input.
-- `path::is_within` canonicalizes both paths and requires them to exist; lexical normalization alone is not a sandbox.
-- Text operations count Unicode scalar values, not user-perceived grapheme clusters. The API states this explicitly.
-
-## Examples (Rust host)
-
-```rust
-use titan_stdlib::{csv, encoding, stats};
-
-let rows = csv::parse("name,score\nAda,10")?;
-let token = encoding::base64_encode(b"Titan");
-
-let mut summary = stats::Summary::new();
-summary.extend([10.0, 20.0, 30.0]);
-assert_eq!(summary.mean(), Some(20.0));
-```
-
-```rust
-use std::time::Duration;
-use titan_stdlib::process::CommandSpec;
-
-let output = CommandSpec::new("git")
-    .args(["--version"])
-    .output_timeout(Duration::from_secs(2))?;
-```
-
-## Calling from `.titan`
+## Llamarlas desde Titan
 
 ```titan
 fn main() {
-    let encoded = std::encoding::base64_encode(
-        std::encoding::utf8_encode("Titan")
-    )
-    let document = std::json::parse("{\"answer\":42}")
-    print(std::text::uppercase(encoded))
-    print(document.answer)
+    let codificado = std::encoding::base64_encode(std::encoding::utf8_encode("Titan"))
+    let doc = std::json::parse("{\"respuesta\":42}")
+    print(std::text::uppercase(codificado))
+    print(doc.respuesta)
 }
 ```
 
-Native results include regular values plus VM `bytes` and `map` values. Map entries can be read with field syntax (`result.stdout`, `document.name`). Bytes can be created with `std::encoding::utf8_encode`, decoded from hex/Base64, or read from files/network.
-
-### Effects and capabilities
-
-Pure functions need no capability. The registry marks effectful calls as one of:
-
-- `Filesystem`: `std::fs::*` and canonical/absolute path operations;
-- `Process`: `std::process::*`;
-- `Network`: `std::net::*`;
-- `Environment`: `std::env::*`.
-
-`Vm::new` enables standard desktop capabilities so CLI programs can use the complete library. Embedders can use `Vm::sandboxed` or `with_capabilities` to deny effects. A denied call returns `PermissionDenied`; it is never silently executed.
-
-The authoritative metadata is `titan_stdlib::native::NATIVES`. Every registered name has a VM dispatch implementation, and registry/dispatch parity is checked during development.
+Los resultados que no son números ni textos son `bytes` y `map`; los campos de un mapa se leen con la sintaxis `resultado.campo`.

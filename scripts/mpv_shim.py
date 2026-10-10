@@ -2,7 +2,7 @@
 """Shim de mpv para el sandbox (sin dispositivo de audio).
 
 Implementa el subconjunto del protocolo JSON IPC de mpv que usa
-`std::audio` de TITAN (crates/titan_stdlib/src/audio_player.rs):
+`std::audio` de TITAN (selfhost/native/std_audio.titan):
 
   comandos:  get_property, set_property, seek, loadfile (append-play),
              playlist-clear, playlist-next, playlist-prev, quit

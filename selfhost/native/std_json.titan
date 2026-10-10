@@ -805,7 +805,7 @@ fn js_float_text(bits: int) -> any {
     if b == 0 {
         return rt_concat(sign, "0.0")
     }
-    let (num, nd, k) = fl_shortest(b)
+    let (num, nd, k) = fl_shortest_even(b)
     let text = rt_int_to_str(num)
     let sbuf = sb_new(32)
     sb_str(sbuf, sign)

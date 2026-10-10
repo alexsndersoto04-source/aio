@@ -1,0 +1,29 @@
+// puerto: 53307
+// std::mysql: errores de red que dependen del entorno (se espera que 10.255.255.1 no conteste y que
+// no haya ruta IPv6): plazo de conexión, red inalcanzable y espera cooperativa entre tareas.
+fn mostrar(nombre: string, r: any) {
+    print("{nombre}: {r}")
+}
+
+fn main() {
+    mostrar("plazo", std::try::catch(|| { std::mysql::connect("mysql://u:p@10.255.255.1:3306/test?tcp_connect_timeout_ms=300") }))
+    mostrar("ipv6_inalcanzable", std::try::catch(|| { std::mysql::connect("mysql://u:p@[2001:db8::1]:3306/test?tcp_connect_timeout_ms=300") }))
+    // tres tareas esperan 0,2 s cada una a la vez, cada una con su conexión
+    let url = "mysql://app:secret@127.0.0.1:53307/test?prefer_socket=false"
+    let mut tareas = []
+    let mut i = 0
+    while i < 3 {
+        let n = i
+        tareas = std::array::push(tareas, spawn || {
+            let h = std::mysql::connect(url)
+            let r = std::mysql::query(h, "SELECT SLEEP(0.2) AS s", [])
+            std::mysql::close(h)
+            let res = [n, r]
+            res
+        })
+        i += 1
+    }
+    for t in tareas {
+        mostrar("espera", join(t))
+    }
+}

@@ -1,0 +1,277 @@
+// Instrucciones Server* (control de conexiones de un servidor) y Runtime*
+// (introspección: memoria, GC, tareas, benchmark) de la VM, en el backend nativo.
+// Referencia: crates/titan_vm/src/lib.rs.
+//
+// Server*: `ServerControl` es un objeto de etiqueta 23 ([cuenta][id][ptr]) que apunta
+// a un bloque {+0 máximo, +8 activas, +16 aceptadas, +24 rechazadas, +32 completadas,
+// +40 apagando}. Como en la VM, crearlo gasta un handle de red para siempre (cupo
+// común con TCP, ver std_tcp.titan) y nunca se libera.
+//
+// Runtime*: el runtime nativo no tiene recolector (cuenta de referencias: lo que
+// se libera, se libera al instante), así que:
+//   memory_limit      -1 (el nativo no tiene tope; solo la VM lo aplica)
+//   allocated_bytes   bytes REALES del montón en uso (rt_heap_allocated); la VM
+//                     devuelve su propia estimación de tamaños de valores, los
+//                     números no coinciden
+//   gc_live_count     allocated_bytes / 64, como la VM
+//   gc_collect        0 (no se recoge nada: como la VM, que tampoco tiene GC)
+//   gc_threshold      1 MiB hasta gc_set_threshold (solo se guarda, como en la VM)
+//   active_tasks      tareas registradas (std_task.titan)
+//   optimize_level 2, fast_path_enabled true (iguales que la VM)
+//   benchmark, heap_dump: reales
+// Estado: globals + 3568 → bloque {+0 umbral del GC, +8 próximo id de enrutador HTTP, +16/+24/+32 estado de std::audio sim/player/engine, +64 estado de std::server, +72 estado de std::window (Wayland), +80 bloque del depurador/DAP}.
+// No hay SpawnQuota: no se puede aplicar un tope de memoria a una tarea.
+
+fn rtm_state() -> int {
+    let g = std::raw::globals() + 3568
+    let mut s = std::raw::load(g)
+    if s == 0 {
+        s = rt_alloc_zero(128)
+        std::raw::store(s, 1048576)
+        std::raw::store(s + 8, 1)
+        std::raw::store(g, s)
+    }
+    s
+}
+
+// positive_limit de la VM: entero entre 1 y 64 MiB.
+fn rtm_positive(v: any, name: string) -> int {
+    if std::raw::tag(v) != 1 {
+        rt_fatal(rt_concat(rt_concat("type error: ", name), " must be int"))
+    }
+    let n = std::raw::bits(v)
+    if n < 0 {
+        rt_fatal(rt_concat(rt_concat("type error: ", name), " must be positive"))
+    }
+    if n == 0 || n > 67108864 {
+        rt_fatal(rt_concat(rt_concat("type error: ", name), " must be between 1 and 64 MiB"))
+    }
+    n
+}
+
+// ------------------------------------------------------------ Server*
+
+fn rtm_control(v: any) -> int {
+    if std::raw::tag(v) != 23 {
+        rt_fatal("type error: operation requires server control")
+    }
+    std::raw::load(std::raw::bits(v) + 16)
+}
+
+fn rt_server_control_new(maximum: any) -> any {
+    tcp_reserve()
+    let n = rtm_positive(maximum, "maximum connections")
+    let st = tcp_st()
+    let id = std::raw::load(st)
+    std::raw::store(st, id + 1)
+    std::raw::store(st + 8, std::raw::load(st + 8) + 1)
+    let c = rt_alloc_zero(48)
+    std::raw::store(c, n)
+    tk_handle(23, id, c)
+}
+
+fn rt_server_try_acquire(v: any) -> any {
+    let c = rtm_control(v)
+    if std::raw::load(c + 40) != 0 {
+        std::raw::store(c + 24, std::raw::load(c + 24) + 1)
+        return false
+    }
+    if std::raw::load(c + 8) >= std::raw::load(c) {
+        std::raw::store(c + 24, std::raw::load(c + 24) + 1)
+        return false
+    }
+    std::raw::store(c + 8, std::raw::load(c + 8) + 1)
+    std::raw::store(c + 16, std::raw::load(c + 16) + 1)
+    true
+}
+
+fn rt_server_release(v: any) -> any {
+    let c = rtm_control(v)
+    if std::raw::load(c + 8) > 0 {
+        std::raw::store(c + 8, std::raw::load(c + 8) - 1)
+        std::raw::store(c + 32, std::raw::load(c + 32) + 1)
+        return true
+    }
+    false
+}
+
+fn rt_server_shutdown(v: any) -> any {
+    let c = rtm_control(v)
+    std::raw::store(c + 40, 1)
+    nil
+}
+
+fn rt_server_stats(v: any) -> any {
+    let c = rtm_control(v)
+    let down = std::raw::load(c + 40) != 0
+    let mut m = std::map::new()
+    m = std::map::insert(m, "maximum", std::raw::load(c))
+    m = std::map::insert(m, "active", std::raw::load(c + 8))
+    m = std::map::insert(m, "accepted", std::raw::load(c + 16))
+    m = std::map::insert(m, "rejected", std::raw::load(c + 24))
+    m = std::map::insert(m, "completed", std::raw::load(c + 32))
+    m = std::map::insert(m, "ready", !down)
+    m = std::map::insert(m, "healthy", true)
+    m = std::map::insert(m, "shutting_down", down)
+    m
+}
+
+fn rt_server_health_response(v: any) -> any {
+    let c = rtm_control(v)
+    let ready = std::raw::load(c + 40) == 0
+    let mut status = "ok"
+    let mut ready_text = "true"
+    let mut code = 200
+    if !ready {
+        status = "draining"
+        ready_text = "false"
+        code = 503
+    }
+    let body = rt_concat(rt_concat(rt_concat(rt_concat(rt_concat(rt_concat("{\"status\":\"", status), "\",\"ready\":"), ready_text), ",\"healthy\":true,\"active\":"), rt_int_to_str(std::raw::load(c + 8))), "}")
+    let mut headers = std::map::new()
+    headers = std::map::insert(headers, "Content-Type", "application/json; charset=utf-8")
+    headers = std::map::insert(headers, "Cache-Control", "no-store")
+    let mut m = std::map::new()
+    m = std::map::insert(m, "status", code)
+    m = std::map::insert(m, "headers", headers)
+    m = std::map::insert(m, "body", rt_bytes_from(rt_bdata(body), rt_slen(body)))
+    m = std::map::insert(m, "keep_alive", false)
+    m
+}
+
+// ------------------------------------------------------------ Runtime*
+
+fn rt_runtime_memory_limit() -> any {
+    -1
+}
+
+fn rt_runtime_allocated_bytes() -> any {
+    rt_heap_allocated()
+}
+
+fn rt_runtime_gc_live_count() -> any {
+    rt_heap_allocated() / 64
+}
+
+fn rt_runtime_gc_collect() -> any {
+    0
+}
+
+fn rt_runtime_gc_threshold() -> any {
+    std::raw::load(rtm_state())
+}
+
+fn rt_runtime_gc_set_threshold(v: any) -> any {
+    let n = rtm_positive(v, "std::runtime::gc_set_threshold")
+    std::raw::store(rtm_state(), n)
+    nil
+}
+
+fn rt_runtime_active_tasks() -> any {
+    let s = std::raw::load(std::raw::globals() + TK_SLOT)
+    if s == 0 {
+        return 0
+    }
+    std::raw::load(s + 48)
+}
+
+fn rt_runtime_optimize_level() -> any {
+    2
+}
+
+fn rt_runtime_fast_path() -> any {
+    true
+}
+
+fn rtm_now_ns() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000000000 + ns
+}
+
+// Pila: [iteraciones, cierre]. La VM saca primero el cierre.
+fn rt_runtime_benchmark(iterations: any, callable: any) -> any {
+    if std::raw::tag(callable) != 12 {
+        rt_fatal("type error: std::runtime::benchmark requires a closure")
+    }
+    let iters = rtm_positive(iterations, "std::runtime::benchmark iterations")
+    let f: fn() -> any = callable
+    let start = rtm_now_ns()
+    let mut i = 0
+    while i < iters {
+        f()
+        i += 1
+    }
+    let elapsed = rtm_now_ns() - start
+    let mut per_op = 0
+    let mut per_sec = 0
+    if iters > 0 {
+        per_op = elapsed / iters
+    }
+    if elapsed > 0 {
+        per_sec = iters * 1000000000 / elapsed
+    }
+    let mut m = std::map::new()
+    m = std::map::insert(m, "iterations", iters)
+    m = std::map::insert(m, "total_ms", elapsed / 1000000)
+    m = std::map::insert(m, "ns_per_op", per_op)
+    m = std::map::insert(m, "ops_per_sec", per_sec)
+    m
+}
+
+fn rt_runtime_heap_dump(path: any) -> any {
+    if std::raw::tag(path) != 5 {
+        rt_fatal("type error: heap_dump path must be string")
+    }
+    let allocated = rt_heap_allocated()
+    let mut tasks = 0
+    let s = std::raw::load(std::raw::globals() + TK_SLOT)
+    if s != 0 {
+        tasks = std::raw::load(s + 48)
+    }
+    let (secs, ns) = rt_clock(0)
+    let mut text = "{\n  \"active_tasks\": "
+    text = rt_concat(text, rt_int_to_str(tasks))
+    text = rt_concat(text, ",\n  \"allocated_bytes\": ")
+    text = rt_concat(text, rt_int_to_str(allocated))
+    text = rt_concat(text, ",\n  \"gc_live_count\": ")
+    text = rt_concat(text, rt_int_to_str(allocated / 64))
+    text = rt_concat(text, ",\n  \"gc_threshold\": ")
+    text = rt_concat(text, rt_int_to_str(std::raw::load(rtm_state())))
+    text = rt_concat(text, ",\n  \"memory_limit\": -1,\n  \"status\": \"healthy\",\n  \"timestamp_unix_ms\": ")
+    text = rt_concat(text, rt_int_to_str(secs * 1000 + ns / 1000000))
+    text = rt_concat(text, "\n}")
+    let p = rt_bdata(path)
+    let n = rt_slen(path)
+    let mut i = 0
+    while i < n {
+        if std::raw::load8(p + i) == 0 {
+            return false
+        }
+        i += 1
+    }
+    let cpath = nt_cdup(p, n)
+    // open(O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666)
+    let fd = std::raw::syscall(2, cpath, 524865, 438, 0, 0, 0)
+    rt_free_block(cpath)
+    if fd < 0 {
+        return false
+    }
+    let data = rt_bdata(text)
+    let total = rt_slen(text)
+    let mut done = 0
+    let mut ok = true
+    while done < total && ok {
+        let w = std::raw::syscall(1, fd, data + done, total - done, 0, 0, 0)
+        if w == -4 {
+            continue
+        }
+        if w <= 0 {
+            ok = false
+        }
+        if w > 0 {
+            done += w
+        }
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    ok
+}

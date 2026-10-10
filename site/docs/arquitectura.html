@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arquitectura — Documentación de Titan</title>
+<meta name="description" content="Etapas del compilador y generadores de código.">
+<meta property="og:title" content="Arquitectura — Documentación de Titan">
+<meta property="og:description" content="Etapas del compilador y generadores de código.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html" class="on">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Empezar</p><h1 id="arquitectura-de-titan">Arquitectura de Titan</h1>
+<p>Todo el compilador, el runtime y la biblioteca estándar están escritos en Titan y viven en <code>selfhost/</code>. No hay código
+Rust en el repositorio (el prototipo original sigue en el historial de git, etiqueta <code>ultimo-con-rust</code>).</p>
+<h2 id="del-codigo-fuente-al-ejecutable">Del código fuente al ejecutable</h2>
+<pre><code class="language-text">programa.titan
+  → lexer.titan          tokens con posiciones
+  → parser.titan         sintaxis → AST (ast.titan)
+  → typechecker.titan    ámbitos, firmas, tipos
+  → codegen.titan        AST → bytecode de pila (la representación intermedia)
+  → opt.titan            optimizador sobre el bytecode
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+  native/backend.titan      native/llvm.titan            wasm.titan
+  x86-64 directo (ELF)      LLVM IR (x86-64 y ARM64)     WebAssembly
+</code></pre>
+<ul>
+<li><strong>Proyectos:</strong> <code>loader.titan</code> y <code>pkg.titan</code> descubren <code>Titan.toml</code>, resuelven dependencias locales y remotas, siguen los
+  <code>import</code> (detectan ciclos y rutas que escapan del árbol) y entregan un único programa a la tubería.</li>
+<li><strong>Bytecode:</strong> <code>titan build</code> escribe un artefacto <code>TITAN-BYTECODE 1</code> (cabecera, versión, CRC-32) y <code>titan exec</code> lo valida
+  (funciones, saltos, locales, llamadas) antes de ejecutarlo (<code>artifact.titan</code>, <code>bytecode.titan</code>).</li>
+<li><strong>No hay máquina virtual al ejecutar.</strong> <code>titan run</code> compila el programa a código nativo y lo ejecuta; el bytecode es solo
+  la representación intermedia entre el front-end y los backends.</li>
+</ul>
+<h2 id="backends">Backends</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Archivo</th>
+<th>Qué produce</th>
+<th>Notas</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>x86-64 propio</td>
+<td><code>native/backend.titan</code>, <code>native/x64.titan</code>, <code>native/elf.titan</code></td>
+<td>ELF estático x86-64, sin libc ni enlazador</td>
+<td>Es el que usa <code>titan run/compile</code> en x86-64.</td>
+</tr>
+<tr>
+<td>LLVM</td>
+<td><code>native/llvm.titan</code>, <code>llvm_build.titan</code></td>
+<td>LLVM IR, que <code>clang</code> + <code>lld</code> convierten en ELF estático (x86-64 o ARM64)</td>
+<td>Es el que usa <code>titan</code> en ARM64 y <code>--target aarch64</code>. También <code>aarch64-none</code> (sin sistema operativo).</td>
+</tr>
+<tr>
+<td>WebAssembly</td>
+<td><code>wasm.titan</code>, <code>wasm_cmd.titan</code></td>
+<td>módulo <code>.wasm</code> con source maps</td>
+<td>El host JS de <code>std::web</code> está en <code>native/</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Los dos backends nativos comparten el <strong>runtime</strong> (<code>native/runtime.titan</code> y los <code>native/std_*.titan</code>): asignador con
+conteo de referencias, cadenas, arrays, mapas, tareas, red, etc. Está escrito en Titan y se compila junto con cada programa
+(con una caché <code>.runtime-cache-*.json</code> dentro de <code>native/</code>). Habla con el sistema operativo por llamadas al sistema de
+Linux, sin libc. En ARM64, <code>native/sys_arm64.titan</code> traduce las llamadas al sistema de x86-64 a las de ARM64.</p>
+<h2 id="biblioteca-estandar">Biblioteca estándar</h2>
+<p><code>natives.titan</code> lista las firmas de las funciones <code>std::*</code> (el typechecker las consulta) y <code>codegen_tables.titan</code> dice cuáles
+se convierten en instrucciones propias del bytecode. El cuerpo de cada función está en <code>selfhost/native/</code> (SQLite, TLS,
+regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 812 funciones en 73 espacios de nombres; la medición
+se repite con <code>bash selfhost/native/cobertura.sh -v</code>. Ver <a href="stdlib.html">STDLIB.md</a>.</p>
+<h2 id="herramientas">Herramientas</h2>
+<p><code>titan.titan</code> es la CLI (<code>new</code>, <code>check</code>, <code>run</code>, <code>build</code>, <code>exec</code>, <code>compile</code>, <code>wasm</code>, <code>test</code>, <code>repl</code>, <code>debug</code>, <code>add</code>, <code>fetch</code>,
+<code>update</code>, <code>keygen</code>, <code>pack</code>, <code>publish</code>, <code>lsp</code>, <code>dap</code>, <code>version</code>). Servidor de lenguaje: <code>lsp.titan</code>. Adaptador de depuración:
+<code>dap.titan</code> y <code>native/dap_core.titan</code>.</p>
+<h2 id="como-se-construye-a-si-mismo">Cómo se construye a sí mismo</h2>
+<p><code>bash selfhost/bootstrap.sh</code>: una <strong>semilla</strong> (el compilador x86-64 ya compilado, <code>selfhost/semilla/</code>) compila el compilador
+escrito en Titan (<code>titanc1</code>); éste se compila (<code>titanc2</code>) y otra vez (<code>titanc3</code>); las tres tienen que ser idénticas byte a
+byte. Después se construye la CLI <code>selfhost/titan</code>. Ver <code>selfhost/semilla/LEEME.md</code>.</p>
+<h2 id="estado-y-limites">Estado y límites</h2>
+<p>El estado detallado, con lo verificado y lo que no, está en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/ARCHITECTURE.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

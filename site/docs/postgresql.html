@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PostgreSQL — Documentación de Titan</title>
+<meta name="description" content="Conexión, consultas y TLS.">
+<meta property="og:title" content="PostgreSQL — Documentación de Titan">
+<meta property="og:description" content="Conexión, consultas y TLS.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html" class="on">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="titan-postgresql">TITAN PostgreSQL</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p><code>titan_postgres</code> uses the maintained synchronous <code>postgres</code> protocol driver. It provides URL connection, server-prepared statements, positional parameters, typed row maps, explicit transactions, rollback-on-drop, affected-row counts and PostgreSQL cancel tokens.</p>
+<p>Supported values: NULL, bool, int2/int4/int8, float4/float8, text/varchar/bpchar/name, bytea and JSON/JSONB. Unknown PostgreSQL types return an explicit error rather than lossy strings.</p>
+<p>TITAN APIs are <code>postgres::connect</code>, <code>connect_tls</code>, <code>execute</code>, <code>query</code>, <code>begin</code>, <code>commit</code>, <code>rollback</code>, <code>cancel</code>, and <code>close</code>. Connection handles are mutex protected, require Network capability, work across tasks, convert rows to maps and reject JSON serialization.</p>
+<p><code>connect_tls</code> uses Titan's own TLS implementation (<code>std_tls.titan</code>) with SNI and hostname/certificate-chain validation; there is no insecure certificate verifier. Plain <code>connect</code> remains available for trusted local Unix/TCP deployments.</p>
+<p><code>Pool::new(url, maximum, tls)</code> provides bounded plain/TLS connection reuse, condition-variable acquisition with timeout, RAII return, stats and controlled close. Connections are opened outside the global lock and failed opens release reserved capacity. Idle connections close immediately during shutdown; checked-out connections close when returned.</p>
+<p>TITAN exposes <code>postgres::pool(url, maximum, tls)</code>, <code>acquire(pool, timeout_ms)</code>, <code>pool_stats(pool)</code>, and <code>pool_close(pool)</code>. Acquire returns <code>Option::Some(Postgres)</code> or <code>Option::None</code>; the lease supports all query/transaction/cancel APIs and returns automatically when <code>postgres::close(lease)</code> is called.</p>
+<p><code>postgres::migrate(db, migrations)</code> uses a process-independent PostgreSQL advisory lock so multiple application instances cannot migrate concurrently. It records version/name/FNV checksum/timestamp in <code>_titan_migrations</code>, applies pending versions atomically, skips prior versions and rejects changed history or invalid ordering.</p>
+<p>The live integration test runs when <code>TITAN_POSTGRES_TEST_URL</code> is configured; it is skipped otherwise because PostgreSQL is an external service. VM pool handles are the next integration block.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/POSTGRESQL.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

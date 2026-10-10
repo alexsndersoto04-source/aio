@@ -1,0 +1,84 @@
+// Canales entre tareas: capacidad 0 y N, orden, recv_timeout, select, sleep.
+fn productor(tx: Sender, n: int) -> int {
+    let mut i = 0
+    while i < n {
+        send(tx, i * 10)
+        i += 1
+    }
+    n
+}
+
+fn main() {
+    let (tx, rx) = channel(0)
+    print(tx)
+    print(rx)
+    let t = spawn || { productor(tx, 5) }
+    let mut got = []
+    let mut k = 0
+    while k < 5 {
+        got = std::array::push(got, recv(rx))
+        k += 1
+    }
+    print(got)
+    print(join(t))
+
+    // Capacidad N: el productor puede ir por delante del consumidor.
+    let (tx2, rx2) = channel(3)
+    let t2 = spawn || { productor(tx2, 20) }
+    let mut suma = 0
+    let mut n = 0
+    while n < 20 {
+        suma += recv(rx2)
+        n += 1
+    }
+    print(suma)
+    print(join(t2))
+
+    // Varios productores, un consumidor; solo la suma es determinista.
+    let (tx3, rx3) = channel(2)
+    let mut ts = []
+    let mut i = 0
+    while i < 4 {
+        let id = i
+        ts = std::array::push(ts, spawn || { productor(tx3, 5 + id) })
+        i += 1
+    }
+    let mut total = 0
+    let mut cuenta = 0
+    while cuenta < 5 + 6 + 7 + 8 {
+        total += recv(rx3)
+        cuenta += 1
+    }
+    print(total)
+    for t in ts {
+        print(join(t))
+    }
+
+    // recv_timeout.
+    let (tx4, rx4) = channel(1)
+    print(recv_timeout(rx4, 20))
+    send(tx4, "hola")
+    print(recv_timeout(rx4, 20))
+    print(recv_timeout(rx4, 0))
+
+    // El valor llega de una tarea que duerme.
+    let t4 = spawn || {
+        std::time::sleep_ms(60)
+        send(tx4, [1, 2, 3])
+        0
+    }
+    print(recv_timeout(rx4, 5))
+    print(recv_timeout(rx4, 2000))
+    print(join(t4))
+
+    // Tipos distintos por el mismo canal.
+    let (tx5, rx5) = channel(4)
+    send(tx5, 1)
+    send(tx5, "dos")
+    send(tx5, [3])
+    send(tx5, nil)
+    print(recv(rx5))
+    print(recv(rx5))
+    print(recv(rx5))
+    print(recv(rx5))
+}

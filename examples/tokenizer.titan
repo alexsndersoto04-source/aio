@@ -1,6 +1,6 @@
 // Demo Fase 12 (parte 1): tokenizers de HuggingFace corriendo en Termux.
 // Ejecutar con:
-//     zett run examples/tokenizer.titan
+//     titan run examples/tokenizer.titan
 //
 // Requiere un archivo tokenizer.json en $HOME/tokenizer.json.
 // El primer bloque te da las instrucciones exactas si no lo tenes.

@@ -1,0 +1,39 @@
+fn sqf_size(fd: int) -> int {
+    return 0
+}
+
+fn sqf_read(fd: int, off: int, n: int) -> array {
+    return sq_zeros(n)
+}
+
+fn sqf_write(fd: int, off: int, a: array) -> int {
+    return 0
+}
+
+fn sqf_truncate(fd: int, size: int) -> int {
+    return 0
+}
+
+fn sqf_sync(fd: int) -> int {
+    return 0
+}
+
+fn sqf_jnl_read(path: string) -> any {
+    return nil
+}
+
+fn sqf_jnl_write(path: string, a: array) -> int {
+    return 0
+}
+
+fn sqf_jnl_delete(path: string) -> int {
+    return 0
+}
+
+fn sqf_lock(fd: int, which: int, ex: bool, ms: int) -> bool {
+    return true
+}
+
+fn sqf_unlock(fd: int, which: int) -> int {
+    return 0
+}

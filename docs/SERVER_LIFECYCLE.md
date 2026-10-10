@@ -1,5 +1,9 @@
 # TITAN Server Lifecycle and Backpressure
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 `std::server::control(maximum_connections)` creates a shared lifecycle handle. Before spawning a connection task, call `try_acquire`; false means the server is draining or at capacity and should reject/close the accepted socket. Every acquired slot must call `release` when its connection task ends.
 
 `shutdown(control)` atomically stops new acquisitions while existing tasks drain. `stats(control)` returns maximum, active, accepted, rejected, completed, ready, healthy and shutting_down. All state uses atomics; acquisition uses compare-exchange, so concurrent accept loops cannot exceed the configured maximum.

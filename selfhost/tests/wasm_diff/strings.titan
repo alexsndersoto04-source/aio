@@ -1,0 +1,32 @@
+fn greet(name: string) -> string {
+    let hello = "hola, " + name
+    hello + "!"
+}
+
+fn same(a: string, b: string) -> bool {
+    std::text::equals(a, b)
+}
+
+fn digest(s: string) -> int {
+    std::text::hash64(s) % 1000
+}
+
+fn pick(flag: bool) -> string {
+    let mut s = "x"
+    if flag {
+        s = s + "yz"
+    } else {
+        s = "ñandú 🚀" + s
+    }
+    s
+}
+
+fn main() {
+    let a = greet("mundo")
+    let b = greet("mundo")
+    let c = pick(true) + pick(false)
+    if same(a, b) && !same(a, c) {
+        return digest(a) + digest(c)
+    }
+    0
+}

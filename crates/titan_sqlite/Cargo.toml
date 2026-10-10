@@ -1,9 +1,0 @@
-[package]
-name = "titan_sqlite"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
-thiserror.workspace = true

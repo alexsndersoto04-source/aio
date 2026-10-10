@@ -1,0 +1,150 @@
+// Compara el motor Titan con el oráculo (std::tokenize de la VM de Rust) sobre /tmp/tkcfg (ver gen_cfgs.py).
+fn orc_sig(m: any) -> string {
+    return std::json::stringify([std::map::get(m, "ids"), std::map::get(m, "tokens"), std::map::get(m, "type_ids"), std::map::get(m, "special_tokens_mask"), std::map::get(m, "attention_mask")])
+}
+
+fn orc_enc(h: int, text: string, add: bool) -> string {
+    let r = std::try::catch(|| { std::tokenize::encode(h, text, add) })
+    match r {
+        Result::Ok(m) => {
+            return orc_sig(m)
+        },
+        _ => {
+            return "ERR"
+        },
+    }
+}
+
+fn my_enc(t: Tok, text: string, add: bool) -> string {
+    let r = std::try::catch(|| { tk_encode(t, text, add) })
+    match r {
+        Result::Ok(p) => {
+            let (e, err) = p
+            if err != "" {
+                return "ERR"
+            }
+            return std::json::stringify([e.ids, e.toks, e.tys, e.sp, e.at])
+        },
+        Result::Err(m) => {
+            return "CRASH " + std::json::stringify(m)
+        },
+    }
+}
+
+fn orc_dec(h: int, ids: array, skip: bool) -> string {
+    let r = std::try::catch(|| { std::tokenize::decode(h, ids, skip) })
+    match r {
+        Result::Ok(s) => {
+            return "OK:" + s
+        },
+        _ => {
+            return "ERR"
+        },
+    }
+}
+
+fn my_dec(t: Tok, ids: array, skip: bool) -> string {
+    let r = std::try::catch(|| { tk_decode(t, ids, skip) })
+    match r {
+        Result::Ok(s) => {
+            return "OK:" + s
+        },
+        Result::Err(m) => {
+            return "CRASH " + std::json::stringify(m)
+        },
+    }
+}
+
+fn main() {
+    let c = tk_ctx()
+    let names = std::json::parse(std::fs::read_text("/tmp/tkcfg/list.json"))
+    let texts = std::json::parse(std::fs::read_text("/tmp/tkcfg/texts.json"))
+    let mut total = 0
+    let mut bad = 0
+    let mut shown = 0
+    for name in names {
+        let path = "/tmp/tkcfg/" + name + ".json"
+        let rh = std::try::catch(|| { std::tokenize::load(path) })
+        let (t, err) = tk_load(c, std::fs::read_text(path))
+        let mut h = -1
+        let mut oerr = false
+        match rh {
+            Result::Ok(x) => {
+                h = x
+            },
+            _ => {
+                oerr = true
+            },
+        }
+        if oerr || err != "" {
+            if oerr != (err != "") {
+                println("LOAD " + name + ": oraculo_err=" + "{oerr}" + " mio=" + err)
+                bad += 1
+            }
+            continue
+        }
+        let mut allids = []
+        for text in texts {
+            for add in [true, false] {
+                total += 1
+                let a = orc_enc(h, text, add)
+                let b = my_enc(t, text, add)
+                if a != b {
+                    bad += 1
+                    if shown < 12 {
+                        shown += 1
+                        println("DIFF " + name + " add={add} text=" + std::json::stringify(text))
+                        println("  oraculo: " + a)
+                        println("  mio:     " + b)
+                    }
+                }
+                if add {
+                    let r = std::try::catch(|| { std::tokenize::encode(h, text, add) })
+                    match r {
+                        Result::Ok(m) => {
+                            allids = tk_cat(allids, std::map::get(m, "ids"))
+                        },
+                        _ => {
+                            allids = allids
+                        },
+                    }
+                }
+            }
+        }
+        // decode
+        let ids = tk_cat(allids, [0, 1, 2, 3, 5, 7, 99999])
+        let mut chunks = []
+        let mut i = 0
+        while i < len(ids) && i < 400 {
+            let mut j = i + 9
+            if j > len(ids) {
+                j = len(ids)
+            }
+            chunks = std::array::push(chunks, std::array::slice(ids, i, j))
+            i += 7
+        }
+        for ch in chunks {
+            for skip in [true, false] {
+                total += 1
+                let a = orc_dec(h, ch, skip)
+                let b = my_dec(t, ch, skip)
+                if a != b {
+                    bad += 1
+                    if shown < 12 {
+                        shown += 1
+                        println("DDIFF " + name + " ids=" + std::json::stringify(ch) + " skip={skip}")
+                        println("  oraculo: " + a)
+                        println("  mio:     " + b)
+                    }
+                }
+            }
+        }
+        let vs = std::tokenize::vocab_size(h)
+        if vs != tk_vocab_size(t, true) {
+            bad += 1
+            println("VSIZE " + name + " oraculo={vs}")
+        }
+        std::tokenize::close(h)
+    }
+    println("casos {total} fallos {bad}")
+}

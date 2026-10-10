@@ -4,7 +4,7 @@
 // relativos a la carpeta que lo contiene (`examples/modules/`).
 //
 // Ejecutar con:
-//     zett run examples/modules/main.titan
+//     titan run examples/modules/main.titan
 //
 // El loader (titan_pkg::SourceProject) resuelve cada import asi:
 //   - `import geometry`      -> examples/modules/geometry.titan

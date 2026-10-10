@@ -1,0 +1,6 @@
+fn main() {
+let t = spawn || { 1 / 0 }
+print("antes")
+print(join(t))
+print("despues")
+}

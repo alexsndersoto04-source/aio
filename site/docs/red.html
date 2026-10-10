@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red y HTTP — Documentación de Titan</title>
+<meta name="description" content="Sockets, servidor HTTP, enrutador y respuestas.">
+<meta property="og:title" content="Red y HTTP — Documentación de Titan">
+<meta property="og:description" content="Sockets, servidor HTTP, enrutador y respuestas.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html" class="on">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="titan-networking">TITAN Networking</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<p>TITAN exposes real TCP sockets as VM-managed handles guarded by the Network runtime capability.</p>
+<pre><code class="language-titan"><span class="k">let</span> listener = std::net::tcp_listen(<span class="s">&quot;127.0.0.1:8080&quot;</span>)
+<span class="k">let</span> local = std::net::tcp_local_addr(listener)
+
+<span class="k">loop</span> {
+    <span class="k">let</span> accepted = std::net::tcp_accept(listener)
+    <span class="k">let</span> stream = accepted[<span class="n">0</span>]
+    <span class="k">let</span> peer = accepted[<span class="n">1</span>]
+
+    <span class="k">spawn</span> || {
+        std::net::tcp_set_timeout(stream, <span class="n">5000</span>)
+        <span class="k">let</span> request = std::net::tcp_read(stream, <span class="n">65536</span>)
+        std::net::tcp_write(stream, request)
+        std::net::tcp_close(stream)
+    }
+}
+</code></pre>
+<p>Implemented operations:</p>
+<ul>
+<li>bind listeners, including ephemeral port <code>:0</code>;</li>
+<li>query the actual local address;</li>
+<li>blocking accept with peer address;</li>
+<li>DNS/address resolution through <code>TcpStream::connect</code>;</li>
+<li>bounded binary reads (hard capped at 16 MiB per operation);</li>
+<li>complete writes via <code>write_all</code>;</li>
+<li>read/write timeouts;</li>
+<li>deterministic close of streams/listeners;</li>
+<li>shared handles usable by spawned tasks;</li>
+<li>typed errors and sandbox denial.</li>
+</ul>
+<p>The runtime registry stores listeners in <code>Arc&lt;TcpListener&gt;</code> and streams in <code>Arc&lt;Mutex&lt;TcpStream&gt;&gt;</code>, avoiding holding the global registry lock during blocking I/O.</p>
+<h2 id="http11-codec">HTTP/1.1 codec</h2>
+<p><code>std::http::parse_request(bytes)</code> incrementally parses one request and returns <code>Option::Some(request)</code> only when headers and the declared body are complete. The request map includes method, target, path, query, version, normalized headers, bytes body, keep-alive and consumed byte count. Remaining bytes can be retained for pipelined requests.</p>
+<p><code>std::http::build_response(status, headers, body, keep_alive)</code> generates a complete response with canonical status reason, trusted <code>Content-Length</code>, controlled <code>Connection</code> and CR/LF injection rejection.</p>
+<p>The codec enforces request-line/header/body/count limits, exactly one HTTP/1.1 Host header, consistent duplicate Content-Length, no obsolete folding, and rejects Transfer-Encoding to prevent CL/TE request-smuggling ambiguity.</p>
+<h2 id="routing-and-query-data">Routing and query data</h2>
+<p><code>std::http::route_match(pattern, path)</code> supports static segments, named <code>:parameters</code>, and a final <code>*wildcard</code>. It returns <code>Option::Some(params)</code> or <code>Option::None</code>; duplicate/empty parameters and non-final wildcards are rejected. Captured values use strict UTF-8 percent-decoding.</p>
+<p><code>std::http::parse_query(query, max_pairs)</code> preserves repeated keys as arrays, decodes <code>%XX</code> and form-style <code>+</code>, and enforces an explicit pair limit.</p>
+<h2 id="high-level-connection-server">High-level connection server</h2>
+<p><code>std::http::serve_connection(listener, handler, max_requests)</code> accepts one TCP connection, incrementally buffers requests, invokes a TITAN closure for each request, writes validated responses, and honors keep-alive up to the configured request limit. Run it inside <code>spawn</code> for concurrent connections.</p>
+<p>The handler receives a map containing method, target, path, query, version, headers, body, keep-alive and peer. It returns a map with status, headers, body and optional keep-alive. The server enforces a 10,000-request maximum per connection and a bounded connection buffer. Handler/runtime errors close that task and propagate through <code>join</code>.</p>
+<h2 id="composed-router-and-middleware">Composed router and middleware</h2>
+<p><code>std::http::router()</code> creates a VM-managed router. <code>route(router, method, pattern, handler)</code> registers ordered handlers; <code>middleware(router, closure)</code> registers request-transforming closures; and <code>dispatch(router, request)</code> runs middleware, matches method/path, injects <code>request.params</code>, and invokes the handler. Missing routes produce a safe 404 response map.</p>
+<p>Routers and their captured closures are shared safely across server tasks. Registration validates patterns before accepting them, dispatch releases router locks before executing user code, and middleware must return a request map. <code>after(router, closure)</code> adds response middleware executed in reverse registration order.</p>
+<p>Production helpers include <code>security_headers(response)</code> (nosniff, frame denial, strict referrer policy and CSP), validated <code>cors(response, origin, methods)</code>, monotonic process-wide <code>request_id(request)</code>, and stateful fixed-window <code>rate_limit(key, maximum, window_ms)</code>. Header helpers reject CR/LF injection, and rate-limit state is mutex protected.</p>
+<p><code>on_error(router, |request, error| response)</code> recovers handler failures into HTTP responses while preserving structured error kind/message; failures in the recovery closure still propagate. <code>json_response(status, value)</code> and <code>error_response(status, message)</code> generate UTF-8 JSON response maps suitable for handlers. Response middleware still runs on recovered responses.</p>
+<p>TLS remains the next transport layer.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/NETWORKING.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

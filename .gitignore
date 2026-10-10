@@ -1,17 +1,14 @@
 # Build artefactos
-target/
 *.tbc
 *.wasm
 *.wasm.map
 *.wasm.map.json
 
-# Logs de cargo — nunca commitear
+# Logs
 *.log
-cargo-*.log
 
 # Archivos de parcheo temporales
 *.bak
-crates/*/src/*.rs.bak
 fix_*.py
 rmir.py
 
@@ -29,8 +26,8 @@ node_modules/
 *.db
 
 # Frontend build
-frontend/node_modules/
-frontend/dist/
+projects/moon/frontend/node_modules/
+projects/moon/frontend/dist/
 
 
 # Moon: artefactos locales (binario, secretos, cluster postgres)
@@ -54,3 +51,15 @@ projects/moon/uploads/
 
 # Empaquetado para subida a Cloudflare (se entrega por el visor, no al repo)
 moon-web-cloudflare.zip
+
+# Compiladores nativos del bootstrap (selfhost/verify_fixpoint.sh)
+selfhost/titanc0
+selfhost/titanc1
+selfhost/titanc2
+selfhost/titanc3
+selfhost/native/.runtime-cache*.json
+selfhost/titan
+selfhost/build_c
+selfhost/tests/audio/fixtures/
+selfhost/titan_*
+selfhost/build_llvm

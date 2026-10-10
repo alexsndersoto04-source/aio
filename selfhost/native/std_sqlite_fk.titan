@@ -1,0 +1,545 @@
+// std::sqlite en Titan, parte 14: claves foráneas y triggers. Prefijo `sf` (FK) y `st` (triggers).
+
+fn sf_key_eq(a: Sv, b: Sv, coll: int) -> bool {
+    if sx_isnull(a) || sx_isnull(b) {
+        return false
+    }
+    return sq_cmp(a, b, coll) == 0
+}
+
+// Filas de `tab` cuyas columnas colidx valen vals (comparación con la afinidad de cada columna).
+fn sf_lookup(cx: Cx, tab: TabI, colidx: array, vals0: array) -> array {
+    let mut vals = []
+    let mut i = 0
+    for ci in colidx {
+        vals = std::array::push(vals, sc_apply_aff(vals0[i], tab.cols[ci].aff))
+        i += 1
+    }
+    let nc = len(tab.cols)
+    let mut out = []
+    // rowid
+    if len(colidx) == 1 && colidx[0] == tab.rowid {
+        match vals[0] {
+            Sv::SInt(rid) => {
+                let (found, pl) = sqt_t_find(cx.pg, tab.root, rid)
+                if found {
+                    return [sh_row(cx, tab, rid, pl)]
+                }
+                return []
+            },
+            _ => {
+                return []
+            },
+        }
+    }
+    // índice cuyo prefijo coincide
+    for ix in sh_tab_indexes(cx.sch, tab) {
+        if ix.wh == nil {
+            let ic = sy_idx_cols(cx.sch, tab, ix)
+            if len(ic) >= len(colidx) {
+                let mut key = []
+                let mut colls = []
+                let mut descs = []
+                let mut ok = true
+                let mut j = 0
+                while j < len(colidx) {
+                    // cada columna del prefijo debe estar en colidx
+                    let mut pos = -1
+                    let mut q = 0
+                    for ci in colidx {
+                        if ci == ic[j][0] {
+                            pos = q
+                        }
+                        q += 1
+                    }
+                    if pos < 0 {
+                        ok = false
+                        break
+                    }
+                    key = std::array::push(key, vals[pos])
+                    colls = std::array::push(colls, ic[j][2])
+                    descs = std::array::push(descs, ic[j][1])
+                    j += 1
+                }
+                if ok {
+                    for v in key {
+                        if sx_isnull(v) {
+                            return []
+                        }
+                    }
+                    let mut st = sqi_seek(cx.pg, ix.root, key, len(key), colls, descs)
+                    while len(st) > 0 {
+                        let iv = sqi_cu_vals(cx.pg, st)
+                        if sqi_cmp(iv, key, len(key), colls, descs) != 0 {
+                            break
+                        }
+                        let rid = sc_to_int(iv[len(iv) - 1])
+                        let (found, pl) = sqt_t_find(cx.pg, tab.root, rid)
+                        if found {
+                            let row = sh_row(cx, tab, rid, pl)
+                            // la comparación del índice usa su collation: se confirma con la de la columna
+                            let mut same = true
+                            let mut k = 0
+                            for ci in colidx {
+                                if !sf_key_eq(row[ci], vals[k], sx_coll_code(tab.cols[ci].coll)) {
+                                    same = false
+                                }
+                                k += 1
+                            }
+                            if same {
+                                out = std::array::push(out, row)
+                            }
+                        }
+                        st = sqt_cu_adv(cx.pg, st)
+                    }
+                    return out
+                }
+            }
+        }
+    }
+    // recorrido completo
+    let mut st = sqt_cu_first(cx.pg, tab.root)
+    while len(st) > 0 {
+        let (rid, pl) = sqt_cu_row(cx.pg, st)
+        let row = sh_row(cx, tab, rid, pl)
+        let mut same = true
+        let mut k = 0
+        for ci in colidx {
+            if !sf_key_eq(row[ci], vals[k], sx_coll_code(tab.cols[ci].coll)) {
+                same = false
+            }
+            k += 1
+        }
+        if same {
+            out = std::array::push(out, row)
+        }
+        st = sqt_cu_adv(cx.pg, st)
+    }
+    return out
+}
+
+// Índices de las columnas referenciadas del padre. Devuelve (índices, error).
+fn sf_parent_cols(ctab: TabI, fk: any, ptab: TabI) -> (array, string) {
+    let mut out = []
+    if len(fk.cols) == 0 {
+        if len(ptab.pk) == 0 {
+            return ([], "foreign key mismatch - \"" + ctab.name + "\" referencing \"" + ptab.name + "\"")
+        }
+        return (ptab.pk, "")
+    }
+    for n in fk.cols {
+        let ci = sh_col_index(ptab, n)
+        if ci < 0 {
+            return ([], "foreign key mismatch - \"" + ctab.name + "\" referencing \"" + ptab.name + "\"")
+        }
+        out = std::array::push(out, ci)
+    }
+    return (out, "")
+}
+
+fn sf_child_cols(ctab: TabI, fk: any) -> (array, string) {
+    let mut out = []
+    for n in fk.from {
+        let ci = sh_col_index(ctab, n)
+        if ci < 0 {
+            return ([], "unknown column \"" + n + "\" in foreign key definition")
+        }
+        out = std::array::push(out, ci)
+    }
+    return (out, "")
+}
+
+// Comprobación del lado hijo: el padre debe existir.
+fn sw_fk_insert(cx: Cx, tab: TabI, full: array) -> string {
+    if cx.flags % 2 == 0 {
+        return ""
+    }
+    for fk in tab.fks {
+        let pt = sh_find_tab(cx.sch, fk.tbl)
+        if pt != nil {
+            let (pc0, e0) = sf_parent_cols(tab, fk, pt)
+            if e0 != "" {
+                return e0
+            }
+            let (cc0, e00) = sf_child_cols(tab, fk)
+            if len(pc0) != len(cc0) || !sf_is_unique_cols(cx, pt, pc0) {
+                return "foreign key mismatch - \"" + tab.name + "\" referencing \"" + pt.name + "\""
+            }
+        }
+    }
+    for fk in tab.fks {
+        let (cc, e1) = sf_child_cols(tab, fk)
+        if e1 != "" {
+            return e1
+        }
+        let mut vals = []
+        let mut hasnull = false
+        for ci in cc {
+            vals = std::array::push(vals, full[ci])
+            if sx_isnull(full[ci]) {
+                hasnull = true
+            }
+        }
+        if !hasnull {
+            let ptab = sh_find_tab(cx.sch, fk.tbl)
+            if ptab == nil {
+                return "no such table: main." + fk.tbl
+            }
+            let (pc, e2) = sf_parent_cols(tab, fk, ptab)
+            if e2 != "" {
+                return e2
+            }
+            if len(pc) != len(cc) || !sf_is_unique_cols(cx, ptab, pc) {
+                return "foreign key mismatch - \"" + tab.name + "\" referencing \"" + ptab.name + "\""
+            }
+            let rows = sf_lookup(cx, ptab, pc, vals)
+            if len(rows) == 0 {
+                // fila que se referencia a sí misma
+                let mut selfok = false
+                if sh_key(ptab.name) == sh_key(tab.name) {
+                    selfok = true
+                    let mut k = 0
+                    for pi in pc {
+                        if !sf_key_eq(sc_apply_aff(full[pi], ptab.cols[pi].aff), sc_apply_aff(vals[k], ptab.cols[pi].aff), 0) {
+                            selfok = false
+                        }
+                        k += 1
+                    }
+                }
+                if !selfok {
+                    return "FOREIGN KEY constraint failed"
+                }
+            }
+        }
+    }
+    return ""
+}
+
+fn sw_fk_update(cx: Cx, tab: TabI, oldfull: array, full: array) -> string {
+    return sw_fk_insert(cx, tab, full)
+}
+
+// Aplica las acciones sobre los hijos de una fila del padre eliminada (full2 = nil) o modificada.
+fn sf_parent_change(cx0: Cx, tab: TabI, oldfull: array, newfull: any) -> (Cx, string) {
+    if cx0.flags % 2 == 0 {
+        return (cx0, "")
+    }
+    let mut cx = cx0
+    for tk in std::map::keys(cx.sch.tabs) {
+        let ct = std::map::get(cx.sch.tabs, tk)
+        for fk in ct.fks {
+            if sh_key(fk.tbl) == sh_key(tab.name) && len(ct.fks) > 0 {
+                let (pc, e1) = sf_parent_cols(ct, fk, tab)
+                if e1 != "" {
+                    return (cx0, e1)
+                }
+                let (cc, e2) = sf_child_cols(ct, fk)
+                if e2 != "" {
+                    return (cx0, e2)
+                }
+                if len(pc) != len(cc) {
+                    return (cx0, "foreign key mismatch - \"" + ct.name + "\" referencing \"" + tab.name + "\"")
+                }
+                let mut okey = []
+                let mut hasnull = false
+                for pi in pc {
+                    okey = std::array::push(okey, oldfull[pi])
+                    if sx_isnull(oldfull[pi]) {
+                        hasnull = true
+                    }
+                }
+                let mut changed = true
+                let mut nkey = []
+                if newfull != nil {
+                    let mut same = true
+                    for pi in pc {
+                        nkey = std::array::push(nkey, newfull[pi])
+                        if !sf_key_eq(newfull[pi], oldfull[pi], 0) {
+                            same = false
+                        }
+                    }
+                    if same {
+                        changed = false
+                    }
+                }
+                if !hasnull && changed {
+                    let rows = sf_lookup(cx, ct, cc, okey)
+                    if len(rows) > 0 {
+                        let mut action = fk.ondel
+                        if newfull != nil {
+                            action = fk.onupd
+                        }
+                        let (prep, perr) = sw_prepare(cx, ct, ct.name)
+                        if perr != "" {
+                            return (cx0, perr)
+                        }
+                        if action == "CASCADE" || action == "SET NULL" || action == "SET DEFAULT" {
+                            for row in rows {
+                                let crid = sc_to_int(row[len(ct.cols)])
+                                if newfull == nil && action == "CASCADE" {
+                                    // el hijo puede haber sido borrado ya por otra cascada
+                                    let (found, pl) = sqt_t_find(cx.pg, ct.root, crid)
+                                    if found {
+                                        let cur = sh_row(cx, ct, crid, pl)
+                                        let c1 = sw_cx(cx, sw_delete_row(cx, ct, prep, cur, crid), cx.lastid, cx.changes)
+                                        let (c2, e3) = sf_parent_change(c1, ct, cur, nil)
+                                        if e3 != "" {
+                                            return (cx0, e3)
+                                        }
+                                        cx = c2
+                                    }
+                                } else {
+                                    let mut nv = std::array::slice(row, 0, len(ct.cols))
+                                    let mut k = 0
+                                    for ci in cc {
+                                        if action == "CASCADE" {
+                                            nv = std::array::set(nv, ci, nkey[k])
+                                        } else if action == "SET NULL" {
+                                            nv = std::array::set(nv, ci, Sv::SNull)
+                                        } else {
+                                            let mut dv = Sv::SNull
+                                            if ct.cols[ci].dflt != nil {
+                                                dv = sx_ev(cx, ct.cols[ci].dflt, [])
+                                            }
+                                            nv = std::array::set(nv, ci, dv)
+                                        }
+                                        k += 1
+                                    }
+                                    let (c2, st, f2, e3) = sw_update_row(cx, ct, prep, row, crid, nv, "", cc)
+                                    if e3 != "" {
+                                        return (cx0, e3)
+                                    }
+                                    cx = c2
+                                }
+                            }
+                        } else {
+                            return (cx0, "FOREIGN KEY constraint failed")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (cx, "")
+}
+
+fn sw_fk_delete(cx: Cx, tab: TabI, full: array) -> (Cx, string) {
+    return sf_parent_change(cx, tab, full, nil)
+}
+
+// ------------------------------------------------------------ triggers
+
+fn st_scope(tab: TabI) -> array {
+    let mut cols = []
+    for al in ["old", "new"] {
+        for c in tab.cols {
+            cols = std::array::push(cols, ScCol { alias: al, name: c.name, aff: c.aff, coll: c.coll, hidden: false, merged: false })
+        }
+        cols = std::array::push(cols, ScCol { alias: al, name: sy_rowid_name(tab), aff: "INTEGER", coll: "", hidden: true, merged: false })
+    }
+    return cols
+}
+
+fn st_clean_err(e: string) -> string {
+    if std::text::starts_with(e, "RAISE:") {
+        let cs = sql_chars(e)
+        let mut n = 0
+        let mut i = 0
+        while i < len(cs) {
+            if cs[i] == ":" {
+                n += 1
+                if n == 2 {
+                    return std::collections::join(std::array::slice(cs, i + 1, len(cs)), "")
+                }
+            }
+            i += 1
+        }
+    }
+    return e
+}
+
+fn st_is_ignore(e: string) -> bool {
+    return std::text::starts_with(e, "RAISE:IGNORE") || std::text::starts_with(e, "RAISE:ignore")
+}
+
+fn st_matching(cx: Cx, tab: TabI, timing: string, ev: string, assigned: array) -> array {
+    let mut out = []
+    for t in cx.sch.trgs {
+        if sh_key(t.tbl) == sh_key(tab.name) && t.timing == timing && t.ev == ev {
+            let mut ok = true
+            if ev == "UPDATE" && len(t.ucols) > 0 {
+                ok = false
+                for u in t.ucols {
+                    let ci = sh_col_index(tab, u)
+                    for a in assigned {
+                        if a == ci {
+                            ok = true
+                        }
+                    }
+                }
+            }
+            if ok {
+                out = std::array::push(out, t)
+            }
+        }
+    }
+    return out
+}
+
+// Ejecuta los triggers. Devuelve (cx, estado (1 = omitir fila), error).
+fn st_fire(cx0: Cx, tab: TabI, timing: string, ev: string, old: any, new: any, assigned: array) -> (Cx, int, string) {
+    let trgs = st_matching(cx0, tab, timing, ev, assigned)
+    if len(trgs) == 0 {
+        return (cx0, 0, "")
+    }
+    let nc1 = len(tab.cols) + 1
+    let mut ctx = []
+    if old != nil {
+        ctx = old
+    } else {
+        ctx = sy_nulls(nc1)
+    }
+    if new != nil {
+        ctx = std::array::concat(ctx, new)
+    } else {
+        ctx = std::array::concat(ctx, sy_nulls(nc1))
+    }
+    let scope = st_scope(tab)
+    let mut cx = cx0
+    for t in trgs {
+        let mut running = false
+        for n in cx.trgs {
+            if n == t.name {
+                running = true
+            }
+        }
+        if !running {
+            if cx.depth >= 1000 {
+                return (cx0, 0, "too many levels of trigger recursion")
+            }
+            let mut fire = true
+            if t.wh != nil {
+                let (we, r1) = sr_ex(t.wh, [scope], sw_rc(cx))
+                if r1.err != "" {
+                    return (cx0, 0, r1.err)
+                }
+                let wv = sx_ev(cx, we, [ctx])
+                if sx_iserr(wv) {
+                    let er = sy_row_err([wv])
+                    if st_is_ignore(er) {
+                        return (cx0, 1, "")
+                    }
+                    return (cx0, 0, st_clean_err(er))
+                }
+                fire = sc_truth(wv) == 1
+            }
+            if fire {
+                let saved_last = cx.lastid
+                let saved_ch = cx.changes
+                let mut cxi = Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth + 1, flags: cx.flags, trgs: std::array::push(cx.trgs, t.name), settings: cx.settings }
+                for st in t.body {
+                    let mut err = ""
+                    if st.k == "select" {
+                        let (n1, r1, e1) = sy_select(cxi, st.v, [scope], [ctx], -1)
+                        err = e1
+                    }
+                    if st.k == "insert" {
+                        let (c2, n1, r1, e1) = sw_insert(cxi, st.v, [scope], [ctx])
+                        err = e1
+                        if e1 == "" {
+                            cxi = c2
+                        }
+                    }
+                    if st.k == "update" {
+                        let (c2, n1, r1, e1) = sw_update(cxi, st.v, [scope], [ctx])
+                        err = e1
+                        if e1 == "" {
+                            cxi = c2
+                        }
+                    }
+                    if st.k == "delete" {
+                        let (c2, n1, r1, e1) = sw_delete(cxi, st.v, [scope], [ctx])
+                        err = e1
+                        if e1 == "" {
+                            cxi = c2
+                        }
+                    }
+                    if err != "" {
+                        if st_is_ignore(err) {
+                            cx = Cx { sch: cx.sch, pg: cxi.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: saved_last, changes: saved_ch, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+                            return (cx, 1, "")
+                        }
+                        return (cx0, 0, st_clean_err(err))
+                    }
+                }
+                cx = Cx { sch: cx.sch, pg: cxi.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: saved_last, changes: saved_ch, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: cx.settings }
+            }
+        }
+    }
+    return (cx, 0, "")
+}
+
+fn sf_sorted_key(a: array) -> string {
+    let mut b = a
+    let mut i = 1
+    while i < len(b) {
+        let mut j = i
+        while j > 0 && b[j] < b[j - 1] {
+            let t = b[j]
+            b = std::array::set(std::array::set(b, j, b[j - 1]), j - 1, t)
+            j -= 1
+        }
+        i += 1
+    }
+    return sh_set_key(b)
+}
+
+fn sf_is_unique_cols(cx: Cx, tab: TabI, pc: array) -> bool {
+    let want = sf_sorted_key(pc)
+    if len(pc) == 1 && pc[0] == tab.rowid {
+        return true
+    }
+    if len(tab.pk) > 0 && sf_sorted_key(tab.pk) == want {
+        return true
+    }
+    for u in tab.uniqs {
+        if sf_sorted_key(u[0]) == want {
+            return true
+        }
+    }
+    for ix in sh_tab_indexes(cx.sch, tab) {
+        if ix.unique && ix.wh == nil {
+            let ic = sy_idx_cols(cx.sch, tab, ix)
+            let mut cols = []
+            for c in ic {
+                cols = std::array::push(cols, c[0])
+            }
+            if len(cols) > 0 && sf_sorted_key(cols) == want {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Las claves foráneas que apuntan a `tab` deben referir columnas únicas.
+fn sf_validate_parent(cx: Cx, tab: TabI) -> string {
+    if cx.flags % 2 == 0 {
+        return ""
+    }
+    for tk in std::map::keys(cx.sch.tabs) {
+        let ct = std::map::get(cx.sch.tabs, tk)
+        for fk in ct.fks {
+            if sh_key(fk.tbl) == sh_key(tab.name) {
+                let (pc, e1) = sf_parent_cols(ct, fk, tab)
+                if e1 != "" {
+                    return e1
+                }
+                if !sf_is_unique_cols(cx, tab, pc) {
+                    return "foreign key mismatch - \"" + ct.name + "\" referencing \"" + tab.name + "\""
+                }
+            }
+        }
+    }
+    return ""
+}

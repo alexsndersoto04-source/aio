@@ -1,5 +1,9 @@
 # TITAN SQLite
 
+> **Nota:** este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+> sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+> hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en `selfhost/ESTADO.md`.
+
 TITAN embeds SQLite through rusqlite's bundled build, providing consistent availability on Termux and supported desktop targets.
 
 APIs: `sqlite::open(path)`, `memory()`, `execute(db, sql, params)`, `query(db, sql, params)`, `begin`, `commit`, `rollback`, `last_insert_id`, and `close`.

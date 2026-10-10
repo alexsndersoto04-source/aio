@@ -1,0 +1,681 @@
+// std::sqlite en Titan, parte 16: PRAGMA y ejecución de sentencias. Prefijo `sg`.
+
+fn sg_row(vals: array) -> array {
+    return vals
+}
+
+fn sg_std_type(ty: string) -> string {
+    let u = sql_upper_ascii(ty)
+    if u == "INT" || u == "INTEGER" || u == "REAL" || u == "TEXT" || u == "BLOB" || u == "ANY" {
+        return u
+    }
+    return ty
+}
+
+// Texto de la expresión DEFAULT de una columna, tal como se escribió.
+fn sg_default_text(tab: TabI, ci: int) -> any {
+    let col = tab.cols[ci]
+    if col.dflt == nil {
+        return nil
+    }
+    let (toks, lerr) = sql_lex(tab.sql)
+    // localizar la definición de la columna
+    let mut i = 0
+    while i < len(toks) && !(toks[i].k == "op" && toks[i].s == "(") {
+        i += 1
+    }
+    let mut depth = 0
+    let mut start = i + 1
+    let mut j = i
+    while j < len(toks) - 1 {
+        let t = toks[j]
+        if t.k == "op" && t.s == "(" {
+            depth += 1
+        }
+        if t.k == "op" && t.s == ")" {
+            depth -= 1
+            if depth == 0 {
+                break
+            }
+        }
+        if t.k == "op" && t.s == "," && depth == 1 {
+            if sk_is_name_tok(toks[start], col.name) {
+                break
+            }
+            start = j + 1
+        }
+        j += 1
+    }
+    if !sk_is_name_tok(toks[start], col.name) {
+        return nil
+    }
+    let mut k = start
+    while k < j && !(toks[k].k == "id" && toks[k].u == "DEFAULT") {
+        k += 1
+    }
+    if k >= j {
+        return nil
+    }
+    k += 1
+    if toks[k].k == "op" && toks[k].s == "(" {
+        let mut d = 0
+        let mut m = k
+        while m < j {
+            if toks[m].k == "op" && toks[m].s == "(" {
+                d += 1
+            }
+            if toks[m].k == "op" && toks[m].s == ")" {
+                d -= 1
+                if d == 0 {
+                    break
+                }
+            }
+            m += 1
+        }
+        return Sv::SText(sq_trim_ws(std::text::substring(tab.sql, toks[k + 1].p, toks[m].p)))
+    }
+    let mut a = k
+    let mut raw = ""
+    if toks[k].k == "op" && (toks[k].s == "-" || toks[k].s == "+") {
+        raw = toks[k].s + sk_tok_raw(tab.sql, toks, k + 1)
+    } else {
+        raw = sk_tok_raw(tab.sql, toks, k)
+    }
+    return Sv::SText(raw)
+}
+
+fn sg_setting(cx: Cx, name: string, dflt: Sv) -> Sv {
+    let v = std::map::get(cx.settings, name)
+    if v == nil {
+        return dflt
+    }
+    return v
+}
+
+fn sg_with_setting(cx: Cx, name: string, v: Sv) -> Cx {
+    return Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: cx.flags, trgs: cx.trgs, settings: std::map::insert(cx.settings, name, v) }
+}
+
+fn sg_with_flags(cx: Cx, fl: int) -> Cx {
+    return Cx { sch: cx.sch, pg: cx.pg, params: cx.params, ctes: cx.ctes, aggs: cx.aggs, wvals: cx.wvals, now: cx.now, lastid: cx.lastid, changes: cx.changes, tchanges: cx.tchanges, depth: cx.depth, flags: fl, trgs: cx.trgs, settings: cx.settings }
+}
+
+fn sg_bool(arg: string) -> int {
+    let a = sh_key(arg)
+    if a == "1" || a == "on" || a == "true" || a == "yes" {
+        return 1
+    }
+    if a == "0" || a == "off" || a == "false" || a == "no" {
+        return 0
+    }
+    match std::text::parse_int(a) {
+        Option::Some(n) => {
+            if n != 0 {
+                return 1
+            }
+            return 0
+        },
+        _ => {
+            return 0
+        },
+    }
+}
+
+fn sg_hdr(pg: SqPg, off: int) -> int {
+    let a = sqp_read(pg, 1)
+    return a[off] * 16777216 + a[off + 1] * 65536 + a[off + 2] * 256 + a[off + 3]
+}
+
+fn sg_hdr_set(pg: SqPg, off: int, v0: int) -> SqPg {
+    let mut v = v0
+    if v < 0 {
+        v += 4294967296
+    }
+    let a = sqp_read(pg, 1)
+    let mut b = std::array::set(a, off, (v / 16777216) % 256)
+    b = std::array::set(b, off + 1, (v / 65536) % 256)
+    b = std::array::set(b, off + 2, (v / 256) % 256)
+    b = std::array::set(b, off + 3, v % 256)
+    return sqp_write(pg, 1, b)
+}
+
+fn sg_i32(v: int) -> int {
+    if v >= 2147483648 {
+        return v - 4294967296
+    }
+    return v
+}
+
+fn sg_one(name: string, v: Sv) -> (array, array) {
+    return ([name], [[v]])
+}
+
+fn sg_table_arg(cx: Cx, arg: string) -> any {
+    let t = sh_find_tab(cx.sch, arg)
+    if t != nil {
+        return t
+    }
+    return nil
+}
+
+fn sg_idx_origin(tab: TabI, ix: IdxI) -> string {
+    if ix.auto {
+        let n = sy_last_int(ix.name)
+        if n >= 1 && n <= len(tab.uniqs) && tab.uniqs[n - 1][1] {
+            return "pk"
+        }
+        return "u"
+    }
+    return "c"
+}
+
+fn sg_integrity(cx: Cx) -> array {
+    let mut msgs = []
+    for k in std::map::keys(cx.sch.tabs) {
+        let tab = std::map::get(cx.sch.tabs, k)
+        if tab.root > 1 && k != "sqlite_schema" {
+            let (prep, perr) = sw_prepare(cx, tab, tab.name)
+            if perr == "" {
+                let rows = sh_scan(cx, tab)
+                for info in prep[0] {
+                    let mut expected = 0
+                    for r in rows {
+                        if sw_in_index(cx, info, r) {
+                            expected += 1
+                        }
+                    }
+                    let mut have = 0
+                    let mut st = sqt_cu_first(cx.pg, info[0].root)
+                    while len(st) > 0 {
+                        have += 1
+                        st = sqt_cu_adv(cx.pg, st)
+                    }
+                    if have != expected {
+                        msgs = std::array::push(msgs, "wrong # of entries in index " + info[0].name)
+                    }
+                    // cada fila debe estar en el índice
+                    for r in rows {
+                        if sw_in_index(cx, info, r) {
+                            let key = std::array::push(sw_ikey(cx, info, r), r[len(tab.cols)])
+                            let (found, path) = sqi_find(cx.pg, info[0].root, key, len(key), sw_icolls(info), sw_idescs(info))
+                            if !found {
+                                msgs = std::array::push(msgs, "row " + sc_to_text(r[len(tab.cols)]) + " missing from index " + info[0].name)
+                            }
+                        }
+                    }
+                }
+                for ck in prep[1] {
+                    let mut idx = 0
+                    for r in rows {
+                        let v = sx_ev(cx, ck[0], [r])
+                        if !sx_isnull(v) && sc_truth(v) == 0 {
+                            msgs = std::array::push(msgs, "CHECK constraint failed in " + tab.name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return msgs
+}
+
+// foreign_key_check: filas hijas sin padre. Devuelve filas [tabla, rowid, padre, id].
+fn sg_fk_check(cx: Cx, only: any) -> (array, string) {
+    let mut out = []
+    let mut names = std::map::keys(cx.sch.tabs)
+    for k in names {
+        let tab = std::map::get(cx.sch.tabs, k)
+        if k != "sqlite_schema" && (only == nil || sh_key(only.name) == k) {
+            let mut fid = len(tab.fks)
+            for fk in tab.fks {
+                fid -= 1
+                let ptab = sh_find_tab(cx.sch, fk.tbl)
+                if ptab == nil {
+                    return ([], "no such table: " + fk.tbl)
+                }
+                let (cc, e1) = sf_child_cols(tab, fk)
+                if e1 != "" {
+                    return ([], e1)
+                }
+                let (pc, e2) = sf_parent_cols(tab, fk, ptab)
+                if e2 != "" {
+                    return ([], e2)
+                }
+                if len(pc) != len(cc) || !sf_is_unique_cols(cx, ptab, pc) {
+                    return ([], "foreign key mismatch - \"" + tab.name + "\" referencing \"" + ptab.name + "\"")
+                }
+                for r in sh_scan(cx, tab) {
+                    let mut vals = []
+                    let mut hasnull = false
+                    for ci in cc {
+                        vals = std::array::push(vals, r[ci])
+                        if sx_isnull(r[ci]) {
+                            hasnull = true
+                        }
+                    }
+                    if !hasnull && len(sf_lookup(cx, ptab, pc, vals)) == 0 {
+                        out = std::array::push(out, [Sv::SText(tab.name), r[len(tab.cols)], Sv::SText(ptab.name), Sv::SInt(fid)])
+                    }
+                }
+            }
+        }
+    }
+    return (out, "")
+}
+
+// PRAGMA. Devuelve (cx, nombres, filas, error).
+fn sg_pragma(cx: Cx, name: string, arg: string, has: bool) -> (Cx, array, array, string) {
+    if name == "table_info" || name == "table_xinfo" {
+        let tab = sg_table_arg(cx, arg)
+        let mut names = ["cid", "name", "type", "notnull", "dflt_value", "pk"]
+        if name == "table_xinfo" {
+            names = ["cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"]
+        }
+        if tab == nil {
+            return (cx, [], [], "")
+        }
+        let mut rows = []
+        let mut i = 0
+        for c in tab.cols {
+            let mut pk = 0
+            let mut q = 0
+            for p in tab.pk {
+                q += 1
+                if p == i {
+                    pk = q
+                }
+            }
+            let mut dv = Sv::SNull
+            let dt = sg_default_text(tab, i)
+            if dt != nil {
+                dv = dt
+            }
+            let mut nn = 0
+            if c.notnull || (pk > 0 && false) {
+                nn = 1
+            }
+            let mut row = [Sv::SInt(i), Sv::SText(c.name), Sv::SText(sg_std_type(c.ty)), Sv::SInt(nn), dv, Sv::SInt(pk)]
+            if name == "table_xinfo" {
+                row = std::array::push(row, Sv::SInt(0))
+            }
+            rows = std::array::push(rows, row)
+            i += 1
+        }
+        return (cx, names, rows, "")
+    }
+    if name == "index_list" {
+        let tab = sg_table_arg(cx, arg)
+        if tab == nil {
+            return (cx, [], [], "")
+        }
+        let mut list = []
+        // el orden es el inverso al de creación
+        let mut ordered = []
+        for r in sk_master_rows(cx.pg) {
+            if sc_to_text(r[1][0]) == "index" && sh_key(sc_to_text(r[1][2])) == sh_key(tab.name) {
+                let ix = sh_find_idx(cx.sch, sc_to_text(r[1][1]))
+                if ix != nil {
+                    ordered = std::array::push(ordered, ix)
+                }
+            }
+        }
+        let mut rows = []
+        let n = len(ordered)
+        let mut seq = 0
+        while seq < n {
+            let ix = ordered[n - 1 - seq]
+            let mut partial = 0
+            if ix.wh != nil {
+                partial = 1
+            }
+            let mut un = 0
+            if ix.unique {
+                un = 1
+            }
+            rows = std::array::push(rows, [Sv::SInt(seq), Sv::SText(ix.name), Sv::SInt(un), Sv::SText(sg_idx_origin(tab, ix)), Sv::SInt(partial)])
+            seq += 1
+        }
+        return (cx, ["seq", "name", "unique", "origin", "partial"], rows, "")
+    }
+    if name == "index_info" || name == "index_xinfo" {
+        let ix = sh_find_idx(cx.sch, arg)
+        if ix == nil {
+            return (cx, [], [], "")
+        }
+        let tab = sh_find_tab(cx.sch, ix.tbl)
+        let ic = sy_idx_cols(cx.sch, tab, ix)
+        let mut rows = []
+        let mut i = 0
+        if len(ic) == 0 {
+            for c in ix.cols {
+                let ci = sh_col_of_expr(tab.cols, c[0])
+                let mut cn = Sv::SNull
+                if ci >= 0 {
+                    cn = Sv::SText(tab.cols[ci].name)
+                }
+                let mut d = 0
+                if c[1] {
+                    d = 1
+                }
+                let mut cl = "BINARY"
+                if c[2] != "" {
+                    cl = sql_upper_ascii(c[2])
+                }
+                if name == "index_info" {
+                    rows = std::array::push(rows, [Sv::SInt(i), Sv::SInt(ci), cn])
+                } else {
+                    rows = std::array::push(rows, [Sv::SInt(i), Sv::SInt(ci), cn, Sv::SInt(d), Sv::SText(cl), Sv::SInt(1)])
+                }
+                if ci < 0 {
+                    rows = std::array::set(rows, i, [Sv::SInt(i), Sv::SInt(-2), Sv::SNull])
+                }
+                i += 1
+            }
+        } else {
+            for c in ic {
+                let col = tab.cols[c[0]]
+                let mut cl = "BINARY"
+                if col.coll != "" {
+                    cl = sql_upper_ascii(col.coll)
+                }
+                if !ix.auto && ix.cols[i][2] != "" {
+                    cl = sql_upper_ascii(ix.cols[i][2])
+                }
+                if name == "index_info" {
+                    rows = std::array::push(rows, [Sv::SInt(i), Sv::SInt(c[0]), Sv::SText(col.name)])
+                } else {
+                    rows = std::array::push(rows, [Sv::SInt(i), Sv::SInt(c[0]), Sv::SText(col.name), Sv::SInt(c[1]), Sv::SText(cl), Sv::SInt(1)])
+                }
+                i += 1
+            }
+        }
+        if name == "index_xinfo" {
+            rows = std::array::push(rows, [Sv::SInt(i), Sv::SInt(-1), Sv::SNull, Sv::SInt(0), Sv::SText("BINARY"), Sv::SInt(0)])
+            return (cx, ["seqno", "cid", "name", "desc", "coll", "key"], rows, "")
+        }
+        return (cx, ["seqno", "cid", "name"], rows, "")
+    }
+    if name == "foreign_key_list" {
+        let tab = sg_table_arg(cx, arg)
+        if tab == nil {
+            return (cx, [], [], "")
+        }
+        let mut rows = []
+        let n = len(tab.fks)
+        let mut id = 0
+        while id < n {
+            let fk = tab.fks[n - 1 - id]
+            let mut seq = 0
+            for f in fk.from {
+                let mut to = Sv::SNull
+                if seq < len(fk.cols) {
+                    to = Sv::SText(fk.cols[seq])
+                }
+                let mut od = fk.ondel
+                if od == "" {
+                    od = "NO ACTION"
+                }
+                let mut ou = fk.onupd
+                if ou == "" {
+                    ou = "NO ACTION"
+                }
+                rows = std::array::push(rows, [Sv::SInt(id), Sv::SInt(seq), Sv::SText(fk.tbl), Sv::SText(f), to, Sv::SText(ou), Sv::SText(od), Sv::SText("NONE")])
+                seq += 1
+            }
+            id += 1
+        }
+        return (cx, ["id", "seq", "table", "from", "to", "on_update", "on_delete", "match"], rows, "")
+    }
+    if name == "table_list" {
+        let mut keys = std::map::keys(cx.sch.tabs)
+        let mut rows = []
+        for k in keys {
+            if k != "sqlite_master" {
+                let t = std::map::get(cx.sch.tabs, k)
+                rows = std::array::push(rows, [Sv::SText("main"), Sv::SText(t.name), Sv::SText("table"), Sv::SInt(len(t.cols)), Sv::SInt(0), Sv::SInt(0)])
+            }
+        }
+        for k in std::map::keys(cx.sch.views) {
+            let v = std::map::get(cx.sch.views, k)
+            let nc = len(v.cols)
+            rows = std::array::push(rows, [Sv::SText("main"), Sv::SText(v.name), Sv::SText("view"), Sv::SInt(nc), Sv::SInt(0), Sv::SInt(0)])
+        }
+        rows = std::array::push(rows, [Sv::SText("temp"), Sv::SText("sqlite_temp_schema"), Sv::SText("table"), Sv::SInt(5), Sv::SInt(0), Sv::SInt(0)])
+        return (cx, ["schema", "name", "type", "ncol", "wr", "strict"], rows, "")
+    }
+    if name == "database_list" {
+        let f = sg_setting(cx, "file", Sv::SText(""))
+        return (cx, ["seq", "name", "file"], [[Sv::SInt(0), Sv::SText("main"), f]], "")
+    }
+    if name == "foreign_keys" {
+        if has {
+            let b = sg_bool(arg)
+            return (sg_with_flags(cx, cx.flags - cx.flags % 2 + b), [], [], "")
+        }
+        let (n, r) = sg_one("foreign_keys", Sv::SInt(cx.flags % 2))
+        return (cx, n, r, "")
+    }
+    if name == "user_version" || name == "application_id" {
+        let mut off = 60
+        if name == "application_id" {
+            off = 68
+        }
+        if has {
+            let v = match std::text::parse_int(arg) {
+                Option::Some(x) => x,
+                _ => 0,
+            }
+            return (sw_cx(cx, sg_hdr_set(cx.pg, off, v), cx.lastid, cx.changes), [], [], "")
+        }
+        let (n, r) = sg_one(name, Sv::SInt(sg_i32(sg_hdr(cx.pg, off))))
+        return (cx, n, r, "")
+    }
+    if name == "schema_version" {
+        let (n, r) = sg_one(name, Sv::SInt(sg_hdr(cx.pg, 40)))
+        return (cx, n, r, "")
+    }
+    if name == "freelist_count" {
+        let (n, r) = sg_one(name, Sv::SInt(sg_hdr(cx.pg, 36)))
+        return (cx, n, r, "")
+    }
+    if name == "page_count" {
+        let (n, r) = sg_one(name, Sv::SInt(cx.pg.npages))
+        return (cx, n, r, "")
+    }
+    if name == "page_size" {
+        let (n, r) = sg_one(name, Sv::SInt(cx.pg.psize))
+        return (cx, n, r, "")
+    }
+    if name == "encoding" {
+        let (n, r) = sg_one(name, Sv::SText("UTF-8"))
+        return (cx, n, r, "")
+    }
+    if name == "integrity_check" || name == "quick_check" {
+        let msgs = sg_integrity(cx)
+        let mut rows = []
+        for m in msgs {
+            rows = std::array::push(rows, [Sv::SText(m)])
+        }
+        if len(rows) == 0 {
+            rows = [[Sv::SText("ok")]]
+        }
+        return (cx, [name], rows, "")
+    }
+    if name == "foreign_key_check" {
+        let mut only: any = nil
+        if has {
+            only = sg_table_arg(cx, arg)
+            if only == nil {
+                return (cx, [], [], "")
+            }
+        }
+        let (rows, err) = sg_fk_check(cx, only)
+        if err != "" {
+            return (cx, [], [], err)
+        }
+        return (cx, ["table", "rowid", "parent", "fkid"], rows, "")
+    }
+    if name == "journal_mode" {
+        let mut dm = "delete"
+        let f = sg_setting(cx, "file", Sv::SText(""))
+        if sc_to_text(f) == "" {
+            dm = "memory"
+        }
+        let (n, r) = sg_one(name, Sv::SText(dm))
+        return (cx, n, r, "")
+    }
+    if name == "busy_timeout" {
+        if has {
+            let v = match std::text::parse_int(arg) {
+                Option::Some(x) => x,
+                _ => 0,
+            }
+            let c2 = sg_with_setting(cx, "busy_timeout", Sv::SInt(v))
+            let (n, r) = sg_one("timeout", Sv::SInt(v))
+            return (c2, n, r, "")
+        }
+        let (n, r) = sg_one("timeout", sg_setting(cx, "busy_timeout", Sv::SInt(5000)))
+        return (cx, n, r, "")
+    }
+    if name == "synchronous" || name == "cache_size" || name == "temp_store" || name == "recursive_triggers" || name == "case_sensitive_like" || name == "locking_mode" || name == "auto_vacuum" || name == "mmap_size" || name == "query_only" || name == "secure_delete" || name == "defer_foreign_keys" || name == "trusted_schema" || name == "read_uncommitted" || name == "automatic_index" || name == "ignore_check_constraints" || name == "cell_size_check" || name == "checkpoint_fullfsync" || name == "fullfsync" || name == "reverse_unordered_selects" || name == "legacy_alter_table" || name == "threads" {
+        let mut dflt = Sv::SInt(0)
+        if name == "synchronous" {
+            dflt = Sv::SInt(2)
+        }
+        if name == "cache_size" {
+            dflt = Sv::SInt(-2000)
+        }
+        if name == "locking_mode" {
+            dflt = Sv::SText("normal")
+        }
+        if name == "trusted_schema" || name == "automatic_index" {
+            dflt = Sv::SInt(1)
+        }
+        if has {
+            let mut v = Sv::SInt(0)
+            let a = sh_key(arg)
+            if name == "synchronous" {
+                let mut n = 2
+                if a == "off" || a == "0" {
+                    n = 0
+                } else if a == "normal" || a == "1" {
+                    n = 1
+                } else if a == "full" || a == "2" {
+                    n = 2
+                } else if a == "extra" || a == "3" {
+                    n = 3
+                }
+                v = Sv::SInt(n)
+            } else if name == "locking_mode" {
+                v = Sv::SText(a)
+            } else if name == "cache_size" || name == "mmap_size" || name == "threads" {
+                v = Sv::SInt(match std::text::parse_int(arg) {
+                    Option::Some(x) => x,
+                    _ => 0,
+                })
+            } else {
+                v = Sv::SInt(sg_bool(arg))
+            }
+            return (sg_with_setting(cx, name, v), [], [], "")
+        }
+        if name == "case_sensitive_like" {
+            return (cx, [], [], "")
+        }
+        let (n, r) = sg_one(name, sg_setting(cx, name, dflt))
+        return (cx, n, r, "")
+    }
+    return (cx, [], [], "")
+}
+
+// ------------------------------------------------------------ ejecución de una sentencia
+
+// Ejecuta una sentencia. item = [Stm, tokens, inicio, fin]. Devuelve (cx, nombres, filas, error).
+fn sg_exec(cx: Cx, item: array, sql: string) -> (Cx, array, array, string) {
+    let st = item[0]
+    let toks = item[1]
+    let end = item[3]
+    let k = st.k
+    if k == "select" {
+        let (names, rows, err) = sy_select(cx, st.v, [], [], -1)
+        return (cx, names, rows, err)
+    }
+    if k == "insert" {
+        return sw_insert(cx, st.v, [], [])
+    }
+    if k == "update" {
+        return sw_update(cx, st.v, [], [])
+    }
+    if k == "delete" {
+        return sw_delete(cx, st.v, [], [])
+    }
+    if k == "createtable" {
+        let (c, err) = sk_create_table(cx, st.v, sql, toks, end)
+        return (c, [], [], err)
+    }
+    if k == "createindex" {
+        let (c, err) = sk_create_index(cx, st.v, sql, toks, end)
+        return (c, [], [], err)
+    }
+    if k == "createview" {
+        let (c, err) = sk_create_view(cx, st.v, sql, toks, end)
+        return (c, [], [], err)
+    }
+    if k == "createtrigger" {
+        let (c, err) = sk_create_trigger(cx, st.v, sql, toks, end)
+        return (c, [], [], err)
+    }
+    if k == "drop" {
+        let v = st.v
+        let (c, err) = sk_drop(cx, sx_lc(v[0]), v[1], v[2])
+        return (c, [], [], err)
+    }
+    if k == "alter" {
+        let v = st.v
+        let tab = sh_find_tab(cx.sch, v[0])
+        if tab == nil {
+            return (cx, [], [], "no such table: " + v[0])
+        }
+        if std::text::starts_with(sh_key(tab.name), "sqlite_") {
+            return (cx, [], [], "table " + tab.name + " may not be altered")
+        }
+        if v[1] == "rename" {
+            let (c, err) = sk_rename_table(cx, tab, v[2])
+            return (c, [], [], err)
+        }
+        if v[1] == "renamecol" {
+            let (c, err) = sk_rename_column(cx, tab, v[2], v[3])
+            return (c, [], [], err)
+        }
+        if v[1] == "addcol" {
+            let a = std::text::parse_int(v[2])
+            let b = std::text::parse_int(v[3])
+            let mut ai = 0
+            let mut bi = 0
+            match a {
+                Option::Some(x) => {
+                    ai = x
+                },
+                _ => {},
+            }
+            match b {
+                Option::Some(x) => {
+                    bi = x
+                },
+                _ => {},
+            }
+            let text = sq_trim_ws(std::text::substring(sql, toks[ai].p, toks[bi].p))
+            let (c, err) = sk_add_column(cx, tab, v[4], text)
+            return (c, [], [], err)
+        }
+        let (c, err) = sk_drop_column(cx, tab, v[2])
+        return (c, [], [], err)
+    }
+    if k == "pragma" {
+        let v = st.v
+        return sg_pragma(cx, v[0], v[1], v[2])
+    }
+    if k == "vacuum" || k == "analyze" {
+        return (cx, [], [], "")
+    }
+    return (cx, [], [], "cannot execute this statement here")
+}

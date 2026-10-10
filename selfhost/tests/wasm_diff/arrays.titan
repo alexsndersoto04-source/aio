@@ -1,0 +1,28 @@
+fn build(n) {
+    let mut a = []
+    let mut i = 0
+    while i < n {
+        a = std::array::push(a, i * i)
+        i += 1
+    }
+    a
+}
+
+fn total(a) {
+    let mut t = 0
+    for x in a {
+        t += x
+    }
+    t
+}
+
+fn main() {
+    let a = build(10)
+    let b = std::array::set(a, 3, 100)
+    let c = std::array::slice(b, 2, 7)
+    let d = std::array::concat(c, [1, 2, 3])
+    let e = std::array::pop(d)
+    let f = [10, 20, 30]
+    let g = (1, 2, 3)
+    total(e) + a[4] + b[3] + f[1] + len(f) + len(e) + g.0 + g.2
+}

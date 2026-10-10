@@ -1,0 +1,1954 @@
+// Decodificador Vorbis de std::audio::engine_* (prefijo vb_ / vf_).
+//
+// Reproduce symphonia-codec-vorbis 0.5.5 (la VM de Rust lo usa con las características por
+// defecto: IMDCT/FFT escalares, sin SIMD). Las muestras y los coeficientes son f32 guardados como
+// bits de f64; tras CADA operación se redondea a f32 (vec_f32), como haría el código f32 de Rust,
+// de modo que el resultado coincide bit a bit.
+//
+// Lector de bits: igual que BitReaderRtl (caché de 64 bits, lectura de menos significativo a más),
+// con su misma conducta al final del paquete (el residuo y el suelo ignoran el fin de datos).
+//
+// Cada objeto reserva su memoria con vb_alloc (se libera de golpe en vb_free).
+
+const VB_CH: int = 0
+const VB_RATE: int = 1
+const VB_BS0: int = 2
+const VB_BS1: int = 3
+const VB_NCB: int = 4
+const VB_CB: int = 5
+const VB_NFL: int = 6
+const VB_FL: int = 7
+const VB_NRS: int = 8
+const VB_RS: int = 9
+const VB_NMP: int = 10
+const VB_MP: int = 11
+const VB_NMD: int = 12
+const VB_MD: int = 13
+const VB_LAP: int = 14
+const VB_PREV: int = 15
+const VB_CHS: int = 16
+const VB_WS: int = 17
+const VB_WL: int = 18
+const VB_TWS: int = 19
+const VB_TWL: int = 20
+const VB_FIN: int = 21
+const VB_FOUT: int = 22
+const VB_FFTT: int = 23
+const VB_BP: int = 24
+const VB_BN: int = 25
+const VB_BC: int = 26
+const VB_BL: int = 27
+const VB_INV: int = 28
+const VB_REG: int = 29
+const VB_REGN: int = 30
+const VB_REGC: int = 31
+const VB_PERMS: int = 32
+const VB_PERML: int = 33
+const VB_FLTAB: int = 34
+const VB_SLOTS: int = 40
+
+// ------------------------------------------------------------ memoria
+fn vb_alloc(v: int, bytes: int) -> int {
+    let p = rt_alloc_zero(bytes + 8)
+    let n = ad_ld(v, VB_REGN)
+    let c = ad_ld(v, VB_REGC)
+    if n >= c {
+        let nc = if c == 0 { 64 } else { c * 2 }
+        let np = rt_alloc_zero(8 * nc)
+        if n > 0 { rt_copy(np, ad_ld(v, VB_REG), 8 * n) }
+        if ad_ld(v, VB_REG) != 0 { rt_free_block(ad_ld(v, VB_REG)) }
+        ad_st(v, VB_REG, np)
+        ad_st(v, VB_REGC, nc)
+    }
+    ad_st(ad_ld(v, VB_REG), n, p)
+    ad_st(v, VB_REGN, n + 1)
+    p
+}
+
+fn vb_free(v: int) {
+    if v == 0 { return }
+    let n = ad_ld(v, VB_REGN)
+    let r = ad_ld(v, VB_REG)
+    let mut i = 0
+    while i < n {
+        rt_free_block(ad_ld(r, i))
+        i += 1
+    }
+    if r != 0 { rt_free_block(r) }
+    rt_free_block(v)
+}
+
+// ------------------------------------------------------------ f32 (bits de f64 ya redondeados)
+fn vf_add(a: int, b: int) -> int { vec_f32(std::raw::fadd(a, b)) }
+fn vf_sub(a: int, b: int) -> int { vec_f32(std::raw::fsub(a, b)) }
+fn vf_mul(a: int, b: int) -> int { vec_f32(std::raw::fmul(a, b)) }
+fn vf_div(a: int, b: int) -> int { vec_f32(std::raw::fdiv(a, b)) }
+fn vf_neg(a: int) -> int { a ^ (-9223372036854775807 - 1) }
+fn vf_one() -> int { 4607182418800017408 }
+fn vf_gt(a: int, b: int) -> bool { std::raw::fcmp(a, b) == 1 }
+
+// ------------------------------------------------------------ lector de bits (BitReaderRtl)
+fn vb_le(p: int, k: int) -> int {
+    let mut r = 0
+    let mut i = k - 1
+    while i >= 0 {
+        r = std::raw::shl(r, 8) | std::raw::load8(p + i)
+        i -= 1
+    }
+    r
+}
+
+fn vb_br_set(v: int, p: int, n: int) {
+    ad_st(v, VB_BP, p)
+    ad_st(v, VB_BN, n)
+    ad_st(v, VB_BC, 0)
+    ad_st(v, VB_BL, 0)
+}
+
+fn vb_fetch(v: int) -> bool {
+    let n = ad_ld(v, VB_BN)
+    if n == 0 { return false }
+    let k = if n < 8 { n } else { 8 }
+    let p = ad_ld(v, VB_BP)
+    ad_st(v, VB_BC, vb_le(p, k))
+    ad_st(v, VB_BL, 8 * k)
+    ad_st(v, VB_BP, p + k)
+    ad_st(v, VB_BN, n - k)
+    true
+}
+
+fn vb_fetch_partial(v: int) {
+    let n = ad_ld(v, VB_BN)
+    let bl = ad_ld(v, VB_BL)
+    let mut k = std::raw::shr(64 - bl, 3)
+    if n < k { k = n }
+    if k == 0 { return }
+    let p = ad_ld(v, VB_BP)
+    ad_st(v, VB_BC, ad_ld(v, VB_BC) | std::raw::shl(vb_le(p, k), bl))
+    ad_st(v, VB_BL, bl + 8 * k)
+    ad_st(v, VB_BP, p + k)
+    ad_st(v, VB_BN, n - k)
+}
+
+// read_bits_leq32 / leq64 (w <= 63). Devuelve -1 si se acaban los datos.
+fn vb_read(v: int, w: int) -> int {
+    let mut bits = ad_ld(v, VB_BC)
+    let mut need = w
+    while need > ad_ld(v, VB_BL) {
+        need -= ad_ld(v, VB_BL)
+        if !vb_fetch(v) { return -1 }
+        bits = bits | std::raw::shl(ad_ld(v, VB_BC), w - need)
+    }
+    ad_st(v, VB_BL, ad_ld(v, VB_BL) - need)
+    ad_st(v, VB_BC, std::raw::shr(ad_ld(v, VB_BC), need))
+    bits & (std::raw::shl(1, w) - 1)
+}
+
+fn vb_rd(v: int, w: int) -> int {
+    let r = vb_read(v, w)
+    if r < 0 { std::raw::fail("vorbis: truncated setup header") }
+    r
+}
+
+fn vb_bits_left(v: int) -> int { 8 * ad_ld(v, VB_BN) + ad_ld(v, VB_BL) }
+
+fn vb_ilog(x: int) -> int { ad_bitlen(x) }
+
+// ------------------------------------------------------------ libros de códigos
+const CB_DIM: int = 0
+const CB_ENT: int = 1
+const CB_TRIE: int = 2
+const CB_VQ: int = 3
+const CB_MAXLEN: int = 4
+const CB_SLEN: int = 5     // longitud del único código (libro de una sola entrada), si no 0
+const CB_SENT: int = 6     // entrada de ese único código
+const CB_SLOTS: int = 8
+
+fn vb_unpack_f32(x: int) -> int {
+    let mant = x & 2097151
+    let neg = (x & 2147483648) != 0
+    let ex = std::raw::shr(x & 2145386496, 21)
+    let n = ex - 788
+    let mut factor = 0
+    if n >= 128 {
+        factor = 9218868437227405312
+    } else if n > -128 {
+        factor = std::raw::shl(n + 1023, 52)
+    }
+    let val = vf_mul(std::raw::ffromint(mant), factor)
+    if neg { return vf_neg(val) }
+    val
+}
+
+fn vb_lookup1_values(entries: int, dims: int) -> int {
+    let mut val = 0
+    loop {
+        let nx = val + 1
+        let mut p = 1
+        let mut j = 0
+        while j < dims && p <= entries {
+            p = p * nx
+            j += 1
+        }
+        if p <= entries { val = nx } else { break }
+    }
+    val
+}
+
+// synthesize_codewords. Devuelve la tabla de palabras (8 bytes cada una).
+fn vb_codewords(v: int, lens: int, n: int) -> int {
+    let cw = vb_alloc(v, 8 * (n + 1))
+    let nxt = rt_alloc_zero(8 * 34)
+    let mut sparse = 0
+    let mut e = 0
+    while e < n {
+        let len = ad_ld(lens, e)
+        if len == 0 {
+            sparse += 1
+        } else {
+            let word = ad_ld(nxt, len)
+            if len < 32 && std::raw::shr(word, len) > 0 {
+                rt_free_block(nxt)
+                std::raw::fail("vorbis: codebook overspecified")
+            }
+            let mut i = len
+            while i >= 0 {
+                if (ad_ld(nxt, i) & 1) == 1 {
+                    ad_st(nxt, i, (std::raw::shl(ad_ld(nxt, i - 1), 1)) & 4294967295)
+                    break
+                }
+                ad_st(nxt, i, (ad_ld(nxt, i) + 1) & 4294967295)
+                i -= 1
+            }
+            let branch = ad_ld(nxt, len)
+            let mut k = 1
+            while len + k <= 32 {
+                if ad_ld(nxt, len + k) == (std::raw::shl(word, k) & 4294967295) {
+                    ad_st(nxt, len + k, std::raw::shl(branch, k) & 4294967295)
+                } else {
+                    break
+                }
+                k += 1
+            }
+            ad_st(cw, e, word)
+        }
+        e += 1
+    }
+    let mut under = false
+    let mut i = 1
+    while i <= 32 {
+        if (ad_ld(nxt, i) & (std::raw::shl(1, i) - 1)) != 0 { under = true }
+        i += 1
+    }
+    rt_free_block(nxt)
+    if under && n - sparse != 1 { std::raw::fail("vorbis: codebook underspecified") }
+    cw
+}
+
+fn vb_codebook_read(v: int) -> int {
+    let sync = vb_rd(v, 24)
+    if sync != 5653314 { std::raw::fail("vorbis: invalid codebook sync") }
+    let dims = vb_rd(v, 16)
+    let entries = vb_rd(v, 24)
+    if entries > 4194304 { std::raw::fail("vorbis: codebook too large") }
+    let ordered = vb_rd(v, 1)
+    let lens = vb_alloc(v, 8 * (entries + 1))
+    if ordered == 0 {
+        let sparse = vb_rd(v, 1)
+        let mut e = 0
+        while e < entries {
+            if sparse == 1 {
+                if vb_rd(v, 1) == 1 { ad_st(lens, e, vb_rd(v, 5) + 1) }
+            } else {
+                ad_st(lens, e, vb_rd(v, 5) + 1)
+            }
+            e += 1
+        }
+    } else {
+        let mut cur = 0
+        let mut clen = vb_rd(v, 5) + 1
+        let mut cnt = 0
+        loop {
+            let mut nb = 0
+            if entries > cur { nb = vb_ilog(entries - cur) }
+            let num = vb_rd(v, nb)
+            let mut j = 0
+            while j < num && cnt < entries {
+                ad_st(lens, cnt, clen)
+                cnt += 1
+                j += 1
+            }
+            clen += 1
+            cur += num
+            if cur > entries { std::raw::fail("vorbis: invalid codebook") }
+            if cur == entries { break }
+        }
+    }
+    let ltype = vb_rd(v, 4)
+    let mut vq = 0
+    if ltype == 1 || ltype == 2 {
+        let minv = vb_unpack_f32(vb_rd(v, 32))
+        let delta = vb_unpack_f32(vb_rd(v, 32))
+        let vbits = vb_rd(v, 4) + 1
+        let seq = vb_rd(v, 1)
+        let mut lv = 0
+        if ltype == 1 {
+            if dims == 0 { std::raw::fail("vorbis: invalid codebook dimensions") }
+            lv = vb_lookup1_values(entries, dims)
+        } else {
+            lv = entries * dims
+        }
+        let mult = vb_alloc(v, 8 * (lv + 1))
+        let mut i = 0
+        while i < lv {
+            ad_st(mult, i, vb_rd(v, vbits))
+            i += 1
+        }
+        vq = vb_alloc(v, 8 * (entries * dims + 1))
+        let mut e = 0
+        while e < entries {
+            let mut last = 0
+            let mut div = 1
+            let mut d = 0
+            while d < dims {
+                let mut moff = e * dims + d
+                if ltype == 1 { moff = (e / div) % lv }
+                let m = std::raw::ffromint(ad_ld(mult, moff))
+                let val = vf_add(vf_add(vf_mul(m, delta), minv), last)
+                ad_st(vq, e * dims + d, val)
+                if seq == 1 { last = val }
+                div = (div * lv) & 4294967295
+                d += 1
+            }
+            e += 1
+        }
+    } else if ltype != 0 {
+        std::raw::fail("vorbis: invalid codeword lookup type")
+    }
+    // Códigos y árbol de decodificación (bit a bit; el primer bit leído es el más significativo).
+    let cw = vb_codewords(v, lens, entries)
+    let mut total = 2
+    let mut used = 0
+    let mut maxlen = 0
+    let mut e = 0
+    while e < entries {
+        let l = ad_ld(lens, e)
+        if l > 32 { std::raw::fail("vorbis: codeword too long") }
+        if l > 0 {
+            total += l
+            used += 1
+            if l > maxlen { maxlen = l }
+        }
+        e += 1
+    }
+    let cb = vb_alloc(v, 8 * CB_SLOTS)
+    let trie = vb_alloc(v, 16 * (total + 1))
+    ad_st(cb, CB_DIM, dims)
+    ad_st(cb, CB_ENT, entries)
+    ad_st(cb, CB_TRIE, trie)
+    ad_st(cb, CB_VQ, vq)
+    ad_st(cb, CB_MAXLEN, maxlen)
+    let mut nodes = 1
+    e = 0
+    while e < entries {
+        let l = ad_ld(lens, e)
+        if l > 0 {
+            let w = ad_ld(cw, e)
+            if used == 1 {
+                ad_st(cb, CB_SLEN, l)
+                ad_st(cb, CB_SENT, e)
+            }
+            let mut node = 1
+            let mut j = 0
+            while j < l {
+                let bit = std::raw::shr(w, l - 1 - j) & 1
+                let slot = 2 * node + bit
+                if j == l - 1 {
+                    ad_st(trie, slot, -(e + 1))
+                } else {
+                    let mut c = ad_ld(trie, slot)
+                    if c == 0 {
+                        nodes += 1
+                        c = nodes
+                        ad_st(trie, slot, c)
+                    }
+                    if c < 0 { break }
+                    node = c
+                }
+                j += 1
+            }
+        }
+        e += 1
+    }
+    cb
+}
+
+// Lee una entrada de un libro (read_codebook). Devuelve -1 si faltan datos.
+fn vb_cb_read(v: int, cb: int) -> int {
+    if ad_ld(v, VB_BL) < ad_ld(cb, CB_MAXLEN) { vb_fetch_partial(v) }
+    let left = ad_ld(v, VB_BL)
+    let bits = ad_ld(v, VB_BC)
+    let slen = ad_ld(cb, CB_SLEN)
+    if slen > 0 {
+        // Un solo código (todo ceros): un bit a 1 cae en una casilla vacía (valor 0, 0 bits).
+        let mut z = 0
+        while z < slen && (std::raw::shr(bits, z) & 1) == 0 { z += 1 }
+        if z >= slen {
+            if slen > left { return -1 }
+            ad_st(v, VB_BL, left - slen)
+            ad_st(v, VB_BC, std::raw::shr(bits, slen))
+            return ad_ld(cb, CB_SENT)
+        }
+        let consumed = 8 * (z / 8)
+        if consumed > left { return -1 }
+        if consumed > 0 {
+            ad_st(v, VB_BL, left - consumed)
+            ad_st(v, VB_BC, std::raw::shr(bits, consumed))
+        }
+        return 0
+    }
+    let trie = ad_ld(cb, CB_TRIE)
+    let mut node = 1
+    let mut i = 0
+    loop {
+        if i >= left { return -1 }
+        let nx = ad_ld(trie, 2 * node + (std::raw::shr(bits, i) & 1))
+        if nx < 0 {
+            ad_st(v, VB_BL, left - (i + 1))
+            ad_st(v, VB_BC, std::raw::shr(bits, i + 1))
+            return -nx - 1
+        }
+        if nx == 0 { return 0 }
+        node = nx
+        i += 1
+    }
+    0
+}
+
+// ------------------------------------------------------------ suelos
+// Suelo tipo 1: ranuras
+const FQ_TYPE: int = 0
+const FQ_UNUSED: int = 1
+const FQ_PARTS: int = 2
+const FQ_CLIST: int = 3     // 32 clases por partición
+const FQ_CLS: int = 4       // 16 clases x FQC_SLOTS
+const FQ_MULT: int = 5
+const FQ_NX: int = 6
+const FQ_X: int = 7
+const FQ_SORT: int = 8
+const FQ_NBR: int = 9       // 2 por punto (bajo, alto)
+const FQ_Y: int = 10
+const FQ_FINAL: int = 11
+const FQ_STEP2: int = 12
+// Suelo tipo 0
+const FQ_ORDER: int = 13
+const FQ_BARK: int = 14
+const FQ_AMPBITS: int = 15
+const FQ_AMPOFF: int = 16
+const FQ_NBOOKS: int = 17
+const FQ_BOOKS: int = 18
+const FQ_MAPS: int = 19
+const FQ_MAPL: int = 20
+const FQ_COEFF: int = 21
+const FQ_AMP: int = 22
+const FQ_SLOTS: int = 24
+// Clase del suelo 1: mainbook, dims, subbits, used, subbooks[8]
+const FQC_MAIN: int = 0
+const FQC_DIMS: int = 1
+const FQC_SUBBITS: int = 2
+const FQC_USED: int = 3
+const FQC_BOOKS: int = 4
+const FQC_SLOTS: int = 12
+
+fn vb_find_neighbors(xl: int, x: int) -> int {
+    // (bajo, alto) empaquetados: bajo + 65536 * alto.
+    let bound = ad_ld(xl, x)
+    let mut low = 0
+    let mut high = 4294967295
+    let mut r0 = 0
+    let mut r1 = 0
+    let mut j = 0
+    while j < x {
+        let xv = ad_ld(xl, j)
+        if xv > low && xv < bound {
+            low = xv
+            r0 = j
+        }
+        if xv < high && xv > bound {
+            high = xv
+            r1 = j
+        }
+        j += 1
+    }
+    r0 + 65536 * r1
+}
+
+fn vb_floor1_read(v: int, max_cb: int) -> int {
+    let f = vb_alloc(v, 8 * FQ_SLOTS)
+    ad_st(f, FQ_TYPE, 1)
+    let parts = vb_rd(v, 5)
+    let clist = vb_alloc(v, 8 * 33)
+    let cls = vb_alloc(v, 8 * FQC_SLOTS * 16)
+    ad_st(f, FQ_PARTS, parts)
+    ad_st(f, FQ_CLIST, clist)
+    ad_st(f, FQ_CLS, cls)
+    if parts > 0 {
+        let mut maxc = 0
+        let mut i = 0
+        while i < parts {
+            let c = vb_rd(v, 4)
+            ad_st(clist, i, c)
+            if c > maxc { maxc = c }
+            i += 1
+        }
+        let mut c = 0
+        while c <= maxc {
+            let k = cls + 8 * FQC_SLOTS * c
+            ad_st(k, FQC_DIMS, vb_rd(v, 3) + 1)
+            let sb = vb_rd(v, 2)
+            ad_st(k, FQC_SUBBITS, sb)
+            if sb != 0 {
+                let mb = vb_rd(v, 8)
+                if mb >= max_cb { std::raw::fail("vorbis: floor1, invalid codebook for class") }
+                ad_st(k, FQC_MAIN, mb)
+            }
+            let nsub = std::raw::shl(1, sb)
+            let mut j = 0
+            while j < nsub {
+                let mut b = vb_rd(v, 8)
+                if b > 0 {
+                    b -= 1
+                    if b >= max_cb { std::raw::fail("vorbis: floor1, invalid codebook for subclass") }
+                    ad_st(k, FQC_USED, ad_ld(k, FQC_USED) | std::raw::shl(1, j))
+                }
+                ad_st(k, FQC_BOOKS + j, b)
+                j += 1
+            }
+            c += 1
+        }
+    }
+    let mult = vb_rd(v, 2) + 1
+    ad_st(f, FQ_MULT, mult)
+    let rangebits = vb_rd(v, 4)
+    let xl = vb_alloc(v, 8 * 70)
+    ad_st(xl, 0, 0)
+    ad_st(xl, 1, std::raw::shl(1, rangebits))
+    let mut nx = 2
+    let mut i = 0
+    while i < parts {
+        let k = cls + 8 * FQC_SLOTS * ad_ld(clist, i)
+        let dims = ad_ld(k, FQC_DIMS)
+        if nx + dims > 65 { std::raw::fail("vorbis: floor1, x_list too long") }
+        let mut j = 0
+        while j < dims {
+            let x = vb_rd(v, rangebits)
+            let mut q = 2
+            while q < nx {
+                if ad_ld(xl, q) == x { std::raw::fail("vorbis: floor1, x_list is not unique") }
+                q += 1
+            }
+            ad_st(xl, nx, x)
+            nx += 1
+            j += 1
+        }
+        i += 1
+    }
+    let nbr = vb_alloc(v, 16 * nx)
+    let sort = vb_alloc(v, 8 * nx)
+    i = 0
+    while i < nx {
+        let r = vb_find_neighbors(xl, i)
+        ad_st(nbr, 2 * i, r & 65535)
+        ad_st(nbr, 2 * i + 1, std::raw::shr(r, 16))
+        ad_st(sort, i, i)
+        i += 1
+    }
+    // Ordenación estable por x (inserción).
+    i = 1
+    while i < nx {
+        let cur = ad_ld(sort, i)
+        let key = ad_ld(xl, cur)
+        let mut j = i - 1
+        while j >= 0 && ad_ld(xl, ad_ld(sort, j)) > key {
+            ad_st(sort, j + 1, ad_ld(sort, j))
+            j -= 1
+        }
+        ad_st(sort, j + 1, cur)
+        i += 1
+    }
+    ad_st(f, FQ_NX, nx)
+    ad_st(f, FQ_X, xl)
+    ad_st(f, FQ_SORT, sort)
+    ad_st(f, FQ_NBR, nbr)
+    ad_st(f, FQ_Y, vb_alloc(v, 8 * nx))
+    ad_st(f, FQ_FINAL, vb_alloc(v, 8 * nx))
+    ad_st(f, FQ_STEP2, vb_alloc(v, 8 * nx))
+    f
+}
+
+fn vb_f1_range(mult: int) -> int {
+    if mult == 1 { return 256 }
+    if mult == 2 { return 128 }
+    if mult == 3 { return 86 }
+    64
+}
+
+// Lee el suelo de un canal. Devuelve 0 (bien; FQ_UNUSED indica si se usa) o lanza error.
+fn vb_floor1_channel(v: int, f: int) {
+    ad_st(f, FQ_UNUSED, 1)
+    let b = vb_read(v, 1)
+    if b < 0 { return }
+    if b == 0 { return }
+    let mult = ad_ld(f, FQ_MULT)
+    let range = vb_f1_range(mult)
+    let rbits = vb_ilog(range - 1)
+    let y = ad_ld(f, FQ_Y)
+    let y0 = vb_read(v, rbits)
+    if y0 < 0 { return }
+    ad_st(y, 0, y0)
+    let y1 = vb_read(v, rbits)
+    if y1 < 0 { return }
+    ad_st(y, 1, y1)
+    let cbs = ad_ld(v, VB_CB)
+    let clist = ad_ld(f, FQ_CLIST)
+    let cls = ad_ld(f, FQ_CLS)
+    let parts = ad_ld(f, FQ_PARTS)
+    let mut offset = 2
+    let mut i = 0
+    while i < parts {
+        let k = cls + 8 * FQC_SLOTS * ad_ld(clist, i)
+        let cdim = ad_ld(k, FQC_DIMS)
+        let cbits = ad_ld(k, FQC_SUBBITS)
+        let csub = std::raw::shl(1, cbits) - 1
+        let mut cval = 0
+        if cbits > 0 {
+            cval = vb_cb_read(v, ad_ld(cbs, ad_ld(k, FQC_MAIN)))
+            if cval < 0 { return }
+        }
+        let mut j = 0
+        while j < cdim {
+            let sub = cval & csub
+            cval = std::raw::shr(cval, cbits)
+            let mut yv = 0
+            if (std::raw::shr(ad_ld(k, FQC_USED), sub) & 1) == 1 {
+                yv = vb_cb_read(v, ad_ld(cbs, ad_ld(k, FQC_BOOKS + sub)))
+                if yv < 0 { return }
+            }
+            ad_st(y, offset + j, yv)
+            j += 1
+        }
+        offset += cdim
+        i += 1
+    }
+    ad_st(f, FQ_UNUSED, 0)
+}
+
+fn vb_render_point(x0: int, y0: int, x1: int, y1: int, x: int) -> int {
+    let dy = y1 - y0
+    let adx = x1 - x0
+    if adx <= 0 { return y0 }
+    let ady = if dy < 0 { 0 - dy } else { dy }
+    let off = (ady * (x - x0)) / adx
+    if dy < 0 { return y0 - off }
+    y0 + off
+}
+
+// render_line: escribe en floor[x0 .. min(n, x1)] los valores de la tabla de dB inversa.
+fn vb_render_line(v: int, x0: int, y0: int, x1: int, y1: int, n: int, floor: int) {
+    let tab = ad_ld(v, VB_FLTAB)
+    let dy = y1 - y0
+    let adx = x1 - x0
+    if adx <= 0 { return }
+    let base = dy / adx
+    let mut y = y0
+    let sy = if dy < 0 { base - 1 } else { base + 1 }
+    let ady0 = if dy < 0 { 0 - dy } else { dy }
+    let abase = if base < 0 { 0 - base } else { base }
+    let ady = ady0 - abase * adx
+    let mut yi = y
+    if yi < 0 { yi = 0 }
+    if yi > 255 { yi = 255 }
+    ad_st(floor, x0, ad_ld(tab, yi))
+    let mut err = 0
+    let xend = if n < x1 { n } else { x1 }
+    let mut x = x0 + 1
+    while x < xend {
+        err += ady
+        if err >= adx {
+            err -= adx
+            y += sy
+        } else {
+            y += base
+        }
+        yi = y
+        if yi < 0 { yi = 0 }
+        if yi > 255 { yi = 255 }
+        ad_st(floor, x, ad_ld(tab, yi))
+        x += 1
+    }
+}
+
+fn vb_floor1_synth(v: int, f: int, bsx: int, floor: int) {
+    let n = std::raw::shl(1, bsx) / 2
+    let mult = ad_ld(f, FQ_MULT)
+    let range = vb_f1_range(mult)
+    let nx = ad_ld(f, FQ_NX)
+    let xl = ad_ld(f, FQ_X)
+    let nbr = ad_ld(f, FQ_NBR)
+    let fy = ad_ld(f, FQ_Y)
+    let fin = ad_ld(f, FQ_FINAL)
+    let st2 = ad_ld(f, FQ_STEP2)
+    let sort = ad_ld(f, FQ_SORT)
+    // paso 1
+    ad_st(st2, 0, 1)
+    ad_st(st2, 1, 1)
+    ad_st(fin, 0, ad_ld(fy, 0))
+    ad_st(fin, 1, ad_ld(fy, 1))
+    let mut i = 2
+    while i < nx {
+        let lo = ad_ld(nbr, 2 * i)
+        let hi = ad_ld(nbr, 2 * i + 1)
+        let predicted = vb_render_point(ad_ld(xl, lo), ad_ld(fin, lo), ad_ld(xl, hi), ad_ld(fin, hi), ad_ld(xl, i))
+        let val = ad_ld(fy, i)
+        let highroom = range - predicted
+        let lowroom = predicted
+        if val != 0 {
+            let room = 2 * (if highroom < lowroom { highroom } else { lowroom })
+            ad_st(st2, lo, 1)
+            ad_st(st2, hi, 1)
+            ad_st(st2, i, 1)
+            if val >= room {
+                if highroom > lowroom {
+                    ad_st(fin, i, val - lowroom + predicted)
+                } else {
+                    ad_st(fin, i, predicted - val + highroom - 1)
+                }
+            } else {
+                if (val & 1) == 1 {
+                    ad_st(fin, i, predicted - ((val + 1) / 2))
+                } else {
+                    ad_st(fin, i, predicted + (val / 2))
+                }
+            }
+        } else {
+            ad_st(st2, i, 0)
+            ad_st(fin, i, predicted)
+        }
+        i += 1
+    }
+    // paso 2
+    let first = ad_ld(sort, 0)
+    let mut hx = 0
+    let mut hy = 0
+    let mut lx = 0
+    let mut ly = ad_ld(fin, first) * mult
+    let mut q = 1
+    while q < nx {
+        let idx = ad_ld(sort, q)
+        if ad_ld(st2, idx) != 0 {
+            hy = ad_ld(fin, idx) * mult
+            hx = ad_ld(xl, idx)
+            vb_render_line(v, lx, ly, hx, hy, n, floor)
+            lx = hx
+            ly = hy
+        }
+        q += 1
+    }
+    if hx < n {
+        vb_render_line(v, hx, hy, n, hy, n, floor)
+    }
+}
+
+// ------------------------------------------------------------ residuos
+const RS_TYPE: int = 0
+const RS_BEGIN: int = 1
+const RS_END: int = 2
+const RS_PSIZE: int = 3
+const RS_NCLS: int = 4
+const RS_CBOOK: int = 5
+const RS_CLS: int = 6      // por clase: is_used + 8 libros (9 ranuras)
+const RS_MAXPASS: int = 7
+const RS_PCLS: int = 8     // clases por partición (crece, nunca se encoge, igual que el Vec de Rust)
+const RS_PCLEN: int = 9
+const RS_T2: int = 10
+const RS_T2LEN: int = 11
+const RS_SLOTS: int = 12
+const RSC_SLOTS: int = 9
+
+fn vb_residue_read(v: int, rtype: int, max_cb: int) -> int {
+    let r = vb_alloc(v, 8 * RS_SLOTS)
+    let begin = vb_rd(v, 24)
+    let end = vb_rd(v, 24)
+    let psize = vb_rd(v, 24) + 1
+    let ncls = vb_rd(v, 6) + 1
+    let cbook = vb_rd(v, 8)
+    if end < begin { std::raw::fail("vorbis: invalid residue begin and end") }
+    if cbook >= ad_ld(v, VB_NCB) { std::raw::fail("vorbis: invalid residue classbook") }
+    ad_st(r, RS_TYPE, rtype)
+    ad_st(r, RS_BEGIN, begin)
+    ad_st(r, RS_END, end)
+    ad_st(r, RS_PSIZE, psize)
+    ad_st(r, RS_NCLS, ncls)
+    ad_st(r, RS_CBOOK, cbook)
+    let cls = vb_alloc(v, 8 * RSC_SLOTS * ncls)
+    ad_st(r, RS_CLS, cls)
+    let mut c = 0
+    while c < ncls {
+        let low = vb_rd(v, 3)
+        let mut high = 0
+        if vb_rd(v, 1) == 1 { high = vb_rd(v, 5) }
+        ad_st(cls, RSC_SLOTS * c, (std::raw::shl(high, 3) | low) & 255)
+        c += 1
+    }
+    let mut maxpass = 0
+    c = 0
+    while c < ncls {
+        let k = cls + 8 * RSC_SLOTS * c
+        let used = ad_ld(k, 0)
+        let mut j = 0
+        while j < 8 {
+            if (std::raw::shr(used, j) & 1) == 1 {
+                let b = vb_rd(v, 8)
+                if b == 0 || b >= max_cb { std::raw::fail("vorbis: invalid codebook for residue") }
+                ad_st(k, 1 + j, b)
+                if j > maxpass { maxpass = j }
+            }
+            j += 1
+        }
+        c += 1
+    }
+    ad_st(r, RS_MAXPASS, maxpass)
+    r
+}
+
+// Reparte un código de clases entre las particiones (decode_classes). pc: puntero a las clases
+// (bytes en ranuras de 8), num_parts = longitud restante del Vec de Rust.
+fn vb_decode_classes(code: int, ppc: int, classif: int, pc: int, num_parts: int) {
+    let mut val = code
+    let mut skip = 0
+    if ppc > num_parts {
+        skip = ppc - num_parts
+        let mut i = 0
+        while i < skip {
+            val = val / classif
+            i += 1
+        }
+    }
+    let mut i = ppc - skip - 1
+    while i >= 0 {
+        ad_st(pc, i, val % classif)
+        val = val / classif
+        i -= 1
+    }
+}
+
+// Formato 0 y 1 de una partición. out: puntero a la primera muestra; len: tamaño de la partición.
+// Devuelve 0 si va bien, -1 si faltan datos; lanza error si el libro no tiene VQ.
+fn vb_part_vq(v: int, cb: int) -> int {
+    let e = vb_cb_read(v, cb)
+    if e < 0 { return -1 }
+    if ad_ld(cb, CB_VQ) == 0 { std::raw::fail("Svorbis: not a vq codebook") }
+    e
+}
+
+fn vb_part_format0(v: int, cb: int, out: int, len: int) -> int {
+    let dim = ad_ld(cb, CB_DIM)
+    let step = len / dim
+    let vq = ad_ld(cb, CB_VQ)
+    let mut i = 0
+    while i < step {
+        let e = vb_part_vq(v, cb)
+        if e < 0 { return -1 }
+        let mut j = 0
+        while j < dim {
+            let idx = i + j * step
+            ad_st(out, idx, vf_add(ad_ld(out, idx), ad_ld(vq, e * dim + j)))
+            j += 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn vb_part_format1(v: int, cb: int, out: int, len: int) -> int {
+    let dim = ad_ld(cb, CB_DIM)
+    let vq = ad_ld(cb, CB_VQ)
+    let mut pos = 0
+    while pos + dim <= len {
+        let e = vb_part_vq(v, cb)
+        if e < 0 { return -1 }
+        let mut j = 0
+        while j < dim {
+            ad_st(out, pos + j, vf_add(ad_ld(out, pos + j), ad_ld(vq, e * dim + j)))
+            j += 1
+        }
+        pos += dim
+    }
+    0
+}
+
+fn vb_res_grow(v: int, r: int, slot: int, lenslot: int, len: int) {
+    if ad_ld(r, lenslot) < len {
+        let np = vb_alloc(v, 8 * len)
+        let old = ad_ld(r, slot)
+        if old != 0 { rt_copy(np, old, 8 * ad_ld(r, lenslot)) }
+        ad_st(r, slot, np)
+        ad_st(r, lenslot, len)
+    }
+}
+
+// Lectura de un residuo. chans: lista de canales (índices) del submapa; nch: cuántos.
+// Los errores de fin de datos se tragan (como en Rust); los demás se propagan.
+fn vb_residue_inner12(v: int, r: int, bsx: int, chans: int, nch: int) {
+    let rtype = ad_ld(r, RS_TYPE)
+    let cbs = ad_ld(v, VB_CB)
+    let cbook = ad_ld(cbs, ad_ld(r, RS_CBOOK))
+    let chs = ad_ld(v, VB_CHS)
+    let half = std::raw::shl(1, bsx) / 2
+    let full = if rtype == 2 { half * nch } else { half }
+    let begin = ad_ld(r, RS_BEGIN)
+    let end = ad_ld(r, RS_END)
+    let lim_begin = if begin < full { begin } else { full }
+    let lim_end = if end < full { end } else { full }
+    let rlen = lim_end - lim_begin
+    let ppc = ad_ld(cbook, CB_DIM)
+    let psize = ad_ld(r, RS_PSIZE)
+    let parts = rlen / psize
+    let ncls = ad_ld(r, RS_NCLS)
+    let cls = ad_ld(r, RS_CLS)
+    if ppc == 0 { std::raw::fail("Svorbis: invalid residue classbook dimensions") }
+    let mut t2 = 0
+    if rtype == 2 {
+        vb_res_grow(v, r, RS_PCLS, RS_PCLEN, parts)
+        vb_res_grow(v, r, RS_T2, RS_T2LEN, full)
+        t2 = ad_ld(r, RS_T2)
+        let mut z = 0
+        while z < full {
+            ad_st(t2, z, 0)
+            z += 1
+        }
+    } else {
+        vb_res_grow(v, r, RS_PCLS, RS_PCLEN, parts * nch)
+    }
+    let mut has = false
+    let mut ci = 0
+    while ci < nch {
+        let ch = ad_ld(chs, ad_ld(chans, ci))
+        if ad_ld(ch, 2) == 0 { has = true }
+        if rtype != 2 {
+            let res = ad_ld(ch, 1)
+            let mut z = 0
+            while z < full {
+                ad_st(res, z, 0)
+                z += 1
+            }
+        }
+        ci += 1
+    }
+    if !has { return }
+    let pcls = ad_ld(r, RS_PCLS)
+    let pclen = ad_ld(r, RS_PCLEN)
+    let maxpass = ad_ld(r, RS_MAXPASS)
+    let mut pass = 0
+    while pass <= maxpass {
+        let mut pf = 0
+        while pf < parts {
+            if pass == 0 {
+                if rtype == 2 {
+                    let code = vb_cb_read(v, cbook)
+                    if code < 0 { return }
+                    vb_decode_classes(code, ppc, ncls, pcls + 8 * pf, pclen - pf)
+                } else {
+                    let mut i = 0
+                    while i < nch {
+                        let ch = ad_ld(chs, ad_ld(chans, i))
+                        if ad_ld(ch, 2) == 0 {
+                            let code = vb_cb_read(v, cbook)
+                            if code < 0 { return }
+                            vb_decode_classes(code, ppc, ncls, pcls + 8 * (pf + i * parts), pclen - (pf + i * parts))
+                        }
+                        i += 1
+                    }
+                }
+            }
+            let mut plast = pf + ppc
+            if parts < plast { plast = parts }
+            let mut part = pf
+            while part < plast {
+                if rtype == 2 {
+                    let k = cls + 8 * RSC_SLOTS * ad_ld(pcls, part)
+                    if (std::raw::shr(ad_ld(k, 0), pass) & 1) == 1 {
+                        let vqb = ad_ld(cbs, ad_ld(k, 1 + pass))
+                        let pstart = lim_begin + psize * part
+                        if vb_part_format1(v, vqb, t2 + 8 * pstart, psize) < 0 { return }
+                    }
+                } else {
+                    let mut i = 0
+                    while i < nch {
+                        let ch = ad_ld(chs, ad_ld(chans, i))
+                        if ad_ld(ch, 2) == 0 {
+                            let k = cls + 8 * RSC_SLOTS * ad_ld(pcls, part + parts * i)
+                            if (std::raw::shr(ad_ld(k, 0), pass) & 1) == 1 {
+                                let vqb = ad_ld(cbs, ad_ld(k, 1 + pass))
+                                let pstart = lim_begin + psize * part
+                                let out = ad_ld(ch, 1) + 8 * pstart
+                                let mut rc = 0
+                                if rtype == 0 {
+                                    rc = vb_part_format0(v, vqb, out, psize)
+                                } else {
+                                    rc = vb_part_format1(v, vqb, out, psize)
+                                }
+                                if rc < 0 { return }
+                            }
+                        }
+                        i += 1
+                    }
+                }
+                part += 1
+            }
+            pf += ppc
+        }
+        pass += 1
+    }
+}
+
+fn vb_residue_run(v: int, r: int, bsx: int, chans: int, nch: int) {
+    vb_residue_inner12(v, r, bsx, chans, nch)
+    if ad_ld(r, RS_TYPE) != 2 { return }
+    let chs = ad_ld(v, VB_CHS)
+    let t2 = ad_ld(r, RS_T2)
+    let t2len = ad_ld(r, RS_T2LEN)
+    let nchan = ad_ld(v, VB_CH)
+    if nch == 2 {
+        let c0 = ad_ld(chans, 0)
+        let c1 = c0 + ad_ld(chans, 1)
+        if c1 >= nchan { std::raw::fail("Svorbis: invalid residue channel layout") }
+        let a = ad_ld(ad_ld(chs, c0), 1)
+        let b = ad_ld(ad_ld(chs, c1), 1)
+        let half1 = std::raw::shl(1, ad_ld(v, VB_BS1)) / 2
+        let mut lim = t2len / 2
+        if half1 < lim { lim = half1 }
+        let mut i = 0
+        while i < lim {
+            ad_st(a, i, ad_ld(t2, 2 * i))
+            ad_st(b, i, ad_ld(t2, 2 * i + 1))
+            i += 1
+        }
+    } else if nch > 0 {
+        let half1 = std::raw::shl(1, ad_ld(v, VB_BS1)) / 2
+        let mut lim = t2len / nch
+        if half1 < lim { lim = half1 }
+        let mut ci = 0
+        while ci < nch {
+            let out = ad_ld(ad_ld(chs, ad_ld(chans, ci)), 1)
+            let mut i = 0
+            while i < lim {
+                ad_st(out, i, ad_ld(t2, i * nch + ci))
+                i += 1
+            }
+            ci += 1
+        }
+    }
+}
+
+// ------------------------------------------------------------ mapeos y modos
+const MP_NCOUP: int = 0
+const MP_COUP: int = 1
+const MP_MUX: int = 2
+const MP_NSUB: int = 3
+const MP_SUB: int = 4
+const MP_SLOTS: int = 6
+
+fn vb_mapping_read(v: int, nchan: int, max_floor: int, max_res: int) -> int {
+    let m = vb_alloc(v, 8 * MP_SLOTS)
+    let mtype = vb_rd(v, 16)
+    if mtype != 0 { std::raw::fail("vorbis: invalid mapping type") }
+    let mut nsub = 1
+    if vb_rd(v, 1) == 1 { nsub = vb_rd(v, 4) + 1 }
+    let mut ncoup = 0
+    let coup = vb_alloc(v, 16 * 257)
+    if vb_rd(v, 1) == 1 {
+        ncoup = vb_rd(v, 8) + 1
+        let maxch = nchan - 1
+        let cbits = vb_ilog(maxch)
+        let mut i = 0
+        while i < ncoup {
+            let mag = vb_rd(v, cbits)
+            let ang = vb_rd(v, cbits)
+            if mag == ang || mag > maxch || ang > maxch { std::raw::fail("vorbis: invalid channel coupling") }
+            ad_st(coup, 2 * i, mag)
+            ad_st(coup, 2 * i + 1, ang)
+            i += 1
+        }
+    }
+    if vb_rd(v, 2) != 0 { std::raw::fail("vorbis: reserved mapping bits non-zero") }
+    let mux = vb_alloc(v, 8 * (nchan + 1))
+    if nsub > 1 {
+        let mut i = 0
+        while i < nchan {
+            let mx = vb_rd(v, 4)
+            if mx >= nsub { std::raw::fail("vorbis: invalid channel multiplex") }
+            ad_st(mux, i, mx)
+            i += 1
+        }
+    }
+    let sub = vb_alloc(v, 16 * nsub)
+    let mut i = 0
+    while i < nsub {
+        vb_rd(v, 8)
+        let fl = vb_rd(v, 8)
+        if fl >= max_floor { std::raw::fail("vorbis: invalid floor for mapping") }
+        let rs = vb_rd(v, 8)
+        if rs >= max_res { std::raw::fail("vorbis: invalid residue for mapping") }
+        ad_st(sub, 2 * i, fl)
+        ad_st(sub, 2 * i + 1, rs)
+        i += 1
+    }
+    ad_st(m, MP_NCOUP, ncoup)
+    ad_st(m, MP_COUP, coup)
+    ad_st(m, MP_MUX, mux)
+    ad_st(m, MP_NSUB, nsub)
+    ad_st(m, MP_SUB, sub)
+    m
+}
+
+// Mapa de canales de Vorbis a plano de salida (map_vorbis_channel).
+fn vb_map_channel(n: int, ch: int) -> int {
+    if n == 3 {
+        if ch == 1 { return 2 }
+        if ch == 2 { return 1 }
+        return ch
+    }
+    if n == 5 {
+        if ch == 1 { return 2 }
+        if ch == 2 { return 1 }
+        return ch
+    }
+    if n == 6 {
+        if ch == 1 { return 2 }
+        if ch == 2 { return 1 }
+        if ch == 3 { return 4 }
+        if ch == 4 { return 5 }
+        if ch == 5 { return 3 }
+        return ch
+    }
+    if n == 7 {
+        if ch == 1 { return 2 }
+        if ch == 2 { return 1 }
+        if ch == 3 { return 5 }
+        if ch == 4 { return 6 }
+        if ch == 5 { return 4 }
+        if ch == 6 { return 3 }
+        return ch
+    }
+    if n == 8 {
+        if ch == 1 { return 2 }
+        if ch == 2 { return 1 }
+        if ch == 3 { return 6 }
+        if ch == 4 { return 7 }
+        if ch == 5 { return 4 }
+        if ch == 6 { return 5 }
+        if ch == 7 { return 3 }
+        return ch
+    }
+    ch
+}
+
+// ------------------------------------------------------------ suelo tipo 0
+// arctan en f64 (reducción de argumento + serie); solo se usa para el mapa de Bark.
+fn vb_atan(x: int) -> int {
+    let neg = std::raw::fcmp(x, 0) == -1
+    let mut t = if neg { vf_neg(x) } else { x }
+    let one = vf_one()
+    let mut inv = false
+    if std::raw::fcmp(t, one) == 1 {
+        t = std::raw::fdiv(one, t)
+        inv = true
+    }
+    let mut mult = 1
+    let mut k = 0
+    while k < 3 {
+        let s = std::raw::fsqrt(std::raw::fadd(one, std::raw::fmul(t, t)))
+        t = std::raw::fdiv(t, std::raw::fadd(one, s))
+        mult = mult * 2
+        k += 1
+    }
+    let t2 = std::raw::fmul(t, t)
+    let mut term = t
+    let mut sum = t
+    let mut n = 1
+    while n < 14 {
+        term = std::raw::fmul(term, t2)
+        let c = std::raw::fdiv(term, std::raw::ffromint(2 * n + 1))
+        if n % 2 == 1 {
+            sum = std::raw::fsub(sum, c)
+        } else {
+            sum = std::raw::fadd(sum, c)
+        }
+        n += 1
+    }
+    let mut r = std::raw::fmul(sum, std::raw::ffromint(mult))
+    if inv { r = std::raw::fsub(4609753056924675352, r) }
+    if neg { r = vf_neg(r) }
+    r
+}
+
+fn vb_bark(x: int) -> int {
+    let a = std::raw::fmul(4623564262444577587, vb_atan(std::raw::fmul(4559964518578843990, x)))
+    let b = std::raw::fmul(4612226450382672364, vb_atan(std::raw::fmul(std::raw::fmul(4491176510776731676, x), x)))
+    let c = std::raw::fmul(4547007122018943789, x)
+    std::raw::fadd(std::raw::fadd(a, b), c)
+}
+
+fn vb_bark_map(v: int, n: int, rate: int, size: int) -> int {
+    let map = vb_alloc(v, 8 * (n + 1))
+    let fmin = size - 1
+    let rate_f = std::raw::ffromint(rate)
+    let rate_by_2n = std::raw::fdiv(rate_f, std::raw::fmul(4611686018427387904, std::raw::ffromint(n)))
+    let c = std::raw::fdiv(std::raw::ffromint(size), vb_bark(std::raw::fmul(4602678819172646912, rate_f)))
+    let mut i = 0
+    while i < n {
+        let fb = std::raw::ftoint(std::raw::fmul(vb_bark(std::raw::fmul(rate_by_2n, std::raw::ffromint(i))), c))
+        ad_st(map, i, if fb < fmin { fb } else { fmin })
+        i += 1
+    }
+    map
+}
+
+fn vb_floor0_read(v: int, bs0: int, bs1: int, max_cb: int) -> int {
+    let f = vb_alloc(v, 8 * FQ_SLOTS)
+    ad_st(f, FQ_TYPE, 0)
+    let order = vb_rd(v, 8)
+    let rate = vb_rd(v, 16)
+    let bsize = vb_rd(v, 16)
+    let abits = vb_rd(v, 6)
+    let aoff = vb_rd(v, 8)
+    let nbooks = vb_rd(v, 4) + 1
+    let books = vb_alloc(v, 8 * 16)
+    let mut i = 0
+    while i < nbooks {
+        let b = vb_rd(v, 8)
+        if b >= max_cb { std::raw::fail("vorbis: floor0, invalid codebook number") }
+        ad_st(books, i, b)
+        i += 1
+    }
+    ad_st(f, FQ_ORDER, order)
+    ad_st(f, FQ_BARK, bsize)
+    ad_st(f, FQ_AMPBITS, abits)
+    ad_st(f, FQ_AMPOFF, aoff)
+    ad_st(f, FQ_NBOOKS, nbooks)
+    ad_st(f, FQ_BOOKS, books)
+    ad_st(f, FQ_X, bs0)
+    ad_st(f, FQ_MAPS, vb_bark_map(v, std::raw::shl(1, bs0 - 1), rate, bsize))
+    ad_st(f, FQ_MAPL, vb_bark_map(v, std::raw::shl(1, bs1 - 1), rate, bsize))
+    ad_st(f, FQ_COEFF, vb_alloc(v, 8 * 257))
+    f
+}
+
+fn vb_f32cos(x: int) -> int { vec_f32(lm_cos(x)) }
+
+fn vb_floor0_channel(v: int, f: int) {
+    ad_st(f, FQ_UNUSED, 1)
+    let abits = ad_ld(f, FQ_AMPBITS)
+    let amp = vb_read(v, abits)
+    if amp < 0 { return }
+    ad_st(f, FQ_AMP, amp)
+    if amp != 0 {
+        let nb = ad_ld(f, FQ_NBOOKS)
+        let bi = vb_read(v, vb_ilog(nb))
+        if bi < 0 { return }
+        let cbi = ad_ld(ad_ld(f, FQ_BOOKS), bi)
+        if cbi >= ad_ld(v, VB_NCB) { std::raw::fail("Svorbis: floor0, invalid codebook") }
+        let cb = ad_ld(ad_ld(v, VB_CB), cbi)
+        let order = ad_ld(f, FQ_ORDER)
+        let coeffs = ad_ld(f, FQ_COEFF)
+        let dim = ad_ld(cb, CB_DIM)
+        if dim == 0 { std::raw::fail("Svorbis: floor0, empty codebook") }
+        let mut i = 0
+        let mut last = 0
+        while i < order {
+            let i0 = i
+            let e = vb_cb_read(v, cb)
+            if e < 0 { return }
+            if ad_ld(cb, CB_VQ) == 0 { std::raw::fail("Svorbis: not a vq codebook") }
+            let take = if order - i0 < dim { order - i0 } else { dim }
+            i += take
+            let mut j = 0
+            while j < take {
+                ad_st(coeffs, i0 + j, vf_add(last, ad_ld(ad_ld(cb, CB_VQ), e * dim + j)))
+                j += 1
+            }
+            last = ad_ld(coeffs, i - 1)
+        }
+        let mut j = 0
+        while j < order {
+            ad_st(coeffs, j, vf_mul(4611686018427387904, vb_f32cos(ad_ld(coeffs, j))))
+            j += 1
+        }
+    }
+    if amp == 0 { ad_st(f, FQ_UNUSED, 1) } else { ad_st(f, FQ_UNUSED, 0) }
+}
+
+fn vb_u64_to_f32(x: int) -> int {
+    if x >= 0 { return vec_f32(std::raw::ffromint(x)) }
+    let h = std::raw::shr(x, 1) | (x & 1)
+    vec_f32(std::raw::fmul(std::raw::ffromint(h), 4611686018427387904))
+}
+
+fn vb_floor0_synth(v: int, f: int, bsx: int, floor: int) {
+    let n = std::raw::shl(1, bsx) / 2
+    let map = if bsx == ad_ld(f, FQ_X) { ad_ld(f, FQ_MAPS) } else { ad_ld(f, FQ_MAPL) }
+    let bsize = ad_ld(f, FQ_BARK)
+    let order = ad_ld(f, FQ_ORDER)
+    let coeffs = ad_ld(f, FQ_COEFF)
+    let amp = ad_ld(f, FQ_AMP)
+    let abits = ad_ld(f, FQ_AMPBITS)
+    let aoff = ad_ld(f, FQ_AMPOFF)
+    // PI f32 = 3.1415927
+    let pi32 = vec_f32(4614256656552045848)
+    let omega_step = vf_div(pi32, std::raw::ffromint(bsize))
+    let one = vf_one()
+    let half = 4602678819172646912
+    let two = 4611686018427387904
+    let mut i = 0
+    loop {
+        let cond = ad_ld(map, i)
+        let omega = vf_mul(omega_step, std::raw::ffromint(cond))
+        let cosw = vb_f32cos(omega)
+        let twocos = vf_mul(two, cosw)
+        let mut p = one
+        let mut q = one
+        let mut c = 0
+        while c + 2 <= order {
+            p = vf_mul(p, vf_sub(ad_ld(coeffs, c + 1), twocos))
+            q = vf_mul(q, vf_sub(ad_ld(coeffs, c), twocos))
+            c += 2
+        }
+        if c < order {
+            q = vf_mul(q, vf_sub(ad_ld(coeffs, c), twocos))
+            p = vf_mul(vf_mul(p, p), vf_sub(one, vf_mul(cosw, cosw)))
+            q = vf_mul(vf_mul(q, q), vec_f32(4598175219545276416))
+        } else {
+            p = vf_mul(vf_mul(p, p), vf_div(vf_sub(one, cosw), two))
+            q = vf_mul(vf_mul(q, q), vf_div(vf_add(one, cosw), two))
+        }
+        if std::raw::fcmp(vf_add(p, q), 0) == 0 { std::raw::fail("Svorbis: invalid floor0 coefficients") }
+        let a = vb_u64_to_f32(std::raw::wmul(amp, aoff))
+        let mask = std::raw::shl(1, abits) - 1
+        let b = vf_mul(vec_f32(std::raw::fsqrt(vf_add(p, q))), vb_u64_to_f32(mask))
+        let t = vf_mul(vec_f32(4592960357227560960), vf_sub(vf_div(a, b), std::raw::ffromint(aoff)))
+        let value = vec_f32(lm_exp(t))
+        while i < n && ad_ld(map, i) == cond {
+            ad_st(floor, i, value)
+            i += 1
+        }
+        if i >= n { break }
+    }
+}
+
+// ------------------------------------------------------------ ventanas, IMDCT y FFT
+fn vb_window(v: int, bs: int) -> int {
+    let len = bs / 2
+    let w = vb_alloc(v, 8 * (len + 1))
+    let denom = std::raw::ffromint(len)
+    let pi2 = 4609753056924675352
+    let mut i = 0
+    while i < len {
+        let num = std::raw::fadd(std::raw::ffromint(i), 4602678819172646912)
+        let frac = std::raw::fmul(pi2, std::raw::fdiv(num, denom))
+        let s = lm_sin(frac)
+        let s2 = std::raw::fmul(s, s)
+        ad_st(w, i, vec_f32(lm_sin(std::raw::fmul(pi2, s2))))
+        i += 1
+    }
+    w
+}
+
+// Twiddles del IMDCT: Imdct::new(n) con n = bs/2 -> n/2 = bs/4 complejos.
+fn vb_imdct_twiddles(v: int, bs: int) -> int {
+    let n = bs / 2
+    let n2 = n / 2
+    let t = vb_alloc(v, 16 * (n2 + 1))
+    let pi_n = std::raw::fdiv(4614256656552045848, std::raw::ffromint(n))
+    let mut k = 0
+    while k < n2 {
+        let theta = std::raw::fmul(pi_n, std::raw::fadd(4593671619917905920, std::raw::ffromint(k)))
+        ad_st(t, 2 * k, vec_f32(lm_cos(theta)))
+        ad_st(t, 2 * k + 1, vec_f32(lm_sin(theta)))
+        k += 1
+    }
+    t
+}
+
+fn vb_perm(v: int, n: int) -> int {
+    let p = vb_alloc(v, 8 * (n + 1))
+    let k = ad_bitlen(n) - 1
+    let mut i = 0
+    while i < n {
+        let mut r = 0
+        let mut b = 0
+        while b < k {
+            r = r | std::raw::shl((std::raw::shr(i, b) & 1), k - 1 - b)
+            b += 1
+        }
+        ad_st(p, i, r)
+        i += 1
+    }
+    p
+}
+
+fn vb_fft_table(v: int, n: int) -> int {
+    let lg = ad_bitlen(n) - 1
+    let tt = ad_ld(v, VB_FFTT)
+    let have = ad_ld(tt, lg)
+    if have != 0 { return have }
+    let h = n / 2
+    let t = vb_alloc(v, 16 * (h + 1))
+    let c = vec_f32(4604544271108800512)
+    let theta = std::raw::fdiv(4614256656552045848, std::raw::ffromint(h))
+    let mut k = 0
+    while k < h {
+        let mut wr = 0
+        let mut wi = 0
+        if n <= 32 && k == 0 {
+            wr = vf_one()
+            wi = 0
+        } else if n <= 32 && 4 * k == n {
+            wr = 0
+            wi = vf_neg(vf_one())
+        } else if n <= 32 && 8 * k == n {
+            wr = c
+            wi = vf_neg(c)
+        } else if n <= 32 && 8 * k == 3 * n {
+            wr = vf_neg(c)
+            wi = vf_neg(c)
+        } else {
+            let angle = std::raw::fmul(theta, std::raw::ffromint(k))
+            wr = vec_f32(lm_cos(angle))
+            wi = vec_f32(vf_neg(lm_sin(angle)))
+        }
+        ad_st(t, 2 * k, wr)
+        ad_st(t, 2 * k + 1, wi)
+        k += 1
+    }
+    ad_st(tt, lg, t)
+    t
+}
+
+// FFT por decimación en el tiempo sobre a[0..n) (ya en orden de bits invertido).
+fn vb_fft_rec(v: int, a: int, n: int) {
+    if n == 1 { return }
+    let h = n / 2
+    vb_fft_rec(v, a, h)
+    vb_fft_rec(v, a + 16 * h, h)
+    let tw = vb_fft_table(v, n)
+    let mut k = 0
+    while k < h {
+        let e = a + 16 * k
+        let o = a + 16 * (h + k)
+        let pr = std::raw::load(e)
+        let pi = std::raw::load(e + 8)
+        let orr = std::raw::load(o)
+        let oi = std::raw::load(o + 8)
+        let mut qr = orr
+        let mut qi = oi
+        if k > 0 {
+            if n <= 32 && 4 * k == n {
+                qr = oi
+                qi = vf_neg(orr)
+            } else {
+                let wr = std::raw::load(tw + 16 * k)
+                let wi = std::raw::load(tw + 16 * k + 8)
+                qr = vf_sub(vf_mul(orr, wr), vf_mul(oi, wi))
+                qi = vf_add(vf_mul(orr, wi), vf_mul(oi, wr))
+            }
+        }
+        std::raw::store(e, vf_add(pr, qr))
+        std::raw::store(e + 8, vf_add(pi, qi))
+        std::raw::store(o, vf_sub(pr, qr))
+        std::raw::store(o + 8, vf_sub(pi, qi))
+        k += 1
+    }
+}
+
+fn vb_fft(v: int, perm: int, x: int, y: int, n: int) {
+    let mut i = 0
+    while i < n {
+        let s = x + 16 * std::raw::load(perm + 8 * i)
+        std::raw::store(y + 16 * i, std::raw::load(s))
+        std::raw::store(y + 16 * i + 8, std::raw::load(s + 8))
+        i += 1
+    }
+    vb_fft_rec(v, y, n)
+}
+
+// IMDCT de symphonia-core (Imdct::imdct): spec[bs/2] -> out[bs].
+fn vb_imdct(v: int, long: bool, spec: int, out: int) {
+    let bsx = if long { ad_ld(v, VB_BS1) } else { ad_ld(v, VB_BS0) }
+    let bs = std::raw::shl(1, bsx)
+    let n = bs / 2
+    let n2 = bs / 4
+    let n4 = bs / 8
+    let tw = if long { ad_ld(v, VB_TWL) } else { ad_ld(v, VB_TWS) }
+    let perm = if long { ad_ld(v, VB_PERML) } else { ad_ld(v, VB_PERMS) }
+    let fin = ad_ld(v, VB_FIN)
+    let fout = ad_ld(v, VB_FOUT)
+    let mut i = 0
+    while i < n2 {
+        let even = std::raw::load(spec + 16 * i)
+        let odd = vf_neg(std::raw::load(spec + 8 * (n - 1 - 2 * i)))
+        let wr = std::raw::load(tw + 16 * i)
+        let wi = std::raw::load(tw + 16 * i + 8)
+        std::raw::store(fin + 16 * i, vf_sub(vf_mul(odd, wi), vf_mul(even, wr)))
+        std::raw::store(fin + 16 * i + 8, vf_add(vf_mul(odd, wr), vf_mul(even, wi)))
+        i += 1
+    }
+    vb_fft(v, perm, fin, fout, n2)
+    let v1 = out + 8 * n2
+    let v2 = out + 16 * n2
+    let v3 = out + 24 * n2
+    i = 0
+    while i < n4 {
+        let xr = std::raw::load(fout + 16 * i)
+        let xi = std::raw::load(fout + 16 * i + 8)
+        let wr = std::raw::load(tw + 16 * i)
+        let wi = std::raw::load(tw + 16 * i + 8)
+        let vr = vf_add(vf_mul(wr, xr), vf_mul(wi, xi))
+        let vi = vf_sub(vf_mul(wi, xr), vf_mul(wr, xi))
+        let fi = 2 * i
+        let ri = n2 - 1 - 2 * i
+        std::raw::store(out + 8 * ri, vf_neg(vi))
+        std::raw::store(v1 + 8 * fi, vi)
+        std::raw::store(v2 + 8 * ri, vr)
+        std::raw::store(v3 + 8 * fi, vr)
+        i += 1
+    }
+    i = 0
+    while i < n2 - n4 {
+        let xr = std::raw::load(fout + 16 * (n4 + i))
+        let xi = std::raw::load(fout + 16 * (n4 + i) + 8)
+        let wr = std::raw::load(tw + 16 * (n4 + i))
+        let wi = std::raw::load(tw + 16 * (n4 + i) + 8)
+        let vr = vf_add(vf_mul(wr, xr), vf_mul(wi, xi))
+        let vi = vf_sub(vf_mul(wi, xr), vf_mul(wr, xi))
+        let fi = 2 * i
+        let ri = n2 - 1 - 2 * i
+        std::raw::store(out + 8 * fi, vf_neg(vr))
+        std::raw::store(v1 + 8 * ri, vr)
+        std::raw::store(v2 + 8 * fi, vi)
+        std::raw::store(v3 + 8 * ri, vi)
+        i += 1
+    }
+}
+
+// ------------------------------------------------------------ preparación del decodificador
+fn vb_floor_table() -> int {
+    let src = [870626366, 871600393, 872526475, 873078844, 873667107, 874293600, 874960807, 875671371, 876428112, 877234032, 878092323, 879006392, 879979861, 880910216, 881462268, 882050195, 882676329, 883343154, 884053311, 884809619, 885615076, 886472877, 887386422, 888359334, 889293960, 889845696, 890433286, 891059062, 891725504, 892435255, 893191130, 893996126, 894853435, 895766457, 896738812, 897677706, 898229126, 898816380, 899441797, 900107858, 900817203, 901572645, 902377180, 903233998, 904146497, 905118295, 906061455, 906612559, 907199477, 907824536, 908490216, 909199154, 909954164, 910758238, 911614565, 912526542, 913497784, 914445207, 914995996, 915582578, 916207279, 916872577, 917581109, 918335687, 919139300, 919995137, 920906592, 921877278, 922828962, 923379435, 923965681, 924590025, 925254942, 925963069, 926717214, 927520367, 928375714, 929286647, 930256777, 931212719, 931762878, 932348788, 932972774, 933637310, 934345031, 935098745, 935901438, 936756295, 937666706, 938636280, 939596480, 940146323, 940731897, 941355526, 942019682, 942726998, 943480280, 944282514, 945136882, 946046771, 947015790, 947980243, 948529771, 949115010, 949738282, 950402057, 951108968, 951861819, 952663593, 953517472, 954426841, 955395304, 956364009, 956913222, 957498126, 958121041, 958784437, 959490943, 960243362, 961044677, 961898067, 962806915, 963774824, 964747777, 965296676, 965881245, 966503803, 967166819, 967872921, 968624909, 969425766, 970278667, 971186994, 972154349, 973131549, 973680133, 974264368, 974886569, 975549205, 976254903, 977006460, 977806858, 978659271, 979567078, 980533880, 981515323, 982063593, 982647494, 983269339, 983931595, 984636888, 985388015, 986187955, 987039880, 987947167, 988913415, 989899100, 990447056, 991030622, 991652111, 992313988, 993018877, 993769575, 994569057, 995420493, 996327261, 997292956, 998282879, 998830522, 999413753, 1000034887, 1000696385, 1001400871, 1002151138, 1002950162, 1003801111, 1004707360, 1005672501, 1006666662, 1007213991, 1007796888, 1008417666, 1009078785, 1009782868, 1010532705, 1011331272, 1012181733, 1013087464, 1014052052, 1015050447, 1015597462, 1016180026, 1016800448, 1017461189, 1018164869, 1018914277, 1019712386, 1020562361, 1021467572, 1022431609, 1023434235, 1023980937, 1024563167, 1025183234, 1025843597, 1026546873, 1027295853, 1028093504, 1028942993, 1029847685, 1030811170, 1031818026, 1032364415, 1032946312, 1033566024, 1034226008, 1034928882, 1035677432, 1036474627, 1037323629, 1038227804, 1039190737, 1040201819, 1040747895, 1041329459, 1041948816, 1042608423, 1043310894, 1044059015, 1044855754, 1045704269, 1046607927, 1047570308, 1048585615, 1049131379, 1049712610, 1050331612, 1050990841, 1051692909, 1052440603, 1053236885, 1054084915, 1054988055, 1055949885, 1056969414, 1057514866, 1058095763, 1058714411, 1059373262, 1060074929, 1060822194, 1061618021, 1062465565, 1063368187, 1064329467, 1065353216]
+    let t = rt_alloc(8 * 256)
+    let mut i = 0
+    while i < 256 {
+        std::raw::store(t + 8 * i, ad_f32bits_to_f64(src[i]))
+        i += 1
+    }
+    t
+}
+
+fn vb_setup_parse(v: int, extra: int, len: int) {
+    // Cabecera de identificación (30 bytes).
+    if len < 30 { std::raw::fail("vorbis: truncated identification header") }
+    if std::raw::load8(extra) != 1 { std::raw::fail("vorbis: invalid packet type for identification header") }
+    if ad_ld32(extra + 1) != 1651666806 || ad_ld16(extra + 5) != 29545 {
+        std::raw::fail("vorbis: invalid header signature")
+    }
+    if ad_ld32(extra + 7) != 0 { std::raw::fail("vorbis: only vorbis 1 is supported") }
+    let nch = std::raw::load8(extra + 11)
+    if nch == 0 { std::raw::fail("vorbis: number of channels cannot be 0") }
+    if nch > 32 { std::raw::fail("vorbis: only a maximum of 32 channels are supported") }
+    let rate = ad_ld32(extra + 12)
+    if rate == 0 { std::raw::fail("vorbis: sample rate cannot be 0") }
+    let bsz = std::raw::load8(extra + 28)
+    let bs0 = bsz & 15
+    let bs1 = std::raw::shr(bsz, 4) & 15
+    if bs0 < 6 || bs0 > 13 { std::raw::fail("vorbis: blocksize_0 out-of-bounds") }
+    if bs1 < 6 || bs1 > 13 { std::raw::fail("vorbis: blocksize_1 out-of-bounds") }
+    if bs0 > bs1 { std::raw::fail("vorbis: blocksize_0 exceeds blocksize_1") }
+    if std::raw::load8(extra + 29) != 1 { std::raw::fail("vorbis: ident header framing flag unset") }
+    if nch > 8 { std::raw::fail("vorbis: unknown channel map (fix me)") }
+    ad_st(v, VB_CH, nch)
+    ad_st(v, VB_RATE, rate)
+    ad_st(v, VB_BS0, bs0)
+    ad_st(v, VB_BS1, bs1)
+    // Cabecera de configuración.
+    let sp = extra + 30
+    if len < 37 { std::raw::fail("vorbis: missing setup header") }
+    if std::raw::load8(sp) != 5 { std::raw::fail("vorbis: invalid packet type for setup header") }
+    if ad_ld32(sp + 1) != 1651666806 || ad_ld16(sp + 5) != 29545 {
+        std::raw::fail("vorbis: invalid setup header signature")
+    }
+    vb_br_set(v, sp + 7, len - 37)
+    ad_st(v, VB_FLTAB, vb_floor_table())
+    // libros
+    let ncb = vb_rd(v, 8) + 1
+    let cbs = vb_alloc(v, 8 * ncb)
+    ad_st(v, VB_CB, cbs)
+    ad_st(v, VB_NCB, 0)
+    let mut i = 0
+    while i < ncb {
+        ad_st(cbs, i, vb_codebook_read(v))
+        ad_st(v, VB_NCB, i + 1)
+        i += 1
+    }
+    // transformadas en el dominio del tiempo
+    let ntd = vb_rd(v, 6) + 1
+    i = 0
+    while i < ntd {
+        if vb_rd(v, 16) != 0 { std::raw::fail("vorbis: invalid time domain tranform") }
+        i += 1
+    }
+    let max_cb = ncb & 255
+    // suelos
+    let nfl = vb_rd(v, 6) + 1
+    let fls = vb_alloc(v, 8 * nfl)
+    ad_st(v, VB_FL, fls)
+    i = 0
+    while i < nfl {
+        let ft = vb_rd(v, 16)
+        if ft == 0 {
+            ad_st(fls, i, vb_floor0_read(v, bs0, bs1, max_cb))
+        } else if ft == 1 {
+            ad_st(fls, i, vb_floor1_read(v, max_cb))
+        } else {
+            std::raw::fail("vorbis: invalid floor type")
+        }
+        i += 1
+    }
+    ad_st(v, VB_NFL, nfl)
+    // residuos
+    let nrs = vb_rd(v, 6) + 1
+    let rss = vb_alloc(v, 8 * nrs)
+    ad_st(v, VB_RS, rss)
+    i = 0
+    while i < nrs {
+        let rt = vb_rd(v, 16)
+        if rt > 2 { std::raw::fail("vorbis: invalid residue type") }
+        ad_st(rss, i, vb_residue_read(v, rt, max_cb))
+        i += 1
+    }
+    ad_st(v, VB_NRS, nrs)
+    // mapeos
+    let nmp = vb_rd(v, 6) + 1
+    let mps = vb_alloc(v, 8 * nmp)
+    ad_st(v, VB_MP, mps)
+    i = 0
+    while i < nmp {
+        ad_st(mps, i, vb_mapping_read(v, nch, nfl & 255, nrs & 255))
+        i += 1
+    }
+    ad_st(v, VB_NMP, nmp)
+    // modos
+    let nmd = vb_rd(v, 6) + 1
+    let mds = vb_alloc(v, 16 * nmd)
+    ad_st(v, VB_MD, mds)
+    i = 0
+    while i < nmd {
+        let flag = vb_rd(v, 1)
+        let wt = vb_rd(v, 16)
+        let tt = vb_rd(v, 16)
+        let mp = vb_rd(v, 8)
+        if wt != 0 { std::raw::fail("vorbis: invalid window type for mode") }
+        if tt != 0 { std::raw::fail("vorbis: invalid transform type for mode") }
+        if mp >= (nmp & 255) { std::raw::fail("vorbis: invalid mode mapping") }
+        ad_st(mds, 2 * i, flag)
+        ad_st(mds, 2 * i + 1, mp)
+        i += 1
+    }
+    ad_st(v, VB_NMD, nmd)
+    if vb_rd(v, 1) == 0 { std::raw::fail("vorbis: setup header framing flag unset") }
+    // tablas de síntesis
+    ad_st(v, VB_WS, vb_window(v, std::raw::shl(1, bs0)))
+    ad_st(v, VB_WL, vb_window(v, std::raw::shl(1, bs1)))
+    ad_st(v, VB_TWS, vb_imdct_twiddles(v, std::raw::shl(1, bs0)))
+    ad_st(v, VB_TWL, vb_imdct_twiddles(v, std::raw::shl(1, bs1)))
+    ad_st(v, VB_PERMS, vb_perm(v, std::raw::shl(1, bs0) / 4))
+    ad_st(v, VB_PERML, vb_perm(v, std::raw::shl(1, bs1) / 4))
+    ad_st(v, VB_FFTT, vb_alloc(v, 8 * 20))
+    ad_st(v, VB_FIN, vb_alloc(v, 16 * (std::raw::shl(1, bs1) / 4 + 1)))
+    ad_st(v, VB_FOUT, vb_alloc(v, 16 * (std::raw::shl(1, bs1) / 4 + 1)))
+    let half1 = std::raw::shl(1, bs1) / 2
+    let chs = vb_alloc(v, 8 * nch)
+    ad_st(v, VB_CHS, chs)
+    let inv = vb_alloc(v, 8 * nch)
+    ad_st(v, VB_INV, inv)
+    i = 0
+    while i < nch {
+        let c = vb_alloc(v, 8 * 8)
+        ad_st(c, 0, vb_alloc(v, 8 * (half1 + 1)))
+        ad_st(c, 1, vb_alloc(v, 8 * (half1 + 1)))
+        ad_st(c, 3, vb_alloc(v, 8 * (2 * half1 + 1)))
+        ad_st(c, 4, vb_alloc(v, 8 * (half1 + 1)))
+        ad_st(c, 5, vb_alloc(v, 8 * (half1 + 1)))
+        ad_st(chs, i, c)
+        ad_st(inv, vb_map_channel(nch, i), i)
+        i += 1
+    }
+}
+
+// Crea el decodificador a partir de «extra data» (identificación + configuración). 0 si falla.
+fn vb_new(extra: int, len: int) -> int {
+    let v = rt_alloc_zero(8 * VB_SLOTS)
+    let r = std::try::catch(|| vb_setup_parse(v, extra, len))
+    match r {
+        Result::Ok(_) => v,
+        Result::Err(_) => {
+            vb_free(v)
+            0
+        },
+    }
+}
+
+// ------------------------------------------------------------ síntesis
+fn vb_overlap_add(out: int, left: int, right: int, win: int, len: int) {
+    let mut i = 0
+    while i < len {
+        let w0 = std::raw::load(win + 8 * (len - 1 - i))
+        let w1 = std::raw::load(win + 8 * i)
+        let s0 = std::raw::load(left + 8 * i)
+        let s1 = std::raw::load(right + 8 * i)
+        std::raw::store(out + 8 * i, vf_add(vf_mul(s0, w0), vf_mul(s1, w1)))
+        i += 1
+    }
+}
+
+fn vb_synth(v: int, ch: int, long: bool, buf: int) {
+    let bs0 = std::raw::shl(1, ad_ld(v, VB_BS0))
+    let bs1 = std::raw::shl(1, ad_ld(v, VB_BS1))
+    let bs = if long { bs1 } else { bs0 }
+    let imd = ad_ld(ch, 3)
+    let ovl = ad_ld(ch, 4)
+    vb_imdct(v, long, ad_ld(ch, 0), imd)
+    if ad_ld(v, VB_LAP) != 0 {
+        let prev = ad_ld(v, VB_PREV) != 0
+        let win = if long && prev { ad_ld(v, VB_WL) } else { ad_ld(v, VB_WS) }
+        let pn = if prev { bs1 } else { bs0 }
+        let rlen = (pn + bs) / 4
+        if prev == long {
+            vb_overlap_add(buf, ovl, imd, win, bs / 2)
+        } else if prev && !long {
+            let start = (bs1 - bs0) / 4
+            rt_copy(buf, ovl, 8 * start)
+            vb_overlap_add(buf + 8 * start, ovl + 8 * start, imd, win, bs0 / 2)
+        } else {
+            let start = (bs1 - bs0) / 4
+            let end = start + bs0 / 2
+            vb_overlap_add(buf, ovl, imd + 8 * start, win, bs0 / 2)
+            rt_copy(buf + 8 * (bs0 / 2), imd + 8 * end, 8 * (bs1 / 2 - end))
+        }
+        let mut i = 0
+        while i < rlen {
+            let s = std::raw::load(buf + 8 * i)
+            if std::raw::fcmp(s, 4607182418800017408) == 1 {
+                std::raw::store(buf + 8 * i, 4607182418800017408)
+            } else if std::raw::fcmp(s, -4616189618054758400) == -1 {
+                std::raw::store(buf + 8 * i, -4616189618054758400)
+            }
+            i += 1
+        }
+    }
+    rt_copy(ovl, imd + 8 * (bs / 2), 8 * (bs / 2))
+}
+
+fn vb_floor_run(v: int, f: int, bsx: int, floor: int) {
+    if ad_ld(f, FQ_TYPE) == 1 {
+        vb_floor1_synth(v, f, bsx, floor)
+    } else {
+        vb_floor0_synth(v, f, bsx, floor)
+    }
+}
+
+// Decodifica un paquete de audio y añade las muestras (intercaladas) a ob.
+// Errores: clase I = fin de datos (el flujo termina), clase S = paquete defectuoso (se salta).
+fn vb_decode(v: int, p: int, len: int, ob: int) {
+    vb_br_set(v, p, len)
+    let first = vb_read(v, 1)
+    if first < 0 { ad_fail_eof() }
+    if first == 1 { std::raw::fail("Svorbis: not an audio packet") }
+    let nmodes = ad_ld(v, VB_NMD)
+    let mode_no = vb_read(v, vb_ilog(nmodes - 1))
+    if mode_no < 0 { ad_fail_eof() }
+    if mode_no >= nmodes { std::raw::fail("Svorbis: invalid packet mode number") }
+    let mds = ad_ld(v, VB_MD)
+    let long = ad_ld(mds, 2 * mode_no) != 0
+    let mapping = ad_ld(ad_ld(v, VB_MP), ad_ld(mds, 2 * mode_no + 1))
+    if long {
+        if vb_read(v, 1) < 0 { ad_fail_eof() }
+        if vb_read(v, 1) < 0 { ad_fail_eof() }
+    }
+    let bsx = if long { ad_ld(v, VB_BS1) } else { ad_ld(v, VB_BS0) }
+    let n = std::raw::shl(1, bsx)
+    let n2 = n / 2
+    let nch = ad_ld(v, VB_CH)
+    let chs = ad_ld(v, VB_CHS)
+    let mux = ad_ld(mapping, MP_MUX)
+    let sub = ad_ld(mapping, MP_SUB)
+    let fls = ad_ld(v, VB_FL)
+    let mut c = 0
+    while c < nch {
+        let ch = ad_ld(chs, c)
+        let f = ad_ld(fls, ad_ld(sub, 2 * ad_ld(mux, c)))
+        if ad_ld(f, FQ_TYPE) == 1 { vb_floor1_channel(v, f) } else { vb_floor0_channel(v, f) }
+        let unused = ad_ld(f, FQ_UNUSED)
+        ad_st(ch, 2, unused)
+        let floor = ad_ld(ch, 0)
+        if unused == 0 {
+            vb_floor_run(v, f, bsx, floor)
+        } else {
+            let mut z = 0
+            while z < n2 {
+                ad_st(floor, z, 0)
+                z += 1
+            }
+        }
+        c += 1
+    }
+    // acoplamiento: si solo uno de los dos canales está sin usar, se decodifican ambos
+    let ncoup = ad_ld(mapping, MP_NCOUP)
+    let coup = ad_ld(mapping, MP_COUP)
+    let mut k = 0
+    while k < ncoup {
+        let a = ad_ld(chs, ad_ld(coup, 2 * k))
+        let b = ad_ld(chs, ad_ld(coup, 2 * k + 1))
+        if ad_ld(a, 2) != ad_ld(b, 2) {
+            ad_st(a, 2, 0)
+            ad_st(b, 2, 0)
+        }
+        k += 1
+    }
+    // residuos por submapa
+    let nsub = ad_ld(mapping, MP_NSUB)
+    let rss = ad_ld(v, VB_RS)
+    let list = rt_alloc_zero(8 * (nch + 1))
+    let mut s = 0
+    while s < nsub {
+        let mut cnt = 0
+        c = 0
+        while c < nch {
+            if ad_ld(mux, c) == s {
+                ad_st(list, cnt, c)
+                cnt += 1
+            }
+            c += 1
+        }
+        let r = ad_ld(rss, ad_ld(sub, 2 * s + 1))
+        let rr = std::try::catch(|| vb_residue_run(v, r, bsx, list, cnt))
+        match rr {
+            Result::Ok(_) => {},
+            Result::Err(e) => {
+                rt_free_block(list)
+                std::raw::fail(e)
+            },
+        }
+        s += 1
+    }
+    rt_free_block(list)
+    // acoplamiento inverso
+    k = 0
+    while k < ncoup {
+        let ma = ad_ld(ad_ld(chs, ad_ld(coup, 2 * k)), 1)
+        let an = ad_ld(ad_ld(chs, ad_ld(coup, 2 * k + 1)), 1)
+        let mut i = 0
+        while i < n2 {
+            let m = ad_ld(ma, i)
+            let a = ad_ld(an, i)
+            let mut nm = 0
+            let mut na = 0
+            if vf_gt(m, 0) {
+                if vf_gt(a, 0) {
+                    nm = m
+                    na = vf_sub(m, a)
+                } else {
+                    nm = vf_add(m, a)
+                    na = m
+                }
+            } else {
+                if vf_gt(a, 0) {
+                    nm = m
+                    na = vf_add(m, a)
+                } else {
+                    nm = vf_sub(m, a)
+                    na = m
+                }
+            }
+            ad_st(ma, i, nm)
+            ad_st(an, i, na)
+            i += 1
+        }
+        k += 1
+    }
+    // suelo x residuo
+    c = 0
+    while c < nch {
+        let ch = ad_ld(chs, c)
+        if ad_ld(ch, 2) == 0 {
+            let fl = ad_ld(ch, 0)
+            let rs = ad_ld(ch, 1)
+            let mut i = 0
+            while i < n2 {
+                ad_st(fl, i, vf_mul(ad_ld(fl, i), ad_ld(rs, i)))
+                i += 1
+            }
+        }
+        c += 1
+    }
+    // ventana, solapamiento y salida
+    let bs0 = std::raw::shl(1, ad_ld(v, VB_BS0))
+    let bs1 = std::raw::shl(1, ad_ld(v, VB_BS1))
+    let mut rlen = 0
+    if ad_ld(v, VB_LAP) != 0 {
+        let prev_n = if ad_ld(v, VB_PREV) != 0 { bs1 } else { bs0 }
+        rlen = (prev_n + n) / 4
+    }
+    c = 0
+    while c < nch {
+        let ch = ad_ld(chs, c)
+        vb_synth(v, ch, long, ad_ld(ch, 5))
+        c += 1
+    }
+    ad_st(v, VB_LAP, 1)
+    ad_st(v, VB_PREV, if long { 1 } else { 0 })
+    if rlen > 0 {
+        ob_reserve(ob, rlen * nch)
+        let inv = ad_ld(v, VB_INV)
+        let mut f = 0
+        while f < rlen {
+            let mut pl = 0
+            while pl < nch {
+                ob_push(ob, ad_ld(ad_ld(ad_ld(chs, ad_ld(inv, pl)), 5), f))
+                pl += 1
+            }
+            f += 1
+        }
+    }
+}
+
+// Duración de un paquete (VorbisPacketParser::parse_next_packet_dur). prev: ranura con el
+// exponente del bloque anterior (0 = ninguno). Devuelve 0 si el paquete no es de audio.
+fn vb_packet_dur(v: int, p: int, len: int, prev: int) -> int {
+    if len < 1 { return 0 }
+    let b0 = std::raw::load8(p)
+    if (b0 & 1) != 0 { return 0 }
+    let nmodes = ad_ld(v, VB_NMD)
+    let nb = vb_ilog(nmodes - 1)
+    let mode = std::raw::shr(b0, 1) & (std::raw::shl(1, nb) - 1)
+    if mode >= nmodes { return 0 }
+    let cur = if ad_ld(ad_ld(v, VB_MD), 2 * mode) != 0 { ad_ld(v, VB_BS1) } else { ad_ld(v, VB_BS0) }
+    let mut dur = 0
+    let pe = ad_ld(prev, 0)
+    if pe != 0 {
+        dur = (std::raw::shl(1, pe) / 4) + (std::raw::shl(1, cur) / 4)
+    }
+    ad_st(prev, 0, cur)
+    dur
+}
+
+fn vb_rate(v: int) -> int { ad_ld(v, VB_RATE) }
+fn vb_channels(v: int) -> int { ad_ld(v, VB_CH) }

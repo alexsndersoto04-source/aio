@@ -1,0 +1,147 @@
+// Añade (publica) una versión de un paquete en un registro ESTÁTICO (un directorio de ficheros).
+//
+// El registro público de Zett es el directorio `registro/` de este repositorio, servido por
+// GitHub (raw.githubusercontent.com). No hay servidor: «publicar» es escribir ficheros y subirlos
+// con git (normalmente mediante un pull request).
+//
+// Uso:
+//   titan run selfhost/registro_agregar.titan PROYECTO CLAVE REGISTRO
+//
+//   PROYECTO  directorio con Titan.toml (el paquete a publicar)
+//   CLAVE     fichero con la clave privada ed25519 (32 bytes; se crea con `zett keygen`)
+//   REGISTRO  directorio del registro (por ejemplo `registro`)
+//
+// Escribe:
+//   REGISTRO/archivos/<nombre>-<versión>.tpkg   el paquete firmado
+//   REGISTRO/v1/packages/<nombre>               el índice JSON (lo que lee `zett fetch`)
+//
+// Reglas (iguales a las de un servidor de registro): una versión ya publicada no se puede
+// reescribir, y un paquete ya existente solo se puede ampliar con la misma clave de firma.
+import pkg
+import cli_util
+
+fn ra_fail(message: string) {
+    cl_eprint("error: " + message)
+    std::process::exit(1)
+}
+
+fn ra_entry(r: map) -> string {
+    let deps = std::map::get(r, "dependencies")
+    let mut dep_lines = []
+    for k in std::map::keys(deps) {
+        dep_lines = std::array::push(dep_lines, "        " + ld_json_str(k) + ": " + ld_json_str(std::map::get(deps, k)))
+    }
+    let mut dep_body = "{}"
+    if len(dep_lines) > 0 {
+        dep_body = "{\n" + ld_join(dep_lines, ",\n") + "\n      }"
+    }
+    "    {\n      \"version\": " + ld_json_str(std::map::get(r, "version")) + ",\n      \"archive\": " + ld_json_str(std::map::get(r, "archive")) + ",\n      \"sha256\": " + ld_json_str(std::map::get(r, "sha256")) + ",\n      \"signing_key\": " + ld_json_str(std::map::get(r, "signing_key")) + ",\n      \"signature\": " + ld_json_str(std::map::get(r, "signature")) + ",\n      \"dependencies\": " + dep_body + "\n    }"
+}
+
+// Versiones ya publicadas (del índice existente), como mapas con los 6 campos.
+fn ra_read_index(path: string, name: string) -> array {
+    if !std::fs::is_file(path) {
+        return []
+    }
+    let doc = std::json::parse(std::fs::read_text(path))
+    if std::map::get(doc, "name") != name {
+        ra_fail("el índice " + path + " no es del paquete " + name)
+    }
+    let mut out = []
+    for v in std::map::get(doc, "versions") {
+        let mut r = std::map::new()
+        for f in ["version", "archive", "sha256", "signing_key", "signature"] {
+            r = std::map::insert(r, f, std::map::get(v, f))
+        }
+        let mut deps = std::map::new()
+        if std::map::contains(v, "dependencies") {
+            let d = std::map::get(v, "dependencies")
+            for k in std::map::keys(d) {
+                deps = std::map::insert(deps, k, std::map::get(d, k))
+            }
+        }
+        r = std::map::insert(r, "dependencies", deps)
+        out = std::array::push(out, r)
+    }
+    out
+}
+
+fn main() {
+    let a = std::env::args()
+    // `titan run registro_agregar.titan P K R` → args = [ejecutable, P, K, R]
+    if len(a) != 4 {
+        ra_fail("uso: titan run selfhost/registro_agregar.titan PROYECTO CLAVE REGISTRO")
+    }
+    let project = a[1]
+    let key = a[2]
+    let registry = a[3]
+
+    let tmp = std::path::join(pk_temp_dir(), "titan-registro-" + pk_pid_text() + ".tpkg")
+    if std::fs::exists(tmp) {
+        std::fs::remove_file(tmp)
+    }
+    let built = pk_build(project, key, tmp)
+    let mut p = std::map::new()
+    match built {
+        Result::Ok(v) => {
+            p = v
+        },
+        Result::Err(m) => {
+            ra_fail(m)
+        },
+    }
+    let name: string = std::map::get(p, "name")
+    let version: string = std::map::get(p, "version")
+    if !pk_name_ok(name, 128) {
+        ra_fail("nombre de paquete no válido: " + name)
+    }
+
+    let index_path = std::path::join(std::path::join(std::path::join(registry, "v1"), "packages"), name)
+    let mut releases = ra_read_index(index_path, name)
+    for r in releases {
+        if std::map::get(r, "signing_key") != std::map::get(p, "signing_key") {
+            ra_fail("el paquete " + name + " ya existe con otra clave de firma")
+        }
+        if std::map::get(r, "version") == version {
+            ra_fail(name + " " + version + " ya está publicado (las versiones no se reescriben)")
+        }
+    }
+
+    // Dependencias del índice: nombre -> requisito. Una dependencia de ruta no se puede descargar.
+    let raw_deps = std::map::get(p, "dependencies")
+    let mut remote_deps = std::map::new()
+    for alias in std::map::keys(raw_deps) {
+        let spec = std::map::get(raw_deps, alias)
+        if spec[1] != nil {
+            ra_fail("la dependencia `" + alias + "` es de ruta (path); un paquete del registro solo puede depender de otros del registro")
+        }
+        remote_deps = std::map::insert(remote_deps, alias, spec[0])
+    }
+
+    pk_mkdirs(registry)
+    pk_mkdirs(std::path::join(registry, "v1"))
+    pk_mkdirs(std::path::join(std::path::join(registry, "v1"), "packages"))
+    pk_mkdirs(std::path::join(registry, "archivos"))
+    let relative = "archivos/" + name + "-" + version + ".tpkg"
+    std::fs::write_bytes(std::path::join(registry, relative), std::fs::read_bytes(tmp))
+    std::fs::remove_file(tmp)
+
+    let mut release = std::map::new()
+    release = std::map::insert(release, "version", version)
+    release = std::map::insert(release, "archive", relative)
+    release = std::map::insert(release, "sha256", std::map::get(p, "sha256"))
+    release = std::map::insert(release, "signing_key", std::map::get(p, "signing_key"))
+    release = std::map::insert(release, "signature", std::map::get(p, "signature"))
+    release = std::map::insert(release, "dependencies", remote_deps)
+    releases = std::array::push(releases, release)
+
+    let mut entries = []
+    for r in releases {
+        entries = std::array::push(entries, ra_entry(r))
+    }
+    let body = "{\n  \"name\": " + ld_json_str(name) + ",\n  \"versions\": [\n" + ld_join(entries, ",\n") + "\n  ]\n}\n"
+    std::fs::write_text(index_path, body)
+    println("Publicado " + name + " " + version + " en " + registry)
+    println("  " + relative)
+    println("  " + index_path)
+}

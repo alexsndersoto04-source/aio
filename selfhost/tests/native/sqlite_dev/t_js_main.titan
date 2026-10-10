@@ -1,0 +1,14 @@
+fn main() {
+    let cx = Cx { sch: Sch { tabs: std::map::new(), idxs: std::map::new(), views: std::map::new(), trgs: [] }, pg: SqPg { io: sqio_mem(), psize: 4096, npages: 1, n0: 0, dirty: std::map::new(), intxn: false }, params: [], ctes: std::map::new(), aggs: [], wvals: [], now: 1700000000123, lastid: 0, changes: 0, tchanges: 0, depth: 0, flags: 1, trgs: [], settings: std::map::new() }
+    let db = std::sqlite::memory()
+    let qs = std::text::lines(std::fs::read_text("/home/user/aio/selfhost/tests/native/sqlite_dev/json_queries.txt"))
+    let mut bad = 0
+    let mut n = 0
+    for q in qs {
+        if len(q) > 0 {
+            n += 1
+            bad += check(db, cx, q)
+        }
+    }
+    print("total", n, "bad", bad)
+}

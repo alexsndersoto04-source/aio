@@ -1,0 +1,803 @@
+// Contenedor Ogg de std::audio::engine_* (prefijo og_): symphonia-format-ogg 0.5.5.
+//
+// Páginas con CRC32, flujos lógicos (ordenados por número de serie, como el BTreeMap de
+// symphonia), reconstrucción de paquetes, mapeadores (Vorbis, Opus y «nulo») y sondeo del
+// principio y el final del flujo para saber la duración (n_frames). Sin recorte «gapless»
+// (FormatOptions::default()).
+//
+// Ogg-FLAC todavía no se decodifica: el flujo se trata como no reconocido.
+
+const O_SRC: int = 0
+const O_ABSGP: int = 1
+const O_SERIAL: int = 2
+const O_SEQ: int = 3
+const O_FLAGS: int = 4
+const O_NSEG: int = 5
+const O_NPKT: int = 6
+const O_LENS: int = 7
+const O_BUF: int = 8
+const O_BLEN: int = 9
+const O_STREAMS: int = 10
+const O_NSTREAMS: int = 11
+const O_SELSERIAL: int = 12
+const O_SELV: int = 13
+const O_HDR: int = 14
+const O_CRCT: int = 15
+const O_PP: int = 16
+const O_PL: int = 17
+const O_SEGS: int = 18
+const O_HAVE: int = 19
+const O_PBS: int = 20
+const O_PBE: int = 21
+const O_SLOTS: int = 24
+
+const LS_SERIAL: int = 0
+const LS_KIND: int = 1
+const LS_PQ: int = 2
+const LS_PQH: int = 3
+const LS_PQT: int = 4
+const LS_PQC: int = 5
+const LS_PART: int = 6
+const LS_PARTLEN: int = 7
+const LS_PARTCAP: int = 8
+const LS_HASPREV: int = 9
+const LS_PSEQ: int = 10
+const LS_PABS: int = 11
+const LS_SBH: int = 12
+const LS_SBT: int = 13
+const LS_SBD: int = 14
+const LS_EBH: int = 15
+const LS_EBT: int = 16
+const LS_EBD: int = 17
+const LS_RATE: int = 18
+const LS_CH: int = 19
+const LS_NFR: int = 20
+const LS_START: int = 21
+const LS_VB: int = 22
+const LS_READY: int = 23
+const LS_PARSE: int = 24
+const LS_NEEDC: int = 25
+const LS_IDENT: int = 26
+const LS_SLOTS: int = 32
+
+const OG_PAGE_MAX: int = 65307
+
+// ------------------------------------------------------------ aritmética u64 saturada
+fn og_sadd(a: int, b: int) -> int {
+    let r = a + b
+    if lm_ult(r, a) { return -1 }
+    r
+}
+
+fn og_ssub(a: int, b: int) -> int {
+    if lm_ult(a, b) { return 0 }
+    a - b
+}
+
+// ------------------------------------------------------------ CRC32 de Ogg
+fn og_crc_table() -> int {
+    let t = rt_alloc(8 * 256)
+    let mut i = 0
+    while i < 256 {
+        let mut r = std::raw::shl(i, 24)
+        let mut k = 0
+        while k < 8 {
+            if (r & 2147483648) != 0 {
+                r = (std::raw::shl(r, 1) & 4294967295) ^ 79764919
+            } else {
+                r = std::raw::shl(r, 1) & 4294967295
+            }
+            k += 1
+        }
+        ad_st(t, i, r)
+        i += 1
+    }
+    t
+}
+
+fn og_crc(tab: int, crc0: int, p: int, n: int) -> int {
+    let mut crc = crc0
+    let mut i = 0
+    while i < n {
+        let b = std::raw::load8(p + i)
+        crc = (std::raw::shl(crc, 8) & 4294967295) ^ ad_ld(tab, (std::raw::shr(crc, 24) ^ b) & 255)
+        i += 1
+    }
+    crc
+}
+
+// ------------------------------------------------------------ páginas
+fn og_new(s: int) -> int {
+    let o = rt_alloc_zero(8 * O_SLOTS)
+    ad_st(o, O_SRC, s)
+    ad_st(o, O_LENS, rt_alloc_zero(8 * 260))
+    ad_st(o, O_BUF, rt_alloc_zero(65536 + 16))
+    ad_st(o, O_HDR, rt_alloc_zero(32))
+    ad_st(o, O_CRCT, og_crc_table())
+    ad_st(o, O_SEGS, rt_alloc_zero(264))
+    ad_st(o, O_STREAMS, rt_alloc_zero(8 * 72))
+    o
+}
+
+// try_next_page: errores I (fin de datos) o D (defecto de la página; se puede reintentar).
+fn og_try_page(o: int) {
+    let s = ad_ld(o, O_SRC)
+    let mut m = sr_be32(s)
+    while m != 1332176723 {
+        let b = sr_byte_or_eof(s)
+        if b < 0 { ad_fail_eof() }
+        m = (std::raw::shl(m, 8) | b) & 4294967295
+    }
+    let sync_pos = sr_pos(s)
+    let hb = ad_ld(o, O_HDR)
+    std::raw::store8(hb, 79)
+    std::raw::store8(hb + 1, 103)
+    std::raw::store8(hb + 2, 103)
+    std::raw::store8(hb + 3, 83)
+    sr_read(s, hb + 4, 23)
+    if std::raw::load8(hb + 4) != 0 { ad_fail_decode("ogg: invalid ogg version") }
+    let flags = std::raw::load8(hb + 5)
+    if (flags & 248) != 0 { ad_fail_decode("ogg: invalid flag bits set") }
+    let absgp = ad_ld32(hb + 6) + std::raw::shl(ad_ld32(hb + 10), 32)
+    let serial = ad_ld32(hb + 14)
+    let seq = ad_ld32(hb + 18)
+    let crc = ad_ld32(hb + 22)
+    let nseg = std::raw::load8(hb + 26)
+    std::raw::store8(hb + 22, 0)
+    std::raw::store8(hb + 23, 0)
+    std::raw::store8(hb + 24, 0)
+    std::raw::store8(hb + 25, 0)
+    let tab = ad_ld(o, O_CRCT)
+    let mut c = og_crc(tab, 0, hb, 27)
+    let segs = ad_ld(o, O_SEGS)
+    sr_read(s, segs, nseg)
+    c = og_crc(tab, c, segs, nseg)
+    let lens = ad_ld(o, O_LENS)
+    let mut body = 0
+    let mut plen = 0
+    let mut np = 0
+    let mut i = 0
+    while i < nseg {
+        let sl = std::raw::load8(segs + i)
+        body += sl
+        plen += sl
+        if sl < 255 {
+            ad_st(lens, np, plen)
+            np += 1
+            plen = 0
+        }
+        i += 1
+    }
+    ad_st(o, O_NPKT, np)
+    let buf = ad_ld(o, O_BUF)
+    ad_st(o, O_BLEN, body)
+    sr_read(s, buf, body)
+    c = og_crc(tab, c, buf, body)
+    if c != crc {
+        ad_st(o, O_NPKT, 0)
+        ad_st(o, O_BLEN, 0)
+        sr_seek(s, sync_pos)
+        ad_fail_decode("ogg: crc mismatch")
+    }
+    ad_st(o, O_ABSGP, absgp)
+    ad_st(o, O_SERIAL, serial)
+    ad_st(o, O_SEQ, seq)
+    ad_st(o, O_FLAGS, flags)
+    ad_st(o, O_NSEG, nseg)
+    ad_st(o, O_HAVE, 1)
+}
+
+// next_page: ignora los errores que no son de E/S.
+fn og_next_page(o: int) {
+    loop {
+        let r = std::try::catch(|| og_try_page(o))
+        match r {
+            Result::Ok(_) => { return },
+            Result::Err(e) => {
+                if ad_class(e) == 73 { std::raw::fail(e) }
+            },
+        }
+    }
+}
+
+// ------------------------------------------------------------ flujos lógicos
+fn og_find(o: int, serial: int) -> int {
+    let n = ad_ld(o, O_NSTREAMS)
+    let arr = ad_ld(o, O_STREAMS)
+    let mut i = 0
+    while i < n {
+        let ls = ad_ld(arr, i)
+        if ad_ld(ls, LS_SERIAL) == serial { return ls }
+        i += 1
+    }
+    0
+}
+
+fn og_ls_free(ls: int) {
+    let q = ad_ld(ls, LS_PQ)
+    if q != 0 {
+        let mut i = ad_ld(ls, LS_PQH)
+        while i < ad_ld(ls, LS_PQT) {
+            rt_free_block(ad_ld(q, 4 * i))
+            i += 1
+        }
+        rt_free_block(q)
+    }
+    if ad_ld(ls, LS_PART) != 0 { rt_free_block(ad_ld(ls, LS_PART)) }
+    if ad_ld(ls, LS_VB) != 0 { vb_free(ad_ld(ls, LS_VB)) }
+    if ad_ld(ls, LS_IDENT) != 0 { rt_free_block(ad_ld(ls, LS_IDENT)) }
+    rt_free_block(ls)
+}
+
+fn og_free_streams(o: int, keep: int) {
+    let n = ad_ld(o, O_NSTREAMS)
+    let arr = ad_ld(o, O_STREAMS)
+    let mut i = 0
+    while i < n {
+        let ls = ad_ld(arr, i)
+        if ad_ld(ls, LS_VB) == keep && keep != 0 {
+            ad_st(ls, LS_VB, 0)
+        }
+        og_ls_free(ls)
+        i += 1
+    }
+    ad_st(o, O_NSTREAMS, 0)
+}
+
+fn og_close(d: int) {
+    let o = ad_ld(d, D_FMT)
+    if o == 0 { return }
+    let n = ad_ld(o, O_NSTREAMS)
+    let arr = ad_ld(o, O_STREAMS)
+    let mut i = 0
+    while i < n {
+        og_ls_free(ad_ld(arr, i))
+        i += 1
+    }
+    rt_free_block(arr)
+    rt_free_block(ad_ld(o, O_LENS))
+    rt_free_block(ad_ld(o, O_BUF))
+    rt_free_block(ad_ld(o, O_HDR))
+    rt_free_block(ad_ld(o, O_CRCT))
+    rt_free_block(ad_ld(o, O_SEGS))
+    rt_free_block(o)
+    ad_st(d, D_FMT, 0)
+    ad_st(d, D_DEC, 0)
+}
+
+fn og_ls_new(serial: int, kind: int) -> int {
+    let ls = rt_alloc_zero(8 * LS_SLOTS)
+    ad_st(ls, LS_SERIAL, serial)
+    ad_st(ls, LS_KIND, kind)
+    ad_st(ls, LS_NFR, -1)
+    ad_st(ls, LS_PQC, 16)
+    ad_st(ls, LS_PQ, rt_alloc_zero(8 * 4 * 16))
+    ls
+}
+
+// Mapeadores: detecta el tipo con el primer paquete (flac, vorbis, opus, nulo). Devuelve el flujo.
+fn og_detect(o: int, serial: int) -> int {
+    let np = ad_ld(o, O_NPKT)
+    if np == 0 { return 0 }
+    let p = ad_ld(o, O_BUF)
+    let len = ad_ld(ad_ld(o, O_LENS), 0)
+    // Vorbis
+    if len == 30 && std::raw::load8(p) == 1 && ad_ld32(p + 1) == 1651666806 && ad_ld16(p + 5) == 29545 && ad_ld32(p + 7) == 0 {
+        let nch = std::raw::load8(p + 11)
+        let rate = ad_ld32(p + 12)
+        let bsz = std::raw::load8(p + 28)
+        let bs0 = bsz & 15
+        let bs1 = std::raw::shr(bsz, 4) & 15
+        if nch != 0 && rate != 0 && bs0 >= 6 && bs0 <= 13 && bs1 >= 6 && bs1 <= 13 && bs0 <= bs1 && std::raw::load8(p + 29) == 1 {
+            let ls = og_ls_new(serial, 1)
+            ad_st(ls, LS_RATE, rate)
+            if nch <= 8 { ad_st(ls, LS_CH, nch) }
+            let id = rt_alloc(32)
+            rt_copy(id, p, 30)
+            ad_st(ls, LS_IDENT, id)
+            return ls
+        }
+    }
+    // Opus
+    if len >= 19 && ad_ldbe32(p) == 1332770163 && ad_ldbe32(p + 4) == 1214603620 {
+        let ver = std::raw::load8(p + 8)
+        let nch = std::raw::load8(p + 9)
+        let fam = std::raw::load8(p + 18)
+        if ver <= 15 && nch != 0 {
+            let mut ok = false
+            if fam == 0 && (nch == 1 || nch == 2) { ok = true }
+            if fam == 1 && nch >= 1 && nch <= 8 { ok = true }
+            if ok {
+                let ls = og_ls_new(serial, 3)
+                ad_st(ls, LS_NEEDC, 1)
+                ad_st(ls, LS_RATE, 48000)
+                ad_st(ls, LS_CH, nch)
+                return ls
+            }
+        }
+    }
+    og_ls_new(serial, 0)
+}
+
+// Un bloque de comentarios es válido si se puede recorrer entero (read_comment_no_framing).
+fn og_comment_valid(p: int, n: int) -> bool {
+    let mut pos = 0
+    if pos + 4 > n { return false }
+    let vlen = ad_ld32(p + pos)
+    pos += 4
+    if pos + vlen > n { return false }
+    pos += vlen
+    if pos + 4 > n { return false }
+    let cnt = ad_ld32(p + pos)
+    pos += 4
+    let mut i = 0
+    while i < cnt {
+        if pos + 4 > n { return false }
+        let l = ad_ld32(p + pos)
+        pos += 4
+        if pos + l > n { return false }
+        pos += l
+        i += 1
+    }
+    true
+}
+
+// map_packet: -1 si no es dato de flujo, si no la duración del paquete.
+fn og_map_packet(ls: int, p: int, len: int) -> int {
+    let kind = ad_ld(ls, LS_KIND)
+    if kind == 1 {
+        if len < 1 { return -1 }
+        let t = std::raw::load8(p)
+        if (t & 1) == 0 {
+            let v = ad_ld(ls, LS_VB)
+            if v == 0 { return 0 }
+            return vb_packet_dur(v, p, len, ls + 8 * LS_PARSE)
+        }
+        if len < 7 { return -1 }
+        if ad_ld32(p + 1) != 1651666806 || ad_ld16(p + 5) != 29545 { return -1 }
+        if t == 5 && ad_ld(ls, LS_READY) == 0 {
+            let extra = rt_alloc(30 + len + 8)
+            rt_copy(extra, ad_ld(ls, LS_IDENT), 30)
+            rt_copy(extra + 30, p, len)
+            ad_st(ls, LS_VB, vb_new(extra, 30 + len))
+            rt_free_block(extra)
+            ad_st(ls, LS_READY, 1)
+        }
+        return -1
+    }
+    if kind == 3 {
+        if ad_ld(ls, LS_NEEDC) == 0 { return 0 }
+        if len >= 8 && ad_ldbe32(p) == 1332770163 && ad_ldbe32(p + 4) == 1415669619 {
+            if og_comment_valid(p + 8, len - 8) { ad_st(ls, LS_NEEDC, 0) }
+        }
+        return -1
+    }
+    -1
+}
+
+fn og_queue_push(ls: int, p: int, len: int, dur: int) {
+    let t = ad_ld(ls, LS_PQT)
+    let c = ad_ld(ls, LS_PQC)
+    if t >= c {
+        let h = ad_ld(ls, LS_PQH)
+        let cnt = t - h
+        let mut nc = c
+        if cnt * 2 >= c { nc = c * 2 }
+        let np = rt_alloc_zero(8 * 4 * nc)
+        rt_copy(np, ad_ld(ls, LS_PQ) + 8 * 4 * h, 8 * 4 * cnt)
+        rt_free_block(ad_ld(ls, LS_PQ))
+        ad_st(ls, LS_PQ, np)
+        ad_st(ls, LS_PQC, nc)
+        ad_st(ls, LS_PQH, 0)
+        ad_st(ls, LS_PQT, cnt)
+    }
+    let q = ad_ld(ls, LS_PQ)
+    let tt = ad_ld(ls, LS_PQT)
+    ad_st(q, 4 * tt, p)
+    ad_st(q, 4 * tt + 1, len)
+    ad_st(q, 4 * tt + 2, dur)
+    ad_st(q, 4 * tt + 3, 0)
+    ad_st(ls, LS_PQT, tt + 1)
+}
+
+// LogicalStream::read_page
+fn og_ls_read_page(o: int, ls: int) {
+    let seq = ad_ld(o, O_SEQ)
+    let flags = ad_ld(o, O_FLAGS)
+    let cont = (flags & 1) != 0
+    let np = ad_ld(o, O_NPKT)
+    if ad_ld(ls, LS_HASPREV) != 0 {
+        let last = ad_ld(ls, LS_PSEQ)
+        if seq < last {
+            ad_st(ls, LS_PARTLEN, 0)
+        } else if seq - last > 1 {
+            ad_st(ls, LS_PARTLEN, 0)
+        }
+    }
+    ad_st(ls, LS_HASPREV, 1)
+    ad_st(ls, LS_PSEQ, seq)
+    ad_st(ls, LS_PABS, ad_ld(o, O_ABSGP))
+    let lens = ad_ld(o, O_LENS)
+    let buf = ad_ld(o, O_BUF)
+    let blen = ad_ld(o, O_BLEN)
+    let mut first = 0
+    let mut off = 0
+    if !cont && ad_ld(ls, LS_PARTLEN) > 0 { ad_st(ls, LS_PARTLEN, 0) }
+    if cont && ad_ld(ls, LS_PARTLEN) == 0 {
+        if np > 0 {
+            off += ad_ld(lens, 0)
+            first = 1
+        } else {
+            return
+        }
+    }
+    let prev_count = ad_ld(ls, LS_PQT) - ad_ld(ls, LS_PQH)
+    let mut i = first
+    while i < np {
+        let l = ad_ld(lens, i)
+        let pl = ad_ld(ls, LS_PARTLEN)
+        let data = rt_alloc(pl + l + 8)
+        if pl > 0 { rt_copy(data, ad_ld(ls, LS_PART), pl) }
+        if l > 0 { rt_copy(data + pl, buf + off, l) }
+        ad_st(ls, LS_PARTLEN, 0)
+        let dur = og_map_packet(ls, data, pl + l)
+        if dur >= 0 {
+            og_queue_push(ls, data, pl + l, dur)
+        } else {
+            rt_free_block(data)
+        }
+        off += l
+        i += 1
+    }
+    if blen > off {
+        let add = blen - off
+        let pl = ad_ld(ls, LS_PARTLEN)
+        let nl = pl + add
+        if nl > 16777216 { ad_fail_decode("ogg: packet buffer would exceed max size") }
+        if nl > ad_ld(ls, LS_PARTCAP) {
+            let nc = (nl + 8191) & -8192
+            let nb = rt_alloc(nc)
+            if pl > 0 { rt_copy(nb, ad_ld(ls, LS_PART), pl) }
+            if ad_ld(ls, LS_PART) != 0 { rt_free_block(ad_ld(ls, LS_PART)) }
+            ad_st(ls, LS_PART, nb)
+            ad_st(ls, LS_PARTCAP, nc)
+        }
+        rt_copy(ad_ld(ls, LS_PART) + pl, buf + off, add)
+        ad_st(ls, LS_PARTLEN, nl)
+    }
+    let cnt = ad_ld(ls, LS_PQT) - ad_ld(ls, LS_PQH)
+    let nnew = cnt - prev_count
+    if nnew > 0 {
+        let sd = if ad_ld(ls, LS_SBH) != 0 { ad_ld(ls, LS_SBD) } else { 0 }
+        let mut pet = og_sadd(ad_ld(o, O_ABSGP), sd)
+        if (flags & 4) != 0 {
+            let ed = if ad_ld(ls, LS_EBH) != 0 { ad_ld(ls, LS_EBD) } else { 0 }
+            pet = og_sadd(pet, ed)
+        }
+        let q = ad_ld(ls, LS_PQ)
+        let mut pdur = 0
+        let mut k = ad_ld(ls, LS_PQT) - 1
+        let lo = ad_ld(ls, LS_PQT) - nnew
+        while k >= lo {
+            pdur = og_sadd(pdur, ad_ld(q, 4 * k + 2))
+            ad_st(q, 4 * k + 3, og_ssub(pet, pdur))
+            k -= 1
+        }
+    }
+}
+
+fn og_has_packets(ls: int) -> bool { ad_ld(ls, LS_PQT) > ad_ld(ls, LS_PQH) }
+
+// ------------------------------------------------------------ sondeo del principio y del final
+fn og_inspect_start(o: int, ls: int) {
+    if ad_ld(ls, LS_SBH) != 0 { return }
+    let kind = ad_ld(ls, LS_KIND)
+    if kind != 1 { return }
+    let v = ad_ld(ls, LS_VB)
+    if v == 0 { return }
+    let prev = rt_alloc_zero(16)
+    let lens = ad_ld(o, O_LENS)
+    let buf = ad_ld(o, O_BUF)
+    let np = ad_ld(o, O_NPKT)
+    let mut dur = 0
+    let mut off = 0
+    let mut i = 0
+    while i < np {
+        let l = ad_ld(lens, i)
+        dur = og_sadd(dur, vb_packet_dur(v, buf + off, l, prev))
+        off += l
+        i += 1
+    }
+    rt_free_block(prev)
+    let pet = ad_ld(o, O_ABSGP)
+    ad_st(ls, LS_SBH, 1)
+    if !lm_ult(pet, dur) {
+        ad_st(ls, LS_SBT, pet - dur)
+        ad_st(ls, LS_SBD, 0)
+    } else {
+        ad_st(ls, LS_SBT, 0)
+        ad_st(ls, LS_SBD, dur - pet)
+    }
+    ad_st(ls, LS_START, ad_ld(ls, LS_SBT))
+}
+
+// st: {0 tiene parser, 1 V del parser, 2 prev, 3 tiene cota, 4 ts, 5 delay}
+fn og_inspect_end(o: int, ls: int, st: int) {
+    if ad_ld(ls, LS_EBH) != 0 { return }
+    if ad_ld(ls, LS_KIND) != 1 { return }
+    if ad_ld(st, 0) == 0 {
+        let v = ad_ld(ls, LS_VB)
+        if v == 0 { return }
+        ad_st(st, 0, 1)
+        ad_st(st, 1, v)
+        ad_st(st, 2, 0)
+    }
+    let pv = ad_ld(st, 1)
+    let sd = if ad_ld(ls, LS_SBH) != 0 { ad_ld(ls, LS_SBD) } else { 0 }
+    let pet = og_sadd(ad_ld(o, O_ABSGP), sd)
+    let lens = ad_ld(o, O_LENS)
+    let buf = ad_ld(o, O_BUF)
+    let np = ad_ld(o, O_NPKT)
+    let mut dur = 0
+    let mut off = 0
+    let mut i = 0
+    while i < np {
+        let l = ad_ld(lens, i)
+        dur = og_sadd(dur, vb_packet_dur(pv, buf + off, l, st + 16))
+        off += l
+        i += 1
+    }
+    let last_page = (ad_ld(o, O_FLAGS) & 4) != 0
+    let mut edelay = 0
+    if last_page && ad_ld(st, 3) != 0 {
+        edelay = og_ssub(og_sadd(ad_ld(st, 4), dur), pet)
+    }
+    if last_page {
+        let bend = og_sadd(pet, edelay)
+        if lm_ult(ad_ld(ls, LS_START), bend) {
+            ad_st(ls, LS_NFR, bend - ad_ld(ls, LS_START))
+        }
+        ad_st(ls, LS_EBH, 1)
+        ad_st(ls, LS_EBT, pet)
+        ad_st(ls, LS_EBD, edelay)
+    }
+    ad_st(st, 3, 1)
+    ad_st(st, 4, pet)
+    ad_st(st, 5, edelay)
+}
+
+fn og_probe_start(o: int) {
+    let s = ad_ld(o, O_SRC)
+    let original = sr_pos(s)
+    ad_st(s, SR_LIMIT, original + OG_PAGE_MAX)
+    let mut probed = 0
+    let mut nprobed = 0
+    let n = ad_ld(o, O_NSTREAMS)
+    loop {
+        let ls = og_find(o, ad_ld(o, O_SERIAL))
+        if ls == 0 { break }
+        let mut idx = 0
+        let arr = ad_ld(o, O_STREAMS)
+        while ad_ld(arr, idx) != ls { idx += 1 }
+        let bit = std::raw::shl(1, idx)
+        if (probed & bit) == 0 {
+            og_inspect_start(o, ls)
+            probed = probed | bit
+            nprobed += 1
+        }
+        if nprobed >= n { break }
+        let r = std::try::catch(|| og_try_page(o))
+        match r {
+            Result::Ok(_) => {},
+            Result::Err(_) => { break },
+        }
+    }
+    ad_st(s, SR_LIMIT, 0)
+    sr_seek(s, original)
+}
+
+// scan_stream_end: devuelve la posición tras la última página de este flujo físico, o -1.
+fn og_scan_end(o: int, end: int) -> int {
+    let s = ad_ld(o, O_SRC)
+    let old = ad_ld(s, SR_LIMIT)
+    ad_st(s, SR_LIMIT, end)
+    let st = rt_alloc_zero(8 * 8)
+    let mut upper = -1
+    loop {
+        let ls = og_find(o, ad_ld(o, O_SERIAL))
+        if ls == 0 { break }
+        og_inspect_end(o, ls, st)
+        upper = sr_pos(s)
+        let r = std::try::catch(|| og_next_page(o))
+        match r {
+            Result::Ok(_) => {},
+            Result::Err(_) => { break },
+        }
+    }
+    rt_free_block(st)
+    ad_st(s, SR_LIMIT, old)
+    upper
+}
+
+fn og_probe_end(o: int, start: int, end: int) -> int {
+    let s = ad_ld(o, O_SRC)
+    let original = sr_pos(s)
+    let lsl = ad_ld(o, O_NSTREAMS) * OG_PAGE_MAX
+    if end >= lsl && start <= end - lsl {
+        sr_seek(s, end - lsl)
+    } else {
+        sr_seek(s, start)
+    }
+    og_next_page(o)
+    let mut result = og_scan_end(o, end)
+    if result < 0 {
+        let mut a = start
+        let mut b = end
+        loop {
+            let mid = (a + b) / 2
+            sr_seek(s, mid)
+            let r = std::try::catch(|| og_next_page(o))
+            let mut ok = true
+            match r {
+                Result::Ok(_) => {},
+                Result::Err(_) => { ok = false },
+            }
+            if !ok { break }
+            if og_find(o, ad_ld(o, O_SERIAL)) != 0 { a = mid } else { b = mid }
+            if b - a < lsl { break }
+        }
+        sr_seek(s, a)
+        og_next_page(o)
+        result = og_scan_end(o, b)
+    }
+    sr_seek(s, original)
+    result
+}
+
+// ------------------------------------------------------------ flujo físico
+fn og_insert(o: int, ls: int) {
+    let arr = ad_ld(o, O_STREAMS)
+    let n = ad_ld(o, O_NSTREAMS)
+    let ser = ad_ld(ls, LS_SERIAL)
+    let mut i = 0
+    while i < n && ad_ld(ad_ld(arr, i), LS_SERIAL) < ser { i += 1 }
+    if i < n && ad_ld(ad_ld(arr, i), LS_SERIAL) == ser {
+        og_ls_free(ad_ld(arr, i))
+        ad_st(arr, i, ls)
+        return
+    }
+    if n >= 64 { ad_fail_decode("ogg: too many logical streams") }
+    let mut k = n
+    while k > i {
+        ad_st(arr, k, ad_ld(arr, k - 1))
+        k -= 1
+    }
+    ad_st(arr, i, ls)
+    ad_st(o, O_NSTREAMS, n + 1)
+}
+
+fn og_start_physical(o: int) {
+    let s = ad_ld(o, O_SRC)
+    og_free_streams(o, 0)
+    let mut bstart = sr_pos(s)
+    loop {
+        if (ad_ld(o, O_FLAGS) & 2) == 0 { break }
+        bstart = sr_pos(s)
+        let ls = og_detect(o, ad_ld(o, O_SERIAL))
+        if ls != 0 { og_insert(o, ls) }
+        og_try_page(o)
+    }
+    loop {
+        let ls = og_find(o, ad_ld(o, O_SERIAL))
+        if ls != 0 {
+            og_ls_read_page(o, ls)
+            if og_has_packets(ls) { break }
+        }
+        bstart = sr_pos(s)
+        og_try_page(o)
+    }
+    og_probe_start(o)
+    let total = sr_size(s)
+    let bend = og_probe_end(o, bstart, total)
+    ad_st(o, O_PBS, bstart)
+    ad_st(o, O_PBE, bend)
+}
+
+// ------------------------------------------------------------ paquetes
+fn og_read_page(o: int) {
+    loop {
+        let r = std::try::catch(|| og_try_page(o))
+        let mut done = false
+        match r {
+            Result::Ok(_) => { done = true },
+            Result::Err(e) => {
+                if ad_class(e) == 73 { std::raw::fail(e) }
+            },
+        }
+        if done { break }
+    }
+    if (ad_ld(o, O_FLAGS) & 2) != 0 {
+        og_start_physical(o)
+        ad_fail_eof()
+    }
+    let ls = og_find(o, ad_ld(o, O_SERIAL))
+    if ls != 0 { og_ls_read_page(o, ls) }
+}
+
+// Siguiente paquete lógico: deja puntero y longitud en O_PP / O_PL y devuelve el número de serie.
+fn og_next_packet(o: int) -> int {
+    loop {
+        let serial = ad_ld(o, O_SERIAL)
+        let ls = og_find(o, serial)
+        if ls != 0 && og_has_packets(ls) {
+            let h = ad_ld(ls, LS_PQH)
+            let q = ad_ld(ls, LS_PQ)
+            ad_st(o, O_PP, ad_ld(q, 4 * h))
+            ad_st(o, O_PL, ad_ld(q, 4 * h + 1))
+            ad_st(ls, LS_PQH, h + 1)
+            return serial
+        }
+        og_read_page(o)
+    }
+    0
+}
+
+// ------------------------------------------------------------ enlace con ad_*
+fn ogg_open(s: int, d: int) {
+    let o = og_new(s)
+    ad_st(d, D_FMT, o)
+    ad_st(d, D_KIND, 3)
+    og_try_page(o)
+    if (ad_ld(o, O_FLAGS) & 2) == 0 { ad_fail_unsup("ogg: page is not marked as first") }
+    og_start_physical(o)
+}
+
+// Elige la primera pista que algún descodificador acepta (hoy solo Vorbis).
+fn ogg_codec_new(d: int) -> int {
+    let o = ad_ld(d, D_FMT)
+    let n = ad_ld(o, O_NSTREAMS)
+    let arr = ad_ld(o, O_STREAMS)
+    let mut i = 0
+    while i < n {
+        let ls = ad_ld(arr, i)
+        if ad_ld(ls, LS_KIND) == 1 && ad_ld(ls, LS_VB) != 0 {
+            let v = ad_ld(ls, LS_VB)
+            ad_st(d, D_CODEC, AD_VORBIS)
+            ad_st(d, D_RATE, vb_rate(v))
+            ad_st(d, D_CH, vb_channels(v))
+            ad_st(d, D_TBN, 1)
+            ad_st(d, D_TBD, vb_rate(v))
+            ad_st(d, D_NFRAMES, ad_ld(ls, LS_NFR))
+            ad_st(d, D_DEC, v)
+            ad_st(o, O_SELSERIAL, ad_ld(ls, LS_SERIAL))
+            ad_st(o, O_SELV, v)
+            return 1
+        }
+        i += 1
+    }
+    0
+}
+
+fn ogg_step(d: int, ob: int) -> int {
+    let o = ad_ld(d, D_FMT)
+    loop {
+        let serial = og_next_packet(o)
+        let p = ad_ld(o, O_PP)
+        let n = ad_ld(o, O_PL)
+        if serial == ad_ld(o, O_SELSERIAL) {
+            let v = ad_ld(o, O_SELV)
+            let r = std::try::catch(|| vb_decode(v, p, n, ob))
+            rt_free_block(p)
+            match r {
+                Result::Ok(_) => { return 0 },
+                Result::Err(e) => {
+                    let c = ad_class(e)
+                    if c == 73 || c == 83 { std::raw::fail(e) }
+                    std::raw::fail("Svorbis: invalid packet")
+                },
+            }
+        }
+        rt_free_block(p)
+    }
+    0
+}

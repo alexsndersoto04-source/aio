@@ -1,0 +1,192 @@
+// std::sqlite en Titan, parte 18: E/S de archivo real con llamadas al sistema (x86-64 Linux).
+// pread/pwrite sobre el archivo de la base, diario `<archivo>-journal`, fsync y bloqueo con flock.
+// Prefijo `sqf_`.
+
+fn sqf_open(path: any) -> int {
+    let c = rt_cstr(path)
+    // open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666)
+    let fd = std::raw::syscall(2, c, 524354, 438, 0, 0, 0)
+    rt_free_block(c)
+    fd
+}
+
+fn sqf_close(fd: int) -> int {
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+}
+
+fn sqf_size(fd: int) -> int {
+    let n = std::raw::syscall(8, fd, 0, 2, 0, 0, 0)
+    if n < 0 {
+        return 0
+    }
+    n
+}
+
+fn sqf_read(fd: int, off: int, n: int) -> any {
+    let buf = rt_alloc_zero(n + 8)
+    let mut got = 0
+    while got < n {
+        let r = std::raw::syscall(17, fd, buf + got, n - got, off + got, 0, 0)
+        if r < 0 {
+            if r != -4 {
+                break
+            }
+        } else if r == 0 {
+            break
+        } else {
+            got += r
+        }
+    }
+    let out = rt_array_new(n)
+    let data = rt_seq_data(out)
+    let mut i = 0
+    while i < n {
+        std::raw::store(data + 16 * i, 1)
+        std::raw::store(data + 16 * i + 8, std::raw::load8(buf + i))
+        i += 1
+    }
+    rt_free_block(buf)
+    out
+}
+
+fn sqf_write(fd: int, off: int, a: any) -> int {
+    let n = rt_seq_len(a)
+    let data = rt_seq_data(a)
+    let buf = rt_alloc(n + 8)
+    let mut i = 0
+    while i < n {
+        std::raw::store8(buf + i, std::raw::load(data + 16 * i + 8))
+        i += 1
+    }
+    let mut done = 0
+    let mut rc = 0
+    while done < n {
+        let r = std::raw::syscall(18, fd, buf + done, n - done, off + done, 0, 0)
+        if r < 0 {
+            if r != -4 {
+                rc = r
+                break
+            }
+        } else {
+            done += r
+        }
+    }
+    rt_free_block(buf)
+    rc
+}
+
+fn sqf_truncate(fd: int, size: int) -> int {
+    std::raw::syscall(77, fd, size, 0, 0, 0, 0)
+}
+
+fn sqf_sync(fd: int) -> int {
+    std::raw::syscall(74, fd, 0, 0, 0, 0, 0)
+}
+
+fn sqf_jpath(path: any) -> any {
+    rt_concat(path, "-journal")
+}
+
+fn sqf_jnl_read(path: any) -> any {
+    let c = rt_cstr(sqf_jpath(path))
+    let fd = std::raw::syscall(2, c, 524288, 0, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        return nil
+    }
+    let mut cap = 65536
+    let mut buf = rt_alloc(cap)
+    let mut n = 0
+    loop {
+        if n == cap {
+            let bigger = rt_alloc(cap * 2)
+            rt_copy(bigger, buf, n)
+            rt_free_block(buf)
+            buf = bigger
+            cap = cap * 2
+        }
+        let got = std::raw::syscall(0, fd, buf + n, cap - n, 0, 0, 0)
+        if got < 0 {
+            if got == -4 {
+                continue
+            }
+            break
+        }
+        if got == 0 {
+            break
+        }
+        n += got
+    }
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    let out = rt_str_alloc(n)
+    rt_copy(out + 16, buf, n)
+    rt_free_block(buf)
+    std::raw::adopt(6, out)
+}
+
+fn sqf_jnl_write(path: any, a: any) -> int {
+    let c = rt_cstr(sqf_jpath(path))
+    // open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666)
+    let fd = std::raw::syscall(2, c, 524865, 438, 0, 0, 0)
+    rt_free_block(c)
+    if fd < 0 {
+        return fd
+    }
+    let rc = sqf_write(fd, 0, a)
+    std::raw::syscall(74, fd, 0, 0, 0, 0, 0)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    rc
+}
+
+fn sqf_jnl_delete(path: any) -> int {
+    let c = rt_cstr(sqf_jpath(path))
+    let r = std::raw::syscall(87, c, 0, 0, 0, 0, 0)
+    rt_free_block(c)
+    r
+}
+
+// Bloqueos del archivo con candados OFD de fcntl (por descriptor, con rangos de bytes). Hay dos rangos
+// más allá del final del archivo: 0 = escritor (uno solo, desde begin hasta commit/rollback) y
+// 1 = confirmación (los lectores lo toman compartido mientras leen; el escritor lo toma exclusivo solo
+// mientras vuelca el commit). Así los lectores ven siempre el último estado confirmado aunque haya un
+// escritor con una transacción abierta (el efecto que da WAL en SQLite).
+fn sqf_flock(fd: int, which: int, kind: int, wait: bool) -> int {
+    let b = rt_alloc_zero(40)
+    std::raw::store(b, kind)
+    std::raw::store(b + 8, 1073741824 + which)
+    std::raw::store(b + 16, 1)
+    let mut cmd = 37
+    if wait {
+        cmd = 38
+    }
+    let r = std::raw::syscall(72, fd, cmd, b, 0, 0, 0)
+    rt_free_block(b)
+    r
+}
+
+// `ex`: exclusivo; si no, compartido. Espera hasta `ms`.
+fn sqf_lock(fd: int, which: int, ex: bool, ms: int) -> bool {
+    let mut kind = 0
+    if ex {
+        kind = 1
+    }
+    let deadline = tk_now() + ms
+    loop {
+        let r = sqf_flock(fd, which, kind, false)
+        if r == 0 {
+            return true
+        }
+        if r != -11 && r != -13 && r != -4 {
+            return false
+        }
+        if tk_now() >= deadline {
+            return false
+        }
+        tk_sleep(2)
+    }
+    false
+}
+
+fn sqf_unlock(fd: int, which: int) -> int {
+    sqf_flock(fd, which, 2, false)
+}

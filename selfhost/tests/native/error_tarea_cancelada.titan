@@ -1,0 +1,11 @@
+fn main() {
+    let t = spawn || {
+        let mut n = 0
+        while true {
+            n += 1
+        }
+        n
+    }
+    print(cancel(t))
+    print(join(t))
+}

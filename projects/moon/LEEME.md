@@ -30,7 +30,7 @@ mismo puerto). La primera cuenta que se registra queda como administradora.
 Para trabajar en la interfaz con recarga instantánea:
 
 ```bash
-cd frontend
+cd projects/moon/frontend
 npm install
 npm run dev           # http://localhost:5173, con el proxy hacia la API
 ```
@@ -42,7 +42,7 @@ npm run dev           # http://localhost:5173, con el proxy hacia la API
 cd projects/moon/server && node prueba-api.mjs
 
 # 51 comprobaciones desde la interfaz, en un navegador simulado con red real
-cd frontend && npm i --no-save jsdom && API=http://127.0.0.1:3000 node scripts/prueba-real.mjs
+cd projects/moon/frontend && npm i --no-save jsdom && API=http://127.0.0.1:3000 node scripts/prueba-real.mjs
 ```
 
 Las dos pruebas crean cuentas nuevas con nombres únicos y dejan a la vista lo

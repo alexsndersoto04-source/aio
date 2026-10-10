@@ -1,0 +1,78 @@
+// select, join_timeout y sleep concurrente.
+fn dormir_y_enviar(tx: Sender, ms: int, v: string) -> int {
+    std::time::sleep_ms(ms)
+    send(tx, v)
+    ms
+}
+
+fn main() {
+    let (a, ra) = channel(1)
+    let (b, rb) = channel(1)
+    let (c, rc) = channel(1)
+
+    // Nada listo: expira.
+    print(select([ra, rb, rc], 30))
+
+    // Varios listos: gana el primero del arreglo.
+    send(b, "b")
+    send(c, "c")
+    print(select([ra, rb, rc], 30))
+    print(select([rc, ra], 30))
+    print(select([ra, rc], 30))
+    print(select([ra, rb, rc], 0))
+    print(select([], 10))
+
+    // El que llega primero (por tiempo) es el que se devuelve.
+    let t1 = spawn || { dormir_y_enviar(a, 200, "lento") }
+    let t2 = spawn || { dormir_y_enviar(b, 40, "rapido") }
+    print(select([ra, rb], 5000))
+    print(select([ra, rb], 5000))
+    print(join(t1))
+    print(join(t2))
+
+    // Los tiempos de espera de tareas distintas se solapan.
+    let inicio = std::time::unix_millis()
+    let mut ts = []
+    let mut i = 0
+    while i < 8 {
+        ts = std::array::push(ts, spawn || {
+            std::time::sleep_ms(150)
+            i
+        })
+        i += 1
+    }
+    let mut s = 0
+    for t in ts {
+        s += join(t)
+    }
+    let dur = std::time::unix_millis() - inicio
+    print(s)
+    print(dur >= 150)
+    print(dur < 700)
+
+    // join_timeout: None mientras la tarea duerme; luego Some y se recoge.
+    let (x, rx) = channel(1)
+    let t3 = spawn || { dormir_y_enviar(x, 120, "fin") }
+    print(join_timeout(t3, 10))
+    print(join_timeout(t3, 3000))
+    print(recv(rx))
+    print(std::try::catch(|| join(t3)))
+
+    // sleep en la tarea principal mientras otra trabaja.
+    let (y, ry) = channel(8)
+    let t5 = spawn || {
+        let mut k = 0
+        while k < 3 {
+            std::time::sleep_ms(30)
+            send(y, k)
+            k += 1
+        }
+        7
+    }
+    std::time::sleep_ms(200)
+    print(recv_timeout(ry, 0))
+    print(recv_timeout(ry, 0))
+    print(recv_timeout(ry, 0))
+    print(recv_timeout(ry, 0))
+    print(join(t5))
+}

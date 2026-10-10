@@ -1,0 +1,1965 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Historial de cambios — Documentación de Titan</title>
+<meta name="description" content="Cambios por versión.">
+<meta property="og:title" content="Historial de cambios — Documentación de Titan">
+<meta property="og:description" content="Cambios por versión.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html" class="on">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Estado del proyecto</p><h1 id="zett-titan-changelog">Zett / TITAN — Changelog</h1>
+<blockquote>
+<p>Las entradas con número <code>1.x.0</code> de más abajo (hasta 1.3.0) usan la numeración interna del prototipo en Rust y no coinciden con las
+etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1.1.0</code> y posteriores, con Titan). Esas entradas describen el prototipo escrito en Rust, que se reemplazó por el compilador escrito en
+Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
+El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
+</blockquote>
+<h2 id="sin-publicar">Sin publicar</h2>
+<ul>
+<li><strong>Lenguaje:</strong> la interpolación de textos acepta cualquier expresión (<code>"{a / 7}"</code>, <code>"{v[0]}"</code>, <code>"{p.x}"</code>,
+  <code>"{f(a + 1)}"</code>, <code>"{if c { 1 } else { 0 }}"</code>). Las llaves que no son una expresión (JSON, CSS, <code>{2,3}</code>, <code>${VAR}</code>)
+  siguen siendo texto, y las llaves deben pegarse a la expresión (<code>{ a }</code> o un bloque de código dentro del texto no se
+  tocan). Comparado con el compilador anterior sobre una muestra de 131 programas (incluidos el propio compilador y Moon):
+  mismo bytecode; no se comparó el repositorio entero. Documentado en <code>docs/SPEC.md</code> (sección 9) y
+  <code>docs/TITAN_SYNTAX.md</code>; prueba en <code>selfhost/tests/lenguaje/interpolacion.titan</code>.</li>
+<li><strong>Zett:</strong> el registro por defecto era <code>https://registry.titan-lang.org</code>, que no existe. Ahora es un registro de ficheros
+  dentro del repositorio (<code>registro/</code>, servido por GitHub; el índice admite rutas relativas). Se añade versiones con
+  <code>selfhost/registro_agregar.titan</code>. Pruebas: <code>selfhost/tests/pkg/registro/estatico.sh</code> (servidor HTTPS local) y un paso
+  del CI que lee <code>registro/</code> de verdad desde GitHub. Primer paquete: <code>hola-zett</code> (ejemplo). Hasta que <code>registro/</code> llegue a
+  <code>main</code>, la dirección por defecto no responde.</li>
+</ul>
+<h2 id="v120-2026-10-zett-el-gestor-de-paquetes-arreglo-del-arranque-por-el-path">v1.2.0 (2026-10) — Zett, el gestor de paquetes; arreglo del arranque por el PATH</h2>
+<ul>
+<li><strong>Zett:</strong> <code>zett</code> es ahora el gestor de paquetes de Titan (<code>add</code>, <code>fetch</code>/<code>install</code>, <code>update</code>, <code>keygen</code>, <code>pack</code>, <code>publish</code>,
+  <code>version</code>). Es el mismo ejecutable que <code>titan</code>, invocado con el nombre <code>zett</code>: el paquete trae el enlace <code>zett → titan</code> y
+  <code>instalar-termux.sh</code> lo deja en el <code>PATH</code>. Documentación: <code>docs/ZETT.md</code>. Los comandos siguen disponibles como <code>titan add</code>, etc.</li>
+<li><strong>Corregido:</strong> <code>titan</code> buscaba su carpeta <code>native/</code> a partir de <code>argv[0]</code>; si se invocaba solo por el nombre (<code>titan run x.titan</code>
+  con el ejecutable en el <code>PATH</code>, como deja el instalador de Termux) fallaba con <code>No such file or directory</code>. Ahora usa
+  <code>/proc/self/exe</code>, que resuelve también los enlaces simbólicos.</li>
+</ul>
+<h2 id="v110-2026-10-compilador-runtime-y-biblioteca-estandar-en-titan-linux-x86-64-y-arm64">v1.1.0 (2026-10) — compilador, runtime y biblioteca estándar en Titan; Linux x86-64 y ARM64</h2>
+<ul>
+<li>El compilador, el runtime nativo y la biblioteca estándar (812 funciones <code>std::*</code> en 73 espacios de nombres) están escritos en
+  Titan. El compilador se compila a sí mismo con punto fijo verificado (etapa 1 = 2 = 3, byte a byte) a partir de una semilla
+  (<code>selfhost/semilla/</code>). El código Rust se borró del repositorio (sigue en el historial, etiqueta <code>ultimo-con-rust</code>).</li>
+<li><code>titan run</code>/<code>compile</code> generan código nativo (x86-64 directo, o LLVM para x86-64 y ARM64); ya no hay VM al ejecutar.</li>
+<li>Linux ARM64 (Termux): <code>titan compile --target aarch64</code>; el ejecutable <code>titan</code> ARM64 se prueba en un ARM64 real en CI
+  (95 programas con salida idéntica a la del backend x86-64). Paquetes <code>titan-v1.1.0-linux-{x86_64,aarch64}.tar.gz</code>
+  (<code>selfhost/empaquetar.sh</code>), instalador <code>selfhost/instalar-termux.sh</code>.</li>
+<li>Backend LLVM: tareas y canales (fibras con cambio de pila en ensamblador x86-64/ARM64) y <code>map/filter/fold/find/any/all</code> como llamadas.</li>
+<li>Corregido: el estado de <code>std::server</code> y de <code>std::window</code> (Wayland) estaba en globales que en ARM64 corrompía <code>ppoll</code> o que
+  compartía con las tareas.</li>
+<li>Eliminado: <code>std::audio::cloud_*</code> (dependía de bibliotecas de Rust), <code>--sandbox</code>, <code>spawn_quota</code>.</li>
+<li>macOS y Windows: sin paquete por ahora.</li>
+</ul>
+<h2 id="130-fase-43-nube-musical-en-telegram-biblioteca-doble-con-streaming-puro-stdaudiocloud_">1.3.0 — Fase 43: Nube Musical en Telegram — Biblioteca Doble con Streaming Puro (<code>std::audio::cloud_*</code>) ☁️</h2>
+<ul>
+<li>Tus canciones viven en un canal privado de Telegram («Mi Música», se crea solo) y Titan las toca <strong>directo de la nube</strong>: solo viajan unos segundos por adelantado (MBs en memoria) y <strong>nada se guarda en el teléfono</strong>, salvo descarga explícita tuya. Como Spotify/YouTube.</li>
+<li><strong>Login con tu cuenta</strong> (MTProto, grammers 0.10, Rust puro): <code>cloud_setup(api_id, api_hash)</code> (app personal de https://my.telegram.org), <code>cloud_login_phone</code> → código → <code>cloud_login_code</code> (→ <code>cloud_login_password</code> si hay 2FA). Sesión persistente en <code>~/.titan/telegram.session.json</code> (JSON propio, sin SQLite/C); <code>cloud_status</code> (mapa de estado, nunca falla) y <code>cloud_logout</code> (borra sesión, respeta tus canciones y credenciales).</li>
+<li><strong>Biblioteca doble</strong> con <code>cloud_library</code> (<code>[{id, title, artist, duration_secs, size, file, mime}]</code>, metadatos de las etiquetas de audio de Telegram) + <code>std::audio::scan_library</code> del teléfono; ejemplo <code>examples/reproductor_nube.titan</code> las muestra juntas.</li>
+<li><strong>Streaming honesto</strong>: cada pista es <code>cloud:&lt;id&gt;</code> para el motor 42A (misma cola gapless, crossfade, EQ, 32 barras); seek re-pide desde el punto; <code>cloud_play</code> / <code>cloud_queue_add</code>; <code>engine_decode</code>/<code>engine_current</code>/<code>engine_queue_list</code> entienden pistas nube con títulos bonitos (<code>☁ Artista — Título</code>).</li>
+<li><strong>Gestión explícita</strong>: <code>cloud_upload</code> (detecta duración y etiquetas solo), <code>cloud_download(id, dest)</code> (lo único que toca disco) y <code>cloud_delete</code> (borra del canal).</li>
+<li>Sin internet / sin login / sin bocinas: errores honestos en criollo, exit 0 en la demo. Documentación: <code>docs/CLOUD.md</code>.</li>
+<li>Ajustes de la rama final: <code>Cargo.lock</code> regenerado en CI con el rev de grammers fijado (los builds <code>--locked</code> de Publish/Termux vuelven a verde), <code>CloudMediaSource::read</code> ya no confunde la marca de agua del fetch con la posición de consumo (fin de stream falso que truncaba pistas al primer pedazo) y <code>reproductor_nube.titan</code> usa <code>fn</code> (el parser lo rechazaba).</li>
+<li>Registro actualizado: <strong>809 funciones nativas</strong> registradas en <code>std::*</code>.</li>
+</ul>
+<hr />
+<h2 id="120-fase-42a-motor-de-audio-nativo-titan-decodifica-y-suena-solo-stdaudioengine_">1.2.0 — Fase 42A: Motor de Audio Nativo — Titan Decodifica y Suena Solo (<code>std::audio::engine_*</code>) 🔊</h2>
+<ul>
+<li>Titan deja de delegar el sonido: <strong>decodifica MP3/FLAC/Vorbis/Opus/WAV/AAC dentro del binario</strong> (<code>symphonia</code>, Rust puro, cero librerías del sistema) y lo empuja a las bocinas (<code>cpal</code>: CoreAudio / WASAPI / ALSA). Sin mpv, sin afplay, sin ayudantes.</li>
+<li><strong>Transporte</strong> con 8 nativas: <code>engine_play</code>, <code>engine_stop</code>, <code>engine_pause</code>, <code>engine_resume</code>, <code>engine_position</code> (<code>-1.0</code> si idle), <code>engine_duration</code>, <code>engine_state</code> (<code>idle/playing/paused</code>) y <code>engine_seek</code> (exacto a nivel de muestra). Fallo rápido y tipado: archivo podrido o máquina sin salida devuelven <code>Result::Err</code>, nunca fingen.</li>
+<li><strong>Cola gapless + crossfade + historial</strong> con 6 nativas: <code>engine_queue_add</code> (funciona antes del primer play), <code>engine_queue_list</code>, <code>engine_queue_clear</code>, <code>engine_next</code>, <code>engine_prev</code> (&gt;3 s reinicia, si no retrocede) y <code>engine_current</code> (<code>{path, codec, position_secs, duration_secs, state, queue_len}</code>). Gapless por defecto, crossfade con mezcla muestra a muestra (<code>0.0</code> lo apaga), 250 ms de aire si se apaga gapless.</li>
+<li><strong>Ajustes que sobreviven entre pistas y sesiones</strong> (el backend de la futura pantalla de configuración) con 5 nativas: <code>engine_set_volume</code> (<code>0..100</code>), <code>engine_set_crossfade</code> (<code>0.0..12.0</code> s), <code>engine_set_gapless</code> (booleano), <code>engine_set_eq</code> (graves/medios/agudos <code>-12..12</code> dB, filtros RBJ 250 Hz/1 kHz/4 kHz, bit-transparente en cero) y <code>engine_status</code> (mapa completo para la UI).</li>
+<li><strong>Visualizador</strong> con <code>engine_levels</code>: 32 bandas logarítmicas <code>60 Hz..16 kHz</code> sobre el mono post-FX; ceros en idle para sondeo libre de errores.</li>
+<li><strong>Chequeo headless</strong> con <code>engine_decode</code>: sonda + decodifica hasta 5 s sin bocinas (<code>{duration_secs, sample_rate, channels, codec, verified_secs, peak}</code>) — lo que corre en CI y usará la caché de streaming de Telegram (Fase 43). Más <code>engine_device</code> (etiqueta de salida o <code>""</code>).</li>
+<li>Diseño honesto por target: escritorio = playback completo; CI/headless = <code>NoDevice</code> tipado + decode; Android = decode + cola + ajustes (la salida la pone el shell de la app en Fase 42B, <code>cpal</code> excluido del target).</li>
+<li>Por dentro: hilo decodificador con anillo de ~8 s, remuestreo lineal + adaptación de canales al dispositivo, cola 500 / historial 200, archivos podridos que se saltan sin matar la sesión.</li>
+<li>Ejemplo verificable end-to-end: <code>examples/reproductor_hifi.titan</code> (tonos, decode headless, ajustes, cola y reproducción con degradación elegante). Documentación nueva: <code>docs/AUDIO_ENGINE.md</code>.</li>
+<li>CI: <code>libasound2-dev</code> en los jobs de Linux (+ sysroot multiarch para los cruces ARM) y workflow <code>update-cargo-lock</code> para fijar el lock desde la CI.</li>
+<li>Registro actualizado: <strong>797 funciones nativas</strong> registradas en <code>std::*</code>.</li>
+</ul>
+<hr />
+<h2 id="110-fase-41-base-del-reproductor-de-musica-etiquetas-biblioteca-y-motor-de-reproduccion-de-escritorio-stdaudio-v2">1.1.0 — Fase 41: Base del Reproductor de Música — Etiquetas, Biblioteca y Motor de Reproducción de Escritorio (<code>std::audio</code> v2) 🎵</h2>
+<ul>
+<li>La capa de audio se convierte en fundación real para <strong>construir un reproductor de música escrito en TITAN</strong>: leer bibliotecas, mostrar metadatos y reproducir con control completo.</li>
+<li><strong>Metadatos de pistas</strong> (parser propio, Rust puro, cero dependencias nuevas) con 2 funciones nativas:</li>
+<li><code>std::audio::tags(path)</code> — devuelve el mapa completo de la pista: <code>path</code>, <code>format</code> (<code>mp3</code> / <code>wav</code> / <code>flac</code> / <code>ogg</code> / <code>opus</code>), <code>title</code>, <code>artist</code>, <code>album</code>, <code>album_artist</code>, <code>genre</code>, <code>year</code>, <code>track</code>, <code>duration_secs</code>, <code>sample_rate</code>, <code>channels</code>, <code>bitrate_kbps</code> y <code>has_cover</code>. Los campos de texto salen <code>nil</code> cuando no hay etiqueta.</li>
+<li><code>std::audio::duration(path)</code> — duración en segundos (<code>Float</code>, <code>0.0</code> si el formato no la puede saber).</li>
+<li><strong>Formatos y etiquetas soportados</strong>:</li>
+<li><strong>MP3</strong>: ID3v2.2/2.3/2.4 (TIT2, TPE1, TALB, TPE2, TCON, TYER/TDRC, TRCK) con texto ISO-8859-1, UTF-8 y UTF-16 (con/sin BOM), detección de carátula (APIC/PIC), sincronización inversa (unsync), cabecera extendida y marcos comprimidos/cifrados saltados con seguridad; respaldo ID3v1 con la tabla estándar de 80 géneros. Duración exacta por contador de marcos Xing/Info (VBR) o estimación CBR.</li>
+<li><strong>WAV</strong>: <code>fmt</code> + duración exacta desde <code>data</code>, etiquetas <code>LIST</code>/<code>INFO</code> (INAM, IART, IPRD, IGNR, ICRD, ITRK) y chunks <code>id3</code>/<code>ID3</code> embebidos.</li>
+<li><strong>FLAC</strong>: STREAMINFO (duración exacta, tasa, canales) y VORBIS_COMMENT, con detección de PICTURE.</li>
+<li><strong>OGG Vorbis / Opus</strong>: cabecera de identificación (tasa/canales, pre-skip de Opus), comentarios Vorbis/OpusTags y duración exacta por granule de la última página.</li>
+<li><strong>Biblioteca musical</strong>: <code>std::audio::scan_library(dir)</code> — recorre la carpeta (profundidad máx. 8, tope de 5000 pistas), filtra por extensión (<code>mp3</code>, <code>wav</code>, <code>flac</code>, <code>ogg</code>, <code>oga</code>, <code>opus</code>), lee los metadatos de cada pista y devuelve la lista ordenada por ruta. Los archivos ilegibles se saltan: una pista rota no rompe el escaneo.</li>
+<li><strong>Motor de reproducción de escritorio</strong> con 10 funciones nativas: <code>player_play</code>, <code>player_stop</code>, <code>player_pause</code>, <code>player_resume</code>, <code>player_position</code>, <code>player_set_volume</code>, <code>player_seek</code>, <code>player_backend</code>, <code>player_queue_add</code> y <code>player_queue_clear</code>.</li>
+<li>TITAN controla el <strong>reproductor del sistema</strong> sin embeber audio nativo: detección en orden <strong>mpv → afplay → paplay → aplay → ffplay</strong> (y <code>Media.SoundPlayer</code> por PowerShell en Windows).</li>
+<li><strong>mpv es la vía premium en Unix</strong>: control por su socket JSON-IPC (<code>--input-ipc-server</code>) con <code>UnixStream</code> de la std — pausa, seek, volumen, cola real (<code>loadfile … append-play</code>, <code>playlist-clear</code>) y posición exacta leída del reproductor.</li>
+<li>Backends simples: pausa/resume por señales POSIX (SIGSTOP/SIGCONT, <code>nix</code>, opcional y solo Unix — mismo patrón que <code>process_mod</code>) y posición por reloj con descuento de pausas; lo no soportado devuelve <code>Result::Err</code> <strong>tipado</strong> para degradar con elegancia.</li>
+<li>En Termux/Android sigue disponible la vía clásica de la Fase 9 (<code>termux-media-player</code>).</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/reproductor_musica.titan</code> (genera dos tonos, lee etiquetas, escanea la biblioteca y reproduce con pausa/resume/volumen/cola/stop).</li>
+<li>Documentación nueva: <code>docs/AUDIO.md</code> (tabla de formatos, matriz de soporte por backend y recetas).</li>
+<li>Registro actualizado: <strong>771 funciones nativas</strong> registradas en <code>std::*</code>.</li>
+</ul>
+<hr />
+<h2 id="0400-phase-40-aceleracion-en-caliente-vm-fast-paths-y-benchmark-operacional-stdruntime-v3">0.40.0 — Phase 40: Aceleración en Caliente (<em>VM Fast-Paths</em>) y Benchmark Operacional (<code>std::runtime</code> v3) ⚡</h2>
+<ul>
+<li>Graduación de la hoja de ruta de <strong>Producción Empresarial a Gran Escala (Fases 36 a 40)</strong>.</li>
+<li>Optimización del núcleo de la máquina virtual de pila (<code>titan_vm</code>):</li>
+<li><strong>Fast-Paths aritméticos e inline de enteros</strong>: Las instrucciones del bytecode para suma (<code>Op::Add</code>), resta (<code>Op::Sub</code>), multiplicación (<code>Op::Mul</code>), igualdad (<code>Op::Eq</code>) y comparación (<code>Op::Lt</code>) ahora detectan si ambos operandos en el tope de la pila son enteros continuos, ejecutando la operación nativa en Rust e inyectando el resultado sin alojar objetos auxiliares ni llamar intermediarios.</li>
+<li>Añadidas 3 funciones de inspección y benchmarking al runtime sin depender de herramientas de terceros:</li>
+<li><code>std::runtime::optimize_level()</code> — reporta el nivel de optimización activo del runtime (<code>2</code> en modo release/fast-paths).</li>
+<li><code>std::runtime::fast_path_enabled()</code> — verifica que las rutas aceleradas de enteros y comparación están en funcionamiento (<code>true</code>).</li>
+<li><code>std::runtime::benchmark(iterations, closure)</code> — ejecuta el bloque o closure un número exacto de iteraciones en un bucle cerrado, calculando con precisión milimétrica el tiempo total (<code>total_ms</code>), nanosegundos por operación (<code>ns_per_op</code>) y tasa de rendimiento en operaciones por segundo (<code>ops_per_sec</code>).</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/enterprise_benchmark.titan</code>.</li>
+<li>Documentación de arquitectura actualizada en <code>docs/CONCURRENCY.md</code>.</li>
+</ul>
+<hr />
+<h2 id="0390-phase-39-observabilidad-operacional-y-profiler-de-servidor-stdruntime-v2-heap_dump">0.39.0 — Phase 39: Observabilidad Operacional y Profiler de Servidor (<code>std::runtime</code> v2 &amp; <code>heap_dump</code>) 🔍</h2>
+<ul>
+<li>Subsistema de diagnóstico en tiempo real y ajuste dinámico del Garbage Collector para servidores empresariales.</li>
+<li>Añadidas 4 funciones nativas e instrucciones de la VM:</li>
+<li><code>std::runtime::gc_threshold()</code> — consulta el umbral de recolección en bytes configurado en la máquina virtual.</li>
+<li><code>std::runtime::gc_set_threshold(bytes)</code> — reconfigura dinámicamente la frecuencia del recolector de basura según la carga de trabajo o latencia requerida.</li>
+<li><code>std::runtime::active_tasks()</code> — reporta el número de tareas concurrentes que corren en segundo plano dentro del despachador del proceso.</li>
+<li><code>std::runtime::heap_dump(path)</code> — exporta un reporte diagnóstico instantáneo en formato JSON con la radiografía del heap (<code>timestamp_unix_ms</code>, <code>allocated_bytes</code>, <code>memory_limit</code>, <code>gc_threshold</code>, <code>gc_live_count</code>, <code>active_tasks</code>, <code>status</code>) en la ruta indicada, ideal paraendpoints HTTP de auditoría y depuración en caliente.</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/enterprise_profiler.titan</code>.</li>
+<li>Documentación de arquitectura actualizada en <code>docs/CONCURRENCY.md</code>.</li>
+</ul>
+<hr />
+<h2 id="0380-phase-38-concurrencia-no-bloqueante-y-sandbox-de-memoria-por-tarea-stdruntime-spawn_quota">0.38.0 — Phase 38: Concurrencia No-Bloqueante y Sandbox de Memoria por Tarea (<code>std::runtime</code> &amp; <code>spawn_quota</code>) 🛡️</h2>
+<ul>
+<li>Nuevo subsistema operativo para inspeccionar la memoria de la máquina virtual e imponer cuotas estrictas de memoria por tarea.</li>
+<li>Añadidas 5 funciones nativas e instrucciones de la VM sin pasar por intermediarios de terceros:</li>
+<li><code>std::runtime::memory_limit()</code> — consulta el límite máximo de memoria configurado para la tarea en curso (<code>-1</code> si es ilimitado).</li>
+<li><code>std::runtime::allocated_bytes()</code> — reporta en vivo el uso en bytes de memoria en el heap de TITAN.</li>
+<li><code>std::runtime::gc_live_count()</code> — estima cuántos objetos vivos se encuentran administrados en el GC.</li>
+<li><code>std::runtime::gc_collect()</code> — dispara un ciclo manual del Garbage Collector y devuelve la cantidad de objetos recolectados.</li>
+<li><code>std::runtime::spawn_quota(bytes, closure)</code> — lanza una tarea en segundo plano pero con un límite de cuota estricta (<code>bytes</code>). Si la tarea sobrepasa su límite de memoria, se aborta limpiamente con un error tipado de memoria (<code>VmError::MemoryLimit</code>) sin colapsar el servidor ni afectar a otras tareas en ejecución.</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/enterprise_runtime.titan</code>.</li>
+<li>Documentación y referencia actualizadas en <code>docs/CONCURRENCY.md</code>.</li>
+</ul>
+<hr />
+<h2 id="0370-phase-37-connection-pooling-acid-y-resiliencia-en-red-stdpool-health-check-en-dbs">0.37.0 — Phase 37: Connection Pooling ACID y Resiliencia en Red (<code>std::pool</code> / Health Check en DBs) 🏦</h2>
+<ul>
+<li>Añadida verificación activa de salud en conexiones e inspección de pools para bases de datos (SQLite, PostgreSQL y MySQL).</li>
+<li>Soporte nativo y en VM para ping de conexión y chequeo de salud del pool sin agotar conexiones (<code>std::sqlite::ping</code>, <code>std::sqlite::pool_health</code>, <code>std::postgres::ping</code>, <code>std::postgres::pool_health</code>, <code>std::mysql::ping</code>, <code>std::mysql::pool_health</code>, <code>std::db::ping</code>).</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/enterprise_pool.titan</code>.</li>
+<li>Documentación de arquitectura actualizada en <code>docs/SQLITE.md</code>.</li>
+</ul>
+<hr />
+<h2 id="0360-phase-36-observabilidad-enterprise-y-metricas-estandar-stdmetrics-v2">0.36.0 — Phase 36: Observabilidad Enterprise y Métricas Estándar (<code>std::metrics</code> v2) 📊</h2>
+<ul>
+<li>Implementación real production-grade en <code>std::metrics</code> con formato estándar Prometheus 0.0.4 / OpenMetrics.</li>
+<li>3 nuevas funciones nativas registradas y verificadas end-to-end (total: 758 nativas registradas en <code>std::*</code>):</li>
+<li><code>std::metrics::counter_get(name)</code> — consulta puntual no destructiva de contadores enteros.</li>
+<li><code>std::metrics::gauge_get(name)</code> — consulta puntual no destructiva de medidores flotantes.</li>
+<li><code>std::metrics::prometheus_export()</code> — serializa el estado completo del registro (<code>Snapshot</code>: contadores, gauges e histogramas con <code>_count</code>, <code>_sum</code>, <code>_min</code>, <code>_max</code>) en formato de texto Prometheus (<code># TYPE &lt;name&gt; &lt;type&gt;\n&lt;name&gt; &lt;value&gt;</code>), listo para exportarse en endpoints de monitoreo o Grafana/Datadog sin complementos externos.</li>
+<li>Añadido ejemplo verificable end-to-end: <code>examples/enterprise_metrics.titan</code>.</li>
+<li>Documentación y referencia actualizadas en <code>docs/METRICS.md</code>.</li>
+</ul>
+<hr />
+<h2 id="0330-phase-34-3-modulos-nuevos-serios-process-collections-datetime">0.33.0 — Phase 34: 3 módulos nuevos serios (process + collections + datetime) 🏗️</h2>
+<p>Tres módulos completos, sin humo, sin stubs. Cada uno con
+implementación real backend Rust production-grade, ~110 nuevas
+natives registradas, ejemplo verificable end-to-end.</p>
+<h3 id="stdprocess-control-total-del-sistema-operativo"><code>std::process</code> — Control total del sistema operativo</h3>
+<p>Backend: <code>std::process::Command</code> nativo + <code>nix</code> para señales POSIX.</p>
+<ul>
+<li><code>run(cmd)</code> — ejecuta y retorna <code>{stdout, stderr, exit_code, duration_ms}</code></li>
+<li><code>run_with_input(cmd, bytes)</code> — pasa datos por stdin</li>
+<li><code>shell(cmd)</code> — vía <code>sh -c</code>, permite pipes/redirs/glob</li>
+<li><code>pipe([cmd1, cmd2, cmd3])</code> — encadena stdout→stdin en cascada</li>
+<li><code>spawn(cmd)</code> → handle Int para procesos en background</li>
+<li><code>spawn_wait(h)</code>, <code>spawn_poll(h) → Option&lt;int&gt;</code>, <code>spawn_kill(h)</code>, <code>spawn_pid(h)</code></li>
+<li><code>env_get</code>, <code>env_set</code>, <code>env_unset</code>, <code>env_vars</code> — variables de entorno</li>
+<li><code>working_dir</code>, <code>set_working_dir</code> — cwd</li>
+<li><code>self_pid</code>, <code>hostname</code>, <code>username</code>, <code>args</code> — info del sistema</li>
+<li><code>send_signal(pid, sig)</code> — señales POSIX (HUP=1, INT=2, KILL=9, TERM=15…)</li>
+<li><code>exit(code)</code> — termina el proceso</li>
+</ul>
+<h3 id="stdcollections-estructuras-de-datos-avanzadas"><code>std::collections</code> — Estructuras de datos avanzadas</h3>
+<p>Backend: <code>BTreeSet</code>, <code>VecDeque</code>, <code>BinaryHeap</code> de Rust std + <code>indexmap</code>.
+Handles Int estables, drop explícito para limpiar memoria.</p>
+<p><strong>Set</strong> (11 fns): <code>new</code>, <code>from</code>, <code>add</code>, <code>remove</code>, <code>contains</code>, <code>len</code>,
+<code>to_array</code>, <code>union</code>, <code>intersect</code>, <code>difference</code>, <code>is_subset</code>, <code>drop</code></p>
+<p><strong>Deque</strong> (8 fns): <code>new</code>, <code>push_front/back</code>, <code>pop_front/back</code>,
+<code>len</code>, <code>to_array</code>, <code>drop</code></p>
+<p><strong>PriorityQueue</strong> (7 fns): <code>new_max</code>/<code>new_min</code>, <code>push(item, priority)</code>,
+<code>pop</code>, <code>peek</code>, <code>len</code>, <code>drop</code>. Estable (FIFO en empate).</p>
+<p><strong>OrderedMap</strong> (7 fns): map que preserva orden de inserción. <code>new</code>,
+<code>insert</code>, <code>get</code>, <code>remove</code>, <code>keys</code>, <code>len</code>, <code>drop</code>. Valores son
+cualquier tipo Titan (via JSON internamente).</p>
+<p><strong>Counter</strong> (6 fns): frecuencia de items. <code>from(array)</code>, <code>add(item, delta)</code>,
+<code>count</code>, <code>most_common(n)</code>, <code>total</code>, <code>drop</code>.</p>
+<p><strong>Graph</strong> (11 fns): dirigido y no-dirigido, ponderado.
+- <code>new(directed)</code>, <code>add_node</code>, <code>add_edge(from, to, weight)</code>
+- <code>neighbors(node)</code>, <code>bfs(start)</code>, <code>dfs(start)</code>
+- <code>shortest_path(start, end)</code> — <strong>Dijkstra completo con binary heap</strong>
+- <code>topological_sort()</code> — Kahn's algorithm, detecta ciclos
+- <code>has_cycle()</code> — DFS con 3 estados para directed, BFS-parent para undirected
+- <code>nodes()</code>, <code>drop</code></p>
+<h3 id="stddatetime-extendido-manejo-profesional-de-tiempo"><code>std::datetime</code> extendido — Manejo profesional de tiempo</h3>
+<p>Backend: <code>chrono</code> (ya usado) + <code>chrono-tz</code> para timezones (~600 zonas).</p>
+<p><strong>Componentes</strong> (12 fns): <code>year</code>, <code>month</code>, <code>day</code>, <code>hour</code>, <code>minute</code>, <code>second</code>,
+<code>day_of_week</code> (0=lun), <code>day_of_year</code>, <code>week_of_year</code>, <code>quarter</code>,
+<code>is_leap_year</code>, <code>days_in_month</code>.</p>
+<p><strong>Aritmética</strong> (11 fns): <code>add_seconds/minutes/hours/days_ext/weeks/months/years</code>,
+<code>diff_seconds/minutes/hours/days</code>. <code>add_months</code> respeta fin de mes
+(2024-01-31 + 1 mes = 2024-02-29 correctamente).</p>
+<p><strong>Comparaciones</strong> (3 fns): <code>is_before</code>, <code>is_after</code>, <code>is_same_day</code>.</p>
+<p><strong>Timezones</strong> (3 fns):
+- <code>to_timezone(ts, "America/Caracas")</code> — convierte a cualquier zona
+- <code>timezone_offset_seconds(ts, "Europe/Madrid")</code>
+- <code>common_timezones()</code> — lista curada de zonas latinoamericanas + globales</p>
+<p><strong>Formato</strong> (2 fns): <code>to_iso</code>, <code>from_iso</code> (RFC 3339).</p>
+<p><strong>Humano</strong> (1 fn): <code>humanize(ts, now)</code> → "hace 3 horas", "en 2 días",
+"ahora" (en español).</p>
+<p><strong>Calendarios</strong> (4 fns): <code>is_weekend</code>, <code>business_days_between</code>,
+<code>next_weekday(ts, dow)</code>, <code>range_ext(start, end, step)</code>.</p>
+<p><strong>Construcción</strong> (2 fns): <code>from_ymd(y, m, d)</code>, <code>from_ymd_hms(y, m, d, h, mi, s)</code>.</p>
+<h3 id="ejemplo-verificable">Ejemplo verificable</h3>
+<p><code>zett run examples/phase34_demo.titan</code> — cubre:
+- 5 escenarios de process (echo, shell con pipe, hostname/user/pid,
+  env vars, pipe encadenado con wc)
+- 5 escenarios de collections (Set con union/intersect, PriorityQueue
+  para task scheduling, Counter con análisis de palabras, Graph
+  con <strong>ruta óptima Caracas→Maracaibo por Dijkstra</strong>, topological
+  sort de dependencias tipo compilador)
+- 6 escenarios de datetime (fecha componentes, aritmética con fin de
+  mes, diferencias, humanize en español, timezones para 4 ciudades
+  incluyendo Caracas/Madrid/Tokyo, dias laborales y proximo weekday)</p>
+<h3 id="bajo-el-capo">Bajo el capó</h3>
+<ul>
+<li>3 crates externos nuevos como dependencias opcionales:
+  <code>nix 0.29</code>, <code>indexmap 2</code>, <code>chrono-tz 0.10</code>.</li>
+<li>Cada estructura de collections vive en un registro global thread-safe
+  (Mutex&lt;HashMap<u64, T>&gt;) con handles Int estables tipo sqlite.</li>
+<li>Sin cambios en el compilador (lexer/parser/typechecker/codegen/VM).</li>
+<li>Titan pasa de 23.070 a <strong>~26.400 líneas Rust</strong> (~3.300 nuevas).</li>
+<li><strong>~110 natives nuevas registradas</strong> en <code>native.rs</code> + handlers en VM.</li>
+</ul>
+<hr />
+<h2 id="0320-phase-33-eliminacion-de-comandos-experimentales">0.32.0 — Phase 33: eliminación de comandos experimentales 🧹</h2>
+<p>Se remueven del código dos comandos que nunca funcionaron:</p>
+<ul>
+<li><strong><code>zett native</code></strong> — el crate <code>titan_mir</code> completo (739 líneas) más
+  la función <code>cmd_native</code> (75 líneas). El MIR lowerer era un no-op
+  y los backends ARM64/x86_64 solo emitían headers ELF truncados
+  que Linux/Android no cargaban.</li>
+<li><strong><code>zett mobile</code></strong> — 25 líneas más en el CLI. Escribía el mismo
+  stub ELF con extensión <code>.apk</code>, no era un APK real.</li>
+</ul>
+<p>También se elimina el crate <code>titan_hir</code> (117 líneas) que solo se
+usaba desde <code>titan_mir</code> y <code>cmd_mobile</code>.</p>
+<h3 id="resultado">Resultado</h3>
+<ul>
+<li>Titan pasa de 23.961 a 23.070 líneas de Rust (<strong>891 líneas menos</strong>).</li>
+<li>Todos los comandos que quedan (<code>run</code>, <code>build</code>, <code>wasm</code>, <code>debug</code>,
+  <code>exec</code>, <code>test</code>, <code>repl</code>, <code>new</code>, <code>add</code>, <code>fetch</code>, <code>publish</code>, <code>keygen</code>,
+  <code>pack</code>, <code>check</code>, <code>version</code>) funcionan sin warnings ni promesas rotas.</li>
+<li>README y docs limpiados — se elimina toda mención a "experimental",
+  "not functional", "not loadable", "not a real APK".</li>
+</ul>
+<h3 id="bajo-el-capo_1">Bajo el capó</h3>
+<ul>
+<li><code>crates/titan_hir/</code> y <code>crates/titan_mir/</code> borrados en su totalidad.</li>
+<li><code>Cargo.toml</code> del workspace ya no los lista como members.</li>
+<li><code>titan_cli</code> y <code>titan_codegen</code> ya no dependen de ellos.</li>
+<li><code>zett wasm</code> sigue intacto (no era el comando roto, solo <code>native</code> lo era).</li>
+<li>Los 32 releases anteriores siguen funcionando idéntico — <code>zett run</code>
+  no toca nada de lo removido.</li>
+</ul>
+<hr />
+<h2 id="0310-phase-32-limpieza-cerrar-todos-los-huecos-pendientes-del-nucleo">0.31.0 — Phase 32: LIMPIEZA — cerrar todos los huecos pendientes del núcleo 🧹</h2>
+<p>Sin nuevas features grandes — se cierran de una vez todos los
+huecos básicos del lenguaje que quedaron entre Fase 20 y Fase 31.
+El resultado: <strong>Titan v0.31 es un lenguaje sin promesas rotas</strong>.
+Cada cosa registrada funciona.</p>
+<h3 id="5-fixes-cerrados">5 fixes cerrados</h3>
+<p><strong>FIX 1 — Tipos función parseables</strong> (<code>fn(int) -&gt; string</code>)
+Antes: <code>type Callback = fn(int) -&gt; int</code> → parse error.
+Ahora: el parser reconoce <code>fn(...) -&gt; ...</code> como TypeExpr, funciona
+en type aliases, parámetros y anotaciones. La infraestructura AST
+ya existía (<code>TypeExpr::Function</code>), faltaba parsear la sintaxis.</p>
+<p><strong>FIX 2 — <code>let _ = expr</code></strong> (wildcard binding)
+Antes: <code>let _ = calcular()</code> → parse error, esperaba identifier.
+Ahora: se acepta <code>_</code> y se genera un nombre único interno
+(<code>__destr&lt;N&gt;</code>) para descartar el valor. Útil para evaluar
+expresiones por sus side-effects sin ensuciar el scope.</p>
+<p><strong>FIX 3 — Sintaxis <code>.0</code> <code>.1</code> para tuplas</strong>
+Antes: solo <code>t[0]</code>, <code>t[1]</code> funcionaba.
+Ahora: <code>t.0</code>, <code>t.1</code>, <code>t.2</code> funcionan igual que Rust. Se desazucara
+a Index en el parser. <code>t[0]</code> sigue funcionando también.</p>
+<p><strong>FIX 4 — <code>std::text::parse_int</code> + <code>parse_float</code></strong>
+Antes: no existían. Había que hacer workarounds contando chars.
+Ahora: retornan <code>Option::Some(n)</code> o <code>Option::None</code> — el usuario
+decide con <code>match</code>. Aceptan whitespace, signos, notación
+científica (para float).</p>
+<p><strong>FIX 5 — <code>std::text::substring(str, start, end)</code></strong>
+Antes: no existía. Se usaba <code>replace</code> como workaround feo.
+Ahora: substring char-based (Unicode-aware), con bounds
+clampeados a <code>[0, len]</code> — nunca crashea por índices fuera.</p>
+<h3 id="ejemplo-verificable_1">Ejemplo verificable</h3>
+<p><code>zett run examples/fixes_v032.titan</code> — cada fix probado con
+múltiples casos:
+- Type aliases con <code>fn(int) -&gt; int</code>, higher-order que los recibe
+- <code>let _</code> con side-effect, expresiones descartadas
+- <code>.0</code> <code>.1</code> <code>.2</code> combinable con destructuring <code>(a, b, c)</code>
+- <code>parse_int</code> con OK/whitespace/inválido/float, <code>parse_float</code> con
+  decimales, notación científica, string malo
+- <code>substring</code> con rangos válidos, out-of-bounds, y Unicode ("año")</p>
+<h3 id="impacto-real">Impacto real</h3>
+<ul>
+<li><code>titan_stdlib</code> gana 3 funciones nuevas registradas + implementadas</li>
+<li><code>titan_parser</code> acepta 3 sintaxis nuevas sin romper nada previo</li>
+<li><code>titan_vm</code> gana 3 handlers de nativos</li>
+<li>0 opcodes nuevos, 0 cambios en el typechecker central</li>
+</ul>
+<p>Cada release previo sigue funcionando idéntico. Fase 32 es
+puramente aditiva.</p>
+<hr />
+<h2 id="0300-phase-31-stdasync-primer-modulo-de-la-stdlib-escrito-en-titan">0.30.0 — Phase 31: <code>std::async</code> + primer módulo de la stdlib escrito en TITAN 🕰️</h2>
+<p>Dos cosas importantes en un release:</p>
+<ol>
+<li><strong>El primer módulo <code>std::</code> de la stdlib escrito en TITAN</strong>, no en Rust.</li>
+<li><strong><code>std::async</code></strong> con delay/measure/retry/retry_backoff/timeout.</li>
+</ol>
+<h3 id="el-cambio-arquitectonico">El cambio arquitectónico</h3>
+<p>Antes: si querías agregar algo a <code>std::</code>, tenías que escribirlo en
+Rust dentro de <code>crates/titan_stdlib/</code>, registrarlo como native,
+compilar el binario, empaquetar. Cada función <code>std::</code> era código
+Rust nativo.</p>
+<p>Ahora: <code>import std::algo</code> <strong>también busca</strong> archivos <code>.titan</code> en:</p>
+<ul>
+<li><code>$ZETT_STDLIB_DIR/&lt;algo&gt;.titan</code> (override para desarrollo)</li>
+<li><code>&lt;exe_dir&gt;/../share/zett/stdlib/&lt;algo&gt;.titan</code> (instalación normal)</li>
+<li><code>&lt;exe_dir&gt;/stdlib/&lt;algo&gt;.titan</code> (build local)</li>
+<li><code>&lt;cwd&gt;/stdlib/&lt;algo&gt;.titan</code> (fallback)</li>
+</ul>
+<p>Si encuentra el archivo, lo carga como un módulo Titan normal.
+Si no, cae al comportamiento anterior (asume nativo, no hace nada).</p>
+<p><strong>Esto abre la puerta a una stdlib enteramente escrita en Titan</strong>,
+crecible sin recompilar el compilador. Cada módulo nuevo es un
+archivo <code>.titan</code> que se agrega al <code>.deb</code>.</p>
+<h3 id="stdasync"><code>std::async</code></h3>
+<p>Módulo Titan puro con 5 funciones para operaciones que fallan:</p>
+<pre><code class="language-titan"><span class="k">import</span> std::async
+
+<span class="c">// Sleep</span>
+delay(<span class="n">500</span>)
+
+<span class="c">// Medir cuánto tarda una función</span>
+<span class="k">let</span> (resultado, ms) = measure(|| llamar_api())
+
+<span class="c">// Reintentar hasta N veces con delay constante</span>
+<span class="k">let</span> r = retry(|| fetch_api(url), <span class="n">3</span>, <span class="n">500</span>)
+
+<span class="c">// Reintentar con backoff exponencial (100ms, 200ms, 400ms...)</span>
+<span class="k">let</span> r = retry_backoff(|| fetch_api(url), <span class="n">5</span>, <span class="n">100</span>)
+
+<span class="c">// Marcar como error si tarda más de max_ms</span>
+<span class="k">let</span> r = timeout(|| operacion(), <span class="n">2000</span>)
+</code></pre>
+<p>Todas devuelven <code>Result::Ok(v)</code> en éxito o <code>Result::Err(msg)</code> en falla.
+Combinable con <code>std::try::catch</code> (Fase 18) y enums custom (Fase 27).</p>
+<h3 id="ejemplo-verificable_2">Ejemplo verificable</h3>
+<p><code>zett run examples/async_demo.titan</code> — 7 escenarios:</p>
+<ul>
+<li><code>delay(300)</code> — sleep de 300ms verificado con timing</li>
+<li><code>measure(api_rapida)</code> — devuelve <code>(resultado, 50ms aprox)</code></li>
+<li><code>retry</code> sobre API flaky que falla 2 veces y sale a la 3ra</li>
+<li><code>retry</code> que se rinde después de N intentos (API muerta)</li>
+<li><code>retry_backoff</code> con esperas 100→200→400ms</li>
+<li><code>timeout</code> que cumple (API rápida en 50ms, límite 500ms)</li>
+<li><code>timeout</code> que excede (API lenta 1200ms, límite 500ms)</li>
+</ul>
+<h3 id="bajo-el-capo_2">Bajo el capó</h3>
+<ul>
+<li><code>crates/titan_pkg/src/project.rs</code>: nueva <code>resolve_stdlib_module</code>
+  con 4 candidates de búsqueda + walk-up de 5 niveles para dev.</li>
+<li><code>Loader::visit</code> chequea <code>resolve_stdlib_module</code> antes del skip
+  tradicional del <code>std::</code> — solo skip si no encuentra archivo.</li>
+<li><code>make-zett-package.sh</code> empaqueta <code>stdlib/*.titan</code> en el <code>.deb</code>
+  bajo <code>share/zett/stdlib/</code>.</li>
+<li>Cero cambios en el compilador — el módulo Titan usa closures,
+  match, if, while, todo lo que ya existía.</li>
+</ul>
+<hr />
+<h2 id="0290-phase-30-const-con-expresiones-sintaxis-literal-para-maps">0.29.0 — Phase 30: <code>const</code> con expresiones + sintaxis literal <code>#{...}</code> para maps 🗺️</h2>
+<p>Dos features complementarias que hacen las <strong>constantes de configuración</strong>
+sean naturales de escribir. Antes había que armar cada map con <code>std::map::insert</code>
+encadenado — verboso y poco declarativo. Ahora:</p>
+<h3 id="constantes-con-cualquier-expresion">Constantes con cualquier expresión</h3>
+<p>Las <code>const</code> ya aceptaban cualquier expresión gracias a la infraestructura
+existente, pero esta fase lo demuestra y documenta oficialmente:</p>
+<pre><code class="language-titan"><span class="k">const</span> NUMEROS   = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>, <span class="n">5</span>]
+<span class="k">const</span> NOMBRES   = [<span class="s">&quot;ana&quot;</span>, <span class="s">&quot;juan&quot;</span>, <span class="s">&quot;maria&quot;</span>]
+<span class="k">const</span> CUADRADOS = map(NUMEROS, |n| n * n)     <span class="c">// fn calls funcionan</span>
+<span class="k">const</span> SALUDO    = <span class="s">&quot;Hola desde Titan&quot;</span>
+</code></pre>
+<p>Cualquier expresión Titan válida sirve como valor de una <code>const</code> — arrays,
+strings interpolados, llamadas a funciones libres, higher-order, spread <code>..</code>,
+combinaciones. Se re-evalúa lazy en cada uso (cada acceso corre la
+expresión); útil para expresiones puras, cuidado con side effects.</p>
+<h3 id="nueva-sintaxis-para-maps-literales">Nueva sintaxis: <code>#{ ... }</code> para maps literales</h3>
+<pre><code class="language-titan"><span class="k">const</span> CONFIG = #{
+    <span class="s">&quot;puerto&quot;</span>:   <span class="n">8080</span>,
+    <span class="s">&quot;host&quot;</span>:     <span class="s">&quot;127.0.0.1&quot;</span>,
+    <span class="s">&quot;debug&quot;</span>:    <span class="k">true</span>,
+    <span class="s">&quot;max_conn&quot;</span>: <span class="n">100</span>,
+}
+
+<span class="c">// Keys como identificadores (sin comillas) — mismo efecto</span>
+<span class="k">const</span> USUARIO = #{
+    nombre: <span class="s">&quot;Alex&quot;</span>,
+    edad:   <span class="n">30</span>,
+    tags:   [<span class="s">&quot;premium&quot;</span>, <span class="s">&quot;verificado&quot;</span>],
+}
+
+<span class="c">// Anidable — maps dentro de maps</span>
+<span class="k">const</span> RESPUESTA_API = #{
+    status: <span class="n">200</span>,
+    body:   #{
+        message: <span class="s">&quot;OK&quot;</span>,
+        data:    #{ count: <span class="n">3</span>, items: [<span class="s">&quot;a&quot;</span>, <span class="s">&quot;b&quot;</span>, <span class="s">&quot;c&quot;</span>] },
+    },
+}
+
+<span class="c">// Acceso natural con `.campo` (Map ya soporta field access desde antes)</span>
+print(CONFIG.puerto)                       <span class="c">// 8080</span>
+print(RESPUESTA_API.body.data.count)       <span class="c">// 3</span>
+</code></pre>
+<p>También funciona <strong>dinámicamente</strong>, no solo en <code>const</code>:</p>
+<pre><code class="language-titan"><span class="k">fn</span> crear_perfil(nombre: string, edad: int) -&gt; map {
+    <span class="k">return</span> #{
+        nombre:  nombre,
+        edad:    edad,
+        creado:  std::datetime::now(),
+    }
+}
+</code></pre>
+<h3 id="bajo-el-capo_3">Bajo el capó</h3>
+<ul>
+<li>Lexer: nuevo token <code>HashLBrace</code> para <code>#{</code>. <code>#</code> sin <code>{</code> es error
+  claro (<code>stray '#' — did you mean '#{'?</code>).</li>
+<li>Parser: <code>#{ k1: v1, k2: v2 }</code> se desazucara al pipeline:
+  <code>std::map::insert(std::map::insert(std::map::new(), "k1", v1), "k2", v2)</code>.</li>
+<li>Keys pueden ser string literals (<code>"foo"</code>) o identificadores (<code>foo</code>)
+  — el parser los normaliza a string. Los valores son cualquier <code>Expr</code>.</li>
+<li>Los <code>#{}</code> se anidan naturalmente porque el valor puede ser otro <code>#{}</code>.</li>
+<li>Cero cambios en typechecker/codegen/VM — todo se apoya en los
+  natives <code>std::map::new</code> y <code>std::map::insert</code> que existen desde
+  hace decenas de versiones.</li>
+</ul>
+<h3 id="ejemplo-verificable_3">Ejemplo verificable</h3>
+<p><code>zett run examples/const_and_maps.titan</code> — 6 escenarios:
+constantes con arrays y map()+higher-order, config de servidor,
+usuario con tags anidados, respuesta API de 3 niveles de profundidad,
+iteración con <code>for</code> destructuring sobre const array, map dinámico
+dentro de una función con string interpolación.</p>
+<hr />
+<h2 id="0280-phase-29-for-con-destructuring">0.28.0 — Phase 29: <code>for</code> con destructuring 🔄</h2>
+<p>Extiende Fase 23 (destructuring en <code>let</code>) al loop <code>for</code>. Ahora se
+puede desempacar tuplas y structs directo en el patrón del loop,
+sin escribir un <code>let (a, b) = item</code> a mano dentro del cuerpo.</p>
+<h3 id="nueva-sintaxis">Nueva sintaxis</h3>
+<pre><code class="language-titan"><span class="c">// Tupla</span>
+<span class="k">for</span> (a, b) <span class="k">in</span> pares {
+    print(a + <span class="s">&quot; -&gt; &quot;</span> + b)
+}
+
+<span class="c">// Struct</span>
+<span class="k">struct</span> Point { x: int, y: int }
+<span class="k">for</span> Point { x, y } <span class="k">in</span> puntos {
+    print(<span class="s">&quot;(&quot;</span> + x + <span class="s">&quot;, &quot;</span> + y + <span class="s">&quot;)&quot;</span>)
+}
+
+<span class="c">// Con rename</span>
+<span class="k">for</span> Point { x: cx, y: cy } <span class="k">in</span> puntos { ... }
+
+<span class="c">// Wildcard (descartar campo)</span>
+<span class="k">for</span> (first, _, last) <span class="k">in</span> triples { ... }
+
+<span class="c">// Anidado — tupla dentro de tupla, struct dentro de tupla</span>
+<span class="k">for</span> (id, (a, b)) <span class="k">in</span> anidado { ... }
+<span class="k">for</span> (id, Point { x, y }) <span class="k">in</span> etiquetados { ... }
+
+<span class="c">// Combinable con higher-order y pipeline</span>
+<span class="k">let</span> filtered = numeros |&gt; filter(|n| n &gt; <span class="n">3</span>) |&gt; map(|n| (n, n * n))
+<span class="k">for</span> (n, cuadrado) <span class="k">in</span> filtered { ... }
+</code></pre>
+<h3 id="bajo-el-capo_4">Bajo el capó</h3>
+<ul>
+<li>El parser reconoce <code>(</code> o <code>Ident { ... } in</code> después del <code>for</code>.</li>
+<li>Desazucar puro: <code>for (a, b) in xs { body }</code> se transforma en
+  <code>for __destr&lt;N&gt; in xs { let (a, b) = __destr&lt;N&gt;; body }</code>.</li>
+<li>Reusa <code>emit_pattern_binding</code> / <code>fresh_destr_name</code> / <code>TuplePart</code>
+  de Fase 23 — cero código nuevo en typechecker/codegen/VM.</li>
+<li>Lookahead con seguimiento de profundidad de braces distingue el
+  patrón struct real (<code>for Point { x, y } in xs</code>) de un <code>for x { ... }</code>
+  degenerado.</li>
+</ul>
+<h3 id="ejemplo-verificable_4">Ejemplo verificable</h3>
+<p><code>zett run examples/for_destructuring.titan</code> — 8 escenarios: tupla
+simple, tupla con wildcard, struct básico, struct con rename, struct
+en pipeline con higher-order, tupla anidada dentro de tupla, tupla
+que contiene struct, y combinación con <code>map</code>+<code>filter</code>.</p>
+<hr />
+<h2 id="0270-phase-28-type-aliases-spread-en-arrays">0.27.0 — Phase 28: type aliases + spread <code>..</code> en arrays 🧵</h2>
+<p>Dos QoL del lenguaje que hacen el código más limpio sin cambiar
+la semántica. Type aliases dan <strong>documentación viva y refactor
+gratis</strong> — cambiar el tipo de un dominio en un solo lugar. Spread
+elimina el fold manual para concatenar arrays.</p>
+<h3 id="type-aliases-type-x-y">Type aliases — <code>type X = Y</code></h3>
+<pre><code class="language-titan"><span class="k">type</span> UserId = string
+<span class="k">type</span> Score  = int
+<span class="k">type</span> Ratio  = float
+<span class="k">type</span> Handler = <span class="k">fn</span>(int) -&gt; string
+
+<span class="k">struct</span> Player {
+    id: UserId,
+    score: Score,
+    tags: [string],
+}
+
+<span class="k">fn</span> describe_score(s: Score) -&gt; string {
+    <span class="k">if</span> s &gt;= <span class="n">100</span> { <span class="k">return</span> <span class="s">&quot;excelente&quot;</span> }
+    <span class="k">return</span> <span class="s">&quot;bueno&quot;</span>
+}
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>type Name = ExistingType</code> a nivel top-level (no dentro de funciones).</li>
+<li>Los aliases son <strong>intercambiables 100%</strong> con el tipo real — cero
+  costo en runtime, cero cambios en la VM.</li>
+<li>Chain de aliases funciona: <code>type A = B; type B = int</code> → A es Int.</li>
+<li>El typechecker expande aliases lazy en <code>require_compatible</code>,
+  así ambos lados de una comparación se normalizan.</li>
+<li>Si mañana <code>UserId</code> pasa a ser <code>int</code> en vez de <code>string</code>, cambiás
+  la definición y todas las firmas siguen funcionando.</li>
+</ul>
+<h3 id="spread-en-literales-de-array">Spread <code>..</code> en literales de array</h3>
+<pre><code class="language-titan"><span class="k">let</span> a = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>]
+<span class="k">let</span> b = [<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>]
+
+<span class="k">let</span> concat  = [..a, ..b]                <span class="c">// [1,2,3,10,20,30]</span>
+<span class="k">let</span> mezcla  = [<span class="n">0</span>, ..a, <span class="n">99</span>, ..b, <span class="n">100</span>]    <span class="c">// [0,1,2,3,99,10,20,30,100]</span>
+<span class="k">let</span> prefix  = [-<span class="n">1</span>, ..a]                 <span class="c">// [-1,1,2,3]</span>
+<span class="k">let</span> suffix  = [..b, <span class="n">999</span>]                <span class="c">// [10,20,30,999]</span>
+</code></pre>
+<p>Combinable con higher-order (Fase 19) y pipeline (Fase 24):</p>
+<pre><code class="language-titan"><span class="k">let</span> cuadrados = [..map(a, |x| x*x), ..map(b, |x| x*x)]
+<span class="k">let</span> total = [..a, ..b] |&gt; fold(<span class="n">0</span>, |acc, x| acc + x)
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>..</code> como prefijo de un elemento en un literal de array indica spread.</li>
+<li>Los ranges (<code>0..10</code>) <strong>NO</strong> se ven afectados — como siempre, van
+  entre dos expresiones, no al inicio de un elemento.</li>
+<li>Bajo el capó se desazucara a <code>std::array::concat</code> (que ya existía
+  desde v0.2). Cero cambios en la VM.</li>
+</ul>
+<h3 id="ejemplo-verificable_5">Ejemplo verificable</h3>
+<p><code>zett run examples/aliases_spread.titan</code> — 10 escenarios cubriendo
+aliases en fn signatures, struct fields, spreads simples y anidados,
+combinación con map/fold, spreads de field accesses.</p>
+<h3 id="bajo-el-capo_5">Bajo el capó</h3>
+<ul>
+<li>Lexer: keyword nueva <code>type</code> → <code>TokenKind::Type</code>.</li>
+<li>AST: <code>Item::TypeAlias(TypeAliasDecl)</code>.</li>
+<li>Parser: <code>parse_type_alias</code> (top-level) y detección de <code>..</code> como
+  primer token de un elemento en array literal, que desazucara a
+  <code>Expr::Call { callee: "std::array::concat", args: [...] }</code>.</li>
+<li>Typechecker: <code>type_aliases: HashMap&lt;String, Type&gt;</code> + helper
+  <code>resolve_alias</code> (16 hops max) + <code>require_compatible</code> normaliza
+  ambos lados antes de comparar.</li>
+<li>Codegen y VM: cero cambios. Type aliases son puramente estáticos,
+  spread es puro desazucar.</li>
+</ul>
+<hr />
+<h2 id="0260-phase-27-enums-con-payload-como-errores-custom">0.26.0 — Phase 27: enums-con-payload como errores custom 🎯</h2>
+<p>Titan ya tenía <code>enum X { A, B(int) }</code> funcionando en el parser, AST,
+typechecker, codegen y VM desde hace muchas versiones — pero nunca
+se había demostrado que sirven para el caso de uso rey: <strong>errores
+custom tipados</strong> al estilo Rust/Elm/Haskell.</p>
+<p>Con esta fase queda claro que Titan tiene manejo de errores de
+nivel industrial: propagación con <code>?</code>, exhaustividad implícita en
+<code>match</code>, y contexto por variante en el payload.</p>
+<h3 id="nueva-forma-idiomatica">Nueva forma idiomática</h3>
+<pre><code class="language-titan"><span class="k">enum</span> ApiError {
+    <span class="t">NotFound</span>(string),          <span class="c">// id que no existio</span>
+    <span class="t">BadInput</span>(string),          <span class="c">// nombre del campo invalido</span>
+    Unauthorized,              <span class="c">// variante SIN payload</span>
+    <span class="t">Conflict</span>(string),
+    <span class="t">RateLimited</span>(int),          <span class="c">// segundos hasta reintentar</span>
+}
+
+<span class="c">// Funciones retornan Result&lt;T, ApiError&gt;</span>
+<span class="k">fn</span> find_user(id: string) -&gt; any {
+    <span class="k">if</span> id == <span class="s">&quot;&quot;</span> { <span class="k">return</span> <span class="t">Result</span>::<span class="t">Err</span>(<span class="t">ApiError</span>::<span class="t">BadInput</span>(<span class="s">&quot;id&quot;</span>)) }
+    <span class="k">if</span> id == <span class="s">&quot;42&quot;</span> { <span class="k">return</span> <span class="t">Result</span>::<span class="t">Ok</span>(build_user(id)) }
+    <span class="k">return</span> <span class="t">Result</span>::<span class="t">Err</span>(<span class="t">ApiError</span>::<span class="t">NotFound</span>(id))
+}
+
+<span class="c">// El operador `?` propaga el error automáticamente,</span>
+<span class="c">// atravesando cuantos niveles haga falta:</span>
+<span class="k">fn</span> describe_user(id: string) -&gt; any {
+    <span class="k">let</span> user = find_user(id)?          <span class="c">// Si Err, sale de esta fn con ese Err</span>
+    <span class="k">let</span> name = std::map::get(user, <span class="s">&quot;name&quot;</span>)
+    <span class="k">return</span> <span class="t">Result</span>::<span class="t">Ok</span>(<span class="s">&quot;Usuario &quot;</span> + id + <span class="s">&quot; se llama &quot;</span> + name)
+}
+
+<span class="k">fn</span> handle_request(token: string, user_id: string) -&gt; any {
+    require_auth(token)?               <span class="c">// ? propaga Unauthorized</span>
+    check_rate_limit(user_id)?         <span class="c">// ? propaga RateLimited(30)</span>
+    describe_user(user_id)?            <span class="c">// ? propaga NotFound o BadInput</span>
+}
+</code></pre>
+<h3 id="pattern-matching-con-contexto-extraido">Pattern matching con contexto extraído</h3>
+<pre><code class="language-titan"><span class="k">match</span> resultado {
+    <span class="t">Result</span>::<span class="t">Ok</span>(v) =&gt; print(<span class="s">&quot;OK: &quot;</span> + v),
+    <span class="t">Result</span>::<span class="t">Err</span>(err) =&gt; <span class="k">match</span> err {
+        <span class="t">ApiError</span>::<span class="t">NotFound</span>(id)      =&gt; print(<span class="s">&quot;no existe: &quot;</span> + id),
+        <span class="t">ApiError</span>::<span class="t">BadInput</span>(field)   =&gt; print(<span class="s">&quot;campo: &quot;</span> + field),
+        <span class="t">ApiError</span>::Unauthorized      =&gt; print(<span class="s">&quot;sin auth&quot;</span>),
+        <span class="t">ApiError</span>::<span class="t">Conflict</span>(what)    =&gt; print(<span class="s">&quot;dup: &quot;</span> + what),
+        <span class="t">ApiError</span>::<span class="t">RateLimited</span>(secs) =&gt; print(<span class="s">&quot;esperar &quot;</span> + secs + <span class="s">&quot;s&quot;</span>),
+    }
+}
+</code></pre>
+<h3 id="mapear-errores-a-codigos-http">Mapear errores a codigos HTTP</h3>
+<pre><code class="language-titan"><span class="k">fn</span> http_status(err: ApiError) -&gt; int {
+    <span class="k">match</span> err {
+        <span class="t">ApiError</span>::<span class="t">NotFound</span>(_)    =&gt; <span class="n">404</span>,
+        <span class="t">ApiError</span>::<span class="t">BadInput</span>(_)    =&gt; <span class="n">400</span>,
+        <span class="t">ApiError</span>::Unauthorized   =&gt; <span class="n">401</span>,
+        <span class="t">ApiError</span>::<span class="t">Conflict</span>(_)    =&gt; <span class="n">409</span>,
+        <span class="t">ApiError</span>::<span class="t">RateLimited</span>(_) =&gt; <span class="n">429</span>,
+    }
+}
+</code></pre>
+<h3 id="ejemplo-verificable_6">Ejemplo verificable</h3>
+<p><code>zett run examples/custom_errors.titan</code> — 10 escenarios:</p>
+<ol>
+<li>Camino feliz — Ok con struct dentro</li>
+<li>NotFound(id) — payload con contexto</li>
+<li>BadInput(field) — validación</li>
+<li>Conflict(name) — recurso duplicado</li>
+<li>BadInput otro campo</li>
+<li><code>?</code> operator propagando desde función anidada</li>
+<li>Camino feliz vía <code>?</code></li>
+<li>Handler completo — auth OK</li>
+<li>Unauthorized sin payload</li>
+<li>RateLimited(30) — payload int</li>
+<li>Propagación de NotFound cruzando 3 niveles de funciones</li>
+</ol>
+<h3 id="bajo-el-capo_6">Bajo el capó</h3>
+<ul>
+<li>Cero cambios en el compilador — la infraestructura (parser,
+  <code>enum_variants: HashMap&lt;String, Option&lt;Type&gt;&gt;</code> en typechecker,
+  <code>Op::NewEnum/EnumIs/EnumPayload</code> en VM, <code>Pattern::Enum</code> en match)
+  ya estaba desde hace varias versiones.</li>
+<li>Esta fase la ejercita, verifica end-to-end, y documenta como
+  parte oficial del lenguaje.</li>
+</ul>
+<hr />
+<h2 id="0250-phase-26-rest-api-completa-en-titan">0.25.0 — Phase 26: REST API completa en TITAN 🏢</h2>
+<p><strong>La prueba viviente.</strong> No es una feature del lenguaje — es un
+proyecto real de ~400 líneas de código Titan puro que combina
+TODA la stack construida hasta ahora en una aplicación funcional.</p>
+<p>Este es el momento en que Titan deja de ser un lenguaje de juguete
+y se demuestra como plataforma capaz de construir servicios web
+reales, con la misma arquitectura de un backend de producción
+(Express/Flask/Axum/Gin), corriendo en un celular.</p>
+<h3 id="arquitectura-del-proyecto">Arquitectura del proyecto</h3>
+<pre><code>examples/rest/
+├── main.titan     — servidor HTTP + router + dispatcher (300 líneas)
+├── db.titan       — capa SQL: users, posts, migraciones (90 líneas)
+└── client.titan   — cliente que consume la API (150 líneas)
+</code></pre>
+<h3 id="stack-usado-todas-las-fases-combinadas">Stack usado (todas las Fases combinadas)</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Componente</th>
+<th>Módulo Titan</th>
+<th>Fase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Servidor HTTP</td>
+<td><code>std::server</code></td>
+<td>11</td>
+</tr>
+<tr>
+<td>Router radix-tree</td>
+<td><code>std::router</code> (matchit)</td>
+<td>11</td>
+</tr>
+<tr>
+<td>Base de datos</td>
+<td><code>std::sqlite::memory</code></td>
+<td>12</td>
+</tr>
+<tr>
+<td>Migraciones</td>
+<td><code>std::sqlite::migrate</code></td>
+<td>12</td>
+</tr>
+<tr>
+<td>JSON</td>
+<td><code>std::json</code> (Fase 25-B)</td>
+<td>12</td>
+</tr>
+<tr>
+<td>Password hashing</td>
+<td><code>std::password::argon2</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td>JWT</td>
+<td><code>std::jwt::hs256</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td>UUID v4</td>
+<td><code>std::uuid::v4</code></td>
+<td>1</td>
+</tr>
+<tr>
+<td>Timestamps</td>
+<td><code>std::datetime::now</code></td>
+<td>1</td>
+</tr>
+<tr>
+<td>Manejo de errores</td>
+<td><code>std::try::catch</code></td>
+<td>18</td>
+</tr>
+<tr>
+<td>Multi-archivo</td>
+<td><code>import db</code> / <code>import auth</code></td>
+<td>21</td>
+</tr>
+<tr>
+<td>Higher-order</td>
+<td><code>for u in users</code></td>
+<td>19</td>
+</tr>
+<tr>
+<td>Cliente HTTPS</td>
+<td><code>std::http_full</code></td>
+<td>3</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="endpoints-rest">Endpoints REST</h3>
+<pre><code>GET    /health                  — status
+POST   /api/register            — crear usuario (public)
+POST   /api/login               — obtener JWT (public)
+GET    /api/users               — listar usuarios (public)
+GET    /api/posts               — listar posts (public)
+GET    /api/posts/&lt;id&gt;          — un post (public)
+POST   /api/posts               — crear post (requiere JWT)
+DELETE /api/posts/&lt;id&gt;          — borrar (requiere JWT, solo dueño)
+</code></pre>
+<h3 id="flujo-de-autenticacion">Flujo de autenticación</h3>
+<ol>
+<li><code>POST /api/register</code> → hashea la password con <strong>argon2id</strong> (el
+   estándar OWASP), guarda en SQLite.</li>
+<li><code>POST /api/login</code> → verifica el hash. Si OK, emite un <strong>JWT
+   HS256</strong> con claims <code>sub</code>, <code>username</code>, <code>iss</code>, <code>iat</code>, <code>exp</code>.</li>
+<li>Endpoints protegidos leen <code>Authorization: Bearer &lt;token&gt;</code>,
+   verifican firma + expiración, extraen <code>sub</code> = user_id.</li>
+<li>Cada operación de escritura de posts respeta ownership.</li>
+</ol>
+<h3 id="ejemplo-verificable-end-to-end">Ejemplo verificable end-to-end</h3>
+<p>Terminal 1 (servidor):</p>
+<pre><code class="language-bash">zett run examples/rest/main.titan
+# → http://127.0.0.1:8080 escuchando
+</code></pre>
+<p>Terminal 2 (cliente):</p>
+<pre><code class="language-bash">zett run examples/rest/client.titan
+# → hace un tour completo: health, register, login,
+#   crea 3 posts, lista, GET individual, DELETE,
+#   verifica que borró, y prueba que sin JWT recibe 401.
+</code></pre>
+<p>También se puede probar con <code>curl</code> clásico:</p>
+<pre><code class="language-bash">curl -X POST http://127.0.0.1:8080/api/register \
+     -H 'Content-Type: application/json' \
+     -d '{&quot;username&quot;:&quot;alex&quot;,&quot;password&quot;:&quot;secret123&quot;}'
+</code></pre>
+<h3 id="bajo-el-capo_7">Bajo el capó</h3>
+<ul>
+<li><strong>Cero cambios en el compilador</strong>. Esta fase es puramente
+  aplicativa — demuestra que la stack construida hasta v0.24.0
+  ya es suficiente para escribir servicios web serios.</li>
+<li>El servidor procesa hasta 40 requests y se cierra solo (para
+  demos reproducibles). Cambiando <code>0..40</code> a <code>loop { ... }</code> lo
+  volvés permanente.</li>
+<li>SQLite en memoria: fresh state cada arranque, perfecto para
+  demos. Con <code>std::sqlite::open(path)</code> pasa a persistente.</li>
+<li>El secret JWT está hardcodeado con fines demostrativos. En
+  producción vendría de env vars o <code>std::dirs::secret_file</code>.</li>
+</ul>
+<hr />
+<h2 id="0240-phase-25-b-stdjson-completo-integracion-http-end-to-end">0.24.0 — Phase 25-B: <code>std::json</code> completo + integración HTTP end-to-end 🌐</h2>
+<p>El módulo <code>std::json</code> ya estaba implementado a nivel runtime desde
+hace varias versiones (usa <code>serde_json</code> — el crate JSON estándar de
+todo el ecosistema Rust), pero nunca se había demostrado
+end-to-end con un ejemplo público ni documentado como API pública
+del lenguaje. Esta versión lo cierra: ejemplo real que consume la
+API pública de GitHub, extrae campos con paths RFC 6901, y compone
+un JSON de respuesta enriquecido.</p>
+<h3 id="api-disponible">API disponible</h3>
+<pre><code class="language-titan"><span class="c">// Parsear un string JSON -&gt; Value nativo de Titan</span>
+<span class="k">let</span> obj = std::json::parse(<span class="s">&quot;{\&quot;nombre\&quot;:\&quot;Ana\&quot;,\&quot;edad\&quot;:30}&quot;</span>)
+print(obj.nombre)                          <span class="c">// &quot;Ana&quot;    (acceso con .)</span>
+print(obj.edad)                            <span class="c">// 30</span>
+
+<span class="c">// Serializar de vuelta</span>
+std::json::stringify(obj)                  <span class="c">// &quot;{\&quot;nombre\&quot;:\&quot;Ana\&quot;,\&quot;edad\&quot;:30}&quot;</span>
+std::json::pretty(obj)                     <span class="c">// formato indentado</span>
+
+<span class="c">// JSON Pointer RFC 6901 (como XPath para JSON)</span>
+std::json::pointer(obj, <span class="s">&quot;/direccion/ciudad&quot;</span>)
+std::json::pointer(obj, <span class="s">&quot;/hobbies/0&quot;</span>)
+
+<span class="c">// Merge Patch RFC 7396 (b sobreescribe a; null en b borra)</span>
+std::json::merge(base, patch)
+
+<span class="c">// Aplanar estructura anidada a lista de (path, valor)</span>
+std::json::flatten(obj)                    <span class="c">// [(&quot;/nombre&quot;, &quot;Ana&quot;), (&quot;/edad&quot;, 30), ...]</span>
+</code></pre>
+<h3 id="conversiones-automaticas">Conversiones automáticas</h3>
+<ul>
+<li>JSON <code>Object</code> ↔ Titan <code>Map</code> (accesible con <code>.campo</code>)</li>
+<li>JSON <code>Array</code>  ↔ Titan <code>Array</code> (accesible con <code>[i]</code>)</li>
+<li>JSON <code>Number</code> → Titan <code>Int</code> si entero, <code>Float</code> si decimal</li>
+<li>JSON <code>String</code> ↔ Titan <code>String</code></li>
+<li>JSON <code>Bool</code>   ↔ Titan <code>Bool</code></li>
+<li>JSON <code>null</code>   ↔ Titan <code>Nil</code></li>
+<li>Titan <code>Struct</code> → JSON <code>Object</code> (usa sus campos como keys)</li>
+<li>Titan <code>Enum</code>   → JSON <code>{"type":..., "variant":..., "payload":...}</code></li>
+</ul>
+<h3 id="integracion-http">Integración HTTP</h3>
+<p>Ya existía desde antes pero acá se demuestra:</p>
+<pre><code class="language-titan"><span class="c">// GET con parse automático a Value de Titan</span>
+<span class="k">let</span> user = std::http_full::get_json(
+    <span class="s">&quot;https://api.github.com/users/torvalds&quot;</span>,
+    headers, opts
+)
+print(user.login)              <span class="c">// acceso directo con .</span>
+print(user.followers)
+
+<span class="c">// POST con payload JSON auto-serializado</span>
+<span class="k">let</span> respuesta = std::http_full::post_json(url, payload, headers, opts)
+</code></pre>
+<h3 id="ejemplo-verificable_7">Ejemplo verificable</h3>
+<p><code>zett run examples/json_api.titan</code> — 7 escenarios:</p>
+<ol>
+<li>Parse local de un JSON complejo con nested objects y arrays</li>
+<li>Acceso con <code>.campo</code> y <code>[i]</code> sobre el resultado</li>
+<li>JSON Pointer paths (<code>/direccion/cp</code>, <code>/hobbies/1</code>)</li>
+<li>Stringify compacto y pretty</li>
+<li>Merge Patch con borrado explícito via <code>null</code></li>
+<li>Flatten a lista de (path, valor)</li>
+<li><strong>API HTTPS real de GitHub</strong> con manejo de errores via
+   <code>std::try::catch</code> (Fase 18) — si estás offline no crashea,
+   avisa y el resto del ejemplo sigue.</li>
+</ol>
+<h3 id="bajo-el-capo_8">Bajo el capó</h3>
+<ul>
+<li>Cero cambios en el compilador — Fase 25-B es puramente
+  ejercitar, verificar y documentar la infraestructura ya
+  construida.</li>
+<li>La conversión <code>Value ↔ serde_json::Value</code> vive en
+  <code>crates/titan_vm/src/native.rs</code> (<code>to_json</code> / <code>from_json</code>).</li>
+<li>La implementación de merge/flatten/pointer vive en
+  <code>crates/titan_stdlib/src/json.rs</code>, con test unitario propio.</li>
+</ul>
+<hr />
+<h2 id="0230-phase-24-pipeline-y-spaceship">0.23.0 — Phase 24: pipeline <code>|&gt;</code> y spaceship <code>&lt;=&gt;</code> 🚀</h2>
+<p>Dos operadores de programación funcional que hacían falta para
+escribir código idiomático de verdad — ambos son puro desazucar
+sintáctico en el parser, cero cambios en la VM.</p>
+<h3 id="pipeline">Pipeline <code>|&gt;</code></h3>
+<pre><code class="language-titan"><span class="c">// Antes: cuadrar(dobla(sumar_1(x)))    (leer de adentro hacia afuera)</span>
+<span class="c">// Ahora: x |&gt; sumar_1 |&gt; dobla |&gt; cuadrar   (leer de izquierda a derecha)</span>
+
+<span class="k">let</span> total = [<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>]
+    |&gt; map(|x| x * x)
+    |&gt; fold(<span class="n">0</span>, |acc, x| acc + x)
+<span class="c">// == fold(map([1,2,3,4], |x| x*x), 0, |acc, x| acc + x)</span>
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>x |&gt; f</code> es azúcar de <code>f(x)</code>.</li>
+<li><code>x |&gt; f(a, b)</code> es azúcar de <code>f(x, a, b)</code> — el valor pipeado
+  siempre va como <strong>primer argumento</strong>.</li>
+<li>Precedencia mínima (0): <code>a + 1 |&gt; print</code> es <code>(a+1) |&gt; print</code>.</li>
+<li>Left-associative y encadenable sin límite.</li>
+</ul>
+<h3 id="spaceship">Spaceship <code>&lt;=&gt;</code></h3>
+<pre><code class="language-titan">print(<span class="n">3</span> &lt;=&gt; <span class="n">5</span>)                       <span class="c">// -1</span>
+print(<span class="n">5</span> &lt;=&gt; <span class="n">5</span>)                       <span class="c">//  0</span>
+print(<span class="n">7</span> &lt;=&gt; <span class="n">5</span>)                       <span class="c">//  1</span>
+
+<span class="c">// Ideal para sort_by — reemplaza el clásico</span>
+<span class="c">//   |a, b| if a &lt; b { -1 } else if a &gt; b { 1 } else { 0 }</span>
+<span class="k">let</span> asc  = sort_by(data, |a, b| a &lt;=&gt; b)
+<span class="k">let</span> desc = sort_by(data, |a, b| b &lt;=&gt; a)
+
+<span class="c">// Sobre structs (Fase 20 + Fase 24)</span>
+<span class="k">let</span> por_precio = sort_by(productos, |a, b| a.precio &lt;=&gt; b.precio)
+</code></pre>
+<p>Reglas:</p>
+<ul>
+<li><code>a &lt;=&gt; b</code> devuelve <code>int</code>: <code>-1</code> si <code>a&lt;b</code>, <code>0</code> si <code>a==b</code>, <code>1</code> si <code>a&gt;b</code>.</li>
+<li>Cada lado se evalúa <strong>una sola vez</strong> (usa dos temporarios
+  sintéticos como en Fase 23).</li>
+<li>Funciona sobre <code>int</code> y <code>float</code> (los tipos que el runtime ordena).</li>
+<li>Misma precedencia que los comparadores clásicos (7).</li>
+</ul>
+<h3 id="bajo-el-capo_9">Bajo el capó</h3>
+<ul>
+<li>Lexer: tokens nuevos <code>PipeGt</code> (<code>|&gt;</code>) y <code>Spaceship</code> (<code>&lt;=&gt;</code>).</li>
+<li>Parser: <code>|&gt;</code> se convierte en un <code>Expr::Call</code> con el LHS
+  insertado al principio de los args. <code>&lt;=&gt;</code> se convierte en un
+  <code>Expr::Block</code> con dos <code>let __destr&lt;N&gt;</code> + un <code>if a&lt;b { -1 } else
+  if a&gt;b { 1 } else { 0 }</code>, garantizando evaluación única de cada lado.</li>
+<li>Cero cambios en <code>BinaryOp</code>, typechecker o VM — todo se apoya en
+  la infraestructura existente. Los <code>.zettbc</code> viejos siguen
+  cargando sin cambios.</li>
+</ul>
+<h3 id="ejemplo-verificable_8">Ejemplo verificable</h3>
+<p><code>zett run examples/pipeline_spaceship.titan</code> — 10 casos cubriendo
+pipeline básico, encadenado, con múltiples args, combinado con
+higher-order (Fase 19), spaceship sobre int/float, sort ascendente
+y descendente, y sort sobre structs por campo.</p>
+<hr />
+<h2 id="0220-phase-23-destructuring-en-let-tuplas-structs">0.22.0 — Phase 23: destructuring en <code>let</code> (tuplas + structs) 🎁</h2>
+<p>Ahora se pueden <strong>desempacar</strong> tuplas y structs directamente en el
+binding, sin campo por campo. Cero cambios en la VM, cero cambios
+en el AST — es un desazucar puramente sintáctico en el parser.</p>
+<h3 id="nueva-sintaxis_1">Nueva sintaxis</h3>
+<pre><code class="language-titan"><span class="c">// Tupla</span>
+<span class="k">let</span> (a, b) = mi_par
+<span class="k">let</span> (lo, hi) = min_max(xs)          <span class="c">// funciones que retornan tuplas</span>
+
+<span class="c">// Struct</span>
+<span class="k">struct</span> Point { x: int, y: int }
+<span class="k">let</span> Point { x, y } = p              <span class="c">// nombres iguales al campo</span>
+<span class="k">let</span> Point { x: cx, y: cy } = p      <span class="c">// con rename</span>
+
+<span class="c">// Wildcards para descartar</span>
+<span class="k">let</span> (primero, _) = par
+
+<span class="c">// Anidado</span>
+<span class="k">let</span> (first, (second, third)) = nested
+<span class="k">let</span> (id, Point { x, y }) = combo
+
+<span class="c">// Struct dentro de struct</span>
+<span class="k">struct</span> Address { city: string, zip: int }
+<span class="k">struct</span> Person { name: string, age: int, home: Address }
+<span class="k">let</span> Person { name, age, home: Address { city, zip } } = ana
+</code></pre>
+<h3 id="reglas">Reglas</h3>
+<ul>
+<li>Después de <code>let</code> (o <code>let mut</code>), si viene <code>(</code> → patrón tupla.</li>
+<li>Si viene <code>Ident {</code> y después de <code>}</code> viene <code>=</code> → patrón struct.</li>
+<li>Sin ambos, sigue el <code>let x = ...</code> de siempre.</li>
+<li><code>_</code> como parte descarta el valor pero el temp igual se evalúa.</li>
+<li>La RHS <strong>se evalúa una sola vez</strong>: <code>let (a, b) = calcular()</code>
+  llama <code>calcular()</code> una vez, guarda el resultado en un temp y
+  desde ahí bindea <code>a</code> y <code>b</code>.</li>
+<li>Patrones anidados funcionan recursivamente sin límite de
+  profundidad.</li>
+</ul>
+<h3 id="bajo-el-capo_10">Bajo el capó</h3>
+<ul>
+<li>El parser genera un <code>let __destr&lt;N&gt;</code> (nombre reservado interno,
+  el <code>__</code> inicial evita colisiones con identificadores del usuario)
+  y luego un <code>let</code> por cada nombre bindeado, indexando la tupla
+  con <code>[i]</code> o los campos del struct con <code>.field</code>.</li>
+<li>Ejemplo: <code>let (a, b) = par</code> se compila igual que si el usuario
+  hubiera escrito:
+  <code>titan
+  let __destr0 = par
+  let a = __destr0[0]
+  let b = __destr0[1]</code></li>
+<li>Como no hay opcodes nuevos, los <code>.zettbc</code> viejos siguen ejecutando.</li>
+<li>Enum patterns (<code>let Some(x) = opt</code>) NO están soportados — para
+  eso hay que usar <code>match</code> de siempre.</li>
+</ul>
+<h3 id="ejemplo-verificable_9">Ejemplo verificable</h3>
+<p><code>zett run examples/destructuring.titan</code> — 10 casos cubriendo tupla
+simple, tupla-desde-función, wildcards, struct con y sin rename,
+tuplas anidadas, structs anidados, y combinaciones de ambos.</p>
+<hr />
+<h2 id="0210-phase-22-traits-con-metodos-default">0.21.0 — Phase 22: traits con métodos default 🧬</h2>
+<p>Los traits ya se parseaban desde hace muchas versiones (<code>trait X { fn foo(); }</code>),
+pero no se conectaban con <code>impl Trait for Type</code> ni admitían defaults.
+Ahora sí: polimorfismo real con herencia de métodos.</p>
+<h3 id="nueva-sintaxis-util">Nueva sintaxis útil</h3>
+<pre><code class="language-titan"><span class="k">trait</span> Greetable {
+    <span class="c">// Requerido: cada tipo debe implementarlo.</span>
+    <span class="k">fn</span> name(self) -&gt; string;
+
+    <span class="c">// Default: el impl lo puede omitir y hereda este body.</span>
+    <span class="k">fn</span> greet(self) -&gt; string {
+        <span class="s">&quot;Hola, &quot;</span> + self.name() + <span class="s">&quot;!&quot;</span>
+    }
+
+    <span class="c">// Los defaults pueden llamar a otros métodos del propio trait</span>
+    <span class="c">// via `self.metodo()` — el dispatch dinámico se encarga.</span>
+    <span class="k">fn</span> shout(self) -&gt; string {
+        self.greet() + <span class="s">&quot;!!!&quot;</span>
+    }
+}
+
+<span class="k">struct</span> Person { first: string }
+
+<span class="k">impl</span> Greetable <span class="k">for</span> Person {
+    <span class="k">fn</span> name(self) -&gt; string { self.first }
+    <span class="c">// greet y shout se heredan automáticamente.</span>
+}
+
+<span class="k">struct</span> Robot { model: string, serial: int }
+
+<span class="k">impl</span> Greetable <span class="k">for</span> Robot {
+    <span class="k">fn</span> name(self) -&gt; string { <span class="s">&quot;Robot-&quot;</span> + self.model }
+
+    <span class="c">// Sobreescribe el default.</span>
+    <span class="k">fn</span> greet(self) -&gt; string {
+        <span class="s">&quot;UNIT &quot;</span> + self.name() + <span class="s">&quot; #&quot;</span> + self.serial + <span class="s">&quot; REPORTING&quot;</span>
+    }
+    <span class="c">// shout hereda el default -&gt; usa la versión sobreescrita de greet.</span>
+}
+</code></pre>
+<p>Un mismo struct puede implementar <strong>múltiples</strong> traits:</p>
+<pre><code class="language-titan"><span class="k">struct</span> Product { title: string, stock: int }
+
+<span class="k">impl</span> Greetable <span class="k">for</span> Product {
+    <span class="k">fn</span> name(self) -&gt; string { self.title }
+}
+
+<span class="k">impl</span> Countable <span class="k">for</span> Product {
+    <span class="k">fn</span> count(self) -&gt; int { self.stock }
+}
+</code></pre>
+<h3 id="validacion-en-tiempo-de-compilacion">Validación en tiempo de compilación</h3>
+<ul>
+<li><strong>Método requerido faltante</strong>: si <code>impl Foo for T</code> no provee un método
+  que Foo declara sin default (<code>fn foo();</code>), el typechecker aborta con
+  <code>missing required method 'foo'</code> antes de correr nada.</li>
+<li><strong>Trait desconocido</strong>: <code>impl NoExiste for T</code> da error inmediato.</li>
+<li><strong>Los defaults se typecheckean como si fueran del impl</strong>: si el body
+  del default llama <code>self.campo</code> y el tipo no tiene ese campo, se
+  reporta ahí mismo.</li>
+</ul>
+<h3 id="bajo-el-capo_11">Bajo el capó</h3>
+<ul>
+<li><code>TraitMethod</code> gana un <code>body: Option&lt;Block&gt;</code>. Reutiliza el parser
+  existente de <code>fn</code> que ya distingue <code>;</code> (sin body) de <code>{ ... }</code>.</li>
+<li>Codegen: cuando ve <code>impl Trait for Type { ... }</code>, para cada método
+  del trait con body y que el impl no override, sintetiza un
+  <code>FunctionDecl</code> con nombre <code>Type::metodo</code> y lo registra en la
+  <code>method_table</code> — el runtime lo dispatcha idéntico a un método
+  escrito a mano.</li>
+<li>Los defaults que llaman <code>self.otro_metodo()</code> funcionan porque el
+  dispatch de Fase 20 es dinámico: en runtime se resuelve <code>Type::otro_metodo</code>
+  contra el tipo real del receiver, no contra el trait.</li>
+<li>Cero cambios en la VM — la infraestructura de Fase 20 alcanza.</li>
+</ul>
+<h3 id="ejemplo-verificable_10">Ejemplo verificable</h3>
+<p><code>zett run examples/traits.titan</code> — cubre:</p>
+<ol>
+<li>Trait con método requerido + 2 defaults encadenados</li>
+<li>Struct que hereda los dos defaults</li>
+<li>Struct que sobreescribe uno y hereda el otro</li>
+<li>Trait con 3 defaults encadenados (<code>describe</code> usa <code>is_empty</code>+<code>is_singleton</code>+<code>count</code>)</li>
+<li>Struct que implementa <strong>DOS</strong> traits distintos sin colisión</li>
+</ol>
+<hr />
+<h2 id="0200-phase-21-proyectos-multi-archivo-con-import">0.20.0 — Phase 21: proyectos multi-archivo con <code>import</code> 📦</h2>
+<p>Titan ya tenía todo el andamiaje de carga multi-archivo en
+<code>titan_pkg::SourceProject</code> (parser reconoce <code>import a::b</code>, loader
+resuelve rutas, detecta ciclos, previene escape del source root),
+pero nunca se había demostrado end-to-end con un ejemplo. Esta
+versión lo verifica y lo documenta.</p>
+<h3 id="como-funciona">Cómo funciona</h3>
+<pre><code class="language-titan"><span class="c">// examples/modules/main.titan</span>
+<span class="k">import</span> geometry
+<span class="k">import</span> util::text
+<span class="k">import</span> util::math
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> p = <span class="t">Point</span>::new(<span class="n">3.0</span>, <span class="n">4.0</span>)   <span class="c">// viene de geometry.titan</span>
+    print(greet(<span class="s">&quot;mundo&quot;</span>))           <span class="c">// viene de util/text.titan</span>
+    <span class="k">let</span> s = sum([<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>])          <span class="c">// viene de util/math.titan</span>
+    print(s)
+}
+</code></pre>
+<p>Estructura de archivos:</p>
+<pre><code>examples/modules/
+├── main.titan
+├── geometry.titan
+└── util/
+    ├── math.titan
+    └── text.titan
+</code></pre>
+<p>Reglas de resolución (implementadas por <code>titan_pkg::SourceProject::load</code>):</p>
+<ul>
+<li><code>import geometry</code> → busca <code>&lt;dir_del_entry&gt;/geometry.titan</code>
+  o <code>&lt;dir_del_entry&gt;/geometry/mod.titan</code>.</li>
+<li><code>import util::math</code> → busca <code>util/math.titan</code> o <code>util/math/mod.titan</code>.</li>
+<li>Si hay un <code>Titan.toml</code> en algún ancestro, el source root pasa a
+  ser <code>&lt;root&gt;/src/</code> (comportamiento tipo Cargo). Sin manifiesto,
+  el source root es la carpeta del entry.</li>
+<li>Todos los items importados quedan en un <strong>namespace plano</strong>:
+  <code>Point::new()</code> funciona directo, sin <code>geometry::Point::new()</code>.</li>
+<li><strong>Ciclos detectados</strong>: si <code>a.titan</code> importa <code>b.titan</code> y viceversa,
+  el compilador aborta con <code>ImportCycle: a -&gt; b -&gt; a</code>.</li>
+<li><strong>Escape del root prevenido</strong>: <code>import ../../secreto</code> falla con
+  <code>ImportEscapesRoot</code>.</li>
+<li><strong>Sin doble carga</strong>: cada archivo se parsea y typechecka una sola
+  vez, incluso si dos módulos lo importan.</li>
+<li><code>import std::...</code> se ignora (la stdlib son natives, no <code>.titan</code>).</li>
+</ul>
+<h3 id="ejemplo-verificable_11">Ejemplo verificable</h3>
+<pre><code class="language-bash">zett run examples/modules/main.titan
+</code></pre>
+<p>Combina Fase 20 (impl para structs) con imports: define <code>Point</code>
+y <code>Rect</code> en <code>geometry.titan</code>, funciones libres en <code>util/math.titan</code>
+y <code>util/text.titan</code>, y las usa todas desde <code>main.titan</code>.</p>
+<h3 id="bajo-el-capo_12">Bajo el capó</h3>
+<ul>
+<li>Cero cambios en el compilador — Fase 21 fue puramente ejercitar,
+  verificar y documentar la infraestructura ya construida.</li>
+<li>El loader vive en <code>crates/titan_pkg/src/project.rs</code>, expuesto via
+  <code>titan_pkg::SourceProject::load(entry_path)</code>.</li>
+<li><code>zett run archivo.titan</code> invoca <code>load_and_compile()</code> que a su vez
+  llama <code>SourceProject::load</code> — así que import funciona con todos
+  los subcomandos que compilan (<code>run</code>, <code>build</code>, <code>wasm</code>, <code>check</code>).</li>
+</ul>
+<hr />
+<h2 id="0190-phase-20-impl-para-structs-metodos-en-tipos-custom">0.19.0 — Phase 20: <code>impl</code> para structs (métodos en tipos custom) 🧱</h2>
+<p>Los structs de Titan ahora pueden tener <strong>métodos</strong> propios via
+bloques <code>impl</code>. Es la pieza que faltaba para modelar tipos custom
+como en Rust / Swift / Go, con dispatch dinámico basado en el
+struct real del receiver.</p>
+<h3 id="nueva-sintaxis_2">Nueva sintaxis</h3>
+<pre><code class="language-titan"><span class="k">struct</span> Point { x: float, y: float }
+
+<span class="k">impl</span> Point {
+    <span class="c">// Método estático (sin `self`): se llama `Point::origin()`.</span>
+    <span class="k">fn</span> origin() -&gt; Point { Point { x: <span class="n">0.0</span>, y: <span class="n">0.0</span> } }
+
+    <span class="k">fn</span> new(x: float, y: float) -&gt; Point { Point { x: x, y: y } }
+
+    <span class="c">// Método de instancia: `self` como primer parámetro.</span>
+    <span class="c">// Su tipo se infiere como `Point` automáticamente.</span>
+    <span class="k">fn</span> distance_sq(self, other: Point) -&gt; float {
+        <span class="k">let</span> dx = self.x - other.x
+        <span class="k">let</span> dy = self.y - other.y
+        dx * dx + dy * dy
+    }
+
+    <span class="k">fn</span> translated(self, dx: float, dy: float) -&gt; Point {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+}
+
+<span class="k">fn</span> main() {
+    <span class="k">let</span> o = <span class="t">Point</span>::origin()             <span class="c">// método estático</span>
+    <span class="k">let</span> p = <span class="t">Point</span>::new(<span class="n">3.0</span>, <span class="n">4.0</span>)
+    print(p.distance_sq(o))             <span class="c">// instancia -&gt; 25.0</span>
+    print(p.translated(<span class="n">1.0</span>, -<span class="n">2.0</span>).x)    <span class="c">// encadenable</span>
+}
+</code></pre>
+<p>Dos structs distintos pueden compartir el nombre de un método sin
+colisión (<code>Point::show</code> y <code>Rect::show</code> conviven porque el dispatch
+se hace por el tipo del receiver, no por nombre global).</p>
+<h3 id="bajo-el-capo_13">Bajo el capó</h3>
+<ul>
+<li>Nuevo opcode <code>Op::CallMethod { method, argc }</code>. La VM pop-ea el
+  receiver, mira su <code>Value::Struct { name, .. }</code> y busca
+  <code>"&lt;name&gt;::&lt;method&gt;"</code> en <code>module.method_table</code>. Dispatch en tiempo
+  constante (<code>HashMap</code> lookup).</li>
+<li>Los métodos se registran con nombre calificado (<code>Point::distance_sq</code>)
+  tanto en <code>titan_typechecker</code> como en <code>titan_codegen</code>, evitando
+  colisiones con funciones libres o entre structs.</li>
+<li>El primer parámetro <code>self</code> sin anotación se infiere como
+  <code>Type::Named(nombre_del_impl)</code> — permite <code>self.campo</code> y llamadas
+  <code>self.otro_metodo()</code> sin escribir el tipo.</li>
+<li>Los métodos estáticos (<code>Point::origin()</code>) reutilizan el parser
+  existente para paths <code>::</code>, sin cambio de sintaxis.</li>
+<li><code>CompiledModule</code> gana un campo <code>method_table: HashMap&lt;String, usize&gt;</code>
+  con <code>#[serde(default)]</code>, así los <code>.zettbc</code> viejos siguen leyéndose.</li>
+</ul>
+<h3 id="ejemplo-verificable_12">Ejemplo verificable</h3>
+<p>Correr <code>zett run examples/impl_structs.titan</code> — muestra 10+ casos:
+factories estáticos, distancia entre puntos, encadenamiento de
+métodos (<code>.translated(...).show()</code>), y dos structs (<code>Point</code>, <code>Rect</code>)
+compartiendo <code>show()</code> sin pisarse.</p>
+<hr />
+<h2 id="0180-phase-19-higher-order-sobre-arrays-con-closures">0.18.0 — Phase 19: higher-order sobre arrays con closures 🎛️</h2>
+<h3 id="4-operaciones-nuevas-sort_by-find-any-all">🎯 4 operaciones nuevas: <code>sort_by</code>, <code>find</code>, <code>any</code>, <code>all</code></h3>
+<p>Ya teníamos <code>map</code>, <code>filter</code>, <code>fold</code> — ahora se completan las
+higher-order clásicas para poder programar como en JS/Python/Rust.</p>
+<pre><code class="language-titan"><span class="k">let</span> nums = [<span class="n">3</span>, <span class="n">1</span>, <span class="n">4</span>, <span class="n">1</span>, <span class="n">5</span>, <span class="n">9</span>, <span class="n">2</span>, <span class="n">6</span>]
+
+sort_by(nums, |a, b| a - b)       <span class="c">// [1, 1, 2, 3, 4, 5, 6, 9]</span>
+sort_by(nums, |a, b| b - a)       <span class="c">// [9, 6, 5, 4, 3, 2, 1, 1]  (desc)</span>
+find(nums, |n| n &gt; <span class="n">4</span>)             <span class="c">// 5   (primero que cumple)</span>
+find(nums, |n| n &gt; <span class="n">100</span>)           <span class="c">// nil (ninguno cumple)</span>
+any(nums, |n| n % <span class="n">2</span> == <span class="n">1</span>)         <span class="c">// true (hay impares)</span>
+all(nums, |n| n &gt; <span class="n">0</span>)              <span class="c">// true (todos positivos)</span>
+</code></pre>
+<p>Combinable con <code>.method()</code> syntax también:</p>
+<pre><code class="language-titan">nums.sort_by(|a, b| a - b)
+productos.filter(|p| p.precio &gt; <span class="n">10</span>).sort_by(|a, b| a.precio - b.precio)
+</code></pre>
+<h3 id="caso-real-ordenar-un-array-de-maps-por-campo">🎯 Caso real — ordenar un array de maps por campo</h3>
+<pre><code class="language-titan"><span class="k">let</span> productos = [p1, p2, p3]
+<span class="k">let</span> baratos = sort_by(productos, |a, b| a.precio - b.precio)
+<span class="k">let</span> caro = find(productos, |p| p.precio &gt; <span class="n">20</span>)
+<span class="k">let</span> gratis = any(productos, |p| p.precio == <span class="n">0</span>)
+</code></pre>
+<h3 id="implementacion">🔧 Implementación</h3>
+<p>4 opcodes nuevos en el codegen (<code>ArraySortBy</code>, <code>ArrayFind</code>, <code>ArrayAny</code>,
+<code>ArrayAll</code>), 4 handlers en el VM que ejecutan la closure para cada
+elemento del array. Los predicados de <code>find</code>/<code>any</code>/<code>all</code> deben devolver
+<code>bool</code>; el comparador de <code>sort_by</code> debe devolver <code>int</code> o <code>float</code>
+(negativo si a<b, cero si iguales, positivo si a>b — mismo protocolo
+que <code>qsort</code>/<code>compareTo</code> de C/Java).</p>
+<p><code>any</code>/<code>all</code>/<code>find</code> cortocircuitan (paran apenas encuentran la respuesta).
+<code>sort_by</code> usa selection sort (simple, O(n²), estable — suficiente para
+arrays hasta ~1000 elementos; para más, ordenar en Rust vía un helper).</p>
+<h3 id="ejemplo">📦 Ejemplo</h3>
+<p><code>examples/qol_higher_order.titan</code> — verifica los 4 nuevos con nums
+primero, después ordena un array de maps de productos por precio,
+busca el primer caro, y chequea si hay algo gratis.</p>
+<h3 id="no-breaking">⚠️ No-breaking</h3>
+<p><code>map</code>/<code>filter</code>/<code>fold</code> que ya existían no se tocan. Los 4 nuevos son
+agregados quirúrgicos: 4 opcodes, 4 dispatch cases, 4 typechecker sigs.</p>
+<h2 id="0170-phase-18-manejo-de-errores-con-stdtrycatch">0.17.0 — Phase 18: manejo de errores con <code>std::try::catch</code> 🛡️</h2>
+<h3 id="titan-ahora-tiene-manejo-de-errores-real">🎯 Titan ahora tiene manejo de errores real</h3>
+<p>Un error de un native (archivo no existe, HTTP timeout, JSON malformado,
+etc.) ya NO mata el programa. Podés capturarlo como valor con
+<code>std::try::catch(closure)</code> y decidir qué hacer.</p>
+<p><strong>API:</strong></p>
+<pre><code class="language-titan"><span class="k">let</span> r = std::try::catch(|| std::fs::read_text(<span class="s">&quot;/config.json&quot;</span>))
+<span class="k">match</span> r {
+    <span class="t">Result</span>::<span class="t">Ok</span>(text) =&gt; print(<span class="s">&quot;cargue: &quot;</span> + text),
+    <span class="t">Result</span>::<span class="t">Err</span>(msg) =&gt; print(<span class="s">&quot;no pude: &quot;</span> + msg),
+}
+</code></pre>
+<p>Combinado con el operador <code>?</code> (que ya existía pero era casi inutil
+porque nada devolvia Result), ahora podés propagar errores idiomáticamente:</p>
+<pre><code class="language-titan"><span class="k">fn</span> cargar_config(path) {
+    <span class="k">let</span> text = std::try::catch(|| std::fs::read_text(path))?
+    <span class="k">let</span> json = std::try::catch(|| std::json::parse(text))?
+    <span class="t">Result</span>::<span class="t">Ok</span>(json)
+}
+</code></pre>
+<p>Todas las natives peligrosas (fs, http, dns, json parse, database, etc.)
+se pueden envolver en <code>catch()</code> sin cambios en el resto del código.</p>
+<h3 id="como-funciona-internamente">🔧 Cómo funciona internamente</h3>
+<ul>
+<li><strong>Codegen</strong> (<code>titan_codegen</code>): al ver <code>std::try::catch(fn, args...)</code>
+  emite el opcode nuevo <code>Op::TryCall(argc)</code> en vez de un CallNative.</li>
+<li><strong>VM</strong> (<code>titan_vm</code>): <code>Op::TryCall</code> ejecuta la closure envuelta en un
+  <code>match Result&lt;Value, VmError&gt;</code>, convierte el <code>Err</code> en <code>Value::Enum {
+  Result::Err(msg) }</code> y sigue. Ningún error escapa.</li>
+<li><strong>Typechecker</strong>: <code>std::try::catch</code> declarada como variádica (skip
+  arity check) y con retorno <code>Any</code> (es Result<Ok, Err>).</li>
+<li><strong><code>?</code> operator</strong>: ya sabía procesar <code>Result</code> y <code>Option</code> — ahora
+  finalmente tiene valores reales que procesar.</li>
+</ul>
+<h3 id="ejemplo_1">📦 Ejemplo</h3>
+<p><code>examples/qol_try_catch.titan</code> — 6 casos:
+1. Leer archivo que existe
+2. Leer archivo que NO existe (capturado)
+3. Parsear JSON válido
+4. Parsear JSON malformado (capturado)
+5. DNS lookup a dominio inexistente (capturado)
+6. Función que usa <code>?</code> para propagar errores</p>
+<h3 id="no-breaking_1">⚠️ No-breaking</h3>
+<p>Cualquier código v0.16.0 sigue compilando y corriendo igual. <code>Op::TryCall</code>
+es un opcode nuevo, no toca los existentes. El registry de natives suma
+una entrada más (<code>std::try::catch</code>); nada se remueve.</p>
+<h2 id="0160-phase-17-part-1-qol-string-any-plus-phase-16-pdf">0.16.0 — Phase 17 (part 1) QoL: String + Any, plus Phase 16 PDF</h2>
+<h3 id="language-quality-of-life-1-string-any-just-works">🎯 Language Quality-of-Life #1: <code>String + Any</code> just works</h3>
+<p>The <code>+</code> operator now works when <strong>either operand is a String</strong> — the
+other side is coerced to its <code>print</code> form via <code>val_to_string</code>. Mirrors
+JavaScript's <code>"x " + n</code> and Python's f-strings.</p>
+<p><strong>Before v0.16.0:</strong></p>
+<pre><code class="language-titan"><span class="k">let</span> s = <span class="s">&quot;count: &quot;</span> + <span class="n">42</span>          <span class="c">// typecheck ERROR</span>
+<span class="k">let</span> out = <span class="s">&quot;hello &quot;</span> + doc        <span class="c">// typecheck ERROR if doc is Unknown</span>
+</code></pre>
+<p><strong>Now:</strong></p>
+<pre><code class="language-titan"><span class="k">let</span> s = <span class="s">&quot;count: &quot;</span> + <span class="n">42</span>          <span class="c">// → &quot;count: 42&quot;</span>
+<span class="k">let</span> out = <span class="s">&quot;hello &quot;</span> + doc        <span class="c">// works for any type of doc</span>
+<span class="k">let</span> e = <span class="n">100</span> + <span class="s">&quot; points&quot;</span>         <span class="c">// → &quot;100 points&quot;  (symmetric)</span>
+</code></pre>
+<p>This removes the single most frequent typecheck gotcha we hit while
+writing ~20 <code>.titan</code> examples across Phases 10-15. Existing code that
+concatenated two Strings keeps working unchanged — this is a strict
+loosening of the rule, not a breaking change.</p>
+<p><strong>Example:</strong> <code>examples/qol_string_add.titan</code> — verified all six patterns
+(Int, Float, Bool, Array, Unknown-from-param, symmetric).</p>
+<p><strong>Files changed:</strong> <code>crates/titan_typechecker/src/lib.rs</code> (Add rule),
+<code>crates/titan_vm/src/lib.rs</code> (runtime <code>add</code> fn).</p>
+<h3 id="phase-16-pdf-disabled-in-default-build">⚠️ Phase 16 PDF DISABLED in default build</h3>
+<p>The <code>printpdf</code> 0.7 crate turned out to have API incompatibilities I
+couldn't detect without a local Rust toolchain (no <code>.clone()</code> on
+<code>PdfDocumentReference</code>, <code>!Send</code> marker, <code>Mm(f32)</code> vs my <code>f64</code>). Rather
+than block v0.16.0's QoL fix, <code>pdf_mod</code> is now behind an opt-in
+feature — the code stays in the tree (<code>crates/titan_stdlib/src/pdf_mod.rs</code>
++ <code>examples/invoice.titan</code>) but doesn't ship in the default <code>.deb</code>.</p>
+<p>To re-enable if you want to tinker:</p>
+<pre><code class="language-toml">titan_stdlib = { path = &quot;...&quot;, features = [&quot;pdf_mod&quot;] }
+</code></pre>
+<p>We'll come back to PDF with a different backend (or a printpdf
+rewrite) in a later release.</p>
+<h3 id="added">Added</h3>
+<ul>
+<li><strong><code>std::pdf::*</code></strong> — pure-Rust PDF writing via <code>printpdf</code> 0.7 built
+  with <code>default-features = false</code>. That drops <code>azul-layout</code>,
+  <code>rust-fontconfig</code>, HTML rendering and SVG-to-PDF — leaving just the
+  core PDF machinery (<code>lopdf</code> + <code>owned_ttf_parser</code> + <code>time</code>). No C
+  dependencies at all, compiles cleanly on Termux ARM.</li>
+<li>API (opaque <code>i64</code> handles for documents; pages and layers by
+  0-based index; all coordinates in millimetres, PDF-space with y
+  growing upwards):<ul>
+<li><code>new(title, width_mm, height_mm)</code> — new document, page 0 / layer 0
+  created automatically. Common sizes: A4 portrait <code>(210, 297)</code>,
+  A4 landscape <code>(297, 210)</code>, US Letter <code>(216, 279)</code>.</li>
+<li><code>add_page(handle, width, height, layer_name)</code> → page index.</li>
+<li><code>page_count(handle)</code>.</li>
+<li><code>add_text(handle, page, layer, text, font_size_pt, x, y)</code> — uses
+  the document's default Helvetica (one of PDF's 14 built-in fonts,
+  no TTF embedding needed).</li>
+<li><code>set_color(handle, page, layer, r, g, b)</code> — sets both fill and
+  outline colours for subsequent draw calls (RGB in <code>[0, 1]</code>).</li>
+<li><code>add_line(handle, page, layer, x1, y1, x2, y2, thickness_pt)</code>.</li>
+<li><code>add_rect(handle, page, layer, x, y, w, h)</code> — closed 4-point
+  polygon, both fill and outline honour the current colour.</li>
+<li><code>save(handle, path)</code> — serialize to disk.</li>
+<li><code>close(handle)</code> — release from the process-wide registry.</li>
+</ul>
+</li>
+</ul>
+<h3 id="combines-with">Combines with</h3>
+<ul>
+<li><strong>Fase 7 (<code>std::qrcode::to_svg</code>)</strong> — build a QR code SVG and drop
+  its image into a receipt PDF (via <code>rsvg-convert</code> → PNG → future
+  <code>add_png</code>; kept out of this release to avoid version conflicts with
+  the <code>image</code> crate).</li>
+<li><strong>Fase 14 (<code>std::plot</code>)</strong> — the same route works for embedding
+  charts once <code>add_png</code> lands.</li>
+</ul>
+<h3 id="notes">Notes</h3>
+<ul>
+<li>PDF image embedding (<code>add_png</code>) was intentionally deferred to a
+  follow-up release. <code>printpdf</code> uses <code>image = 0.24</code>, while our Fase 7
+  modules use <code>image = 0.25</code>; adding embed today would either force
+  a version downgrade (breaking Fase 7) or upgrade <code>printpdf</code>'s deps
+  (pulling in the heavy <code>azul-layout</code> graph). We'll consolidate the
+  two once <code>printpdf</code> releases with <code>image = 0.25</code>.</li>
+</ul>
+<h2 id="0150-phase-12-part-4-semantic-search-on-device">0.15.0 — Phase 12 (part 4): Semantic search on-device 🧠🔍</h2>
+<h3 id="added_1">Added</h3>
+<ul>
+<li><strong><code>std::onnx::run_bert_pooled(handle, batch, seq_len, ids, mask)</code></strong>
+  — sentence-transformer style: runs a BERT-family encoder and applies
+  <strong>attention-mask-weighted mean pooling</strong> over the token dimension of
+  the raw <code>last_hidden_state</code>. Returns <code>{values, shape=[batch, hidden]}</code>.
+  Doing the pooling in Rust is way faster than looping in <code>.titan</code>
+  (for MiniLM's 128 * 384 fp adds per sentence).</li>
+<li><strong><code>std::vector::*</code></strong> — new pure-Rust module for embedding math and
+  ranking:<ul>
+<li><code>dot(a, b)</code> — dot product.</li>
+<li><code>norm(v)</code> — L2 (Euclidean) norm.</li>
+<li><code>cosine_similarity(a, b)</code> → <code>[-1, 1]</code>. Returns 0 for zero-vectors
+  so callers can rank without a special case.</li>
+<li><code>normalize(v)</code> — unit L2 norm (zeros stay zeros).</li>
+<li><code>add(a, b)</code>, <code>sub(a, b)</code>, <code>scale(v, k)</code> — element-wise ops.</li>
+<li><code>argmax(v)</code> → index of the max element (errors on empty).
+  Every fn is deliberately branchless-when-possible so rustc's release
+  profile autovectorizes into ARM NEON on Termux.</li>
+</ul>
+</li>
+<li><strong><code>examples/vector_search.titan</code></strong> — lightweight demo of
+  <code>std::vector::*</code> with <strong>hardcoded 4-dim embeddings</strong> (no ONNX
+  model needed). Runs in &lt; 1s on any device, including a 3 GB Redmi
+  9C. Demonstrates that the cosine-similarity ranking pipeline is
+  correct end-to-end.</li>
+<li><strong><code>examples/search.titan</code></strong> — full end-to-end pipeline with a real
+  MiniLM ONNX encoder. <strong>Requires 4+ GB RAM free</strong> — tract's graph
+  optimization pass needs ~250-800 MB peak depending on model and
+  seq_len, which does not fit in a 3 GB device with Android and other
+  apps loaded. Tested and confirmed unusable on a Redmi 9C (swap
+  thrashes indefinitely). Kept in the tree as a template for users
+  with beefier hardware; refined with defensive defaults (MiniLM-L3,
+  seq_len=64) that at least give it a chance on 4 GB devices.</li>
+</ul>
+<h3 id="notes-on-running-the-full-pipeline">Notes on running the full pipeline</h3>
+<ul>
+<li>MiniLM's ONNX export has hidden_size=384. Sentence embeddings are
+  normalized so cosine == dot, which is faster to compute repeatedly
+  when ranking many documents against one query.</li>
+<li>Combines with Phase 10 (<code>std::kv</code>) to persist an embedding index to
+  disk once and reload it across runs. Left as an exercise in the demo.</li>
+<li><strong>Memory reality on Termux:</strong> even paraphrase-MiniLM-L3-v2 (a 3-layer
+  distilled BERT, 66 MB on disk) needs ~250 MB RAM peak inside tract
+  during <code>into_optimized()</code>. Below 4 GB total RAM (before Android + other
+  apps take their cut), the process just swaps forever. Not a bug in
+  Titan or tract — it's an inherent tension between "compile the graph
+  once, run it fast forever" (tract's design) and "3 GB celus with
+  Android eating half".</li>
+</ul>
+<h2 id="0140-phase-13-wi-fi-introspection-termux-wifi-">0.14.0 — Phase 13': Wi-Fi introspection (termux-wifi-*)</h2>
+<h3 id="added_2">Added</h3>
+<ul>
+<li><strong><code>std::wifi::*</code></strong> — real bindings to the <code>termux-wifi-*</code> CLIs shipped
+  by the official Termux:API package. Nothing is simulated: every call
+  spawns the matching binary and surfaces exactly what Android's
+  <code>WifiManager</code> reports.<ul>
+<li><code>scan()</code> → <code>[{ ssid, bssid, rssi, frequency_mhz, timestamp,
+  channel_bandwidth_mhz, center_frequency_mhz }, ...]</code>
+  — nearby access points from the last cached scan.</li>
+<li><code>connection_info()</code> → <code>{ ssid, bssid, ip, mac_address,
+  link_speed_mbps, rssi, frequency_mhz, network_id,
+  supplicant_state, hidden_ssid }</code> or <code>nil</code> when not connected.</li>
+<li><code>set_enabled(bool)</code> — toggle the Wi-Fi radio (may silently
+  no-op on Android ≥ 10 with the screen locked; upstream Android
+  restriction, not a bug).</li>
+<li><code>signal_bars(rssi_dbm)</code> → 0..=4 — pure Rust, no CLI, matches
+  Android's <code>WifiManager.calculateSignalLevel</code> heuristic. Safe to
+  call anywhere for UI rendering.</li>
+</ul>
+</li>
+</ul>
+<h3 id="why-wi-fi-and-not-bluetooth">Why Wi-Fi and not Bluetooth</h3>
+<p>Termux:API does <strong>not</strong> expose Bluetooth scanning / BLE. <code>bluetoothctl</code>
+/ BlueZ / <code>hcitool</code> all require Linux's BlueZ stack, which Android
+doesn't use (it uses BlueDroid). Confirmed by the Termux maintainer
+(Grimler91, 2022): <em>"android doesn't use bluez, so bluetoothctl cannot
+work. What you need is a termux-api 'bluetoothAPI', but no one has
+worked on writing such an API at the moment."</em></p>
+<p>Rather than ship a fake <code>std::bluetooth::*</code> module (which would
+violate the project's zero-simulations rule), this release replaces
+what was going to be Phase 13 with <strong>Phase 13'</strong>: real Wi-Fi
+introspection using <code>termux-wifi-scaninfo</code>, <code>termux-wifi-connectioninfo</code>
+and <code>termux-wifi-enable</code> — all of which are confirmed present in the
+official termux-api package.</p>
+<h3 id="ejemplo_2">📦 Ejemplo</h3>
+<p><code>examples/wifi.titan</code> — escanea redes cercanas, imprime SSID / RSSI /
+frecuencia / bars por cada AP, después muestra el estado de la conexión
+actual (SSID, IP, MAC, link speed).</p>
+<h2 id="0130-phase-12-part-3-bert-family-multi-input-inference">0.13.0 — Phase 12 (part 3): BERT-family multi-input inference</h2>
+<h3 id="added_3">Added</h3>
+<ul>
+<li><strong><code>std::onnx::load_bert(path, batch, seq_len)</code></strong> — pin both input
+  tensors (<code>input_ids</code>, <code>attention_mask</code>) to <code>[batch, seq_len]</code> of
+  <code>i64</code> before optimize. Matches the shape 99% of HuggingFace exports
+  use for DistilBERT / MiniLM / RoBERTa classifiers and encoders.</li>
+<li><strong><code>std::onnx::load_bert3(path, batch, seq_len)</code></strong> — same but pins
+  three inputs (<code>input_ids</code>, <code>attention_mask</code>, <code>token_type_ids</code>).
+  Classic BERT-base-uncased needs this third tensor.</li>
+<li><strong><code>std::onnx::run_bert(handle, shape, input_ids, attention_mask)</code></strong>
+  → <code>{values, shape}</code> — feeds a text sample through the model in one
+  call. Combined with <code>std::tokenize::encode()</code> from Phase 12 pt.1,
+  a text-to-logits pipeline fits in ~10 lines of <code>.titan</code>.</li>
+<li><strong><code>std::onnx::run_bert3(handle, shape, input_ids, attention_mask,
+  token_type_ids)</code></strong> — three-input equivalent.</li>
+<li><strong><code>std::math::exp(x)</code></strong>, <strong><code>std::math::log(x, base)</code></strong>,
+  <strong><code>std::math::to_float(int)</code></strong>, <strong><code>std::math::to_int(float)</code></strong> —
+  small additions needed to build a real softmax + int/float
+  arithmetic on top of tokenizer/model outputs without leaving Titan.</li>
+<li><strong><code>std::tokenize::encode_padded(handle, text, max_length, pad_id, add_special_tokens)</code></strong>
+  — encode + pad-to-max_length or truncate. Necessary when the ONNX
+  transformer graph was compiled with a fixed <code>[batch, seq_len]</code> input
+  shape (which is the norm — MiniLM's tokenizer.json ships with
+  padding baked in, but DistilBERT's doesn't). Uses <code>pad_id</code> for
+  <code>ids</code> / <code>type_ids</code> / <code>special_tokens_mask</code> and <code>0</code> for <code>attention_mask</code>
+  so downstream transformers correctly ignore padded positions.</li>
+<li><strong><code>examples/sentiment.titan</code></strong> — end-to-end demo: loads a real
+  DistilBERT sentiment classifier (SST-2, 2 classes: NEGATIVE /
+  POSITIVE), tokenizes English text, runs the ONNX forward pass on
+  device, applies a numerically-stable 2-class softmax and prints
+  the sentiment label with its confidence — 100% offline, no cloud,
+  no API keys, no Python interpreter.</li>
+</ul>
+<h3 id="notes_1">Notes</h3>
+<ul>
+<li>The Rust API additions are non-breaking: <code>load</code>, <code>load_shape</code>,
+  <code>run_f32</code>, <code>run_ids</code> from v0.12.0 still work unchanged.</li>
+<li>Suggested model for the demo:
+  <code>Xenova/distilbert-base-uncased-finetuned-sst-2-english</code> — use the
+  <strong>FP32 <code>model.onnx</code></strong> (~260 MB), NOT <code>model_quantized.onnx</code>
+  (~65 MB). The quantized export uses INT8-specific ops that
+  onnxruntime handles in the browser but tract-onnx cannot analyse.
+  Download instructions printed by the example already point at the
+  right one.</li>
+</ul>
+<h2 id="0120-phase-12-part-2-onnx-inference-on-device">0.12.0 — Phase 12 (part 2): ONNX inference on-device</h2>
+<h3 id="added_4">Added</h3>
+<ul>
+<li><strong><code>std::onnx::*</code></strong> — real ONNX model inference via <code>tract-onnx</code> 0.21,
+  the pure-Rust runtime Sonos uses in production for wake-word and
+  streaming speech recognition on their smart speakers. <strong>No CUDA, no
+  cuDNN, no BLAS, no ONNX Runtime C++.</strong> Runs anywhere Rust compiles,
+  including armv7-linux-androideabi (your Termux ARM phone).</li>
+<li>API (opaque <code>i64</code> handles; multiple models can coexist):<ul>
+<li><code>load(path)</code> — parse → optimize → make runnable in one shot.</li>
+<li><code>load_shape(path, shape)</code> — same, but pin the first input's shape
+  before optimizing (needed for models with dynamic axes, e.g. BERT
+  that leaves batch/seq-len symbolic).</li>
+<li><code>close(handle)</code>.</li>
+<li><code>input_count(handle)</code> / <code>output_count(handle)</code>.</li>
+<li><code>input_shape(handle, i)</code> / <code>output_shape(handle, i)</code> — return an
+  <code>[Int]</code> shape (may contain -1 for symbolic dims tract couldn't
+  resolve statically).</li>
+<li><code>run_f32(handle, shape, data)</code> — flat f32 input, returns
+  <code>{values: [Float], shape: [Int]}</code> (first output). Perfect for
+  MNIST, MobileNet, image classifiers, VAD, etc.</li>
+<li><code>run_ids(handle, shape, ids)</code> — same but for i64 token-id inputs
+  (BERT / MiniLM / DistilBERT and other transformers), so you can
+  pipe the output of <code>std::tokenize::encode()</code> straight in.</li>
+</ul>
+</li>
+<li><strong>Combines</strong> with Fase 12 pt.1 (<code>std::tokenize::*</code>): tokenize text →
+  feed ids to an ONNX transformer → get embeddings back. All on-device,
+  offline, no cloud, no API key.</li>
+</ul>
+<h3 id="notes_2">Notes</h3>
+<ul>
+<li><code>tract-onnx</code> 0.21 build takes 8–12 min on Termux the first time
+  (~50 crates in the dep graph — <code>prost</code> protobuf, <code>tract-hir</code>,
+  <code>tract-nnef</code>, <code>tract-onnx-opl</code>, <code>tract-core</code>, <code>tract-linalg</code>,
+  <code>smallvec</code>, <code>num-integer</code>, <code>memmap2</code>, ...). All pure Rust, no C.</li>
+<li>Suggested first model: MNIST-8 (~26 KB) or MobileNet-v2 (~14 MB).
+  Both are on the ONNX model zoo.</li>
+<li>For LLM-family models (BERT, MiniLM, DistilBERT), use <code>load_shape</code>
+  and pass <code>[1, seq_len]</code> as input shape before you feed ids.</li>
+</ul>
+<h2 id="0110-phase-12-part-1-huggingface-tokenizers">0.11.0 — Phase 12 (part 1): HuggingFace tokenizers</h2>
+<h3 id="added_5">Added</h3>
+<ul>
+<li><strong><code>std::tokenize::*</code></strong> — real HuggingFace <code>tokenizers</code> crate 0.22
+  built in a <strong>pure-Rust configuration</strong>. Defaults are deliberately
+  turned off (<code>default-features = false</code>) to avoid three C/C++ deps
+  that would break Termux builds:<ul>
+<li><code>esaxx_fast</code>  → skipped (C++ suffix-array; pure-Rust fallback works)</li>
+<li><code>onig</code>        → skipped (C Oniguruma regex; replaced by <code>fancy-regex</code>)</li>
+<li><code>progressbar</code> → skipped (Phase 6 already ships <code>indicatif</code>)
+  Only <code>fancy-regex</code> is enabled. <strong>v0.22 is the first release that
+  properly gates <code>SysRegex</code> on <code>fancy-regex XOR onig</code></strong> — v0.20/0.21
+  hardcoded <code>mod onig;</code> and refused to compile without the C library.</li>
+</ul>
+</li>
+<li>API (opaque <code>i64</code> handles from a process-wide registry, so multiple
+  tokenizers can coexist):<ul>
+<li><code>load(path)</code> — open a HuggingFace <code>tokenizer.json</code> from disk.</li>
+<li><code>from_json(text)</code> — same but from an in-memory JSON string.</li>
+<li><code>close(handle)</code> — release.</li>
+<li><code>vocab_size(handle)</code> — total vocab (incl. added tokens).</li>
+<li><code>encode(handle, text, add_special_tokens)</code> → map with
+  <code>ids</code>, <code>tokens</code>, <code>type_ids</code>, <code>attention_mask</code>, <code>special_tokens_mask</code>.</li>
+<li><code>encode_batch(handle, texts, add_special_tokens)</code> — same but
+  returns an array of maps (uses rayon internally for parallelism).</li>
+<li><code>decode(handle, ids, skip_special_tokens)</code> → string.</li>
+<li><code>token_to_id(handle, token)</code> / <code>id_to_token(handle, id)</code> — lookups
+  that return <code>nil</code> when the token/id is absent.</li>
+</ul>
+</li>
+</ul>
+<h3 id="coming-next-in-phase-12">Coming next in Phase 12</h3>
+<ul>
+<li><code>std::onnx::*</code> via <code>tract-onnx</code> (pure-Rust ONNX inference). Kept as a
+  separate patch so <code>tract</code>'s 8-12 min compile doesn't hold this shipment
+  back if something needs adjusting.</li>
+</ul>
+<h2 id="0100-phase-14-svg-charts-plotters">0.10.0 — Phase 14: SVG charts (plotters)</h2>
+<h3 id="added_6">Added</h3>
+<ul>
+<li><strong><code>std::plot::*</code></strong> — real, pure-Rust charts via <code>plotters</code> 0.3.
+  Deliberately built <strong>without</strong> <code>ttf</code> / <code>font-kit</code> (which pull in
+  <code>freetype-sys</code> / <code>expat-sys</code> / <code>fontconfig</code>, all C-deps that break or
+  bloat Termux builds). Every function writes a standalone <code>.svg</code> file;
+  text is rendered by whatever viewer opens the file.</li>
+<li><code>line(path, title, x_axis, y_axis, xs, ys)</code> — single line chart
+    with a marker on every sample.</li>
+<li><code>multi_line(path, title, x_axis, y_axis, labels, xs_of_series, ys_of_series)</code>
+    — 3 parallel arrays (a triple-of-arrays per series would be a
+    heterogeneous literal, which Titan's typechecker rejects). Each
+    series gets a stable colour from an 8-slot palette + a legend entry.</li>
+<li><code>bar(path, title, y_axis, labels, values)</code> — bar chart.</li>
+<li><code>scatter(path, title, x_axis, y_axis, xs, ys)</code> — scatter plot.</li>
+<li><code>histogram(path, title, x_axis, values, bins)</code> — auto-binned
+    histogram.</li>
+<li><strong><code>examples/charts.titan</code></strong> — writes 5 SVGs to <code>$HOME</code> (line, bar,
+  scatter, histogram, multi-line) and prints their paths so you can
+  <code>termux-open</code> them or <code>rsvg-convert</code> them to PNG.</li>
+</ul>
+<h3 id="notes_3">Notes</h3>
+<ul>
+<li>SVGs are ~5-15 KB each — safe to commit to a repo, e-mail, or
+  attach to WhatsApp.</li>
+<li>For PNG output on Termux, install <code>librsvg</code>: <code>pkg install librsvg</code>
+  and then <code>rsvg-convert chart.svg -o chart.png</code>.</li>
+<li>Combines beautifully with <code>std::procfs::*</code> (Fase 8) to build live
+  system dashboards, and with <code>std::server::respond_bytes</code> (Fase 11)
+  to serve charts straight from an HTTP endpoint.</li>
+</ul>
+<h2 id="090-phase-11-web-server-tiny_http-matchit-axum-style">0.9.0 — Phase 11: Web server (tiny_http + matchit, axum-style)</h2>
+<h3 id="added_7">Added</h3>
+<ul>
+<li><strong><code>std::server::*</code></strong> — real pure-Rust HTTP/1.1 server via <code>tiny_http</code>
+  0.12. No async runtime, no OpenSSL, no C shims. Blocking event-loop
+  model that fits Titan's synchronous VM perfectly.</li>
+<li>Lifecycle: <code>start(addr)</code>, <code>local_addr(server)</code>, <code>stop(server)</code>.</li>
+<li>Accept: <code>accept(server, timeout_ms) → request | -1</code>.</li>
+<li>Introspection: <code>method</code>, <code>url</code>, <code>path</code>, <code>query</code>, <code>remote_addr</code>,
+    <code>header(name)</code>, <code>headers()</code> (whole map), <code>body()</code> (raw bytes),
+    <code>body_text()</code> (UTF-8).</li>
+<li>Responses: <code>respond</code> (text/plain), <code>respond_html</code>, <code>respond_json</code>,
+    <code>respond_bytes(content_type, bytes)</code>, <code>respond_full(status,
+    content_type, headers-map, body-bytes)</code>.</li>
+<li><strong>WebSocket upgrade (RFC 6455):</strong>
+    <code>upgrade_websocket(request, max_message) → ws_handle</code>,
+    <code>ws_recv(ws) → [kind, text, bytes]</code> (kind is one of <code>"text"</code>,
+    <code>"binary"</code>, <code>"ping"</code>, <code>"pong"</code>, <code>"close"</code>; pings are auto-ponged),
+    <code>ws_send_text</code>, <code>ws_send_binary</code>, <code>ws_close(ws, code, reason)</code>.</li>
+<li><strong><code>std::router::*</code></strong> — high-performance radix-tree URL router via
+  <code>matchit</code> 0.8 (the same crate axum uses internally).</li>
+<li><code>new()</code>, <code>drop(router)</code>.</li>
+<li><code>insert(router, pattern, tag)</code> — pattern syntax:<ul>
+<li><code>/users</code> — static</li>
+<li><code>/users/{id}</code> — named parameter</li>
+<li><code>/files/{*rest}</code> — catch-all (must be last segment)</li>
+</ul>
+</li>
+<li><code>at(router, path) → { pattern: tag, params: {name: value, ...} }</code>
+    or <code>nil</code> when nothing matches.</li>
+<li><code>matches(router, path) → bool</code> for quick feature-flag style checks.</li>
+<li><strong><code>examples/webserver.titan</code></strong> — end-to-end demo: binds a port,
+  installs 4 routes with matchit, decodes path params for
+  <code>GET /users/{id}</code> and <code>GET /files/{*rest}</code>, and returns JSON,
+  HTML and plain text responses.</li>
+</ul>
+<h3 id="notes_4">Notes</h3>
+<ul>
+<li>No TLS in the server itself (keeps the Termux build lean and avoids
+  the <code>aws-lc-sys</code> C-dep trap). Put nginx / Caddy / stunnel in front
+  for public HTTPS, or use the existing <code>std::http</code> client (which does
+  use rustls) for outbound HTTPS.</li>
+<li><code>std::ws::*</code> (RFC 6455 codec primitives) from Phase 3 stays available
+  and is what <code>std::server::ws_*</code> builds upon.</li>
+</ul>
+<h2 id="080-phase-10-nosql-embedded-kv-redis">0.8.0 — Phase 10: NoSQL (embedded KV + Redis)</h2>
+<h3 id="added_8">Added</h3>
+<ul>
+<li><strong><code>std::kv::*</code></strong> — real embedded key-value database via <code>sled</code> 0.34.
+  Pure Rust, ACID, persists a whole database to a single directory on
+  disk. Multiple databases and named sub-buckets ("trees") can coexist
+  through opaque <code>i64</code> handles.</li>
+<li>Lifecycle: <code>open(path)</code>, <code>close</code>, <code>flush</code>.</li>
+<li>Default tree: <code>insert</code>, <code>get</code>, <code>remove</code>, <code>contains</code>, <code>len</code>, <code>clear</code>,
+    <code>keys</code>, <code>compare_and_swap(key, expected, new)</code> — pass empty bytes
+    for <code>None</code>.</li>
+<li>Named trees (buckets): <code>open_tree(db, name)</code>, <code>tree_insert</code>,
+    <code>tree_get</code>, <code>tree_remove</code>, <code>tree_len</code>, <code>tree_keys</code>.</li>
+<li><strong><code>std::redis::*</code></strong> — blocking Redis client via <code>redis</code> 0.27.
+  Connections are opaque handles.</li>
+<li>Lifecycle: <code>connect(url)</code>, <code>close</code>, <code>ping</code>.</li>
+<li>Strings: <code>set</code>, <code>set_ex</code>, <code>get</code>, <code>del</code>, <code>exists</code>, <code>expire</code>, <code>ttl</code>,
+    <code>incr</code>, <code>keys(pattern)</code>.</li>
+<li>Lists: <code>lpush</code>, <code>rpush</code>, <code>lrange</code>, <code>llen</code>.</li>
+<li>Hashes: <code>hset</code>, <code>hget</code>, <code>hdel</code>, <code>hgetall</code>.</li>
+<li>Escape hatch: <code>raw(command_and_args)</code> for anything else.</li>
+<li><code>examples/database.titan</code> opens a sled database in <code>$HOME</code>, writes
+  three users, reads one back, walks all keys, uses a "sessions"
+  sub-bucket for tokens, exercises compare-and-swap, flushes and
+  closes. Runs offline (no Redis required).</li>
+</ul>
+<h3 id="nothing-removed">Nothing removed</h3>
+<p>All Phases 1-9 remain untouched.</p>
+<hr />
+<h2 id="070-phase-9-audio">0.7.0 — Phase 9: Audio</h2>
+<h3 id="added_9">Added</h3>
+<ul>
+<li><strong><code>std::audio::*</code></strong> — real WAV I/O and synthesis (crate <code>hound</code>, pure
+  Rust, no native audio deps), plus playback and recording delegated to
+  the Termux:API binaries so the compile never breaks on Android.</li>
+<li>Read: <code>read_wav(path)</code>, <code>read_wav_bytes(bytes)</code> — both return
+    <code>{ samples, sample_rate, channels, bits_per_sample }</code> with the
+    samples normalized to floats in <code>[-1.0, 1.0]</code>.</li>
+<li>Write: <code>write_wav(path, samples, sample_rate, channels)</code> and
+    in-memory <code>encode_wav(samples, sample_rate, channels)</code>.</li>
+<li>Synthesis: <code>sine_wave</code>, <code>square_wave</code>, <code>saw_wave</code>, <code>white_noise</code> —
+    each returns a float sample array for the requested duration/rate.</li>
+<li>Playback (via <code>termux-media-player</code>): <code>play(path)</code>, <code>pause</code>,
+    <code>resume</code>, <code>stop</code>, <code>info</code>, <code>is_termux_media_available</code>.</li>
+<li>Recording (via <code>termux-microphone-record</code>): <code>record_start(path,
+    seconds)</code>, <code>record_stop</code>, <code>record_info</code>.</li>
+<li><code>examples/audio.titan</code> synthesises a 500 ms A4 tone, writes and
+  re-reads the WAV, tries to play it via Termux:API, and stitches
+  Do-Re-Mi-Fa-Sol into a scale WAV.</li>
+</ul>
+<h3 id="nothing-removed_1">Nothing removed</h3>
+<p>All Phases 1-8 remain untouched.</p>
+<hr />
+<h2 id="060-phase-8-system-os">0.6.0 — Phase 8: System &amp; OS</h2>
+<h3 id="added_10">Added</h3>
+<ul>
+<li><strong><code>std::procfs::*</code></strong> — cross-platform system information via <code>sysinfo</code>.
+  Works on Termux/Android, Linux and macOS.</li>
+<li>Identity: <code>hostname</code>, <code>kernel</code>, <code>os_name</code>, <code>os_version</code>, <code>uptime</code>.</li>
+<li>CPU: <code>cpu_usage</code> (global %), <code>cpu_count</code>, <code>cpus()</code> (per-core map).</li>
+<li>Memory: <code>total_memory</code>, <code>used_memory</code>, <code>available_memory</code>,
+    <code>total_swap</code>, <code>used_swap</code>.</li>
+<li><code>load_average()</code> returning <code>{one, five, fifteen}</code>.</li>
+<li>Processes: <code>process_count</code>, <code>top_processes(limit)</code> sorted by CPU %.</li>
+<li><code>disks()</code> and <code>networks()</code> with usage counters.</li>
+<li><strong><code>std::fswatch::*</code></strong> — file-system watcher powered by <code>notify</code>
+  (inotify on Linux/Android).</li>
+<li><code>watch_once(path, timeout_ms, recursive)</code> — one-shot blocking watch.</li>
+<li>Handle-based <code>open(path, recursive)</code> + <code>next_event(handle, timeout_ms)</code><ul>
+<li><code>close(handle)</code> for long-lived daemons.</li>
+</ul>
+</li>
+<li><strong><code>std::signals::*</code></strong> — Unix signals via <code>signal-hook</code>.</li>
+<li><code>install("SIGINT")</code> (idempotent), <code>pending("SIGINT")</code> for counter
+    polling, <code>wait_any(timeout_ms)</code> returning the first fired signal.</li>
+<li>Names accepted with or without <code>SIG</code> prefix.</li>
+<li><code>examples/system.titan</code> demoing hostname, OS, CPU %, memory, load
+  average, top processes, disks and network counters.</li>
+</ul>
+<h3 id="nothing-removed_2">Nothing removed</h3>
+<p>All Phases 1-7 stay exactly as they were in 0.5.0.</p>
+<hr />
+<h2 id="050-phase-7-images-qr-codes">0.5.0 — Phase 7: Images &amp; QR codes</h2>
+<h3 id="added_11">Added</h3>
+<ul>
+<li><strong><code>std::image::*</code></strong> — real image processing via the <code>image</code> crate.
+  Supports PNG, JPEG, WebP, BMP, GIF. Images are managed through opaque
+  <code>i64</code> handles kept in a process-wide registry.</li>
+<li>I/O: <code>load(path)</code>, <code>load_bytes(bytes)</code>, <code>save(handle, path)</code>,
+    <code>encode(handle, format)</code>, <code>close(handle)</code>.</li>
+<li>Metadata: <code>width</code>, <code>height</code>, <code>color_type</code>.</li>
+<li>Transforms (return new handles): <code>resize</code>, <code>resize_exact</code>,
+    <code>thumbnail</code>, <code>crop</code>, <code>grayscale</code>, <code>blur</code>, <code>brighten</code>,
+    <code>rotate90</code>/<code>180</code>/<code>270</code>, <code>flip_horizontal</code>, <code>flip_vertical</code>.</li>
+<li>Named filters: <code>nearest</code>, <code>triangle</code>, <code>catmullrom</code>, <code>gaussian</code>,
+    <code>lanczos3</code>.</li>
+<li><strong><code>std::qrcode::*</code></strong> — QR code generation via the <code>qrcode</code> crate.</li>
+<li><code>to_ascii(text, level, dark, light)</code> — printable text.</li>
+<li><code>to_unicode(text, level)</code> — dense Unicode block art.</li>
+<li><code>to_svg(text, level, module_pixels)</code> — SVG bytes.</li>
+<li><code>to_png(text, level, side_pixels)</code> — PNG bytes.</li>
+<li><code>save_png(text, level, side_pixels, path)</code> — write PNG to disk.</li>
+<li>Error-correction levels: <code>L</code>, <code>M</code>, <code>Q</code>, <code>H</code>.</li>
+<li><code>examples/images.titan</code> demoing a QR encoded as ASCII + Unicode + PNG,
+  then reloading the PNG and creating a 100×100 thumbnail and a
+  grayscale version.</li>
+</ul>
+<h3 id="combines-beautifully-with-earlier-phases">Combines beautifully with earlier phases</h3>
+<ul>
+<li>Take a photo with <code>std::termux::camera_photo</code> (Phase 5), resize it
+  with <code>std::image::resize</code> (Phase 7), hash it with <code>std::hash::sha256</code>
+  (Phase 1), generate a QR of the hash with <code>std::qrcode::to_ansi</code>
+  (Phase 7), and share it via <code>std::termux::share</code> (Phase 5).</li>
+</ul>
+<h3 id="nothing-removed_3">Nothing removed</h3>
+<p>All Phases 1-6 remain untouched.</p>
+<hr />
+<h2 id="040-phase-6-terminal-tui">0.4.0 — Phase 6: Terminal &amp; TUI</h2>
+<h3 id="added_12">Added</h3>
+<ul>
+<li><strong><code>std::term::*</code></strong> — real terminal control powered by <code>crossterm</code>:</li>
+<li><code>print_colored</code>, <code>print_styled</code>, <code>print_attr</code> (bold/italic/underline).</li>
+<li>Named colours plus custom <code>rgb:R,G,B</code> and <code>#RRGGBB</code>.</li>
+<li><code>clear_screen</code>, <code>clear_line</code>, <code>move_to</code>, <code>hide_cursor</code>, <code>show_cursor</code>,
+    <code>size</code>, <code>flush</code>.</li>
+<li>Alt-screen / raw-mode switches: <code>enter_alt_screen</code>, <code>leave_alt_screen</code>,
+    <code>enable_raw</code>, <code>disable_raw</code>.</li>
+<li><code>read_key(timeout_ms)</code> returning normalized names like <code>Enter</code>,
+    <code>Ctrl+c</code>, <code>Shift+F1</code>, <code>Up</code>.</li>
+<li><strong><code>std::readline::*</code></strong> — GNU-Readline-style line editing via <code>rustyline</code>:</li>
+<li><code>prompt</code>, <code>prompt_with_history</code>, <code>prompt_persistent(prompt, path)</code>,
+    <code>prompt_secret</code> (input hidden).</li>
+<li><strong><code>std::progress::*</code></strong> — animated progress via <code>indicatif</code>:</li>
+<li><code>bar_new(total)</code>, <code>spinner_new()</code>, <code>set_message</code>, <code>set_position</code>,
+    <code>increment</code>, <code>finish</code>, <code>abandon</code>.</li>
+<li><code>examples/tui.titan</code> demoing colors, terminal size, an animated
+  progress bar and a spinner.</li>
+</ul>
+<h3 id="nothing-removed_4">Nothing removed</h3>
+<p>All Phase 1-5 modules from 0.3.0 remain exactly as they were.</p>
+<hr />
+<h2 id="030-phase-5-real-android-hardware-os-bindings">0.3.0 — Phase 5: real Android hardware &amp; OS bindings</h2>
+<h3 id="added_13">Added</h3>
+<ul>
+<li><strong><code>std::termux::*</code></strong> — 23 native functions that shell out to the
+  Termux:API CLI shipped by the Termux:API Android app. Everything is
+  real, nothing is simulated:</li>
+<li>Device state: <code>battery_status</code>, <code>wifi_info</code>, <code>telephony_info</code>.</li>
+<li>Location: <code>location(provider, request)</code>.</li>
+<li>Sensors: <code>sensor_list</code>, <code>sensor_read</code>.</li>
+<li>Real system clipboard: <code>clipboard_get</code>, <code>clipboard_set</code>.</li>
+<li>Feedback: <code>vibrate</code>, <code>torch</code>, <code>toast</code>, <code>notify</code>, <code>notify_remove</code>,
+    <code>tts_speak</code>, <code>brightness</code>.</li>
+<li>Communications: <code>sms_list</code>, <code>sms_send</code>, <code>contacts</code>.</li>
+<li>Camera: <code>camera_info</code>, <code>camera_photo</code>.</li>
+<li>Dialog &amp; sharing: <code>dialog</code>, <code>share</code>.</li>
+<li>Availability probe: <code>is_available</code> for cross-platform code.</li>
+<li>All Phase-5 natives are gated behind the <code>Process</code> capability, so
+  <code>zett run --sandbox</code> blocks them consistently with <code>std::process::*</code>.</li>
+<li><code>examples/android.titan</code> demonstrating battery, toast, vibration,
+  clipboard, notification, sensors and WiFi.</li>
+</ul>
+<h3 id="requirements-on-device">Requirements (on-device)</h3>
+<ul>
+<li><strong>Termux:API</strong> app from F-Droid or Play Store.</li>
+<li><code>pkg install termux-api</code> inside Termux.</li>
+</ul>
+<p>If the CLI is missing, every helper returns a typed
+<code>TermuxError::MissingCli</code> so <code>.titan</code> programs can degrade gracefully.</p>
+<hr />
+<h2 id="020-phases-1-4">0.2.0 — Phases 1-4</h2>
+<h3 id="added_14">Added</h3>
+<p><strong>Phase 1 — Fundamentals</strong>
+- <code>std::regex</code> — Unicode-aware pattern matching (crate <code>regex</code>).
+- <code>std::uuid</code> — UUID v4 and v7 (crate <code>uuid</code>).
+- <code>std::hash</code> — SHA-256/384/512, SHA-3, BLAKE3, HMAC (RustCrypto).
+- <code>std::random</code> — OS entropy + reproducible ChaCha20 (crate <code>rand</code>).
+- <code>std::datetime</code> — dates, RFC 3339/2822, offsets (crate <code>chrono</code>).
+- <code>std::url</code> — parse/build URLs and query strings (crate <code>url</code>).
+- <code>std::dirs</code> — HOME/config/cache/downloads (crate <code>dirs</code>).</p>
+<p><strong>Phase 2 — Formats &amp; compression</strong>
+- <code>std::compress</code> — Gzip, Zlib, Deflate, Zstandard.
+- <code>std::archive</code> — tar &amp; zip pack/unpack, zip-slip safe.
+- <code>std::yaml</code> — parse, stringify, multi-document.
+- <code>std::xml</code> — quick-xml tree parsing + escapes.</p>
+<p><strong>Phase 3 — Advanced networking</strong>
+- <code>std::http_full</code> — blocking HTTPS client (ureq + rustls-ring).
+- <code>std::dns</code> — hickory-resolver lookups (A, AAAA, MX, TXT, CNAME, PTR).
+- <code>std::email</code> — SMTP with STARTTLS / implicit TLS (lettre).</p>
+<p><strong>Phase 4 — Modern cryptography</strong>
+- <code>std::crypto</code> — ChaCha20-Poly1305, AES-256-GCM AEAD.
+- <code>std::password</code> — Argon2id, bcrypt.
+- <code>std::jwt</code> — HS256 / RS256 JSON Web Tokens.</p>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li>Cleaned up hallucinated artifacts left by an earlier AI-assisted
+  session (zero-byte binaries, imaginary informe docs, broken fix
+  scripts). Marked <code>titan native</code> / <code>titan mobile</code> as experimental
+  with runtime warnings; they don't produce loadable ELF or APK yet.</li>
+<li>Forced the whole workspace onto rustls' <code>ring</code> backend to keep the
+  Termux build small and avoid aws-lc-sys (~300 C files).</li>
+<li><code>titan_tls::ensure_default_crypto_provider()</code> installs a default
+  rustls CryptoProvider exactly once per process; fixes the crash in
+  <code>titan_postgres::builds_rustls_connector</code> after Phase 3 landed.</li>
+</ul>
+<h3 id="notes_5">Notes</h3>
+<ul>
+<li>All new stdlib modules live behind Cargo features; the <code>extras</code>
+  meta-feature bundles them all and is on by default.</li>
+<li>Docs: <code>docs/EXTRAS.md</code> walks through every module and the Termux
+  build recipe.</li>
+</ul><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/CHANGELOG.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

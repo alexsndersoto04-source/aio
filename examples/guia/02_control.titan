@@ -1,0 +1,18 @@
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1 }
+    n * factorial(n - 1)
+}
+
+fn main() {
+    let mut total = 0
+    for i in 1..=5 {
+        total += factorial(i)
+    }
+    print("suma de factoriales = {total}")
+
+    let mut n = 10
+    while n > 0 {
+        n -= 4
+    }
+    print("n = {n}")
+}

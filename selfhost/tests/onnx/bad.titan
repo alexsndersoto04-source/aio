@@ -1,0 +1,34 @@
+// Archivos ONNX inválidos: cada carga tiene que fallar con un error, nunca
+// abortar ni devolver un handle. Uso: bad <directorio de los modelos>
+fn report(label: string, r: any) {
+    match r {
+        Result::Ok(v) => {
+            print(label + " => LOADED (mal)")
+        },
+        Result::Err(e) => {
+            print(label + " => ERR")
+        },
+        _ => {
+            print(label + " => ?")
+        },
+    }
+}
+
+fn main() {
+    let args = std::env::args()
+    let dir = args[len(args) - 1]
+    report("trunc", std::try::catch(|| { std::onnx::load(dir + "/bad_trunc.onnx") }))
+    report("junk", std::try::catch(|| { std::onnx::load(dir + "/bad_junk.onnx") }))
+    report("op", std::try::catch(|| { std::onnx::load(dir + "/bad_op.onnx") }))
+    // Un archivo vacío no es un ModelProto con grafo: también se rechaza.
+    report("empty", std::try::catch(|| { std::onnx::load(dir + "/bad_empty.onnx") }))
+    let ok = std::try::catch(|| { std::onnx::load(dir + "/mlp.onnx") })
+    match ok {
+        Result::Ok(h) => {
+            print("valid => handle {h}")
+        },
+        _ => {
+            print("valid => ERR (mal)")
+        },
+    }
+}

@@ -1,0 +1,600 @@
+// std::sqlite en Titan, parte 19: funciones de ventana (OVER, PARTITION BY, ORDER BY, marcos
+// ROWS / RANGE / GROUPS, EXCLUDE, FILTER). Prefijo `swn`.
+// Cada ventana calcula un valor por fila de la consulta ya filtrada; luego la proyección lo lee con EWin(i).
+
+fn swn_is_rank(n: string) -> bool {
+    n == "row_number" || n == "rank" || n == "dense_rank" || n == "percent_rank" || n == "cume_dist" || n == "ntile"
+}
+
+fn swn_is_val(n: string) -> bool {
+    n == "lag" || n == "lead" || n == "first_value" || n == "last_value" || n == "nth_value"
+}
+
+fn swn_is_agg(n: string) -> bool {
+    n == "count" || n == "sum" || n == "total" || n == "avg" || n == "min" || n == "max" || n == "group_concat" || n == "string_agg" || n == "json_group_array" || n == "json_group_object"
+}
+
+fn swn_bound_rank(k: string) -> int {
+    if k == "UNBOUNDED PRECEDING" {
+        return 0
+    }
+    if k == "PRECEDING" {
+        return 1
+    }
+    if k == "CURRENT" {
+        return 2
+    }
+    if k == "FOLLOWING" {
+        return 3
+    }
+    4
+}
+
+fn swn_zeros(n: int) -> array {
+    std::array::filled(n, false)
+}
+
+// Valores por fila de todas las ventanas. cxs/envs: contexto y entorno de evaluación por fila.
+// Las ventanas se aplican en orden inverso al listado (como SQLite): cada una reordena de forma estable
+// las filas y el orden final es el de la primera. Devuelve (columnas, permutación final, error).
+fn swn_all(cxs: array, envs: array, wins: array) -> (array, array, string) {
+    let m = len(envs)
+    let mut perm = []
+    let mut j = 0
+    while j < m {
+        perm = std::array::push(perm, j)
+        j += 1
+    }
+    let mut cols = std::array::filled(len(wins), [])
+    let mut wi = len(wins) - 1
+    while wi >= 0 {
+        let (vals, np, err) = swn_one(cxs, envs, wins[wi], perm)
+        if err != "" {
+            return ([], [], err)
+        }
+        cols = std::array::set(cols, wi, vals)
+        perm = np
+        wi -= 1
+    }
+    return (cols, perm, "")
+}
+
+fn swn_row(cols: array, j: int) -> array {
+    let mut out = []
+    for c in cols {
+        out = std::array::push(out, c[j])
+    }
+    out
+}
+
+fn swn_truth(v: Sv) -> bool {
+    sc_truth(v) == 1
+}
+
+// posición del primer elemento del grupo de pares / último
+fn swn_frame_bound(cx: Cx, e2: array, kind: string, ex: any, mode: string, p: int, mp: int, gs: array, ge: array, pg: array, gfirst: array, glast: array, keys: array, desc: bool, isstart: bool) -> (int, string) {
+    // devuelve la posición (índice dentro de la partición) de inicio o fin del marco
+    let isprec = std::text::ends_with(kind, "PRECEDING")
+    let isfol = std::text::ends_with(kind, "FOLLOWING")
+    if kind == "UNBOUNDED PRECEDING" {
+        return (0, "")
+    }
+    if kind == "UNBOUNDED FOLLOWING" {
+        return (mp - 1, "")
+    }
+    let mut n = 0
+    if ex != nil {
+        let v = sx_ev(cx, ex, e2)
+        match v {
+            Sv::SErr(m) => {
+                return (0, m)
+            },
+            _ => {},
+        }
+        let nv = sc_num(v)
+        let mut ok = false
+        match nv {
+            Sv::SInt(i) => {
+                n = i
+                ok = true
+            },
+            Sv::SReal(f) => {
+                if std::math::floor(f) == f {
+                    n = std::math::to_int(f)
+                    ok = true
+                }
+            },
+            _ => {},
+        }
+        if !ok || n < 0 {
+            if mode == "RANGE" && ok == false {
+                return (0, "frame starting offset must be a non-negative integer")
+            }
+            if isstart {
+                return (0, "frame starting offset must be a non-negative integer")
+            }
+            return (0, "frame ending offset must be a non-negative integer")
+        }
+    }
+    if mode == "ROWS" {
+        if kind == "CURRENT" {
+            return (p, "")
+        }
+        if isprec {
+            return (p - n, "")
+        }
+        return (p + n, "")
+    }
+    let g = pg[p]
+    let ng = len(gfirst)
+    if mode == "GROUPS" {
+        let mut tg = g
+        if isprec {
+            tg = g - n
+        }
+        if isfol {
+            tg = g + n
+        }
+        if isstart {
+            if tg < 0 {
+                return (0, "")
+            }
+            if tg >= ng {
+                return (mp, "")
+            }
+            return (gfirst[tg], "")
+        }
+        if tg < 0 {
+            return (-1, "")
+        }
+        if tg >= ng {
+            return (mp - 1, "")
+        }
+        return (glast[tg], "")
+    }
+    // RANGE
+    if kind == "CURRENT" {
+        if isstart {
+            return (gfirst[g], "")
+        }
+        return (glast[g], "")
+    }
+    if len(keys) == 0 {
+        return (0, "RANGE with offset PRECEDING/FOLLOWING requires one ORDER BY expression")
+    }
+    let cur = keys[p]
+    if sx_isnull(cur) {
+        if isstart {
+            return (gfirst[g], "")
+        }
+        return (glast[g], "")
+    }
+    let cf = sc_to_float(cur)
+    let nf = std::math::to_float(n)
+    // límite de valor en el eje de la ordenación
+    let mut lim = cf - nf
+    if isprec == desc {
+        lim = cf + nf
+    }
+    // en orden ascendente: PRECEDING -> valores >= cf - n ; FOLLOWING -> valores <= cf + n
+    // en orden descendente: PRECEDING -> valores <= cf + n ; FOLLOWING -> valores >= cf - n
+    let mut q = 0
+    if isstart {
+        // primer índice dentro del marco
+        let mut res = mp
+        q = 0
+        while q < mp && res == mp {
+            let kv = keys[q]
+            let mut inside = false
+            if sx_isnull(kv) {
+                inside = false
+                if !desc {
+                    inside = false
+                }
+            } else {
+                let kf = sc_to_float(kv)
+                if desc {
+                    inside = kf <= lim
+                } else {
+                    inside = kf >= lim
+                }
+            }
+            if inside {
+                res = q
+            }
+            q += 1
+        }
+        return (res, "")
+    }
+    let mut res2 = -1
+    q = 0
+    while q < mp {
+        let kv = keys[q]
+        if !sx_isnull(kv) {
+            let kf = sc_to_float(kv)
+            let mut inside = false
+            if desc {
+                inside = kf >= lim
+            } else {
+                inside = kf <= lim
+            }
+            if inside {
+                res2 = q
+            }
+        }
+        q += 1
+    }
+    return (res2, "")
+}
+
+fn swn_one(cxs: array, envs: array, w: array, perm: array) -> (array, array, string) {
+    let name = sx_lc(w[0])
+    let args = w[1]
+    let distinct = w[2]
+    let flt = w[3]
+    let spec = w[4]
+    let m = len(envs)
+    if !swn_is_rank(name) && !swn_is_val(name) && !swn_is_agg(name) {
+        return ([], [], name + "() may not be used as a window function")
+    }
+    if distinct && (swn_is_agg(name) || swn_is_val(name) || swn_is_rank(name)) {
+        return ([], [], "DISTINCT is not supported for window functions")
+    }
+    if flt != nil && !swn_is_agg(name) {
+        return ([], [], "FILTER clause may only be used with aggregate window functions")
+    }
+    let part = spec[0]
+    let ord = spec[1]
+    let frame = spec[2]
+    if frame != nil {
+        let rk = swn_bound_rank(frame[1])
+        let rk2 = swn_bound_rank(frame[3])
+        if frame[1] == "UNBOUNDED FOLLOWING" || frame[3] == "UNBOUNDED PRECEDING" || rk > rk2 {
+            return ([], [], "unsupported frame specification")
+        }
+    }
+    // evaluar claves y argumentos por fila
+    let mut pkeys = []
+    let mut okeys = []
+    let mut avals = []
+    let mut fvals = []
+    let mut j = 0
+    while j < m {
+        let e2 = envs[j]
+        let cx = cxs[j]
+        let mut pk = []
+        for e in part {
+            pk = std::array::push(pk, sx_ev(cx, e, e2))
+        }
+        let mut ok = []
+        for o in ord {
+            ok = std::array::push(ok, sx_ev(cx, o[0], e2))
+        }
+        let mut av = []
+        for a in args {
+            av = std::array::push(av, sx_ev(cx, a, e2))
+        }
+        if name == "count" && len(args) == 0 {
+            av = []
+        }
+        let er = sy_row_err(std::array::concat(std::array::concat(pk, ok), av))
+        if er != "" {
+            return ([], [], er)
+        }
+        let mut fv = true
+        if flt != nil {
+            let fx = sx_ev(cx, flt, e2)
+            let er2 = sy_row_err([fx])
+            if er2 != "" {
+                return ([], [], er2)
+            }
+            fv = swn_truth(fx)
+        }
+        pkeys = std::array::push(pkeys, pk)
+        okeys = std::array::push(okeys, ok)
+        avals = std::array::push(avals, av)
+        fvals = std::array::push(fvals, fv)
+        j += 1
+    }
+    // ordenar
+    let mut descs = []
+    let mut nulls = []
+    let mut colls = []
+    for e in part {
+        descs = std::array::push(descs, false)
+        nulls = std::array::push(nulls, 0)
+        colls = std::array::push(colls, sx_coll_code(sx_coll_of(e)))
+    }
+    for o in ord {
+        descs = std::array::push(descs, o[1])
+        nulls = std::array::push(nulls, o[2])
+        colls = std::array::push(colls, sx_coll_code(sx_coll_of(o[0])))
+    }
+    let mut items = []
+    for pj in perm {
+        items = std::array::push(items, [std::array::concat(pkeys[pj], okeys[pj]), pj])
+    }
+    let sorted = sy_msort(items, descs, nulls, colls)
+    let mut res = std::array::filled(m, Sv::SNull)
+    // recorrer particiones
+    let mut start = 0
+    while start < m {
+        let pk0 = sx_row_key(pkeys[sorted[start][1]])
+        let mut end = start + 1
+        while end < m && sx_row_key(pkeys[sorted[end][1]]) == pk0 {
+            end += 1
+        }
+        let mut idxs = []
+        let mut p = start
+        while p < end {
+            idxs = std::array::push(idxs, sorted[p][1])
+            p += 1
+        }
+        let (vals, err) = swn_part(cxs, envs, idxs, name, args, spec, okeys, avals, fvals, frame)
+        if err != "" {
+            return ([], [], err)
+        }
+        let mut q = 0
+        while q < len(idxs) {
+            res = std::array::set(res, idxs[q], vals[q])
+            q += 1
+        }
+        start = end
+    }
+    let mut np = []
+    for it in sorted {
+        np = std::array::push(np, it[1])
+    }
+    return (res, np, "")
+}
+
+// Calcula los valores de una partición; idxs son los índices de fila en orden.
+fn swn_part(cxs: array, envs: array, idxs: array, name: string, args: array, spec: array, okeys: array, avals: array, fvals: array, frame: any) -> (array, string) {
+    let mp = len(idxs)
+    let ord = spec[1]
+    // grupos de pares
+    let mut pg = []
+    let mut gfirst = []
+    let mut glast = []
+    let mut keys1 = []
+    let mut prevk = ""
+    let mut g = -1
+    let mut p = 0
+    while p < mp {
+        let k = sx_row_key(okeys[idxs[p]])
+        if p == 0 || k != prevk {
+            g += 1
+            gfirst = std::array::push(gfirst, p)
+            glast = std::array::push(glast, p)
+        } else {
+            glast = std::array::set(glast, g, p)
+        }
+        prevk = k
+        pg = std::array::push(pg, g)
+        if len(ord) == 1 {
+            keys1 = std::array::push(keys1, okeys[idxs[p]][0])
+        }
+        p += 1
+    }
+    let mut out = []
+    if swn_is_rank(name) {
+        let mut nt = 0
+        if name == "ntile" {
+            let a0 = avals[idxs[0]][0]
+            match sc_num(a0) {
+                Sv::SInt(i) => {
+                    nt = i
+                },
+                Sv::SReal(f) => {
+                    nt = std::math::to_int(f)
+                },
+                _ => {},
+            }
+            if nt <= 0 {
+                return ([], "argument of ntile must be a positive integer")
+            }
+        }
+        p = 0
+        while p < mp {
+            let gi = pg[p]
+            if name == "row_number" {
+                out = std::array::push(out, Sv::SInt(p + 1))
+            } else if name == "rank" {
+                out = std::array::push(out, Sv::SInt(gfirst[gi] + 1))
+            } else if name == "dense_rank" {
+                out = std::array::push(out, Sv::SInt(gi + 1))
+            } else if name == "percent_rank" {
+                if mp == 1 {
+                    out = std::array::push(out, Sv::SReal(0.0))
+                } else {
+                    out = std::array::push(out, Sv::SReal(std::math::to_float(gfirst[gi]) / std::math::to_float(mp - 1)))
+                }
+            } else if name == "cume_dist" {
+                out = std::array::push(out, Sv::SReal(std::math::to_float(glast[gi] + 1) / std::math::to_float(mp)))
+            } else {
+                let q = mp / nt
+                let r = mp % nt
+                let big = r * (q + 1)
+                let mut b = 0
+                if q == 0 {
+                    b = p + 1
+                } else if p < big {
+                    b = p / (q + 1) + 1
+                } else {
+                    b = r + (p - big) / q + 1
+                }
+                out = std::array::push(out, Sv::SInt(b))
+            }
+            p += 1
+        }
+        return (out, "")
+    }
+    if name == "lag" || name == "lead" {
+        p = 0
+        while p < mp {
+            let av = avals[idxs[p]]
+            let mut off = 1
+            if len(av) > 1 {
+                let ov = sc_num(av[1])
+                match ov {
+                    Sv::SInt(i) => {
+                        off = i
+                    },
+                    Sv::SReal(f) => {
+                        off = std::math::to_int(f)
+                    },
+                    _ => {
+                        off = 0
+                    },
+                }
+            }
+            let mut tp = p - off
+            if name == "lead" {
+                tp = p + off
+            }
+            if tp >= 0 && tp < mp {
+                out = std::array::push(out, avals[idxs[tp]][0])
+            } else if len(av) > 2 {
+                out = std::array::push(out, av[2])
+            } else {
+                out = std::array::push(out, Sv::SNull)
+            }
+            p += 1
+        }
+        return (out, "")
+    }
+    // marco
+    let mut mode = "RANGE"
+    let mut sk = "UNBOUNDED PRECEDING"
+    let mut sx: any = nil
+    let mut ek = "CURRENT"
+    let mut ex: any = nil
+    let mut excl = ""
+    if frame != nil {
+        mode = frame[0]
+        sk = frame[1]
+        sx = frame[2]
+        ek = frame[3]
+        ex = frame[4]
+        excl = frame[5]
+    } else if len(ord) == 0 {
+        ek = "UNBOUNDED FOLLOWING"
+    }
+    let mut desc = false
+    if len(ord) == 1 {
+        desc = ord[0][1]
+    }
+    let inc = sk == "UNBOUNDED PRECEDING" && (excl == "" || excl == "NO OTHERS") && swn_is_agg(name)
+    let mut st = sx_agg_init(name)
+    let mut fed = 0
+    let mut lastv = Sv::SNull
+    let mut lasthi = -2
+    let coll = 0
+    p = 0
+    while p < mp {
+        let (lo0, e1) = swn_frame_bound(cxs[idxs[p]], envs[idxs[p]], sk, sx, mode, p, mp, [], [], pg, gfirst, glast, keys1, desc, true)
+        if e1 != "" {
+            return ([], e1)
+        }
+        let (hi0, e2) = swn_frame_bound(cxs[idxs[p]], envs[idxs[p]], ek, ex, mode, p, mp, [], [], pg, gfirst, glast, keys1, desc, false)
+        if e2 != "" {
+            return ([], e2)
+        }
+        let mut lo = lo0
+        let mut hi = hi0
+        if lo < 0 {
+            lo = 0
+        }
+        if hi > mp - 1 {
+            hi = mp - 1
+        }
+        let gi = pg[p]
+        if inc {
+            if hi == lasthi {
+                out = std::array::push(out, lastv)
+            } else {
+                while fed <= hi {
+                    let rj = idxs[fed]
+                    if fvals[rj] {
+                        let a2 = sj_mark(cxs[rj], name, args, avals[rj])
+                        st = sx_agg_step(name, st, a2, swn_coll_of_args(args), false)
+                    }
+                    fed += 1
+                }
+                lastv = sx_agg_final(name, st)
+                lasthi = hi
+                out = std::array::push(out, lastv)
+            }
+            p += 1
+        } else {
+            // posiciones del marco sin las excluidas
+            let mut pos = []
+            let mut q = lo
+            while q <= hi {
+                let mut skip = false
+                if excl == "CURRENT ROW" && q == p {
+                    skip = true
+                }
+                if excl == "GROUP" && pg[q] == gi {
+                    skip = true
+                }
+                if excl == "TIES" && pg[q] == gi && q != p {
+                    skip = true
+                }
+                if !skip {
+                    pos = std::array::push(pos, q)
+                }
+                q += 1
+            }
+            if name == "first_value" {
+                if len(pos) == 0 {
+                    out = std::array::push(out, Sv::SNull)
+                } else {
+                    out = std::array::push(out, avals[idxs[pos[0]]][0])
+                }
+            } else if name == "last_value" {
+                if len(pos) == 0 {
+                    out = std::array::push(out, Sv::SNull)
+                } else {
+                    out = std::array::push(out, avals[idxs[pos[len(pos) - 1]]][0])
+                }
+            } else if name == "nth_value" {
+                let nv = sc_num(avals[idxs[p]][1])
+                let mut nn = 0
+                match nv {
+                    Sv::SInt(i) => {
+                        nn = i
+                    },
+                    _ => {},
+                }
+                if nn <= 0 {
+                    return ([], "second argument to nth_value must be a positive integer")
+                }
+                if nn <= len(pos) {
+                    out = std::array::push(out, avals[idxs[pos[nn - 1]]][0])
+                } else {
+                    out = std::array::push(out, Sv::SNull)
+                }
+            } else {
+                let mut st2 = sx_agg_init(name)
+                for q2 in pos {
+                    let rj = idxs[q2]
+                    if fvals[rj] {
+                        let a3 = sj_mark(cxs[rj], name, args, avals[rj])
+                        st2 = sx_agg_step(name, st2, a3, swn_coll_of_args(args), false)
+                    }
+                }
+                out = std::array::push(out, sx_agg_final(name, st2))
+            }
+            p += 1
+        }
+    }
+    return (out, "")
+}
+
+fn swn_coll_of_args(args: array) -> int {
+    if len(args) > 0 {
+        return sx_coll_code(sx_coll_of(args[0]))
+    }
+    0
+}

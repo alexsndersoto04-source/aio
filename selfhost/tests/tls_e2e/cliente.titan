@@ -1,0 +1,25 @@
+// Cliente TLS contra hosts públicos (TLS 1.3 y TLS 1.2): GET / y resumen.
+fn pedir(host: string) {
+    let c = std::tls::connect("{host}:443", host)
+    std::tls::write(c, "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+    let primero = std::tls::read(c, 12)
+    let mut total = std::bytes::length(primero)
+    let mut mas = true
+    while mas {
+        let x = std::tls::read(c, 65536)
+        total += std::bytes::length(x)
+        if std::bytes::length(x) == 0 {
+            mas = false
+        }
+    }
+    let cabeza = std::encoding::utf8_decode(primero)
+    let bastante = total > 100
+    print("{host}: {cabeza} {bastante}")
+    std::tls::close(c)
+}
+
+fn main() {
+    pedir("pypi.org")
+    pedir("registry.npmjs.org")
+    pedir("files.pythonhosted.org")
+}

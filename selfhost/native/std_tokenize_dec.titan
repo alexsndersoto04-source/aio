@@ -1,0 +1,311 @@
+// std::tokenize en Titan, parte 5: decodificadores y decode(). Traducción de `tokenizers` 0.22.2.
+// Prefijo `tkd`.
+
+// str::replace con la semántica de Rust (el patrón vacío inserta el reemplazo entre caracteres).
+fn tkd_replace(s: string, pat: string, rep: string) -> string {
+    if pat != "" {
+        return std::text::replace(s, pat, rep)
+    }
+    let mut out = []
+    let r = tk_cps(rep)
+    for c in tk_cps(s) {
+        out = tk_cat(out, r)
+        out = std::array::push(out, c)
+    }
+    out = tk_cat(out, r)
+    return tk_str(out)
+}
+
+fn tkd_cleanup(s: string) -> string {
+    let mut x = std::text::replace(s, " .", ".")
+    x = std::text::replace(x, " ?", "?")
+    x = std::text::replace(x, " !", "!")
+    x = std::text::replace(x, " ,", ",")
+    x = std::text::replace(x, " ' ", "'")
+    x = std::text::replace(x, " n't", "n't")
+    x = std::text::replace(x, " 'm", "'m")
+    x = std::text::replace(x, " do not", " don't")
+    x = std::text::replace(x, " 's", "'s")
+    x = std::text::replace(x, " 've", "'ve")
+    x = std::text::replace(x, " 're", "'re")
+    return x
+}
+
+fn tkd_join(toks: array) -> string {
+    return std::collections::join(toks, "")
+}
+
+fn tkd_hexval(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+// Bytes acumulados -> tokens (UTF-8 válido o un `�` por byte).
+fn tkd_flush_bytes(out: array, bs: array) -> array {
+    let (cps, ok) = tk_decode_valid_ok(bs)
+    if ok {
+        return std::array::push(out, tk_str(cps))
+    }
+    let mut o = out
+    for b in bs {
+        o = std::array::push(o, tk_str([65533]))
+    }
+    return o
+}
+
+// ¿Son bytes UTF-8 válidos? -> (cps, ok)
+fn tk_decode_valid_ok(bs: array) -> (array, bool) {
+    let cps = tk_lossy(bs)
+    let b2 = tk_utf8(cps)
+    if len(b2) != len(bs) {
+        return (cps, false)
+    }
+    let mut i = 0
+    while i < len(bs) {
+        if b2[i] != bs[i] {
+            return (cps, false)
+        }
+        i += 1
+    }
+    return (cps, true)
+}
+
+fn tkd_chain(t: TkC, node: any, toks: array) -> array {
+    let ty = tj_gstr(node, "type", "")
+    if ty == "Sequence" {
+        let mut cur = toks
+        for d in tj_list(node, "decoders") {
+            cur = tkd_chain(t, d, cur)
+        }
+        return cur
+    }
+    if ty == "WordPiece" {
+        let prefix = tj_gstr(node, "prefix", "##")
+        let cleanup = tj_gbool(node, "cleanup", true)
+        let pc = tk_cps(prefix)
+        let mut out = []
+        let mut i = 0
+        for tok in toks {
+            let mut x = tok
+            if i != 0 {
+                let c = tk_cps(tok)
+                if len(pc) <= len(c) && tkt_match_at(pc, c, 0) {
+                    x = tk_str(std::array::slice(c, len(pc), len(c)))
+                } else {
+                    x = " " + tok
+                }
+            }
+            if cleanup {
+                x = tkd_cleanup(x)
+            }
+            out = std::array::push(out, x)
+            i += 1
+        }
+        return out
+    }
+    if ty == "BPEDecoder" {
+        let suf = tj_gstr(node, "suffix", "</w>")
+        let n = len(toks) - 1
+        let mut out = []
+        let mut i = 0
+        for tok in toks {
+            if i == n {
+                out = std::array::push(out, tkd_replace(tok, suf, ""))
+            } else {
+                out = std::array::push(out, tkd_replace(tok, suf, " "))
+            }
+            i += 1
+        }
+        return out
+    }
+    if ty == "ByteLevel" {
+        let mut bytes = []
+        for tok in toks {
+            let c = tk_cps(tok)
+            let mut bs = []
+            let mut allm = true
+            for ch in c {
+                let mut bv = -1
+                if ch < 324 {
+                    bv = t.blinv[ch]
+                }
+                if bv >= 0 {
+                    bs = std::array::push(bs, bv)
+                } else {
+                    allm = false
+                }
+                bv = 0
+            }
+            if allm {
+                bytes = tk_cat(bytes, bs)
+            } else {
+                bytes = tk_cat(bytes, tk_utf8(c))
+            }
+        }
+        return [tk_str(tk_lossy(bytes))]
+    }
+    if ty == "Metaspace" {
+        let r0 = tk_cps(tj_gstr(node, "replacement", "_"))[0]
+        let mut scheme = tj_gstr(node, "prepend_scheme", "always")
+        if !tj_has(node, "prepend_scheme") && tj_has(node, "add_prefix_space") && !tj_gbool(node, "add_prefix_space", true) {
+            scheme = "never"
+        }
+        let mut out = []
+        let mut i = 0
+        for tok in toks {
+            let mut o = []
+            for ch in tk_cps(tok) {
+                if ch == r0 {
+                    if !(i == 0 && scheme != "never") {
+                        o = std::array::push(o, 32)
+                    }
+                } else {
+                    o = std::array::push(o, ch)
+                }
+            }
+            out = std::array::push(out, tk_str(o))
+            i += 1
+        }
+        return out
+    }
+    if ty == "ByteFallback" {
+        let mut out = []
+        let mut prev = []
+        for tok in toks {
+            let c = tk_cps(tok)
+            let mut b = -1
+            if len(c) == 6 && c[0] == 60 && c[1] == 48 && c[2] == 120 && c[5] == 62 {
+                let h = tkd_hexval(c[3])
+                let l = tkd_hexval(c[4])
+                if h >= 0 && l >= 0 {
+                    b = h * 16 + l
+                }
+            }
+            if b >= 0 {
+                prev = std::array::push(prev, b)
+            } else {
+                if len(prev) > 0 {
+                    out = tkd_flush_bytes(out, prev)
+                    prev = []
+                }
+                out = std::array::push(out, tok)
+            }
+        }
+        if len(prev) > 0 {
+            out = tkd_flush_bytes(out, prev)
+        }
+        return out
+    }
+    if ty == "Fuse" {
+        return [tkd_join(toks)]
+    }
+    if ty == "Strip" {
+        let content = tk_cps(tj_gstr(node, "content", " "))[0]
+        let start = tj_gint(node, "start", 0)
+        let stop = tj_gint(node, "stop", 0)
+        let mut out = []
+        for tok in toks {
+            let c = tk_cps(tok)
+            let n = len(c)
+            let mut sc = 0
+            let mut i = 0
+            while i < start && i < n {
+                if c[i] == content {
+                    sc = i + 1
+                } else {
+                    break
+                }
+                i += 1
+            }
+            let mut ec = n
+            i = 0
+            while i < stop {
+                let idx = n - i - 1
+                if idx < 0 {
+                    break
+                }
+                if c[idx] == content {
+                    ec = idx
+                } else {
+                    break
+                }
+                i += 1
+            }
+            if sc > ec {
+                sc = ec
+            }
+            out = std::array::push(out, tk_str(std::array::slice(c, sc, ec)))
+        }
+        return out
+    }
+    if ty == "CTC" {
+        let pad = tj_gstr(node, "pad_token", "<pad>")
+        let wd = tj_gstr(node, "word_delimiter_token", "|")
+        let cleanup = tj_gbool(node, "cleanup", true)
+        let mut out = []
+        let mut prev = ""
+        let mut first = true
+        for tok in toks {
+            if first || tok != prev {
+                let mut r = tkd_replace(tok, pad, "")
+                if cleanup {
+                    r = tkd_replace(tkd_cleanup(r), wd, " ")
+                }
+                if r != "" {
+                    out = std::array::push(out, r)
+                }
+            }
+            first = false
+            prev = tok
+        }
+        return out
+    }
+    if ty == "Replace" {
+        let (pat, e) = tk_pattern(tj_get(node, "pattern"))
+        let rx = tk_rx(t, pat)
+        let content = tj_gstr(node, "content", "")
+        let mut out = []
+        for tok in toks {
+            let c = tk_cps(tok)
+            let m = tkp_m_rx(rx, c)
+            let mut o = []
+            let mut k = 0
+            while k < len(m) {
+                if m[k + 2] == 1 {
+                    o = tk_cat(o, tk_cps(content))
+                } else {
+                    o = tk_cat(o, std::array::slice(c, m[k], m[k + 1]))
+                }
+                k += 3
+            }
+            out = std::array::push(out, tk_str(o))
+        }
+        return out
+    }
+    return toks
+}
+
+// decode(ids, skip_special_tokens)
+fn tk_decode(t: Tok, ids: array, skip: bool) -> string {
+    let mut toks = []
+    for id in ids {
+        let s = tk_id_to_token(t, id)
+        if s != nil {
+            if !skip || std::map::get(t.spset, s) == nil {
+                toks = std::array::push(toks, s)
+            }
+        }
+    }
+    if t.dec != nil {
+        return tkd_join(tkd_chain(t.c, t.dec, toks))
+    }
+    return std::collections::join(toks, " ")
+}

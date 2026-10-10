@@ -349,8 +349,12 @@ fn std__http__reason_phrase(status: any) -> any {
 fn std__http__parse_request(buffer: any) -> any {
     let function = "std::http::parse_request"
     rt_expect_bytes(buffer, function)
-    let n = rt_slen(buffer)
-    let p = rt_bdata(buffer)
+    ht_parse_raw(rt_bdata(buffer), rt_slen(buffer), function)
+}
+
+// Núcleo de parse_request sobre buf[0..n) (lo usa también serve_connection, que
+// reporta los errores con su propio nombre de función).
+fn ht_parse_raw(p: int, n: int, function: string) -> any {
     let end = ht_find4(p, n)
     if end < 0 {
         if n > 65536 {
@@ -540,7 +544,10 @@ fn std__http__parse_request(buffer: any) -> any {
 }
 
 fn std__http__build_response(status: any, headers: any, body: any, keep_alive: any) -> any {
-    let function = "std::http::build_response"
+    ht_build_response(status, headers, body, keep_alive, "std::http::build_response")
+}
+
+fn ht_build_response(status: any, headers: any, body: any, keep_alive: any, function: string) -> any {
     rt_expect_int(status, function)
     rt_expect_map(headers, function)
     rt_expect_bytes(body, function)
@@ -618,6 +625,15 @@ fn std__http__route_match(pattern: any, path: any) -> any {
     let function = "std::http::route_match"
     rt_expect_str(pattern, function)
     rt_expect_str(path, function)
+    ht_route_match(pattern, path, function)
+}
+
+// validate_route_pattern de la VM.
+fn ht_validate_pattern(pattern: any, function: string) {
+    ht_route_ok(ht_split_slash(pattern), function)
+}
+
+fn ht_route_match(pattern: any, path: any, function: string) -> any {
     let pp = ht_split_slash(pattern)
     let tp = ht_split_slash(path)
     ht_route_ok(pp, function)
@@ -1307,46 +1323,37 @@ fn ht_ipv4_literal(host: any) -> bool {
     dots == 3 && digits > 0 && value <= 255
 }
 
-// Abre una sesión TLS real con OpenSSL, verifica la cadena y el nombre del
-// servidor, envía la petición HTTP por stdin y devuelve los bytes recibidos.
-// OpenSSL hereda SSL_CERT_FILE/SSL_CERT_DIR, por lo que pueden usarse las
-// autoridades del sistema o una CA indicada explícitamente por el programa.
+// Abre una sesión TLS 1.2/1.3 (std_tls), verifica la cadena y el nombre del
+// servidor contra las raíces incluidas, envía la petición HTTP y devuelve
+// los bytes recibidos hasta el fin del flujo.
 fn ht_tls_exchange(host: any, port: int, request: any, timeout: int, maximum: int, function: string) -> any {
-    let address = host + ":" + rt_int_to_str(port)
-    let mut argv: any = ["openssl", "s_client", "-quiet", "-connect", address, "-verify", "10", "-verify_return_error", "-verify_quiet", "-alpn", "http/1.1"]
-    if ht_ipv4_literal(host) {
-        argv = std::array::push(argv, "-noservername")
-        argv = std::array::push(argv, "-verify_ip")
-        argv = std::array::push(argv, host)
-    } else {
-        argv = std::array::push(argv, "-servername")
-        argv = std::array::push(argv, host)
-        argv = std::array::push(argv, "-verify_hostname")
-        argv = std::array::push(argv, host)
-    }
-    let output_limit = maximum + 1048576
-    let result = ps_run_raw_timeout(function, argv, request, timeout, output_limit)
-    if std::map::get(result, "timed_out") {
-        ht_fail(function, "HTTP I/O error: timed out")
-    }
-    let code = std::map::get(result, "exit_code")
-    let error_bytes = std::map::get(result, "stderr")
-    if code != 0 {
-        let detail = std::text::trim(dr_lossy(error_bytes))
-        if detail == "" {
-            ht_fail(function, "TLS error: OpenSSL handshake failed")
+    let hp = std::raw::bits(host) + 16
+    let hn = rt_slen(host)
+    let fd = nt_connect(function, hp, hn, port)
+    let s = tl_state_new(fd, 1, timeout, 1)
+    tl_ss(s, TS_FNAME, std::raw::bits(function))
+    tl_ss(s, TS_LENIENT, 1)
+    tl_client_handshake(s, hp, hn)
+    tl_write_all(s, 23, rt_bdata(request), rt_slen(request))
+    let acc = sb_new(8192)
+    let buf = rt_alloc(16400)
+    let limit = maximum + 1048576
+    let mut more = true
+    while more {
+        let n = tl_read_app(s, buf, 16384)
+        if n == 0 {
+            more = false
+        } else {
+            sb_raw(acc, buf, n)
+            if sb_len(acc) > limit {
+                more = false
+            }
         }
-        let mut short_detail = detail
-        if std::text::length(short_detail) > 2048 {
-            short_detail = std::text::substring(short_detail, 0, 2048)
-        }
-        ht_fail(function, "TLS error: " + short_detail)
     }
-    let input_error = std::map::get(result, "input_error")
-    if input_error != 0 {
-        ht_fail(function, "TLS error: failed to send the HTTP request")
-    }
-    std::map::get(result, "stdout")
+    rt_free_block(buf)
+    std::raw::syscall(3, fd, 0, 0, 0, 0, 0)
+    tl_state_free(s)
+    sb_finish_bytes(acc)
 }
 
 fn ht_set_to(fd: int, ms: int, function: string) {

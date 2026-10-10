@@ -1,0 +1,870 @@
+// std::tokenize en Titan, parte 4: modelos (WordLevel, WordPiece, BPE), vocabulario añadido,
+// post-procesadores, truncado/relleno y la tubería de codificación. Traducción de `tokenizers` 0.22.2.
+// Prefijo `tkm` (modelos), `tka` (tokens añadidos), `tkq` (post-procesado), `tk_` (resto).
+
+// ------------------------------------------------------------ estructuras
+
+struct TkA {
+    s: string,
+    cps: array,
+    sw: bool,
+    ls: bool,
+    rs: bool,
+    nm: bool,
+    sp: bool,
+}
+
+// "Trie" de tokens añadidos: patrones (cps), tokens y primer carácter -> candidatos.
+struct TkT {
+    pats: array,
+    toks: array,
+    first: any,
+}
+
+struct Enc {
+    ids: array,
+    toks: array,
+    tys: array,
+    sp: array,
+    at: array,
+}
+
+struct Tok {
+    c: TkC,
+    norm: any,
+    pre: any,
+    post: any,
+    dec: any,
+    trunc: any,
+    pad: any,
+    mt: int,
+    vocab: any,
+    vr: any,
+    vsize: int,
+    unk: string,
+    hasunk: bool,
+    prefix: string,
+    maxc: int,
+    suffix: string,
+    fuse: bool,
+    bfall: bool,
+    ignm: bool,
+    mg: any,
+    mnew: array,
+    uni: any,
+    spset: any,
+    am: any,
+    ar: any,
+    t0: TkT,
+    t1: TkT,
+}
+
+fn enc_empty() -> Enc {
+    Enc { ids: [], toks: [], tys: [], sp: [], at: [] }
+}
+
+fn enc_new(ids: array, toks: array) -> Enc {
+    let n = len(ids)
+    Enc { ids: ids, toks: toks, tys: std::array::filled(n, 0), sp: std::array::filled(n, 0), at: std::array::filled(n, 1) }
+}
+
+fn tk_cat(a: array, b: array) -> array {
+    std::array::concat(a, b)
+}
+
+// ------------------------------------------------------------ vocabulario
+
+fn tk_idkey(id: int) -> string {
+    "{id}"
+}
+
+// Tabla id -> token a partir de token -> id (gana el último).
+fn tk_vocab_r(vocab: any) -> any {
+    let mut vr = std::map::new()
+    for k in std::map::keys(vocab) {
+        let id = std::map::get(vocab, k)
+        vr = std::map::insert(vr, tk_idkey(id), k)
+    }
+    return vr
+}
+
+fn tk_vocab_id(t: Tok, s: string) -> int {
+    if t.mt == 3 {
+        return tku_token_id(t, s)
+    }
+    let v = std::map::get(t.vocab, s)
+    if v == nil {
+        return -1
+    }
+    return v
+}
+
+fn tk_vocab_tok(t: Tok, id: int) -> any {
+    if t.mt == 3 {
+        return tku_id_token(t, id)
+    }
+    return std::map::get(t.vr, tk_idkey(id))
+}
+
+// Token (de texto) -> id: añadidos primero, luego el modelo (-1 si no existe).
+fn tk_token_to_id(t: Tok, s: string) -> int {
+    let a = std::map::get(t.am, s)
+    if a != nil {
+        return a
+    }
+    return tk_vocab_id(t, s)
+}
+
+// id -> token (añadidos primero) o nil.
+fn tk_id_to_token(t: Tok, id: int) -> any {
+    let a = std::map::get(t.ar, tk_idkey(id))
+    if a != nil {
+        return a.s
+    }
+    return tk_vocab_tok(t, id)
+}
+
+// ------------------------------------------------------------ tokens añadidos
+
+fn tkt_build(pats: array, toks: array) -> TkT {
+    let mut first = std::map::new()
+    let mut i = 0
+    while i < len(pats) {
+        let ch = pats[i][0]
+        let key = "{ch}"
+        let cur = std::map::get(first, key)
+        if cur == nil {
+            first = std::map::insert(first, key, [i])
+        } else {
+            first = std::map::insert(first, key, std::array::push(cur, i))
+        }
+        i += 1
+    }
+    TkT { pats: pats, toks: toks, first: first }
+}
+
+fn tkt_match_at(p: array, c: array, s: int) -> bool {
+    let l = len(p)
+    if s + l > len(c) {
+        return false
+    }
+    let mut i = 0
+    while i < l {
+        if c[s + i] != p[i] {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+// Coincidencia más a la izquierda y, a igual inicio, la más larga: (ini, fin, índice).
+fn tkt_find(tr: TkT, c: array, from: int) -> (int, int, int) {
+    let n = len(c)
+    let mut s = from
+    while s < n {
+        let ch = c[s]
+        let cand = std::map::get(tr.first, "{ch}")
+        if cand != nil {
+            let mut best = -1
+            let mut bl = 0
+            for k in cand {
+                let l = len(tr.pats[k])
+                if l > bl && tkt_match_at(tr.pats[k], c, s) {
+                    best = k
+                    bl = l
+                }
+            }
+            if best >= 0 {
+                return (s, s + bl, best)
+            }
+        }
+        s += 1
+    }
+    return (-1, -1, -1)
+}
+
+// split_with_indices sobre una pieza (sin token).
+fn tka_split(t: Tok, tr: TkT, p: TkP) -> array {
+    let n = len(p.c)
+    if n == 0 {
+        return []
+    }
+    let mut out = []
+    let mut so = 0
+    let mut from = 0
+    while true {
+        let (s, e, k) = tkt_find(tr, p.c, from)
+        if s < 0 {
+            break
+        }
+        from = e
+        let tk = tr.toks[k]
+        let id = std::map::get(t.am, tk.s)
+        let rec = std::map::get(t.ar, tk_idkey(id))
+        if rec.sw {
+            let ss = s == 0 || !tk_is_word(t.c.u, p.c[s - 1])
+            let es = e == n || !tk_is_word(t.c.u, p.c[e])
+            if !(ss && es) {
+                continue
+            }
+        }
+        let mut start = s
+        let mut stop = e
+        if rec.ls {
+            let mut ns = s
+            while ns > 0 && tk_is_space(t.c.u, p.c[ns - 1]) {
+                ns -= 1
+            }
+            start = ns
+            if so > start {
+                start = so
+            }
+        }
+        if rec.rs {
+            while stop < n && tk_is_space(t.c.u, p.c[stop]) {
+                stop += 1
+            }
+        }
+        if so < start {
+            out = std::array::push(out, tks_slice(p, so, start))
+        }
+        let sl = tks_slice(p, start, stop)
+        out = std::array::push(out, tks_tok(sl, id, tk_str(sl.c)))
+        so = stop
+    }
+    if so != n {
+        out = std::array::push(out, tks_slice(p, so, n))
+    }
+    return out
+}
+
+// ------------------------------------------------------------ modelos
+
+// Un trozo de palabra -> (ids, tokens, error)
+fn tkm_wordlevel(t: Tok, c: array) -> (array, array, string) {
+    let s = tk_str(c)
+    let id = tk_vocab_id(t, s)
+    if id >= 0 {
+        return ([id], [s], "")
+    }
+    let u = tk_vocab_id(t, t.unk)
+    if u >= 0 {
+        return ([u], [t.unk], "")
+    }
+    return ([], [], "WordLevel error: Missing [UNK] token from the vocabulary")
+}
+
+fn tkm_wordpiece(t: Tok, c: array) -> (array, array, string) {
+    let n = len(c)
+    let u = tk_vocab_id(t, t.unk)
+    if n > t.maxc {
+        if u < 0 {
+            return ([], [], "WordPiece error: Missing [UNK] token from the vocabulary")
+        }
+        return ([u], [t.unk], "")
+    }
+    let mut ids = []
+    let mut toks = []
+    let mut start = 0
+    let mut bad = false
+    while start < n {
+        let mut end = n
+        let mut cur = -1
+        let mut cs = ""
+        while start < end {
+            let mut sub = tk_str(std::array::slice(c, start, end))
+            if start > 0 {
+                sub = t.prefix + sub
+            }
+            let id = tk_vocab_id(t, sub)
+            if id >= 0 {
+                cur = id
+                cs = sub
+                break
+            }
+            end -= 1
+        }
+        if cur < 0 {
+            bad = true
+            break
+        }
+        ids = std::array::push(ids, cur)
+        toks = std::array::push(toks, cs)
+        start = end
+    }
+    if bad {
+        if u < 0 {
+            return ([], [], "WordPiece error: Missing [UNK] token from the vocabulary")
+        }
+        return ([u], [t.unk], "")
+    }
+    return (ids, toks, "")
+}
+
+fn tk_hex2(b: int) -> string {
+    let d = "0123456789ABCDEF"
+    let hi = b / 16
+    let lo = b - hi * 16
+    return std::text::substring(d, hi, hi + 1) + std::text::substring(d, lo, lo + 1)
+}
+
+// Cola de prioridad mínima de enteros (clave = rank * 4294967296 + pos).
+fn tkh_push(h: array, x: int) -> array {
+    let mut a = std::array::push(h, x)
+    let mut i = len(a) - 1
+    while i > 0 {
+        let p = (i - 1) / 2
+        if a[p] > a[i] {
+            let tmp = a[p]
+            a = std::array::set(a, p, a[i])
+            a = std::array::set(a, i, tmp)
+            i = p
+        } else {
+            break
+        }
+    }
+    return a
+}
+
+fn tkh_pop(h: array) -> (array, int) {
+    let top = h[0]
+    let last = h[len(h) - 1]
+    let mut a = std::array::pop(h)
+    let n = len(a)
+    if n > 0 {
+        a = std::array::set(a, 0, last)
+        let mut i = 0
+        while true {
+            let l = i * 2 + 1
+            let r = l + 1
+            let mut m = i
+            if l < n && a[l] < a[m] {
+                m = l
+            }
+            if r < n && a[r] < a[m] {
+                m = r
+            }
+            if m == i {
+                break
+            }
+            let tmp = a[m]
+            a = std::array::set(a, m, a[i])
+            a = std::array::set(a, i, tmp)
+            i = m
+        }
+    }
+    return (a, top)
+}
+
+fn tkm_pair_key(a: int, b: int) -> string {
+    "{a}_{b}"
+}
+
+// Rango de una pareja (-1 si no se fusiona).
+fn tkm_rank(t: Tok, a: int, b: int) -> int {
+    let r = std::map::get(t.mg, tkm_pair_key(a, b))
+    if r == nil {
+        return -1
+    }
+    return r
+}
+
+fn tkm_bpe(t: Tok, c: array) -> (array, array, string) {
+    let n = len(c)
+    if t.ignm {
+        let s = tk_str(c)
+        let id = tk_vocab_id(t, s)
+        if id >= 0 {
+            return ([id], [s], "")
+        }
+    }
+    // símbolos
+    let mut sc = []
+    let mut sl = []
+    let mut pend = -1
+    let mut pend_len = 0
+    let mut i = 0
+    while i < n {
+        let mut s = tk_str([c[i]])
+        if i > 0 && t.prefix != "" {
+            s = t.prefix + s
+        }
+        if i == n - 1 && t.suffix != "" {
+            s = s + t.suffix
+        }
+        let id = tk_vocab_id(t, s)
+        if id >= 0 {
+            if pend >= 0 {
+                sc = std::array::push(sc, pend)
+                sl = std::array::push(sl, pend_len)
+                pend = -1
+            }
+            sc = std::array::push(sc, id)
+            sl = std::array::push(sl, 1)
+        } else {
+            let mut done = false
+            if t.bfall {
+                let mut bs = []
+                let mut okb = true
+                for b in tk_utf8(tk_cps(s)) {
+                    let bid = tk_vocab_id(t, "<0x" + tk_hex2(b) + ">")
+                    if bid < 0 {
+                        okb = false
+                    }
+                    bs = std::array::push(bs, bid)
+                }
+                if okb {
+                    for b in bs {
+                        sc = std::array::push(sc, b)
+                        sl = std::array::push(sl, 1)
+                    }
+                    done = true
+                }
+            }
+            if !done && t.hasunk {
+                let uid = tk_vocab_id(t, t.unk)
+                if pend >= 0 && t.fuse {
+                    pend_len += 1
+                } else {
+                    if uid < 0 {
+                        return ([], [], "Unk token `" + t.unk + "` not found in the vocabulary")
+                    }
+                    if pend >= 0 {
+                        sc = std::array::push(sc, pend)
+                        sl = std::array::push(sl, pend_len)
+                    }
+                    pend = uid
+                    pend_len = 1
+                }
+            }
+        }
+        i += 1
+    }
+    if pend >= 0 {
+        sc = std::array::push(sc, pend)
+        sl = std::array::push(sl, pend_len)
+    }
+    // fusión
+    let m = len(sc)
+    let mut sp = []
+    let mut sn = []
+    i = 0
+    while i < m {
+        sp = std::array::push(sp, i - 1)
+        if i == m - 1 {
+            sn = std::array::push(sn, -1)
+        } else {
+            sn = std::array::push(sn, i + 1)
+        }
+        i += 1
+    }
+    let mut heap = []
+    i = 0
+    while i + 1 < m {
+        let r = tkm_rank(t, sc[i], sc[i + 1])
+        if r >= 0 {
+            heap = tkh_push(heap, r * 4294967296 + i)
+        }
+        i += 1
+    }
+    while len(heap) > 0 {
+        let (h2, top) = tkh_pop(heap)
+        heap = h2
+        let rank = top / 4294967296
+        let pos = top - rank * 4294967296
+        let newid = t.mnew[rank]
+        if sl[pos] == 0 {
+            continue
+        }
+        if sn[pos] == -1 {
+            continue
+        }
+        let np = sn[pos]
+        let rc = sc[np]
+        let rnext = sn[np]
+        let tr = tkm_rank(t, sc[pos], rc)
+        if tr < 0 || t.mnew[tr] != newid {
+            continue
+        }
+        sc = std::array::set(sc, pos, newid)
+        sl = std::array::set(sl, pos, sl[pos] + sl[np])
+        sn = std::array::set(sn, pos, rnext)
+        sl = std::array::set(sl, np, 0)
+        if rnext > -1 && rnext < m {
+            sp = std::array::set(sp, rnext, pos)
+        }
+        if sp[pos] >= 0 {
+            let pv = sp[pos]
+            let r2 = tkm_rank(t, sc[pv], sc[pos])
+            if r2 >= 0 {
+                heap = tkh_push(heap, r2 * 4294967296 + pv)
+            }
+        }
+        let nx = sn[pos]
+        if nx >= 0 && nx < m {
+            let r3 = tkm_rank(t, sc[pos], sc[nx])
+            if r3 >= 0 {
+                heap = tkh_push(heap, r3 * 4294967296 + pos)
+            }
+        }
+    }
+    let mut ids = []
+    let mut toks = []
+    i = 0
+    while i < m {
+        if sl[i] != 0 {
+            ids = std::array::push(ids, sc[i])
+            toks = std::array::push(toks, tk_vocab_tok(t, sc[i]))
+        }
+        i += 1
+    }
+    return (ids, toks, "")
+}
+
+fn tkm_run(t: Tok, c: array) -> (array, array, string) {
+    if t.mt == 0 {
+        return tkm_wordlevel(t, c)
+    }
+    if t.mt == 1 {
+        return tkm_wordpiece(t, c)
+    }
+    if t.mt == 2 {
+        return tkm_bpe(t, c)
+    }
+    return tku_tokenize(t, c)
+}
+
+// ------------------------------------------------------------ post-procesadores
+
+fn tkq_zeros(n: int) -> array {
+    std::array::filled(n, 0)
+}
+
+fn tkq_ones(n: int) -> array {
+    std::array::filled(n, 1)
+}
+
+// Concatena la lista de codificaciones (Encoding::merge).
+fn tkq_merge(es: array) -> Enc {
+    let mut o = enc_empty()
+    for e in es {
+        o = Enc { ids: tk_cat(o.ids, e.ids), toks: tk_cat(o.toks, e.toks), tys: tk_cat(o.tys, e.tys), sp: tk_cat(o.sp, e.sp), at: tk_cat(o.at, e.at) }
+    }
+    return o
+}
+
+// [id, token] de sep/cls: ["[SEP]", 102]
+fn tkq_pair_tok(v: any) -> (string, int) {
+    return (v[0], v[1])
+}
+
+// BertProcessing / RobertaProcessing sobre la lista de codificaciones.
+fn tkq_bert(node: any, es: array, add: bool, roberta: bool) -> array {
+    let (sep_s, sep_id) = tkq_pair_tok(tj_get(node, "sep"))
+    let (cls_s, cls_id) = tkq_pair_tok(tj_get(node, "cls"))
+    let mut cur = []
+    for e in es {
+        if roberta {
+            cur = std::array::push(cur, Enc { ids: e.ids, toks: e.toks, tys: tkq_zeros(len(e.ids)), sp: e.sp, at: e.at })
+        } else {
+            cur = std::array::push(cur, e)
+        }
+    }
+    if !add {
+        return cur
+    }
+    let mut out = []
+    let mut i = 0
+    for e in cur {
+        let n = len(e.ids)
+        if i == 0 {
+            let tys = if roberta { tkq_zeros(n + 2) } else { tk_cat(tk_cat([0], e.tys), [0]) }
+            out = std::array::push(out, Enc {
+                ids: tk_cat(tk_cat([cls_id], e.ids), [sep_id]),
+                toks: tk_cat(tk_cat([cls_s], e.toks), [sep_s]),
+                tys: tys,
+                sp: tk_cat(tk_cat([1], tkq_zeros(n)), [1]),
+                at: tkq_ones(n + 2),
+            })
+        } else if roberta {
+            out = std::array::push(out, Enc {
+                ids: tk_cat(tk_cat([sep_id], e.ids), [sep_id]),
+                toks: tk_cat(tk_cat([sep_s], e.toks), [sep_s]),
+                tys: tkq_zeros(n + 2),
+                sp: tk_cat(tk_cat([1], tkq_zeros(n)), [1]),
+                at: tkq_ones(n + 2),
+            })
+        } else {
+            out = std::array::push(out, Enc {
+                ids: tk_cat(e.ids, [sep_id]),
+                toks: tk_cat(e.toks, [sep_s]),
+                tys: tk_cat(e.tys, [1]),
+                sp: tk_cat(tkq_zeros(n), [1]),
+                at: tkq_ones(n + 1),
+            })
+        }
+        i += 1
+    }
+    return out
+}
+
+// TemplateProcessing: una codificación por pieza.
+fn tkq_template(node: any, es: array, add: bool) -> (array, string) {
+    let tpl = if len(es) == 2 { tj_list(node, "pair") } else { tj_list(node, "single") }
+    if len(es) != 1 && len(es) != 2 {
+        return ([], "unsupported TemplateProcessing input")
+    }
+    let sts = tj_get(node, "special_tokens")
+    let mut out = []
+    for piece in tpl {
+        let sq = tj_get(piece, "Sequence")
+        if sq != nil {
+            let i = if tj_gstr(sq, "id", "A") == "A" { 0 } else { 1 }
+            let e = es[i]
+            let ty = tj_gint(sq, "type_id", 0)
+            out = std::array::push(out, Enc { ids: e.ids, toks: e.toks, tys: std::array::filled(len(e.ids), ty), sp: e.sp, at: e.at })
+        } else if add {
+            let st = tj_get(piece, "SpecialToken")
+            let tk = tj_get(sts, tj_gstr(st, "id", ""))
+            let ids = tj_list(tk, "ids")
+            let n = len(ids)
+            out = std::array::push(out, Enc {
+                ids: ids,
+                toks: tj_list(tk, "tokens"),
+                tys: std::array::filled(n, tj_gint(st, "type_id", 0)),
+                sp: tkq_ones(n),
+                at: tkq_ones(n),
+            })
+        }
+    }
+    return (out, "")
+}
+
+fn tkq_process(node: any, es: array, add: bool) -> (array, string) {
+    let ty = tj_gstr(node, "type", "")
+    if ty == "BertProcessing" {
+        return (tkq_bert(node, es, add, false), "")
+    }
+    if ty == "RobertaProcessing" {
+        return (tkq_bert(node, es, add, true), "")
+    }
+    if ty == "TemplateProcessing" {
+        return tkq_template(node, es, add)
+    }
+    if ty == "Sequence" {
+        let mut cur = es
+        for p in tj_list(node, "processors") {
+            let (nx, e) = tkq_process(p, cur, add)
+            if e != "" {
+                return ([], e)
+            }
+            cur = nx
+        }
+        return (cur, "")
+    }
+    return (es, "")
+}
+
+// Número de tokens que añade el post-procesador a una secuencia simple.
+fn tkq_nadd(node: any) -> int {
+    let ty = tj_gstr(node, "type", "")
+    if ty == "BertProcessing" || ty == "RobertaProcessing" {
+        return 2
+    }
+    if ty == "TemplateProcessing" {
+        let sts = tj_get(node, "special_tokens")
+        let mut n = 0
+        for piece in tj_list(node, "single") {
+            let st = tj_get(piece, "SpecialToken")
+            if st != nil {
+                let tk = tj_get(sts, tj_gstr(st, "id", ""))
+                n += len(tj_list(tk, "ids"))
+            }
+        }
+        return n
+    }
+    if ty == "Sequence" {
+        let mut n = 0
+        for p in tj_list(node, "processors") {
+            n += tkq_nadd(p)
+        }
+        return n
+    }
+    return 0
+}
+
+// ------------------------------------------------------------ truncado y relleno
+
+fn tk_enc_slice(e: Enc, i: int, j: int) -> Enc {
+    Enc {
+        ids: std::array::slice(e.ids, i, j),
+        toks: std::array::slice(e.toks, i, j),
+        tys: std::array::slice(e.tys, i, j),
+        sp: std::array::slice(e.sp, i, j),
+        at: std::array::slice(e.at, i, j),
+    }
+}
+
+fn tk_truncate(e: Enc, tr: any, nadd: int, add: bool) -> (Enc, string) {
+    let mut maxl = tj_gint(tr, "max_length", 0)
+    if add && nadd > 0 {
+        if maxl >= nadd {
+            maxl = maxl - nadd
+        } else {
+            return (e, "")
+        }
+    }
+    let n = len(e.ids)
+    if maxl == 0 {
+        return (enc_empty(), "")
+    }
+    if n <= maxl {
+        return (e, "")
+    }
+    let strat = tj_gstr(tr, "strategy", "LongestFirst")
+    if strat == "OnlySecond" {
+        return (e, "Truncation error: Second sequence not provided")
+    }
+    if tj_gint(tr, "stride", 0) >= maxl {
+        return (e, "`stride` must be strictly less than `max_len=" + "{maxl}" + "` (note that `max_len` may be shorter than the max length of the original model, as it subtracts the number of special characters")
+    }
+    if tj_gstr(tr, "direction", "Right") == "Left" {
+        return (tk_enc_slice(e, n - maxl, n), "")
+    }
+    return (tk_enc_slice(e, 0, maxl), "")
+}
+
+fn tk_pad(e: Enc, pd: any) -> Enc {
+    return tk_pad_t(e, pd, len(e.ids))
+}
+
+// `base`: longitud de partida (la propia o, en lote, la mayor del lote).
+fn tk_pad_t(e: Enc, pd: any, base: int) -> Enc {
+    let n = len(e.ids)
+    let st = tj_get(pd, "strategy")
+    let mut target = base
+    if tj_map(st) {
+        target = tj_gint(st, "Fixed", base)
+    }
+    let mult = tj_gint(pd, "pad_to_multiple_of", 0)
+    if mult > 0 && target % mult > 0 {
+        target += mult - target % mult
+    }
+    if n >= target {
+        return e
+    }
+    let k = target - n
+    let pid = tj_gint(pd, "pad_id", 0)
+    let pty = tj_gint(pd, "pad_type_id", 0)
+    let ptk = tj_gstr(pd, "pad_token", "[PAD]")
+    let pe = Enc {
+        ids: std::array::filled(k, pid),
+        toks: std::array::filled(k, ptk),
+        tys: std::array::filled(k, pty),
+        sp: std::array::filled(k, 1),
+        at: std::array::filled(k, 0),
+    }
+    if tj_gstr(pd, "direction", "Right") == "Left" {
+        return tkq_merge([pe, e])
+    }
+    return tkq_merge([e, pe])
+}
+
+// ------------------------------------------------------------ codificación
+
+// Texto -> codificación sin post-procesar.
+fn tk_encode_raw(t: Tok, text: string) -> (Enc, string) {
+    let c = tk_cps(text)
+    if len(c) == 0 {
+        return (enc_empty(), "")
+    }
+    let p0 = tks_new(c)
+    let mut ps = []
+    for p in tka_split(t, t.t0, p0) {
+        if p.id >= 0 {
+            ps = std::array::push(ps, p)
+        } else {
+            let mut q = p
+            if t.norm != nil {
+                let (c1, a1) = tkn_run(t.c, t.norm, p.c, p.a)
+                q = TkP { c: c1, a: a1, sh: p.sh, id: -1, tk: "" }
+            }
+            for r in tka_split(t, t.t1, q) {
+                ps = std::array::push(ps, r)
+            }
+        }
+    }
+    if t.pre != nil {
+        ps = tkp_run(t.c, t.pre, ps)
+    }
+    let mut ids = []
+    let mut toks = []
+    for p in ps {
+        if p.id >= 0 {
+            ids = std::array::push(ids, p.id)
+            toks = std::array::push(toks, p.tk)
+        } else {
+            let (i2, t2, e) = tkm_run(t, p.c)
+            if e != "" {
+                return (enc_empty(), e)
+            }
+            ids = tk_cat(ids, i2)
+            toks = tk_cat(toks, t2)
+        }
+    }
+    return (enc_new(ids, toks), "")
+}
+
+// encode(): normalización + modelo + truncado + post-procesado + relleno.
+fn tk_encode(t: Tok, text: string, add: bool) -> (Enc, string) {
+    let (raw, e) = tk_encode_raw(t, text)
+    if e != "" {
+        return (raw, e)
+    }
+    let mut enc = raw
+    if t.trunc != nil {
+        let nadd = if t.post != nil { tkq_nadd(t.post) } else { 0 }
+        let (e2, err) = tk_truncate(enc, t.trunc, nadd, add)
+        if err != "" {
+            return (enc, err)
+        }
+        enc = e2
+    }
+    if t.post != nil {
+        let (es, err) = tkq_process(t.post, [enc], add)
+        if err != "" {
+            return (enc, err)
+        }
+        enc = tkq_merge(es)
+    }
+    if t.pad != nil {
+        enc = tk_pad(enc, t.pad)
+    }
+    return (enc, "")
+}
+
+// Lote: cada texto como `tk_encode` y después el relleno de todo el lote
+// (`pad_encodings`: BatchLongest = la mayor longitud del lote).
+fn tk_encode_batch(t: Tok, texts: array, add: bool) -> (array, string) {
+    let mut out = []
+    let mut longest = 0
+    for x in texts {
+        let (e, err) = tk_encode(t, x, add)
+        if err != "" {
+            return ([], err)
+        }
+        if len(e.ids) > longest {
+            longest = len(e.ids)
+        }
+        out = std::array::push(out, e)
+    }
+    if t.pad != nil {
+        let mut padded = []
+        for e in out {
+            padded = std::array::push(padded, tk_pad_t(e, t.pad, longest))
+        }
+        out = padded
+    }
+    return (out, "")
+}

@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio — Documentación de Titan</title>
+<meta name="description" content="WAV, etiquetas, biblioteca y síntesis.">
+<meta property="og:title" content="Audio — Documentación de Titan">
+<meta property="og:description" content="WAV, etiquetas, biblioteca y síntesis.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Saltar al contenido</a>
+<header class="top"><div class="wrap bar">
+  <a class="brand" href="../index.html"><img src="../zett-marca.svg" alt="" height="30"><span>Titan</span></a>
+  <nav class="main" aria-label="Principal">
+    <a href="../index.html#lenguaje">Lenguaje</a>
+    <a href="../index.html#instalar">Instalación</a>
+    <a href="../index.html#plataformas">Plataformas</a>
+    <a href="../biblioteca.html" data-a="biblioteca">Biblioteca</a>
+    <a href="../documentacion.html" aria-current="page">Documentación</a>
+    <a href="https://github.com/alexsndersoto04-source/aio/releases">Descargas</a>
+    <a class="gh" href="https://github.com/alexsndersoto04-source/aio">GitHub</a>
+  </nav>
+</div></header>
+<main id="contenido">
+<div class="docs wrap"><aside><nav class="side" aria-label="Documentación"><a class="side-home" href="../documentacion.html">Índice</a>
+<div class="side-g">Empezar</div><ul>
+<li><a href="guia-rapida.html">Guía rápida</a></li>
+<li><a href="termux.html">Titan en Termux</a></li>
+<li><a href="proyectos.html">Proyectos, módulos y tests</a></li>
+<li><a href="arquitectura.html">Arquitectura</a></li>
+</ul>
+<div class="side-g">Lenguaje</div><ul>
+<li><a href="sintaxis.html">Referencia de sintaxis</a></li>
+<li><a href="especificacion.html">Especificación</a></li>
+<li><a href="concurrencia.html">Tareas y canales</a></li>
+</ul>
+<div class="side-g">Biblioteca estándar</div><ul>
+<li><a href="stdlib.html">Visión general</a></li>
+<li><a href="extras.html">Regex, uuid, hash y más</a></li>
+<li><a href="red.html">Red y HTTP</a></li>
+<li><a href="cliente-http.html">Cliente HTTP/HTTPS</a></li>
+<li><a href="tls.html">TLS</a></li>
+<li><a href="websocket.html">WebSocket</a></li>
+<li><a href="base-de-datos.html">API común de bases de datos</a></li>
+<li><a href="sqlite.html">SQLite</a></li>
+<li><a href="postgresql.html">PostgreSQL</a></li>
+<li><a href="mysql.html">MySQL</a></li>
+<li><a href="multipart.html">Subida de archivos</a></li>
+<li><a href="servidor.html">Ciclo de vida del servidor</a></li>
+<li><a href="metricas.html">Métricas</a></li>
+<li><a href="audio.html" class="on">Audio</a></li>
+<li><a href="motor-de-audio.html">Motor de audio</a></li>
+<li><a href="wasm.html">WebAssembly</a></li>
+</ul>
+<div class="side-g">Herramientas</div><ul>
+<li><a href="zett.html">Zett, el gestor de paquetes</a></li>
+<li><a href="lsp.html">Servidor de lenguaje (LSP)</a></li>
+<li><a href="dap.html">Adaptador de depuración (DAP)</a></li>
+<li><a href="depurador.html">Depurador</a></li>
+<li><a href="paquetes.html">Paquetes</a></li>
+</ul>
+<div class="side-g">Estado del proyecto</div><ul>
+<li><a href="estado.html">Estado verificado</a></li>
+<li><a href="cambios.html">Historial de cambios</a></li>
+<li><a href="validacion.html">Registro de validación (histórico)</a></li>
+</ul>
+</nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="audio-procesamiento-metadatos-y-motor-de-reproduccion-stdaudio">Audio — procesamiento, metadatos y motor de reproducción (<code>std::audio</code>)</h1>
+<blockquote>
+<p><strong>Nota:</strong> este documento se escribió para el prototipo en Rust. La API de Titan que describe (funciones, argumentos, resultados)
+sigue siendo la del lenguaje, pero las referencias a la VM, a hilos del sistema, a «capabilities» o a bibliotecas de Rust ya no aplican:
+hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está en <code>selfhost/ESTADO.md</code>.</p>
+<p><strong>Fase 42A:</strong> Titan ahora también decodifica y suena por sí solo con
+<code>std::audio::engine_*</code> (sin mpv ni ayudantes). Ver <code>docs/AUDIO_ENGINE.md</code>.
+Este documento describe las capas Fase 9/41, que siguen vigentes.</p>
+</blockquote>
+<p><code>std::audio</code> es la base para construir música y reproductores en TITAN.
+Todo está escrito en Titan, sin bibliotecas de audio externas: el motor de reproducción
+<strong>envía el audio a los reproductores que ya están instalados en el sistema</strong> (<code>pw-cat</code>, <code>paplay</code>, <code>aplay</code>, <code>mpv</code>, <code>ffplay</code>).</p>
+<p>Tres capas:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Capa</th>
+<th>Nativos</th>
+<th>Funciona en</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>WAV I/O + síntesis</strong> (Fase 9)</td>
+<td><code>read_wav</code>, <code>read_wav_bytes</code>, <code>write_wav</code>, <code>encode_wav</code>, <code>sine_wave</code>, <code>square_wave</code>, <code>saw_wave</code>, <code>white_noise</code>, <code>fade_in</code>, <code>fade_out</code></td>
+<td>Cualquier máquina (100 % Rust, crate <code>hound</code>)</td>
+</tr>
+<tr>
+<td><strong>Metadatos + biblioteca</strong> (Fase 41)</td>
+<td><code>tags</code>, <code>duration</code>, <code>scan_library</code></td>
+<td>Cualquier máquina (parser propio de ID3v1/v2, Vorbis, FLAC, WAV INFO)</td>
+</tr>
+<tr>
+<td><strong>Reproducción</strong></td>
+<td>Termux (Fase 9): <code>play</code>, <code>pause</code>, <code>resume</code>, <code>stop</code>, <code>info</code>, <code>record_*</code> · Escritorio (Fase 41): <code>player_*</code></td>
+<td><code>termux-api</code> en Android; mpv/afplay/paplay/aplay/ffplay/SoundPlayer en escritorio</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="1-metadatos-de-pistas-stdaudiotags-duration">1. Metadatos de pistas (<code>std::audio::tags</code> / <code>duration</code>)</h2>
+<pre><code class="language-titan"><span class="k">let</span> info = std::audio::tags(<span class="s">&quot;/musica/cancion.mp3&quot;</span>)
+print(info.title)          <span class="c">// &quot;Canción&quot; o nil</span>
+print(info.artist)         <span class="c">// &quot;Artista&quot; o nil</span>
+print(info.album)          <span class="c">// nil si no hay etiqueta</span>
+print(info.year)           <span class="c">// &quot;1998&quot; o nil</span>
+print(info.genre)          <span class="c">// &quot;Rock&quot;</span>
+print(info.track)          <span class="c">// 7 o nil</span>
+print(info.duration_secs)  <span class="c">// 214.5 (0.0 si el formato no lo dice)</span>
+print(info.sample_rate)    <span class="c">// 44100</span>
+print(info.channels)       <span class="c">// 2</span>
+print(info.bitrate_kbps)   <span class="c">// 320 (solo MP3; 0 en WAV/FLAC/OGG)</span>
+print(info.has_cover)      <span class="c">// true si trae carátula embebida</span>
+
+<span class="k">let</span> solo_duracion = std::audio::duration(<span class="s">&quot;/musica/cancion.flac&quot;</span>) <span class="c">// Float</span>
+
+<span class="c">// Carátula embebida en bytes (ID3v2 APIC/PIC en MP3, PICTURE en FLAC);</span>
+<span class="c">// vector vacío cuando el archivo no trae portada.</span>
+<span class="k">let</span> portada = std::audio::cover(<span class="s">&quot;/musica/cancion.mp3&quot;</span>)
+</code></pre>
+<h3 id="formatos-y-etiquetas-soportados">Formatos y etiquetas soportados</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Formato</th>
+<th>Etiquetas leídas</th>
+<th>Duración</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MP3</strong></td>
+<td>ID3v2.2/2.3/2.4 (TIT2, TPE1, TALB, TPE2, TCON, TYER/TDRC, TRCK; texto ISO-8859-1, UTF-8 y UTF-16 con/sin BOM) + ID3v1 de respaldo + género ID3v1 estándar</td>
+<td>Exacta con cabecera Xing/Info (VBR); estimada por CBR si no la hay</td>
+</tr>
+<tr>
+<td><strong>WAV</strong></td>
+<td>Chunk <code>LIST</code>/<code>INFO</code> (INAM, IART, IPRD, IGNR, ICRD, ITRK) y chunks <code>id3</code>/<code>ID3</code> embebidos</td>
+<td>Exacta (bytes de <code>data</code> / tasa de bytes)</td>
+</tr>
+<tr>
+<td><strong>FLAC</strong></td>
+<td>VORBIS_COMMENT (TITLE, ARTIST, ALBUM, ALBUMARTIST, GENRE, DATE, TRACKNUMBER)</td>
+<td>Exacta (STREAMINFO)</td>
+</tr>
+<tr>
+<td><strong>OGG Vorbis</strong></td>
+<td>Comentario Vorbis</td>
+<td>Exacta (granule de la última página)</td>
+</tr>
+<tr>
+<td><strong>OGG Opus</strong></td>
+<td>OpusTags</td>
+<td>Exacta (granule menos pre-skip, a 48 kHz)</td>
+</tr>
+</tbody>
+</table></div>
+<p>La lectura es tolerante a archivos corruptos: todo está verificado contra
+límites y con topes de iteración, así que un archivo roto devuelve menos
+campos, nunca cuelga la VM.</p>
+<h2 id="2-biblioteca-stdaudioscan_library">2. Biblioteca (<code>std::audio::scan_library</code>)</h2>
+<pre><code class="language-titan"><span class="k">let</span> biblioteca = std::audio::scan_library(<span class="s">&quot;/musica&quot;</span>)
+<span class="k">let</span> total = std::collections::length(biblioteca)
+<span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..total {
+    <span class="k">let</span> t = biblioteca[i]
+    print(t.path)             <span class="c">// ordenado por ruta</span>
+    print(t.title)
+    print(t.duration_secs)
+}
+</code></pre>
+<p>Recorre la carpeta en profundidad (máx. 8 niveles, máx. 5000 pistas),
+filtra por extensión (<code>mp3</code>, <code>wav</code>, <code>flac</code>, <code>ogg</code>, <code>oga</code>, <code>opus</code>), lee los
+metadatos de cada pista y devuelve la lista ordenada por ruta. Los
+archivos ilegibles se saltan: una pista rota no rompe el escaneo.</p>
+<h2 id="3-reproduccion-en-escritorio-stdaudioplayer_">3. Reproducción en escritorio (<code>std::audio::player_*</code>)</h2>
+<p>TITAN no lleva audio nativo dentro del binario: controla un reproductor
+que ya esté instalado. Backend detectado en este orden: <strong>mpv → afplay →
+paplay → aplay → ffplay</strong> (y <code>Media.SoundPlayer</code> vía PowerShell en
+Windows, solo WAV).</p>
+<pre><code class="language-titan">print(std::audio::player_backend())      <span class="c">// &quot;mpv&quot;, &quot;afplay&quot;, ... o &quot;&quot;</span>
+
+print(std::audio::player_play(<span class="s">&quot;/musica/a.mp3&quot;</span>))  <span class="c">// &quot;playing ... via mpv&quot;</span>
+print(std::audio::player_position())     <span class="c">// segundos (Float); -1.0 si idle</span>
+print(std::audio::player_pause())        <span class="c">// o Result::Err tipado</span>
+print(std::audio::player_resume())
+<span class="k">let</span> aplicado = std::audio::player_set_volume(<span class="n">60</span>) <span class="c">// true si el backend lo aplicó</span>
+print(std::audio::player_seek(<span class="n">42.0</span>))
+print(std::audio::player_queue_add(<span class="s">&quot;/musica/b.mp3&quot;</span>))  <span class="c">// cola real con mpv</span>
+print(std::audio::player_queue_clear())
+print(std::audio::player_next())          <span class="c">// saltar a la siguiente pista (mpv)</span>
+print(std::audio::player_prev())          <span class="c">// volver a la anterior (mpv)</span>
+<span class="k">let</span> actual = std::audio::player_current() <span class="c">// {index, count, title, path} (mpv)</span>
+print(actual.title)
+print(std::audio::player_stop())
+</code></pre>
+<h3 id="matriz-de-soporte-por-backend">Matriz de soporte por backend</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Plataforma</th>
+<th>play</th>
+<th>pause/resume</th>
+<th>position</th>
+<th>seek</th>
+<th>volume</th>
+<th>cola</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mpv</code></td>
+<td>Unix</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅ (exacta)</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><code>afplay</code></td>
+<td>macOS</td>
+<td>✅</td>
+<td>✅ (señales)</td>
+<td>✅ (reloj)</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><code>paplay</code></td>
+<td>Linux/Pulse</td>
+<td>✅</td>
+<td>✅ (señales)</td>
+<td>✅ (reloj)</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><code>aplay</code></td>
+<td>Linux/ALSA</td>
+<td>✅</td>
+<td>✅ (señales)</td>
+<td>✅ (reloj)</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><code>ffplay</code></td>
+<td>cualquiera</td>
+<td>✅</td>
+<td>✅ (señales)</td>
+<td>✅ (reloj)</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><code>soundplayer</code></td>
+<td>Windows</td>
+<td>✅ (WAV)</td>
+<td>❌</td>
+<td>✅ (reloj)</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table></div>
+<p>Las funciones que el backend no soporta devuelven un error <strong>tipado</strong>
+(<code>Result::Err</code>), así que un reproductor escrito en TITAN consulta
+<code>player_backend()</code> una vez y degrada con elegancia:</p>
+<pre><code class="language-titan"><span class="k">let</span> salto = std::try::catch(|| std::audio::player_seek(<span class="n">1.0</span>))
+<span class="k">match</span> salto {
+    <span class="t">Result</span>::<span class="t">Ok</span>(msg) =&gt; print(msg),
+    <span class="t">Result</span>::<span class="t">Err</span>(e) =&gt; print(<span class="s">&quot;este backend no hace seek: &quot;</span> + e),
+}
+</code></pre>
+<p>Detalles de diseño:</p>
+<ul>
+<li><strong>mpv se controla por su socket JSON-IPC</strong> (<code>--input-ipc-server</code>) con
+  <code>UnixStream</code> de la std: pausa, seek, volumen y playlist reales, posición
+  exacta leída del reproductor.</li>
+<li>En los backends simples, pausa/resume usan <strong>SIGSTOP/SIGCONT</strong> sobre el
+  proceso del reproductor y la posición se calcula por reloj (resta las
+  pausas).</li>
+<li><code>player_play</code> detiene lo que sonaba antes de empezar; el proceso del
+  backend queda bajo control de la VM (stop = kill + reap).</li>
+<li>Termux/Android mantiene además la vía clásica de la Fase 9
+  (<code>termux-media-player</code>): <code>std::audio::play</code>, <code>pause</code>, <code>stop</code>, <code>record_*</code>.</li>
+</ul>
+<h3 id="pruebas-sin-dispositivo-de-audio-headless-sandbox">Pruebas sin dispositivo de audio (headless / sandbox)</h3>
+<p>En máquinas sin audio (CI, sandbox, contenedores) el backend <code>mpv</code> no
+puede abrir un driver de salida y el motor de reproducción no puede
+exercitarse con él. Dos vías para probar <code>std::audio::player_*</code> igual:</p>
+<ol>
+<li>
+<p><strong>mpv real en silencioso</strong>: añade <code>ao=null</code> a <code>~/.config/mpv/mpv.conf</code>
+   (driver de salida nulo: "suena" sin audio, el reloj avanza y el
+   socket IPC responde completo).</p>
+</li>
+<li>
+<p><strong>Shim de protocolo</strong> (<code>scripts/mpv_shim.py</code>): doble de Python del
+   subconjunto del JSON-IPC de mpv que usa este módulo
+   (<code>get_property</code>, <code>set_property</code>, <code>seek</code>, <code>loadfile append-play</code>,
+   <code>playlist-*</code>, <code>quit</code>). Instalándolo como <code>/usr/local/bin/mpv</code>,
+   <code>player_backend()</code> detecta "mpv" y todo el motor se ejercita de
+   verdad contra el cliente IPC de TITAN:</p>
+</li>
+</ol>
+<p><code>bash
+   sudo cp scripts/mpv_shim.py /usr/local/bin/mpv &amp;&amp; sudo chmod +x /usr/local/bin/mpv
+   titan run examples/reproductor_musica.titan</code></p>
+<p>El shim registra cada comando recibido en <code>/tmp/mpv-shim-debug.log</code>
+   (útil para auditar los payloads que envía el cliente).</p>
+<h2 id="4-ejemplo-completo">4. Ejemplo completo</h2>
+<p><code>examples/reproductor_musica.titan</code> — genera dos tonos, lee sus
+metadatos, escanea la biblioteca y reproduce con pausa/resume/volumen/
+cola/stop, degradando según el backend disponible:</p>
+<pre><code class="language-bash">titan run examples/reproductor_musica.titan
+</code></pre><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/AUDIO.md">Ver este archivo en GitHub</a></p></article></div></main>
+<footer><div class="wrap">
+  <div class="foot-cols">
+    <div>
+      <div class="zett-lock"><img src="../zett-marca.svg" alt="" height="44"><div><b>ZETT</b><small>Programming language distribution</small></div></div>
+      <p>Titan, lenguaje de programación compilado y con tipos comprobados, se distribuye como Zett. Licencia MIT.</p>
+    </div>
+    <div><h4>Proyecto</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio">Repositorio</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/releases">Releases</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/issues">Issues</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/actions">Pruebas (Actions)</a>
+    </div>
+    <div><h4>Documentación</h4>
+      <a href="../documentacion.html">Índice</a>
+      <a href="../biblioteca.html">Biblioteca estándar</a>
+      <a href="../docs/estado.html">Estado verificado</a>
+      <a href="../docs/cambios.html">Historial de cambios</a>
+    </div>
+    <div><h4>Más</h4>
+      <a href="https://github.com/alexsndersoto04-source/aio/blob/main/LICENSE">Licencia MIT</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/examples">Ejemplos</a>
+      <a href="https://github.com/alexsndersoto04-source/aio/tree/main/projects/moon">Moon (aplicación de ejemplo)</a>
+    </div>
+  </div>
+  <p class="foot-note">Los datos de esta página provienen del repositorio y se midieron en octubre de 2026.</p>
+</div></footer>
+</body>
+</html>

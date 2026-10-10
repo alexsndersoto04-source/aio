@@ -1,0 +1,114 @@
+// serve_connection sobre TCP local: keep-alive, límite de peticiones, cuerpos partidos,
+// peticiones mal formadas y errores del manejador.
+fn texto(b: bytes) -> string {
+    std::encoding::utf8_decode(b)
+}
+
+fn leer_todo(c: TcpStream) -> string {
+    let mut acumulado = ""
+    let mut seguir = true
+    while seguir {
+        let trozo = std::net::tcp_read(c, 4096)
+        if std::bytes::length(trozo) == 0 {
+            seguir = false
+        }
+        acumulado = acumulado + texto(trozo)
+    }
+    acumulado
+}
+
+fn eco(q: map) -> map {
+    let mut cab = std::map::insert(std::map::new(), "X-Eco", "si")
+    let mut m = std::map::insert(std::map::new(), "status", 200)
+    m = std::map::insert(m, "headers", cab)
+    let cuerpo = std::map::get(q, "body")
+    m = std::map::insert(m, "body", std::map::get(q, "method") + " " + std::map::get(q, "target") + " [" + texto(cuerpo) + "]")
+    m
+}
+
+fn servir(l: TcpListener, maximo: int) -> int {
+    let peer = std::http::serve_connection(l, eco, maximo)
+    if std::text::starts_with(peer, "127.0.0.1:") {
+        return 1
+    }
+    0
+}
+
+fn pedir(addr: string, texto_peticion: string) -> string {
+    let c = std::net::tcp_connect(addr)
+    std::net::tcp_write(c, texto_peticion)
+    let r = leer_todo(c)
+    std::net::tcp_close(c)
+    r
+}
+
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    // Tres peticiones seguidas; la última cierra.
+    let t1 = spawn || { servir(l, 10) }
+    let tres = "GET /uno HTTP/1.1\r\nHost: x\r\n\r\nPOST /dos?a=1 HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhola!GET /tres HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    print(pedir(addr, tres))
+    print(join(t1))
+    // Límite de peticiones: tras dos respuestas el servidor cierra.
+    let t2 = spawn || { servir(l, 2) }
+    print(pedir(addr, "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\nGET /c HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(join(t2))
+    // Cuerpo en varios trozos.
+    let t3 = spawn || { servir(l, 1) }
+    let c = std::net::tcp_connect(addr)
+    std::net::tcp_write(c, "POST /trozos HTTP/1.0\r\nHost: x\r\nContent-Le")
+    std::time::sleep_ms(30)
+    std::net::tcp_write(c, "ngth: 10\r\n\r\n01234")
+    std::time::sleep_ms(30)
+    std::net::tcp_write(c, "56789")
+    print(leer_todo(c))
+    std::net::tcp_close(c)
+    print(join(t3))
+    // El cliente se va sin enviar nada.
+    let t4 = spawn || { servir(l, 5) }
+    let c4 = std::net::tcp_connect(addr)
+    std::net::tcp_close(c4)
+    print(join(t4))
+    // Petición mal formada.
+    let t5 = spawn || { servir(l, 5) }
+    print(pedir(addr, "BASURA\r\n\r\n"))
+    print(std::try::catch(|| join(t5)))
+    // Error del manejador.
+    let t6 = spawn || {
+        std::http::serve_connection(l, |q| {
+            let z = 0
+            let c = 1 / z
+            std::map::insert(std::map::new(), "status", c)
+        }, 3)
+    }
+    print(pedir(addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(std::try::catch(|| join(t6)))
+    // Respuestas inválidas.
+    let t7 = spawn || {
+        std::http::serve_connection(l, |q| std::map::insert(std::map::new(), "status", 99999), 3)
+    }
+    print(pedir(addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(std::try::catch(|| join(t7)))
+    let t8 = spawn || {
+        std::http::serve_connection(l, |q| std::map::insert(std::map::new(), "status", 299), 3)
+    }
+    print(pedir(addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(std::try::catch(|| join(t8)))
+    let t9 = spawn || {
+        std::http::serve_connection(l, |q| std::map::insert(std::map::new(), "headers", std::map::insert(std::map::new(), "A", 5)), 3)
+    }
+    print(pedir(addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(std::try::catch(|| join(t9)))
+    let t10 = spawn || {
+        std::http::serve_connection(l, |q| std::map::insert(std::map::insert(std::map::new(), "body", 5), "keep_alive", true), 3)
+    }
+    print(pedir(addr, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    print(std::try::catch(|| join(t10)))
+    // Argumentos.
+    print(std::try::catch(|| std::http::serve_connection(l, eco, 0)))
+    print(std::try::catch(|| std::http::serve_connection(l, eco, 10001)))
+    print(std::try::catch(|| std::http::serve_connection(l, eco, 0 - 1)))
+    std::net::tcp_close(l)
+    print(std::try::catch(|| std::http::serve_connection(l, eco, 1)))
+}

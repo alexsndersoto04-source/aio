@@ -1,0 +1,564 @@
+// Tareas y canales (spawn, join, join_timeout, cancel, channel, send, recv,
+// recv_timeout, select) del backend nativo x86-64.
+//
+// La VM de Rust ejecuta cada tarea en un hilo del sistema. Aquí cada tarea
+// es una FIBRA cooperativa: tiene su propia pila (mmap de 32 MiB reservada,
+// no ocupada, con página de guarda) y se ejecuta en el mismo hilo. El cambio de
+// contexto es real (`std::raw::fiber_switch` → `g_switch` del backend: guarda
+// rbp y rsp, carga los de la otra pila) y cada fibra conserva su cadena de
+// manejadores de std::try::catch ([globals+24]) y su profundidad de llamadas
+// ([globals+16]).
+//
+// Puntos de cesión (donde otra fibra puede ejecutarse): join, join_timeout,
+// recv, recv_timeout, select, send con el canal lleno (o sin capacidad: espera
+// a que alguien reciba) y std::time::sleep_ms. Una tarea que calcula sin
+// bloquearse nunca cede: el padre no avanza hasta que ella termine o se bloquee
+// (la VM, con hilos, las ejecuta en paralelo). Las lecturas bloqueantes de
+// red/archivos/stdin tampoco ceden.
+//
+// `spawn` no ejecuta nada todavía: la tarea arranca la primera vez que el
+// hilo principal (u otra fibra) se bloquea. Si todas las fibras están
+// bloqueadas: con plazos, se duerme hasta el más próximo; sin plazos es un
+// bloqueo mutuo real (la VM se colgaría) y termina con un error explícito.
+//
+// `cancel` marca la tarea; se observa cuando ella arranca o vuelve de un
+// punto de cesión (también despierta a las bloqueadas: la VM no lo hace).
+//
+// Al terminar main el proceso sale sin esperar a las tareas, como la VM.
+//
+// Estado (globals + 3552 → bloque S, creado en la primera tarea/canal/espera):
+//   S+0 fibra actual   S+8 siguiente id de tarea   S+16 siguiente id de canal
+//   S+24 comprobaciones sin progreso   S+32 fibra terminada por liberar
+//   S+40 canales creados   S+48 tareas registradas   S+64+8*i tabla (0 = raíz)
+// Fibra (160 bytes): +0 id, +8 rsp guardado, +16 profundidad, +24 manejadores,
+//   +32 base de la pila, +40 estado (0 nueva, 1 viva, 3 terminada), +48/+56
+//   cierre (etiqueta/contenido), +64/+72 resultado o mensaje, +80 falló,
+//   +88 cancelada, +96 plazo (-1 ninguno), +104 hueco, +112 alguien hace join,
+//   +120 descriptor que espera + 1 (0 ninguno), +128 sucesos de poll
+// Canal (64 bytes): +0 id, +8 capacidad, +16 en cola, +24 cabeza, +32 búfer,
+//   +40 huecos del búfer, +48 enviados, +56 recibidos
+// Task/Sender/Receiver: objeto contado de etiqueta 13/14/15: [cuenta][id][ptr]
+
+const TK_SLOT: int = 3552
+const TK_MAX_TASKS: int = 256
+const TK_MAX_CHANNELS: int = 1024
+const TK_MAX_CAPACITY: int = 65536
+const TK_STACK: int = 33554432
+const TK_TABLE: int = 64
+
+fn tk_now() -> int {
+    let (s, ns) = rt_clock(1)
+    s * 1000 + ns / 1000000
+}
+
+fn tk_sched() -> int {
+    let g = std::raw::globals() + TK_SLOT
+    let have = std::raw::load(g)
+    if have != 0 {
+        return have
+    }
+    let s = rt_alloc_zero(TK_TABLE + 8 * (TK_MAX_TASKS + 1))
+    let root = rt_alloc_zero(160)
+    std::raw::store(root + 40, 1)
+    std::raw::store(root + 96, -1)
+    std::raw::store(s, root)
+    std::raw::store(s + 8, 1)
+    std::raw::store(s + 16, 1)
+    std::raw::store(s + TK_TABLE, root)
+    std::raw::store(g, s)
+    s
+}
+
+fn tk_handle(tag: int, id: int, ptr: int) -> any {
+    let p = rt_alloc(24)
+    std::raw::store(p, 1)
+    std::raw::store(p + 8, id)
+    std::raw::store(p + 16, ptr)
+    std::raw::adopt(tag, p)
+}
+
+// Milisegundos de un timeout: entero no negativo.
+fn tk_timeout(v: any) -> int {
+    if std::raw::tag(v) != 1 {
+        std::raw::fail("timeout must be a nonnegative integer")
+    }
+    let ms = std::raw::bits(v)
+    if ms < 0 {
+        std::raw::fail("timeout must be a nonnegative integer")
+    }
+    if ms > 1000000000000000 {
+        return 1000000000000000
+    }
+    ms
+}
+
+fn tk_fiber_at(s: int, i: int) -> int {
+    std::raw::load(s + TK_TABLE + 8 * i)
+}
+
+// Hueco de la tarea con ese id (1..), o -1.
+fn tk_find(s: int, id: int) -> int {
+    let mut i = 1
+    while i <= TK_MAX_TASKS {
+        let f = tk_fiber_at(s, i)
+        if f != 0 && std::raw::load(f) == id {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// Fibras que aún pueden ejecutarse (la raíz siempre).
+fn tk_live(s: int) -> int {
+    let mut n = 0
+    let mut i = 0
+    while i <= TK_MAX_TASKS {
+        let f = tk_fiber_at(s, i)
+        if f != 0 && std::raw::load(f + 40) != 3 {
+            n += 1
+        }
+        i += 1
+    }
+    n
+}
+
+// Siguiente fibra viva después de `cur` (en orden de huecos), o 0 si no hay otra.
+fn tk_next(s: int, cur: int) -> int {
+    let start = std::raw::load(cur + 104)
+    let mut k = 1
+    while k <= TK_MAX_TASKS + 1 {
+        let f = tk_fiber_at(s, (start + k) % (TK_MAX_TASKS + 1))
+        if f != 0 && f != cur && std::raw::load(f + 40) != 3 {
+            return f
+        }
+        k += 1
+    }
+    0
+}
+
+// Libera la pila de la última fibra terminada (ya no se está ejecutando en ella).
+fn tk_reap(s: int) {
+    let z = std::raw::load(s + 32)
+    if z != 0 && z != std::raw::load(s) {
+        let base = std::raw::load(z + 32)
+        if base != 0 {
+            std::raw::syscall(11, base, TK_STACK, 0, 0, 0, 0)
+            std::raw::store(z + 32, 0)
+        }
+        std::raw::store(s + 32, 0)
+    }
+}
+
+// Reserva la pila de una fibra nueva y deja en ella lo que g_switch espera
+// (rbp, dirección de entrada) para que el primer cambio arranque tk_fiber_entry.
+fn tk_prepare(f: int) {
+    let base = std::raw::syscall(9, 0, TK_STACK, 3, 16418, -1, 0)
+    if base < 0 {
+        rt_die("out of memory")
+    }
+    // Página de guarda: un desbordamiento de pila falla en vez de pisar memoria.
+    std::raw::syscall(10, base, 4096, 0, 0, 0, 0)
+    let entry: fn() -> int = tk_fiber_entry
+    let code = std::raw::load(std::raw::bits(entry) + 8)
+    let sp = base + TK_STACK - 72
+    std::raw::store(sp, 0)
+    std::raw::store(sp + 8, code)
+    std::raw::store(sp + 16, 0)
+    std::raw::store(f + 32, base)
+    std::raw::store(f + 8, sp)
+    std::raw::store(f + 16, 0)
+    std::raw::store(f + 24, 0)
+    std::raw::store(f + 40, 1)
+}
+
+fn tk_switch_to(s: int, from: int, to: int) {
+    let g = std::raw::globals()
+    std::raw::store(from + 16, std::raw::load(g + 16))
+    std::raw::store(from + 24, std::raw::load(g + 24))
+    if std::raw::load(to + 40) == 0 {
+        tk_prepare(to)
+        std::raw::store(s + 24, 0)
+    }
+    std::raw::store(g + 16, std::raw::load(to + 16))
+    std::raw::store(g + 24, std::raw::load(to + 24))
+    std::raw::store(s, to)
+    std::raw::fiber_switch(from + 8, std::raw::load(to + 8))
+    tk_reap(s)
+}
+
+fn tk_deadlock() {
+    rt_write(2, "RUNTIME ERROR: deadlock: every task is blocked and none can ever wake up\n")
+    std::raw::syscall(60, 1, 0, 0, 0, 0, 0)
+}
+
+// La fibra actual no puede avanzar (su condición no se cumple): deja paso a
+// otra. `deadline` = plazo de espera en ms del reloj monótono, o -1.
+fn tk_idle(s: int, deadline: int) {
+    let cur = std::raw::load(s)
+    std::raw::store(cur + 96, deadline)
+    if std::raw::load(cur + 88) != 0 {
+        std::raw::store(cur + 96, -1)
+        std::raw::store(cur + 120, 0)
+        rt_fatal("task cancelled")
+    }
+    let idle = std::raw::load(s + 24) + 1
+    std::raw::store(s + 24, idle)
+    if idle > 2 * tk_live(s) + 2 {
+        // Se miró a todas las fibras y ninguna progresó: solo un plazo puede
+        // cambiar algo.
+        let mut best = -1
+        let mut i = 0
+        while i <= TK_MAX_TASKS {
+            let f = tk_fiber_at(s, i)
+            if f != 0 && std::raw::load(f + 40) != 3 {
+                let d = std::raw::load(f + 96)
+                if d >= 0 && (best < 0 || d < best) {
+                    best = d
+                }
+            }
+            i += 1
+        }
+        // Fibras esperando un descriptor (tcp_wait): se vigilan con poll(2).
+        let pf = rt_alloc(8 * (TK_MAX_TASKS + 1))
+        let mut nfd = 0
+        i = 0
+        while i <= TK_MAX_TASKS {
+            let f = tk_fiber_at(s, i)
+            if f != 0 && std::raw::load(f + 40) != 3 && std::raw::load(f + 120) != 0 {
+                let ev = std::raw::load(f + 128)
+                std::raw::store(pf + 8 * nfd, (std::raw::load(f + 120) - 1) + ev * 4294967296)
+                nfd += 1
+            }
+            i += 1
+        }
+        if best < 0 && nfd == 0 {
+            tk_deadlock()
+        }
+        let now = tk_now()
+        let mut wait = -1
+        if best >= 0 {
+            wait = 0
+            if best > now {
+                wait = best - now
+            }
+            if wait > 2147483647 {
+                wait = 2147483647
+            }
+        }
+        if nfd > 0 {
+            while std::raw::syscall(7, pf, nfd, wait, 0, 0, 0) == -4 {
+            }
+        } else if wait > 0 {
+            let ts = rt_alloc(16)
+            std::raw::store(ts, wait / 1000)
+            std::raw::store(ts + 8, (wait % 1000) * 1000000)
+            while std::raw::syscall(35, ts, ts, 0, 0, 0, 0) == -4 {
+            }
+            rt_free_block(ts)
+        }
+        rt_free_block(pf)
+        std::raw::store(s + 24, 0)
+    }
+    let nxt = tk_next(s, cur)
+    if nxt != 0 {
+        tk_switch_to(s, cur, nxt)
+    }
+    let me = std::raw::load(s)
+    std::raw::store(me + 96, -1)
+    std::raw::store(me + 120, 0)
+    if std::raw::load(me + 88) != 0 {
+        rt_fatal("task cancelled")
+    }
+}
+
+// Resultado de la tarea al terminar: Ok(valor) o Err(mensaje).
+fn tk_finish(f: int, res: any) {
+    let p = rt_enum_payload(res)
+    std::raw::store(f + 64, std::raw::tag(p))
+    std::raw::store(f + 72, std::raw::keep(p))
+    if rt_enum_is(res, "Result", "Ok") {
+        std::raw::store(f + 80, 0)
+    } else {
+        std::raw::store(f + 80, 1)
+    }
+}
+
+// Primera instrucción de una fibra nueva (se entra por `ret` desde g_switch).
+fn tk_fiber_entry() {
+    let s = std::raw::load(std::raw::globals() + TK_SLOT)
+    tk_reap(s)
+    let f = std::raw::load(s)
+    let cl: fn() -> any = std::raw::adopt(std::raw::load(f + 48), std::raw::load(f + 56))
+    std::raw::store(f + 48, 0)
+    std::raw::store(f + 56, 0)
+    if std::raw::load(f + 88) != 0 {
+        tk_finish(f, rt_try_err("task cancelled"))
+    } else {
+        tk_finish(f, std::try::catch(cl))
+    }
+    std::raw::store(f + 40, 3)
+    std::raw::store(s + 24, 0)
+    std::raw::store(s + 32, f)
+    let nxt = tk_next(s, f)
+    if nxt == 0 {
+        tk_deadlock()
+    }
+    tk_switch_to(s, f, nxt)
+    rt_die("task resumed after it finished")
+}
+
+// ------------------------------------------------------------ tareas
+
+fn rt_task_spawn(cl: any) -> any {
+    if std::raw::tag(cl) != 12 {
+        std::raw::fail("type error: spawn requires a closure")
+    }
+    let s = tk_sched()
+    if std::raw::load(s + 48) >= TK_MAX_TASKS {
+        std::raw::fail("runtime task limit exceeded (256)")
+    }
+    let mut i = 1
+    while tk_fiber_at(s, i) != 0 {
+        i += 1
+    }
+    let id = std::raw::load(s + 8)
+    std::raw::store(s + 8, id + 1)
+    let f = rt_alloc_zero(160)
+    std::raw::store(f, id)
+    std::raw::store(f + 48, std::raw::tag(cl))
+    std::raw::store(f + 56, std::raw::keep(cl))
+    std::raw::store(f + 96, -1)
+    std::raw::store(f + 104, i)
+    std::raw::store(s + TK_TABLE + 8 * i, f)
+    std::raw::store(s + 48, std::raw::load(s + 48) + 1)
+    tk_handle(13, id, 0)
+}
+
+fn tk_task_id(t: any, what: string) -> int {
+    if std::raw::tag(t) != 13 {
+        rt_fatal(rt_concat(rt_concat("type error: ", what), " requires a task"))
+    }
+    std::raw::load(std::raw::bits(t) + 8)
+}
+
+// Fibra registrada con ese id que nadie más esté esperando; si no, error.
+fn tk_claim(s: int, id: int) -> int {
+    let slot = tk_find(s, id)
+    if slot < 0 {
+        rt_fatal(rt_concat("unknown or already joined task ", rt_int_to_str(id)))
+    }
+    let f = tk_fiber_at(s, slot)
+    if std::raw::load(f + 112) != 0 {
+        rt_fatal(rt_concat("unknown or already joined task ", rt_int_to_str(id)))
+    }
+    std::raw::store(f + 112, 1)
+    f
+}
+
+// La tarea terminó: se quita del registro y se devuelve su resultado o se
+// propaga su error.
+fn tk_collect(s: int, f: int) -> any {
+    let slot = std::raw::load(f + 104)
+    std::raw::store(s + TK_TABLE + 8 * slot, 0)
+    std::raw::store(s + 48, std::raw::load(s + 48) - 1)
+    let failed = std::raw::load(f + 80)
+    let v = std::raw::adopt(std::raw::load(f + 64), std::raw::load(f + 72))
+    rt_free_block(f)
+    if failed != 0 {
+        rt_fatal(v)
+    }
+    v
+}
+
+fn rt_task_join(t: any) -> any {
+    let id = tk_task_id(t, "join")
+    let s = tk_sched()
+    let f = tk_claim(s, id)
+    while std::raw::load(f + 40) != 3 {
+        tk_idle(s, -1)
+    }
+    std::raw::store(s + 24, 0)
+    tk_collect(s, f)
+}
+
+fn rt_task_join_timeout(t: any, ms: any) -> any {
+    let wait = tk_timeout(ms)
+    let id = tk_task_id(t, "join_timeout")
+    let s = tk_sched()
+    let f = tk_claim(s, id)
+    let deadline = tk_now() + wait
+    while std::raw::load(f + 40) != 3 {
+        if tk_now() >= deadline {
+            std::raw::store(f + 112, 0)
+            std::raw::store(s + 24, 0)
+            return Option::None
+        }
+        tk_idle(s, deadline)
+    }
+    std::raw::store(s + 24, 0)
+    Option::Some(tk_collect(s, f))
+}
+
+fn rt_task_cancel(t: any) -> any {
+    let id = tk_task_id(t, "cancel")
+    let s = tk_sched()
+    let slot = tk_find(s, id)
+    if slot < 0 {
+        return false
+    }
+    let f = tk_fiber_at(s, slot)
+    std::raw::store(f + 88, 1)
+    if f == std::raw::load(s) {
+        rt_fatal("task cancelled")
+    }
+    true
+}
+
+// std::time::sleep_ms con tareas: las demás fibras siguen mientras tanto.
+fn tk_sleep(ms: int) {
+    let s = tk_sched()
+    let deadline = tk_now() + ms
+    while tk_now() < deadline {
+        tk_idle(s, deadline)
+    }
+    std::raw::store(s + 24, 0)
+}
+
+// ------------------------------------------------------------ canales
+
+fn rt_chan_new(cap: any) -> any {
+    if std::raw::tag(cap) != 1 {
+        std::raw::fail("type error: channel capacity must be int")
+    }
+    let n = std::raw::bits(cap)
+    if n < 0 {
+        std::raw::fail("type error: channel capacity must be nonnegative")
+    }
+    if n > TK_MAX_CAPACITY {
+        std::raw::fail("runtime channel capacity limit exceeded (65536)")
+    }
+    let s = tk_sched()
+    if std::raw::load(s + 40) >= TK_MAX_CHANNELS {
+        std::raw::fail("runtime channel limit exceeded (1024)")
+    }
+    std::raw::store(s + 40, std::raw::load(s + 40) + 1)
+    let id = std::raw::load(s + 16)
+    std::raw::store(s + 16, id + 1)
+    let mut slots = n
+    if slots == 0 {
+        slots = 1
+    }
+    let c = rt_alloc_zero(64)
+    std::raw::store(c, id)
+    std::raw::store(c + 8, n)
+    std::raw::store(c + 32, rt_alloc(16 * slots))
+    std::raw::store(c + 40, slots)
+    let pair = (tk_handle(14, id, c), tk_handle(15, id, c))
+    pair
+}
+
+fn tk_chan_of(v: any, tag: int, message: string) -> int {
+    if std::raw::tag(v) != tag {
+        std::raw::fail(message)
+    }
+    std::raw::load(std::raw::bits(v) + 16)
+}
+
+// Saca el primer valor de la cola (hay uno).
+fn tk_dequeue(c: int) -> any {
+    let buf = std::raw::load(c + 32)
+    let slots = std::raw::load(c + 40)
+    let head = std::raw::load(c + 24)
+    let e = buf + 16 * head
+    let v = std::raw::adopt(std::raw::load(e), std::raw::load(e + 8))
+    std::raw::store(c + 24, (head + 1) % slots)
+    std::raw::store(c + 16, std::raw::load(c + 16) - 1)
+    std::raw::store(c + 56, std::raw::load(c + 56) + 1)
+    std::raw::store(std::raw::load(std::raw::globals() + TK_SLOT) + 24, 0)
+    v
+}
+
+fn rt_chan_send(tx: any, v: any) -> any {
+    let c = tk_chan_of(tx, 14, "type error: send requires a channel sender")
+    let s = tk_sched()
+    let cap = std::raw::load(c + 8)
+    let mut room = cap
+    if room == 0 {
+        room = 1
+    }
+    while std::raw::load(c + 16) >= room {
+        tk_idle(s, -1)
+    }
+    let slots = std::raw::load(c + 40)
+    let pos = (std::raw::load(c + 24) + std::raw::load(c + 16)) % slots
+    let e = std::raw::load(c + 32) + 16 * pos
+    std::raw::store(e, std::raw::tag(v))
+    std::raw::store(e + 8, std::raw::keep(v))
+    std::raw::store(c + 16, std::raw::load(c + 16) + 1)
+    let ticket = std::raw::load(c + 48) + 1
+    std::raw::store(c + 48, ticket)
+    std::raw::store(s + 24, 0)
+    if cap == 0 {
+        // Sin capacidad: send vuelve cuando alguien ha recibido el valor.
+        while std::raw::load(c + 56) < ticket {
+            tk_idle(s, -1)
+        }
+    }
+    nil
+}
+
+fn rt_chan_recv(rx: any) -> any {
+    let c = tk_chan_of(rx, 15, "type error: recv requires a channel receiver")
+    let s = tk_sched()
+    while std::raw::load(c + 16) == 0 {
+        tk_idle(s, -1)
+    }
+    tk_dequeue(c)
+}
+
+fn rt_chan_recv_timeout(rx: any, ms: any) -> any {
+    let wait = tk_timeout(ms)
+    let c = tk_chan_of(rx, 15, "type error: recv_timeout requires a receiver")
+    let s = tk_sched()
+    let deadline = tk_now() + wait
+    while std::raw::load(c + 16) == 0 {
+        if tk_now() >= deadline {
+            std::raw::store(s + 24, 0)
+            return Option::None
+        }
+        tk_idle(s, deadline)
+    }
+    Option::Some(tk_dequeue(c))
+}
+
+fn rt_chan_select(rs: any, ms: any) -> any {
+    let wait = tk_timeout(ms)
+    let n = rt_seq_len(rs)
+    let mut i = 0
+    while i < n {
+        if std::raw::tag(rt_seq_get(rs, i)) != 15 {
+            std::raw::fail("type error: select requires an array of receivers")
+        }
+        i += 1
+    }
+    let s = tk_sched()
+    let deadline = tk_now() + wait
+    while true {
+        i = 0
+        while i < n {
+            let c = std::raw::load(std::raw::bits(rt_seq_get(rs, i)) + 16)
+            if std::raw::load(c + 16) > 0 {
+                let v = tk_dequeue(c)
+                return Option::Some((i, v))
+            }
+            i += 1
+        }
+        if tk_now() >= deadline {
+            std::raw::store(s + 24, 0)
+            return Option::None
+        }
+        tk_idle(s, deadline)
+    }
+    Option::None
+}

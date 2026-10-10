@@ -1,0 +1,230 @@
+// std::tokenize en Titan, parte 7: modelo Unigram (Viterbi sobre el lattice). Traducción de
+// `tokenizers` 0.22.2 (models/unigram/model.rs, `encode_optimized`). Prefijo `tku`.
+// Tok.uni = [tokens, puntuaciones, puntuación mínima, unk_id (-1 si no hay), byte_fallback, longitud máxima].
+
+fn tku_nd(x: any) -> any {
+    x
+}
+
+// Número JSON (entero o decimal) -> decimal.
+fn tk_num(x: any) -> float {
+    let r = std::try::catch(|| { x + 0.0 })
+    match r {
+        Result::Ok(v) => {
+            return v
+        },
+        _ => {
+            return std::math::to_float(x)
+        },
+    }
+}
+
+fn tku_token_id(t: Tok, s: string) -> int {
+    let v = std::map::get(t.vocab, s)
+    if v == nil {
+        return -1
+    }
+    return v
+}
+
+fn tku_id_token(t: Tok, id: int) -> any {
+    let toks = t.uni[0]
+    if id < 0 || id >= len(toks) {
+        return nil
+    }
+    return toks[id]
+}
+
+fn tku_load(c: TkC, model: any) -> (Tok, string) {
+    let bad = tk_blank(c)
+    let v = tj_get(model, "vocab")
+    if v == nil {
+        return (bad, "Missing vocab")
+    }
+    if !tj_arr(v) {
+        return (bad, "invalid type for field `vocab`")
+    }
+    let uk = tj_get(model, "unk_id")
+    if uk != nil && !(tj_isint(uk) && uk >= 0) {
+        return (bad, "invalid type for field `unk_id`")
+    }
+    let e = tkv_opt(model, "byte_fallback", "b")
+    if e != "" {
+        return (bad, e)
+    }
+    let mut toks = []
+    let mut scores = []
+    let mut vm = std::map::new()
+    let mut mn = 1.0e300
+    let mut maxl = 1
+    let mut i = 0
+    for it in v {
+        if !tj_arr(it) || len(it) != 2 || !tj_str(it[0]) || !tj_isnum(it[1]) || tj_str(it[1]) || tj_arr(it[1]) || tj_map(it[1]) || tj_isbool(it[1]) {
+            return (bad, "invalid type: expected a (string, float) pair in `vocab`")
+        }
+        let s = it[0]
+        let sc = tk_num(it[1])
+        toks = std::array::push(toks, s)
+        scores = std::array::push(scores, sc)
+        vm = std::map::insert(vm, s, i)
+        if sc < mn {
+            mn = sc
+        }
+        let l = std::text::length(s)
+        if l > maxl {
+            maxl = l
+        }
+        i += 1
+    }
+    let mut unk = -1
+    if uk != nil {
+        if len(toks) == 0 {
+            return (bad, "Unable to load vocab EmptyVocabulary")
+        }
+        if uk >= len(toks) {
+            return (bad, "Unable to load vocab UnkIdNotInVocabulary")
+        }
+        unk = uk
+    }
+    let uni = tku_nd([toks, scores, mn, unk, tj_gbool(model, "byte_fallback", false), maxl])
+    let t = Tok { mt: 3, vocab: vm, vr: nil, vsize: len(toks), unk: "", hasunk: false, prefix: "", maxc: 0, suffix: "", fuse: false, bfall: false, ignm: false, mg: nil, mnew: [], uni: uni, c: c, norm: nil, pre: nil, post: nil, dec: nil, trunc: nil, pad: nil, spset: bad.spset, am: bad.am, ar: bad.ar, t0: bad.t0, t1: bad.t1 }
+    return (t, "")
+}
+
+// Viterbi: trozos de la frase (como listas de cps) o error.
+fn tku_encode(t: Tok, c: array) -> (array, string) {
+    let n = len(c)
+    let toks = t.uni[0]
+    let scores = t.uni[1]
+    let mn = t.uni[2]
+    let unk = t.uni[3]
+    let maxl = t.uni[5]
+    let unk_score = mn - 10.0
+    let mut bscore = std::array::filled(n + 1, 0.0)
+    let mut bstart = std::array::filled(n + 1, -1)
+    let mut bid = std::array::filled(n + 1, 0)
+    let mut s = 0
+    while s < n {
+        let here = bscore[s]
+        let mut single = false
+        let mut l = 1
+        while l <= maxl && s + l <= n {
+            let id = std::map::get(t.vocab, tk_str(std::array::slice(c, s, s + l)))
+            if id != nil {
+                let kp = s + l
+                let cand = scores[id] + here
+                if bstart[kp] == -1 || cand > bscore[kp] {
+                    bscore = std::array::set(bscore, kp, cand)
+                    bstart = std::array::set(bstart, kp, s)
+                    bid = std::array::set(bid, kp, id)
+                }
+                if l == 1 {
+                    single = true
+                }
+            }
+            l += 1
+        }
+        if !single {
+            let kp = s + 1
+            let cand = unk_score + here
+            if bstart[kp] == -1 || cand > bscore[kp] {
+                if unk < 0 {
+                    return ([], "Encountered an unknown token but `unk_id` is missing")
+                }
+                bscore = std::array::set(bscore, kp, cand)
+                bstart = std::array::set(bstart, kp, s)
+                bid = std::array::set(bid, kp, unk)
+            }
+        }
+        s += 1
+    }
+    let mut results = []
+    let mut run = []
+    let mut e = n
+    while e > 0 {
+        let st = bstart[e]
+        let piece = std::array::slice(c, st, e)
+        if unk >= 0 && bid[e] == unk {
+            run = std::array::push(run, piece)
+        } else {
+            if len(run) > 0 {
+                let mut cat = []
+                let mut j = len(run) - 1
+                while j >= 0 {
+                    cat = tk_cat(cat, run[j])
+                    j -= 1
+                }
+                results = std::array::push(results, cat)
+                run = []
+            }
+            results = std::array::push(results, piece)
+        }
+        e = st
+    }
+    if len(run) > 0 {
+        let mut cat = []
+        let mut j = len(run) - 1
+        while j >= 0 {
+            cat = tk_cat(cat, run[j])
+            j -= 1
+        }
+        results = std::array::push(results, cat)
+    }
+    let mut out = []
+    let mut k = len(results) - 1
+    while k >= 0 {
+        out = std::array::push(out, results[k])
+        k -= 1
+    }
+    return (out, "")
+}
+
+fn tku_tokenize(t: Tok, c: array) -> (array, array, string) {
+    let (pieces, err) = tku_encode(t, c)
+    if err != "" {
+        return ([], [], err)
+    }
+    let unk = t.uni[3]
+    let bf = t.uni[4]
+    let mut ids = []
+    let mut toks = []
+    for p in pieces {
+        let s = tk_str(p)
+        let id = std::map::get(t.vocab, s)
+        if id != nil {
+            ids = std::array::push(ids, id)
+            toks = std::array::push(toks, s)
+        } else {
+            let mut done = false
+            if bf {
+                let mut bi = []
+                let mut bt = []
+                let mut okb = true
+                for b in tk_utf8(p) {
+                    let bs = "<0x" + tk_hex2(b) + ">"
+                    let bid = std::map::get(t.vocab, bs)
+                    if bid == nil {
+                        okb = false
+                    }
+                    if bid != nil {
+                        bi = std::array::push(bi, bid)
+                        bt = std::array::push(bt, bs)
+                    }
+                }
+                if okb {
+                    ids = tk_cat(ids, bi)
+                    toks = tk_cat(toks, bt)
+                    done = true
+                }
+            }
+            if !done {
+                if unk < 0 {
+                    return ([], [], "Encountered an unknown token but `unk_id` is missing")
+                }
+                ids = std::array::push(ids, unk)
+                toks = std::array::push(toks, s)
+            }
+        }
+    }
+    return (ids, toks, "")
+}

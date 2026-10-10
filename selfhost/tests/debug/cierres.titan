@@ -1,0 +1,13 @@
+fn aplica(f: any, v: int) -> int {
+    f(v)
+}
+fn crea(k: int) -> any {
+    |x| x * k
+}
+fn main() {
+    let dobla = crea(2)
+    let r = aplica(dobla, 21)
+    let rs = [1, 2, 3, 4].filter(|v| v % 2 == 0)
+    print("{r}")
+    rs
+}

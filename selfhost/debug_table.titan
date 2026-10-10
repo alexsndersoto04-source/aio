@@ -1,0 +1,53 @@
+// Tabla que el depurador nativo lee en tiempo de ejecución (formato en native/std_debug.titan):
+// funciones (nombre, locales, archivo), posición de cada instrucción y puntos de interrupción.
+import codegen
+
+// `\` -> `\\`, `|` -> `\p`, salto de línea -> `\n`.
+fn dt_esc(s: string) -> string {
+    let mut out = ""
+    for c in s {
+        if c == '\\' {
+            out += "\\\\"
+        } else if c == '|' {
+            out += "\\p"
+        } else if c == '\n' {
+            out += "\\n"
+        } else {
+            out += c
+        }
+    }
+    out
+}
+
+// `kind`: "K|cli" o "K|dap|<seq>"; `extra`: líneas "B|..." de puntos de interrupción.
+fn dt_table(g: G, kind: string, extra: array) -> string {
+    let mut lines = [kind]
+    for e in extra {
+        lines = std::array::push(lines, e)
+    }
+    let mut i = 0
+    for f in g.funcs {
+        let mut locals = f.locals
+        if f.arity + f.captures > locals {
+            locals = f.arity + f.captures
+        }
+        let mut file = ""
+        if f.file != nil {
+            file = dt_esc(f.file)
+        }
+        lines = std::array::push(lines, "F|{i}|" + dt_esc(f.name) + "|{locals}|" + file)
+        let mut locs = []
+        for l in f.locs {
+            if l == nil {
+                locs = std::array::push(locs, "")
+            } else {
+                let line = l.line
+                let col = l.col
+                locs = std::array::push(locs, "{line}:{col}")
+            }
+        }
+        lines = std::array::push(lines, "L|" + std::collections::join(locs, ","))
+        i += 1
+    }
+    std::collections::join(lines, "\n")
+}

@@ -67,7 +67,10 @@ struct Ctx {
     table: array,
     rt: map,
     rt_arity: map,
+    methods: map,
     epi: int,
+    dbg: string,
+    fid: int,
 }
 
 fn pc_new() -> Pc {
@@ -871,6 +874,16 @@ fn bk_intrinsic(p0: Pc, name: string, argc: int) -> Pc {
         p = pc_add(p, x_push(x_r15()))
         return pc_add(p, x_push_i(1))
     }
+    // fiber_switch(guardar, nuevo_rsp): cambia de pila (ver g_switch). Vuelve
+    // aquí cuando otra fibra cambie de nuevo a esta pila.
+    if name == "std::raw::fiber_switch" {
+        p = pc_add(p, x_load(x_rdi(), rsp, 24))
+        p = pc_add(p, x_load(x_rsi(), rsp, 8))
+        p = pc_add(p, x_add_ri(rsp, 32))
+        p = pc_ref(p, x_call(0), 1, "rel", "g_switch", 0)
+        p = pc_add(p, x_push_i(0))
+        return pc_add(p, x_push_i(0))
+    }
     if name == "std::raw::fail" {
         p = pc_add(p, x_load(rax, rsp, 8))
         return pc_ref(p, x_jmp(0), 1, "rel", "g_raise", 0)
@@ -1073,6 +1086,371 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
     if k == "ArraySortBy" {
         return bk_call_rt(p, ctx, "rt_sort_by", 2)
     }
+    // TCP (sockets de Linux, ver std_tcp.titan).
+    if k == "TcpListen" {
+        return bk_call_rt(p, ctx, "rt_tcp_listen", 1)
+    }
+    if k == "TcpLocalAddr" {
+        return bk_call_rt(p, ctx, "rt_tcp_local_addr", 1)
+    }
+    if k == "TcpAccept" {
+        return bk_call_rt(p, ctx, "rt_tcp_accept", 1)
+    }
+    if k == "TcpConnect" {
+        return bk_call_rt(p, ctx, "rt_tcp_connect", 1)
+    }
+    if k == "TcpRead" {
+        return bk_call_rt(p, ctx, "rt_tcp_read", 2)
+    }
+    if k == "TcpWrite" {
+        return bk_call_rt(p, ctx, "rt_tcp_write", 2)
+    }
+    if k == "TcpSetTimeout" {
+        return bk_call_rt(p, ctx, "rt_tcp_set_timeout", 2)
+    }
+    if k == "TcpClose" {
+        return bk_call_rt(p, ctx, "rt_tcp_close", 1)
+    }
+    // Control de servidor e introspección del runtime (ver std_runtime.titan).
+    if k == "ServerControlNew" {
+        return bk_call_rt(p, ctx, "rt_server_control_new", 1)
+    }
+    if k == "ServerTryAcquire" {
+        return bk_call_rt(p, ctx, "rt_server_try_acquire", 1)
+    }
+    if k == "ServerRelease" {
+        return bk_call_rt(p, ctx, "rt_server_release", 1)
+    }
+    if k == "ServerShutdown" {
+        return bk_call_rt(p, ctx, "rt_server_shutdown", 1)
+    }
+    if k == "ServerStats" {
+        return bk_call_rt(p, ctx, "rt_server_stats", 1)
+    }
+    if k == "ServerHealthResponse" {
+        return bk_call_rt(p, ctx, "rt_server_health_response", 1)
+    }
+    if k == "RuntimeMemoryLimit" {
+        return bk_call_rt(p, ctx, "rt_runtime_memory_limit", 0)
+    }
+    if k == "RuntimeAllocatedBytes" {
+        return bk_call_rt(p, ctx, "rt_runtime_allocated_bytes", 0)
+    }
+    if k == "RuntimeGcLiveCount" {
+        return bk_call_rt(p, ctx, "rt_runtime_gc_live_count", 0)
+    }
+    if k == "RuntimeGcCollect" {
+        return bk_call_rt(p, ctx, "rt_runtime_gc_collect", 0)
+    }
+    if k == "RuntimeGcThreshold" {
+        return bk_call_rt(p, ctx, "rt_runtime_gc_threshold", 0)
+    }
+    if k == "RuntimeGcSetThreshold" {
+        return bk_call_rt(p, ctx, "rt_runtime_gc_set_threshold", 1)
+    }
+    if k == "RuntimeActiveTasks" {
+        return bk_call_rt(p, ctx, "rt_runtime_active_tasks", 0)
+    }
+    if k == "RuntimeHeapDump" {
+        return bk_call_rt(p, ctx, "rt_runtime_heap_dump", 1)
+    }
+    if k == "RuntimeOptimizeLevel" {
+        return bk_call_rt(p, ctx, "rt_runtime_optimize_level", 0)
+    }
+    if k == "RuntimeFastPath" {
+        return bk_call_rt(p, ctx, "rt_runtime_fast_path", 0)
+    }
+    if k == "RuntimeBenchmark" {
+        return bk_call_rt(p, ctx, "rt_runtime_benchmark", 2)
+    }
+    // WebSocket con estado (ver std_ws_conn.titan).
+    if k == "WsDecoderNew" {
+        return bk_call_rt(p, ctx, "rt_ws_decoder_new", 1)
+    }
+    if k == "WsDecoderPush" {
+        return bk_call_rt(p, ctx, "rt_ws_decoder_push", 2)
+    }
+    if k == "WsDecoderNext" {
+        return bk_call_rt(p, ctx, "rt_ws_decoder_next", 2)
+    }
+    if k == "WsConnect" {
+        return bk_call_rt(p, ctx, "rt_ws_connect", 3)
+    }
+    if k == "WsAttachTcp" {
+        return bk_call_rt(p, ctx, "rt_ws_attach_tcp", 3)
+    }
+    if k == "WsAttachTls" {
+        return bk_call_rt(p, ctx, "rt_ws_attach_tls", 3)
+    }
+    if k == "WsSendText" {
+        return bk_call_rt(p, ctx, "rt_ws_send_text", 2)
+    }
+    if k == "WsSendBinary" {
+        return bk_call_rt(p, ctx, "rt_ws_send_binary", 2)
+    }
+    if k == "WsReceive" {
+        return bk_call_rt(p, ctx, "rt_ws_receive", 1)
+    }
+    if k == "WsClose" {
+        return bk_call_rt(p, ctx, "rt_ws_close", 3)
+    }
+    // Enrutador y serve_connection HTTP (ver std_http_router.titan).
+    if k == "HttpServeConnection" {
+        return bk_call_rt(p, ctx, "rt_http_serve_connection", 3)
+    }
+    if k == "HttpRouterNew" {
+        return bk_call_rt(p, ctx, "rt_http_router_new", 0)
+    }
+    if k == "HttpRouteAdd" {
+        return bk_call_rt(p, ctx, "rt_http_route_add", 4)
+    }
+    if k == "HttpMiddlewareAdd" {
+        return bk_call_rt(p, ctx, "rt_http_middleware_add", 2)
+    }
+    if k == "HttpAfterAdd" {
+        return bk_call_rt(p, ctx, "rt_http_after_add", 2)
+    }
+    if k == "HttpErrorHandlerAdd" {
+        return bk_call_rt(p, ctx, "rt_http_error_handler_add", 2)
+    }
+    if k == "HttpDispatch" {
+        return bk_call_rt(p, ctx, "rt_http_dispatch", 2)
+    }
+    // TLS 1.3 (ver std_tls.titan).
+    if k == "TlsConnect" {
+        return bk_call_rt(p, ctx, "rt_tls_connect", 2)
+    }
+    if k == "TlsServerConfig" {
+        return bk_call_rt(p, ctx, "rt_tls_server_config", 2)
+    }
+    if k == "TlsAccept" {
+        return bk_call_rt(p, ctx, "rt_tls_accept", 2)
+    }
+    if k == "TlsRead" {
+        return bk_call_rt(p, ctx, "rt_tls_read", 2)
+    }
+    if k == "TlsWrite" {
+        return bk_call_rt(p, ctx, "rt_tls_write", 2)
+    }
+    if k == "TlsClose" {
+        return bk_call_rt(p, ctx, "rt_tls_close", 1)
+    }
+    // SQLite (ver std_sqlite.titan y el motor std_sqlite_*.titan).
+    if k == "SqliteOpen" {
+        return bk_call_rt(p, ctx, "rt_sq_open", 1)
+    }
+    if k == "SqliteMemory" {
+        return bk_call_rt(p, ctx, "rt_sq_memory", 0)
+    }
+    if k == "SqliteExecute" {
+        return bk_call_rt(p, ctx, "rt_sq_execute", 3)
+    }
+    if k == "SqliteQuery" {
+        return bk_call_rt(p, ctx, "rt_sq_query", 3)
+    }
+    if k == "SqliteBegin" {
+        return bk_call_rt(p, ctx, "rt_sq_begin", 1)
+    }
+    if k == "SqliteCommit" {
+        return bk_call_rt(p, ctx, "rt_sq_commit", 1)
+    }
+    if k == "SqliteRollback" {
+        return bk_call_rt(p, ctx, "rt_sq_rollback", 1)
+    }
+    if k == "SqliteMigrate" {
+        return bk_call_rt(p, ctx, "rt_sq_migrate", 2)
+    }
+    if k == "SqliteLastId" {
+        return bk_call_rt(p, ctx, "rt_sq_last_id", 1)
+    }
+    if k == "SqliteClose" {
+        return bk_call_rt(p, ctx, "rt_sq_close", 1)
+    }
+    if k == "SqlitePing" {
+        return bk_call_rt(p, ctx, "rt_sq_ping", 1)
+    }
+    if k == "SqlitePoolNew" {
+        return bk_call_rt(p, ctx, "rt_sq_pool_new", 2)
+    }
+    if k == "SqlitePoolAcquire" {
+        return bk_call_rt(p, ctx, "rt_sq_pool_acquire", 2)
+    }
+    if k == "SqlitePoolStats" {
+        return bk_call_rt(p, ctx, "rt_sq_pool_stats", 1)
+    }
+    if k == "SqlitePoolHealth" {
+        return bk_call_rt(p, ctx, "rt_sq_pool_health", 2)
+    }
+    if k == "SqlitePoolClose" {
+        return bk_call_rt(p, ctx, "rt_sq_pool_close", 1)
+    }
+    // PostgreSQL y operaciones genéricas de base de datos (ver std_postgres.titan).
+    if k == "PostgresConnect" {
+        return bk_call_rt(p, ctx, "rt_pg_connect", 1)
+    }
+    if k == "PostgresConnectTls" {
+        return bk_call_rt(p, ctx, "rt_pg_connect_tls", 1)
+    }
+    if k == "PostgresExecute" {
+        return bk_call_rt(p, ctx, "rt_pg_execute", 3)
+    }
+    if k == "PostgresQuery" {
+        return bk_call_rt(p, ctx, "rt_pg_query", 3)
+    }
+    if k == "PostgresBegin" {
+        return bk_call_rt(p, ctx, "rt_pg_begin", 1)
+    }
+    if k == "PostgresCommit" {
+        return bk_call_rt(p, ctx, "rt_pg_commit", 1)
+    }
+    if k == "PostgresRollback" {
+        return bk_call_rt(p, ctx, "rt_pg_rollback", 1)
+    }
+    if k == "PostgresMigrate" {
+        return bk_call_rt(p, ctx, "rt_pg_migrate", 2)
+    }
+    if k == "PostgresCancel" {
+        return bk_call_rt(p, ctx, "rt_pg_cancel", 1)
+    }
+    if k == "PostgresClose" {
+        return bk_call_rt(p, ctx, "rt_pg_close", 1)
+    }
+    if k == "PostgresPing" {
+        return bk_call_rt(p, ctx, "rt_pg_ping", 1)
+    }
+    if k == "PostgresPoolNew" {
+        return bk_call_rt(p, ctx, "rt_pg_pool_new", 3)
+    }
+    if k == "PostgresPoolAcquire" {
+        return bk_call_rt(p, ctx, "rt_pg_pool_acquire", 2)
+    }
+    if k == "PostgresPoolStats" {
+        return bk_call_rt(p, ctx, "rt_pg_pool_stats", 1)
+    }
+    if k == "PostgresPoolHealth" {
+        return bk_call_rt(p, ctx, "rt_pg_pool_health", 2)
+    }
+    if k == "PostgresPoolClose" {
+        return bk_call_rt(p, ctx, "rt_pg_pool_close", 1)
+    }
+    // MySQL (ver std_mysql.titan).
+    if k == "MysqlConnect" {
+        return bk_call_rt(p, ctx, "rt_my_connect", 1)
+    }
+    if k == "MysqlExecute" {
+        return bk_call_rt(p, ctx, "rt_my_execute", 3)
+    }
+    if k == "MysqlQuery" {
+        return bk_call_rt(p, ctx, "rt_my_query", 3)
+    }
+    if k == "MysqlBegin" {
+        return bk_call_rt(p, ctx, "rt_my_begin", 1)
+    }
+    if k == "MysqlCommit" {
+        return bk_call_rt(p, ctx, "rt_my_commit", 1)
+    }
+    if k == "MysqlRollback" {
+        return bk_call_rt(p, ctx, "rt_my_rollback", 1)
+    }
+    if k == "MysqlMigrate" {
+        return bk_call_rt(p, ctx, "rt_my_migrate", 2)
+    }
+    if k == "MysqlLastId" {
+        return bk_call_rt(p, ctx, "rt_my_last_id", 1)
+    }
+    if k == "MysqlClose" {
+        return bk_call_rt(p, ctx, "rt_my_close", 1)
+    }
+    if k == "MysqlPing" {
+        return bk_call_rt(p, ctx, "rt_my_ping", 1)
+    }
+    if k == "MysqlPoolNew" {
+        return bk_call_rt(p, ctx, "rt_my_pool_new", 2)
+    }
+    if k == "MysqlPoolAcquire" {
+        return bk_call_rt(p, ctx, "rt_my_pool_acquire", 2)
+    }
+    if k == "MysqlPoolStats" {
+        return bk_call_rt(p, ctx, "rt_my_pool_stats", 1)
+    }
+    if k == "MysqlPoolHealth" {
+        return bk_call_rt(p, ctx, "rt_my_pool_health", 2)
+    }
+    if k == "MysqlPoolClose" {
+        return bk_call_rt(p, ctx, "rt_my_pool_close", 1)
+    }
+    if k == "DbExecute" {
+        return bk_call_rt(p, ctx, "rt_db_execute", 3)
+    }
+    if k == "DbQuery" {
+        return bk_call_rt(p, ctx, "rt_db_query", 3)
+    }
+    if k == "DbBegin" {
+        return bk_call_rt(p, ctx, "rt_db_begin", 1)
+    }
+    if k == "DbCommit" {
+        return bk_call_rt(p, ctx, "rt_db_commit", 1)
+    }
+    if k == "DbRollback" {
+        return bk_call_rt(p, ctx, "rt_db_rollback", 1)
+    }
+    if k == "DbMigrate" {
+        return bk_call_rt(p, ctx, "rt_db_migrate", 2)
+    }
+    if k == "DbClose" {
+        return bk_call_rt(p, ctx, "rt_db_close", 1)
+    }
+    if k == "DbPing" {
+        return bk_call_rt(p, ctx, "rt_db_ping", 1)
+    }
+    // Tareas y canales (fibras cooperativas, ver std_task.titan).
+    if k == "Spawn" {
+        return bk_call_rt(p, ctx, "rt_task_spawn", 1)
+    }
+    if k == "JoinTask" {
+        return bk_call_rt(p, ctx, "rt_task_join", 1)
+    }
+    if k == "JoinTaskTimeout" {
+        return bk_call_rt(p, ctx, "rt_task_join_timeout", 2)
+    }
+    if k == "CancelTask" {
+        return bk_call_rt(p, ctx, "rt_task_cancel", 1)
+    }
+    if k == "NewChannel" {
+        return bk_call_rt(p, ctx, "rt_chan_new", 1)
+    }
+    if k == "ChannelSend" {
+        return bk_call_rt(p, ctx, "rt_chan_send", 2)
+    }
+    if k == "ChannelRecv" {
+        return bk_call_rt(p, ctx, "rt_chan_recv", 1)
+    }
+    if k == "ChannelRecvTimeout" {
+        return bk_call_rt(p, ctx, "rt_chan_recv_timeout", 2)
+    }
+    if k == "ChannelSelect" {
+        return bk_call_rt(p, ctx, "rt_chan_select", 2)
+    }
+    // Las mismas operaciones que `recv.map(f)` & co (ver bk_call_method): la pila
+    // trae [array, f] ([array, inicial, f] en fold).
+    if k == "ArrayMap" {
+        return bk_call_rt(p, ctx, "rt_m_map", 2)
+    }
+    if k == "ArrayFilter" {
+        return bk_call_rt(p, ctx, "rt_m_filter", 2)
+    }
+    if k == "ArrayFold" {
+        return bk_call_rt(p, ctx, "rt_m_fold", 3)
+    }
+    if k == "ArrayFind" {
+        return bk_call_rt(p, ctx, "rt_m_find", 2)
+    }
+    if k == "ArrayAny" {
+        return bk_call_rt(p, ctx, "rt_m_any", 2)
+    }
+    if k == "ArrayAll" {
+        return bk_call_rt(p, ctx, "rt_m_all", 2)
+    }
     if k == "Index" {
         return bk_index(p, ctx)
     }
@@ -1189,6 +1567,9 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
         p = bk_call_rt(p, ctx, "rt_call_error", 2)
         return pc_label(p, "done")
     }
+    if k == "CallMethod" {
+        return bk_call_method(p, ctx, op.s, n)
+    }
     if k == "TryCall" {
         // std::try::catch(f, args...): como la VM, un error dentro de la
         // llamada se devuelve como Result::Err(mensaje) y el éxito como
@@ -1264,6 +1645,107 @@ fn bk_op(ctx: Ctx, op: Op, pc: int) -> Pc {
     pc_error(p, "instruction " + k + " is not supported by the native backend yet")
 }
 
+// Implementaciones por struct de `method`: (nombre del struct, índice de la función).
+fn bk_method_candidates(ctx: Ctx, method: string) -> array {
+    let suffix = "::" + method
+    let mut out = []
+    for key in bk_sort_strings(std::map::keys(ctx.methods)) {
+        if std::text::ends_with(key, suffix) {
+            let owner = std::text::substring(key, 0, len(key) - len(suffix))
+            out = std::array::push(out, (owner, std::map::get(ctx.methods, key)))
+        }
+    }
+    out
+}
+
+// Función del runtime que implementa el método de colección `method` con `argc`
+// argumentos (sin contar el receptor), o "" si no existe.
+fn bk_collection_method(method: string, argc: int) -> string {
+    if argc == 0 && method == "len" {
+        return "rt_len"
+    }
+    if argc == 1 {
+        if method == "map" {
+            return "rt_m_map"
+        }
+        if method == "filter" {
+            return "rt_m_filter"
+        }
+        if method == "find" {
+            return "rt_m_find"
+        }
+        if method == "any" {
+            return "rt_m_any"
+        }
+        if method == "all" {
+            return "rt_m_all"
+        }
+        if method == "sort_by" {
+            return "rt_sort_by"
+        }
+    }
+    if argc == 2 && method == "fold" {
+        return "rt_m_fold"
+    }
+    ""
+}
+
+// recv.method(args): la pila trae [receptor, arg1..argN]. Un struct usa la
+// implementación registrada como "<Struct>::<método>" (se compara su nombre, que
+// es un string estático único, con cada candidato conocido en tiempo de
+// compilación; se llama igual que a una función normal, con el receptor como primer
+// argumento). Cualquier otro valor usa la operación de colección del mismo nombre
+// y aridad si existe. Si no, error como el de la VM.
+fn bk_call_method(p0: Pc, ctx: Ctx, method: string, n: int) -> Pc {
+    let rsp = x_rsp()
+    let rax = x_rax()
+    let rcx = x_rcx()
+    let off = 16 * n
+    let mut p = pc_add(p0, x_cmp_mi(rsp, off, 10))
+    p = pc_jl(p, x_jcc(x_cc_ne(), 0), "builtin")
+    let cands = bk_method_candidates(ctx, method)
+    if len(cands) > 0 {
+        p = pc_add(p, x_load(rcx, rsp, off + 8))
+        p = pc_add(p, x_load(rcx, rcx, 8))
+        let mut i = 0
+        for c in cands {
+            let (owner, index) = c
+            p = pc_ref(p, x_mov_ri64(rax, 0), 2, "str", owner, 0)
+            p = pc_add(p, x_cmp_rr(rax, rcx))
+            p = pc_jl(p, x_jcc(x_cc_ne(), 0), "next{i}")
+            let target = ctx.funcs[index]
+            if target.arity != n + 1 {
+                // Como la VM: la aridad se comprueba al entrar en la función.
+                p = bk_push_str(p, target.name)
+                p = bk_push_int(p, target.arity)
+                p = bk_push_int(p, n + 1)
+                p = bk_call_rt(p, ctx, "rt_arity_error", 3)
+                p = pc_add(p, x_ud2())
+            } else {
+                p = pc_ref(p, x_call(0), 1, "rel", ctx.prefix + "{index}", 0)
+                p = pc_add(p, x_add_ri(rsp, 16 * (n + 1)))
+                p = pc_add(pc_add(p, x_push(x_rdx())), x_push(x_rax()))
+                p = pc_jl(p, x_jmp(0), "done")
+            }
+            p = pc_label(p, "next{i}")
+            i += 1
+        }
+    }
+    p = pc_label(p, "err")
+    p = pc_add(pc_add(p, x_push_m(rsp, off + 8)), x_push_m(rsp, off + 8))
+    p = bk_push_str(p, method)
+    p = bk_call_rt(p, ctx, "rt_method_error", 2)
+    p = pc_add(p, x_ud2())
+    p = pc_label(p, "builtin")
+    let target = bk_collection_method(method, n)
+    if target == "" {
+        p = pc_jl(p, x_jmp(0), "err")
+    } else {
+        p = bk_call_rt(p, ctx, target, n + 1)
+    }
+    pc_label(p, "done")
+}
+
 // ------------------------------------------------------------ funciones
 
 fn bk_prologue(ctx: Ctx, f: Func) -> Pc {
@@ -1310,13 +1792,29 @@ fn bk_prologue(ctx: Ctx, f: Func) -> Pc {
     pc_finish(p)
 }
 
+// Gancho del depurador antes de la instrucción `pc`: rt_dbg_hook(función, instrucción, rbp,
+// rsp, tabla). La pila de operandos es la pila de la máquina y los locales están en el marco,
+// así que el gancho lee el estado exacto de la VM con (rbp, rsp). No deja nada apilado.
+fn bk_debug_hook(ctx: Ctx, pc: int) -> Pc {
+    let mut p = pc_add(pc_new(), x_mov_rr(x_rax(), x_rsp()))
+    p = bk_push_int(p, ctx.fid)
+    p = bk_push_int(p, pc)
+    p = pc_add(p, x_push(x_rbp()))
+    p = pc_add(p, x_push_i(1))
+    p = pc_add(p, x_push(x_rax()))
+    p = pc_add(p, x_push_i(1))
+    p = bk_push_str(p, ctx.dbg)
+    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_dbg_hook"), 0)
+    pc_add(p, x_add_ri(x_rsp(), 16 * 5))
+}
+
 // Compila una función: Pc con referencias globales relativas a su inicio.
-fn bk_function(ctx0: Ctx, f: Func) -> Pc {
+fn bk_function(ctx0: Ctx, f: Func, fid: int) -> Pc {
     let mut locals = f.locals
     if f.arity + f.captures > locals {
         locals = f.arity + f.captures
     }
-    let ctx = Ctx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, epi: len(f.code) + 1 }
+    let ctx = Ctx { prefix: ctx0.prefix, runtime: ctx0.runtime, locals: locals, funcs: ctx0.funcs, table: ctx0.table, rt: ctx0.rt, rt_arity: ctx0.rt_arity, methods: ctx0.methods, epi: len(f.code) + 1, dbg: ctx0.dbg, fid: fid }
     let head = bk_prologue(ctx, f)
     let mut code = head.b
     let mut fx = head.fx
@@ -1324,6 +1822,14 @@ fn bk_function(ctx0: Ctx, f: Func) -> Pc {
     let mut pc = 0
     for op in f.code {
         offs = std::array::push(offs, len(code))
+        if ctx.dbg != "" {
+            let hook = pc_finish(bk_debug_hook(ctx, pc))
+            let hbase = len(code)
+            for r in hook.fx {
+                fx = std::array::push(fx, Fx { off: r.off + hbase, kind: r.kind, target: r.target, n: r.n })
+            }
+            code = std::array::concat(code, hook.b)
+        }
         let piece = pc_finish(bk_op(ctx, op, pc))
         let base = len(code)
         for r in piece.fx {
@@ -1365,7 +1871,7 @@ fn bk_function(ctx0: Ctx, f: Func) -> Pc {
 
 // ------------------------------------------------------------ enlazado
 
-fn bk_glue(ctx: Ctx, entry: string) -> array {
+fn bk_glue(ctx: Ctx, entry: string, dbg: string) -> array {
     let rax = x_rax()
     let rsp = x_rsp()
     let mut pieces = []
@@ -1373,7 +1879,11 @@ fn bk_glue(ctx: Ctx, entry: string) -> array {
     let mut p = pc_label(pc_new(), "g_raise")
     p = pc_add(p, x_push(rax))
     p = pc_add(p, x_push_i(5))
-    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, "rt_fatal"), 0)
+    let mut fatal = "rt_fatal"
+    if dbg != "" {
+        fatal = "rt_dbg_fatal"
+    }
+    p = pc_ref(p, x_call(0), 1, "rel", bk_rt(ctx, fatal), 0)
     p = pc_add(p, x_ud2())
     pieces = std::array::push(pieces, p)
     for pair in [("g_overflow", "integer overflow"), ("g_divzero", "division by zero"), ("g_depth", "call depth limit exceeded")] {
@@ -1446,6 +1956,16 @@ fn bk_glue(ctx: Ctx, entry: string) -> array {
     gp = pc_label(gp, "out")
     gp = pc_add(gp, x_ret())
     pieces = std::array::push(pieces, gp)
+    // g_switch (rdi = dónde guardar rsp, rsi = rsp nuevo): cambio de contexto
+    // entre fibras (tareas). Deja rbp y la dirección de retorno en la pila que
+    // abandona y continúa en la que entra (pop rbp; ret). r15 es común.
+    let mut sw = pc_label(pc_new(), "g_switch")
+    sw = pc_add(sw, x_push(x_rbp()))
+    sw = pc_add(sw, x_store(rdi, 0, rsp))
+    sw = pc_add(sw, x_mov_rr(rsp, rsi))
+    sw = pc_add(sw, x_pop(x_rbp()))
+    sw = pc_add(sw, x_ret())
+    pieces = std::array::push(pieces, sw)
     // g_start: globales, pila propia de 1 GiB (reservada, no ocupada) y main.
     let size = 1073741824
     let mut s = pc_label(pc_new(), "g_start")
@@ -1460,10 +1980,20 @@ fn bk_glue(ctx: Ctx, entry: string) -> array {
     s = pc_add(s, x_mov_ri(x_r9(), 0))
     s = pc_add(s, x_syscall())
     s = pc_add(s, x_lea(rsp, rax, size))
+    if dbg != "" {
+        // Depurador: rt_dbg_init(tabla) antes de entrar en main.
+        s = bk_push_str(s, dbg)
+        s = pc_ref(s, x_call(0), 1, "rel", bk_rt(ctx, "rt_dbg_init"), 0)
+        s = pc_add(s, x_add_ri(rsp, 16))
+    }
     s = pc_ref(s, x_call(0), 1, "rel", entry, 0)
     s = pc_add(s, x_push(x_rdx()))
     s = pc_add(s, x_push(rax))
-    s = pc_ref(s, x_call(0), 1, "rel", bk_rt(ctx, "rt_finish"), 0)
+    let mut finish = "rt_finish"
+    if dbg != "" {
+        finish = "rt_dbg_finish"
+    }
+    s = pc_ref(s, x_call(0), 1, "rel", bk_rt(ctx, finish), 0)
     s = pc_add(s, x_ud2())
     pieces = std::array::push(pieces, s)
     pieces
@@ -1527,9 +2057,16 @@ fn bk_label_index(t: string) -> int {
 }
 
 fn bk_build(gu: G, gr: G) -> Result {
+    bk_build_with(gu, gr, "")
+}
+
+// `dbg` no vacío = ejecutable de depuración: antes de cada instrucción de las funciones del
+// usuario se llama a `rt_dbg_hook` (native/std_debug.titan); `dbg` es la tabla de funciones y
+// posiciones que ese gancho lee (ver `dbg_table` en selfhost/debug_table.titan).
+fn bk_build_with(gu: G, gr: G, dbg: string) -> Result {
     let (rt, rt_arity) = bk_rt_tables(gr)
-    let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, epi: 0 }
-    let rctx = Ctx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, epi: 0 }
+    let uctx = Ctx { prefix: "u", runtime: false, locals: 0, funcs: gu.funcs, table: gu.table, rt: rt, rt_arity: rt_arity, methods: gu.methods, epi: 0, dbg: dbg, fid: 0 }
+    let rctx = Ctx { prefix: "r", runtime: true, locals: 0, funcs: gr.funcs, table: gr.table, rt: rt, rt_arity: rt_arity, methods: std::map::new(), epi: 0, dbg: "", fid: 0 }
     let mut code = []
     let mut fx = []
     let mut labels = std::map::new()
@@ -1538,7 +2075,7 @@ fn bk_build(gu: G, gr: G) -> Result {
     // para perfiles y depuración.
     let mut syms = []
     let entry_index = gu.entry
-    for piece in bk_glue(rctx, "u{entry_index}") {
+    for piece in bk_glue(rctx, "u{entry_index}", dbg) {
         let base = len(code)
         for name in std::map::keys(piece.lab) {
             labels = std::map::insert(labels, name, base + std::map::get(piece.lab, name))
@@ -1556,7 +2093,7 @@ fn bk_build(gu: G, gr: G) -> Result {
     for f in gu.funcs {
         labels = std::map::insert(labels, "u{i}", len(code))
         syms = std::array::push(syms, (len(code), f.name))
-        let piece = bk_function(uctx, f)
+        let piece = bk_function(uctx, f, i)
         let base = len(code)
         for r in piece.fx {
             fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })
@@ -1571,8 +2108,11 @@ fn bk_build(gu: G, gr: G) -> Result {
     let mut scan = 0
     while scan < len(fx) {
         let target = fx[scan].target
+        let kind = fx[scan].kind
         scan += 1
-        if !bk_is_rt_label(target) || std::map::contains(emitted, target) {
+        // Solo las referencias a etiquetas de código: el texto de un string
+        // (kind "str") puede parecerse a una etiqueta, p. ej. "r70000".
+        if (kind != "rel" && kind != "abs") || !bk_is_rt_label(target) || std::map::contains(emitted, target) {
             continue
         }
         emitted = std::map::insert(emitted, target, true)
@@ -1580,7 +2120,7 @@ fn bk_build(gu: G, gr: G) -> Result {
         let f = gr.funcs[index]
         labels = std::map::insert(labels, target, len(code))
         syms = std::array::push(syms, (len(code), "runtime:" + f.name))
-        let piece = bk_function(rctx, f)
+        let piece = bk_function(rctx, f, index)
         let base = len(code)
         for r in piece.fx {
             fx = std::array::push(fx, Fx { off: r.off + base, kind: r.kind, target: r.target, n: r.n })

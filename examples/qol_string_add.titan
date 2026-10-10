@@ -10,7 +10,7 @@
 //   let out = "hello " + doc      -> funciona con cualquier tipo
 //
 // Ejecutar con:
-//     zett run examples/qol_string_add.titan
+//     titan run examples/qol_string_add.titan
 
 fn main() {
     print("---- Fase 17: String + Any ----")

@@ -829,11 +829,23 @@ fn ot_inline_into(f: Func, me: int, funcs: array, ok: array) -> any {
 // ya integra por su cuenta) y agranda el ejecutable. Queda probada (243
 // programas) para cuando haya pasadas que se aprovechen de ella
 // (propagación de constantes a través de variables).
+// El runtime nativo se compila sin moves (su código maneja referencias a mano con std::raw), salvo
+// el motor de tokenizers (native/std_tokenize_*.titan), el de SQLite y el de ONNX (std_onnx_engine, std_onnx_ops):
+// es Titan normal, sin std::raw ni punteros,
+// y necesita los moves para que push/set/concat sobre arrays que pasan de función en función
+// modifiquen en el sitio en vez de copiar (sin ellos, el coste sería cuadrático).
+fn ot_moves_for(f: Func, moves: bool) -> bool {
+    if moves || f.file == nil {
+        return moves
+    }
+    std::text::contains(f.file, "std_tokenize_") || std::text::contains(f.file, "std_onnx_engine") || std::text::contains(f.file, "std_onnx_ops") || (std::text::contains(f.file, "std_sqlite_") && !std::text::contains(f.file, "std_sqlite_io"))
+}
+
 fn ot_optimize(g0: G, moves: bool) -> G {
     let mut g = g0
     let mut funcs = []
     for f in g0.funcs {
-        let (g2, nf) = ot_function(g, f, moves)
+        let (g2, nf) = ot_function(g, f, ot_moves_for(f, moves))
         g = g2
         funcs = std::array::push(funcs, nf)
     }
@@ -852,7 +864,7 @@ fn ot_optimize(g0: G, moves: bool) -> G {
         if inl == nil {
             result = std::array::push(result, f)
         } else {
-            let (g2, nf) = ot_function(g, inl, moves)
+            let (g2, nf) = ot_function(g, inl, ot_moves_for(inl, moves))
             g = g2
             result = std::array::push(result, nf)
         }

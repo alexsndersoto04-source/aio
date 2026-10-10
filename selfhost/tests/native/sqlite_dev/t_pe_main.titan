@@ -1,0 +1,26 @@
+fn show(sql: string) {
+    let (toks, err) = sql_lex(sql)
+    if err != "" {
+        print("LEXERR", err)
+        return
+    }
+    let (s, j) = sp_select(toks, 0)
+    if j < 0 {
+        let p = 0 - j - 1
+        print("ERR near", toks[p].s)
+        return
+    }
+    print("OK", j, len(toks) - 1, s)
+}
+
+fn main() {
+    show("SELECT a, b+1 AS c FROM t WHERE a > 5 AND b LIKE 'x%' ORDER BY a DESC LIMIT 10")
+    show("select count(*), max(x) from t group by y having count(*) > 2")
+    show("select * from a join b on a.id = b.id left join c using (id) where a.x in (1,2,3)")
+    show("with r(n) as (select 1 union all select n+1 from r where n < 5) select n from r")
+    show("select case when a then 1 else 2 end, cast(x as integer), -5, x'ff', ?, :n from t where a between 1 and 3 and b is not null and c not in (select 1)")
+    show("select a from t where exists (select 1 from u where u.a = t.a) order by 1, b collate nocase")
+    show("select sum(x) over (partition by y order by z rows between unbounded preceding and current row) from t")
+    show("select 1 +")
+    show("select from")
+}

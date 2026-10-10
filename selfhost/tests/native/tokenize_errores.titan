@@ -1,0 +1,109 @@
+// std::tokenize: errores, límites y casos raros; los mensajes deben coincidir con los de la
+// VM de Rust.
+fn obj(pairs: array) -> any {
+    let mut m = std::map::new()
+    let mut i = 0
+    while i < len(pairs) {
+        m = std::map::insert(m, pairs[i], pairs[i + 1])
+        i += 2
+    }
+    m
+}
+
+fn words_json(unk: any) -> string {
+    let model = obj(["type", "WordLevel", "unk_token", unk, "vocab", obj(["hello", 0, "world", 1, "[UNK]", 2])])
+    std::json::stringify(obj(["version", "1.0", "model", model, "pre_tokenizer", obj(["type", "Whitespace"])]))
+}
+
+fn rep(s: string, n: int) -> string {
+    std::collections::join(std::array::filled(n, s), "")
+}
+
+// Los mensajes de JSON inválido terminan en " at line N column M" (posición de serde); aquí
+// solo se compara la parte anterior.
+fn cut(m: string) -> string {
+    let n = std::text::length(m)
+    let mut i = 0
+    while i + 9 <= n {
+        if std::text::substring(m, i, i + 9) == " at line " {
+            return std::text::substring(m, 0, i)
+        }
+        i += 1
+    }
+    m
+}
+
+fn attempt(label: string, r: any) {
+    match r {
+        Result::Ok(v) => { print(label + ": ok " + std::json::stringify(v)) },
+        Result::Err(m) => { print(label + ": " + cut(m)) },
+        _ => { print(label + ": ?") },
+    }
+}
+
+fn main() {
+    let h = std::tokenize::from_json(words_json("[UNK]"))
+    attempt("ok", std::try::catch(|| { std::tokenize::encode(h, "hello there world", true) }))
+    let sin_unk = std::try::catch(|| { std::tokenize::from_json(words_json(nil)) })
+    match sin_unk {
+        Result::Ok(_) => { print("sin unk: ok") },
+        Result::Err(_) => { print("sin unk: error") },
+    }
+    attempt("manejador desconocido", std::try::catch(|| { std::tokenize::encode(999, "x", true) }))
+    attempt("manejador negativo", std::try::catch(|| { std::tokenize::vocab_size(-1) }))
+
+    let big = rep("a", 65537)
+    attempt("texto grande", std::try::catch(|| { std::tokenize::encode(h, big, true) }))
+    let edge = rep("a", 65536)
+    attempt("texto al limite", std::try::catch(|| { len(std::tokenize::encode(h, edge, true)["ids"]) }))
+    attempt("lote 65", std::try::catch(|| { std::tokenize::encode_batch(h, std::array::filled(65, "a"), true) }))
+    attempt("lote 64", std::try::catch(|| { len(std::tokenize::encode_batch(h, std::array::filled(64, "hello"), true)) }))
+    attempt("lote bytes", std::try::catch(|| { std::tokenize::encode_batch(h, std::array::filled(5, rep("a", 60000)), true) }))
+    attempt("relleno 0", std::try::catch(|| { std::tokenize::encode_padded(h, "a", 0, 0, true) }))
+    attempt("relleno negativo", std::try::catch(|| { std::tokenize::encode_padded(h, "a", -1, 0, true) }))
+    attempt("relleno grande", std::try::catch(|| { std::tokenize::encode_padded(h, "a", 65537, 0, true) }))
+    attempt("relleno max", std::try::catch(|| { len(std::tokenize::encode_padded(h, "a", 65536, 0, true)["ids"]) }))
+    attempt("pad_id negativo", std::try::catch(|| { std::tokenize::encode_padded(h, "a", 4, -1, true) }))
+    attempt("pad_id u32", std::try::catch(|| { std::tokenize::encode_padded(h, "a", 4, 4294967296, true) }))
+    attempt("pad_id max", std::try::catch(|| { std::tokenize::encode_padded(h, "hello", 3, 4294967295, true) }))
+    attempt("decode negativo", std::try::catch(|| { std::tokenize::decode(h, [1, -1], true) }))
+    attempt("decode u32", std::try::catch(|| { std::tokenize::decode(h, [4294967296], true) }))
+    attempt("decode muchos", std::try::catch(|| { std::tokenize::decode(h, std::array::filled(131073, 1), true) }))
+    attempt("decode limite", std::try::catch(|| { len(std::tokenize::decode(h, std::array::filled(131072, 1), true)) }))
+    attempt("id_to_token negativo", std::try::catch(|| { std::tokenize::id_to_token(h, -1) }))
+    attempt("id_to_token u32", std::try::catch(|| { std::tokenize::id_to_token(h, 4294967296) }))
+    attempt("token_to_id largo", std::try::catch(|| { std::tokenize::token_to_id(h, rep("a", 257)) }))
+    attempt("token_to_id 256", std::try::catch(|| { std::tokenize::token_to_id(h, rep("a", 256)) }))
+
+    // Archivos.
+    attempt("archivo ausente", std::try::catch(|| { std::tokenize::load("/tmp/no-existe-tokenizer.json") }))
+    attempt("carpeta", std::try::catch(|| { std::tokenize::load("/tmp") }))
+    attempt("ruta larga", std::try::catch(|| { std::tokenize::load(rep("a", 16385)) }))
+    let pid = std::process::self_pid()
+    let path = "/tmp/titan_tokenize_err_" + "{pid}.json"
+    std::fs::write_bytes(path, std::bytes::from_array([123, 255, 125]))
+    attempt("no utf8", std::try::catch(|| { std::tokenize::load(path) }))
+    std::fs::write_text(path, "")
+    attempt("vacio", std::try::catch(|| { std::tokenize::load(path) }))
+    std::fs::remove_file(path)
+
+    // JSON sin modelo, tipos desconocidos, truncado inválido.
+    attempt("sin modelo", std::try::catch(|| { std::tokenize::from_json(std::json::stringify(obj(["version", "1.0"]))) }))
+    attempt("version", std::try::catch(|| { std::tokenize::from_json(std::json::stringify(obj(["version", "9.9", "model", obj(["type", "WordLevel", "vocab", obj(["a", 0]), "unk_token", "a"])]))) }))
+    attempt("modelo desconocido", std::try::catch(|| { std::tokenize::from_json(std::json::stringify(obj(["model", obj(["type", "Nada"])]))) }))
+
+    // Límite de manejadores: 16 vivos como máximo (`h` es uno).
+    let mut hs = []
+    let mut i = 0
+    while i < 15 {
+        hs = std::array::push(hs, std::tokenize::from_json(words_json("[UNK]")))
+        i += 1
+    }
+    attempt("manejador 17", std::try::catch(|| { std::tokenize::from_json(words_json("[UNK]")) }))
+    for x in hs {
+        std::tokenize::close(x)
+    }
+    attempt("manejador tras cerrar", std::try::catch(|| { std::tokenize::vocab_size(std::tokenize::from_json(words_json("[UNK]"))) }))
+    std::tokenize::close(h)
+    print("fin")
+}

@@ -1,0 +1,46 @@
+// Varios clientes a la vez contra un servidor que atiende en tareas.
+fn texto(b: bytes) -> string {
+    std::encoding::utf8_decode(b)
+}
+
+fn atender(s: TcpStream) -> int {
+    let b = std::net::tcp_read(s, 64)
+    std::net::tcp_write(s, texto(b) + "!")
+    std::net::tcp_close(s)
+    std::bytes::length(b)
+}
+
+fn main() {
+    let l = std::net::tcp_listen("127.0.0.1:0")
+    let addr = std::net::tcp_local_addr(l)
+    let mut clientes = []
+    let mut i = 0
+    while i < 6 {
+        let k = i
+        clientes = std::array::push(clientes, spawn || {
+            let c = std::net::tcp_connect(addr)
+            std::net::tcp_write(c, "cliente {k}")
+            let r = texto(std::net::tcp_read(c, 64))
+            std::net::tcp_close(c)
+            r
+        })
+        i += 1
+    }
+    let mut trabajos = []
+    let mut n = 0
+    while n < 6 {
+        let (s, peer) = std::net::tcp_accept(l)
+        trabajos = std::array::push(trabajos, spawn || { atender(s) })
+        n += 1
+    }
+    let mut bytes_total = 0
+    for t in trabajos {
+        bytes_total += join(t)
+    }
+    print(bytes_total)
+    let mut respuestas = []
+    for c in clientes {
+        respuestas = std::array::push(respuestas, join(c))
+    }
+    print(respuestas)
+}

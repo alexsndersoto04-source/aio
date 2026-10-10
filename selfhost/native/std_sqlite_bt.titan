@@ -1,0 +1,698 @@
+// std::sqlite en Titan, parte 3: árboles B (tablas e índices) sobre el paginador.
+// Formato de página de SQLite. Una página decodificada es `SPc`: tipo, celdas (cada una un
+// array de bytes) y puntero derecho. Cada modificación reconstruye la página entera.
+// Tipos de página: 13 hoja de tabla, 5 interior de tabla, 10 hoja de índice, 2 interior de índice.
+
+struct SPc {
+    kind: int,
+    cells: array,
+    right: int,
+}
+
+fn sqt_hdr(no: int) -> int {
+    if no == 1 {
+        return 100
+    }
+    0
+}
+
+fn sqt_interior(kind: int) -> bool {
+    kind == 5 || kind == 2
+}
+
+fn sqt_max_local(kind: int, u: int) -> int {
+    if kind == 13 {
+        return u - 35
+    }
+    return (u - 12) * 64 / 255 - 23
+}
+
+fn sqt_min_local(u: int) -> int {
+    return (u - 12) * 32 / 255 - 23
+}
+
+fn sqt_local(kind: int, pl: int, u: int) -> int {
+    let mx = sqt_max_local(kind, u)
+    if pl <= mx {
+        return pl
+    }
+    let m = sqt_min_local(u)
+    let k = m + (pl - m) % (u - 4)
+    if k <= mx {
+        return k
+    }
+    m
+}
+
+// Tamaño de la celda que empieza en `off` de la página `a`.
+fn sqt_cell_size(kind: int, a: array, off: int, u: int) -> int {
+    let mut sz = 0
+    if kind == 13 {
+        let (pl, n1) = sqt_varint_at(a, off)
+        let (_, n2) = sqt_varint_at(a, off + n1)
+        let loc = sqt_local(kind, pl, u)
+        sz = n1 + n2 + loc
+        if pl > loc {
+            sz += 4
+        }
+    } else if kind == 5 {
+        let (_, n) = sqt_varint_at(a, off + 4)
+        sz = 4 + n
+    } else if kind == 10 {
+        let (pl, n1) = sqt_varint_at(a, off)
+        let loc = sqt_local(kind, pl, u)
+        sz = n1 + loc
+        if pl > loc {
+            sz += 4
+        }
+    } else {
+        let (pl, n1) = sqt_varint_at(a, off + 4)
+        let loc = sqt_local(kind, pl, u)
+        sz = 4 + n1 + loc
+        if pl > loc {
+            sz += 4
+        }
+    }
+    if sz < 4 {
+        return 4
+    }
+    sz
+}
+
+fn sqt_varint_at(a: array, o: int) -> (int, int) {
+    sq_varint(a, o)
+}
+
+fn sqt_pc_read(p: SqPg, no: int) -> SPc {
+    let a = sqp_read(p, no)
+    let hdr = sqt_hdr(no)
+    let kind = a[hdr]
+    let n = sq_u16(a, hdr + 3)
+    let inter = sqt_interior(kind)
+    let mut right = 0
+    let mut ptr0 = hdr + 8
+    if inter {
+        right = sq_u32(a, hdr + 8)
+        ptr0 = hdr + 12
+    }
+    let mut cells = []
+    let mut i = 0
+    while i < n {
+        let off = sq_u16(a, ptr0 + 2 * i)
+        let sz = sqt_cell_size(kind, a, off, p.psize)
+        cells = std::array::push(cells, std::array::slice(a, off, off + sz))
+        i += 1
+    }
+    SPc { kind: kind, cells: cells, right: right }
+}
+
+fn sqt_pc_used(pc: SPc) -> int {
+    let mut t = 0
+    for c in pc.cells {
+        t += len(c) + 2
+    }
+    t
+}
+
+fn sqt_pc_cap(no: int, kind: int, u: int) -> int {
+    let mut h = 8
+    if sqt_interior(kind) {
+        h = 12
+    }
+    u - sqt_hdr(no) - h
+}
+
+fn sqt_pc_fits(no: int, pc: SPc, u: int) -> bool {
+    sqt_pc_used(pc) <= sqt_pc_cap(no, pc.kind, u)
+}
+
+fn sqt_pc_write(p: SqPg, no: int, pc: SPc) -> SqPg {
+    let u = p.psize
+    let hdr = sqt_hdr(no)
+    let n = len(pc.cells)
+    let mut total = 0
+    for c in pc.cells {
+        total += len(c)
+    }
+    let cs = u - total
+    let inter = sqt_interior(pc.kind)
+    let mut h = [pc.kind, 0, 0, n / 256, n % 256, (cs % 65536) / 256, cs % 256, 0]
+    let mut ptr0 = 8
+    if inter {
+        h = std::array::concat(h, sq_be32(pc.right))
+        ptr0 = 12
+    }
+    // punteros: la celda 0 queda arriba del todo
+    let mut ptrs = []
+    let mut off = u
+    for c in pc.cells {
+        off -= len(c)
+        ptrs = std::array::concat(ptrs, sq_be16(off))
+    }
+    let mut body = []
+    let mut i = n - 1
+    while i >= 0 {
+        body = std::array::concat(body, pc.cells[i])
+        i -= 1
+    }
+    let gap = cs - hdr - ptr0 - 2 * n
+    let mut page = []
+    if hdr > 0 {
+        page = std::array::slice(sqp_read(p, 1), 0, hdr)
+    }
+    page = std::array::concat(page, h)
+    page = std::array::concat(page, ptrs)
+    page = std::array::concat(page, sq_zeros(gap))
+    page = std::array::concat(page, body)
+    sqp_write(p, no, page)
+}
+
+// ------------------------------------------------------------ desbordamiento
+
+// Carga útil completa de la celda cuyo registro empieza en `off` (después de los varints
+// de tamaño): `a` es la celda o la página, `start` el inicio del cuerpo, `pl` su tamaño total.
+fn sqt_payload(p: SqPg, kind: int, a: array, start: int, pl: int) -> array {
+    let u = p.psize
+    let loc = sqt_local(kind, pl, u)
+    let mut out = std::array::slice(a, start, start + loc)
+    if pl > loc {
+        let mut ovf = sq_u32(a, start + loc)
+        let mut left = pl - loc
+        while ovf != 0 && left > 0 {
+            let pg = sqp_read(p, ovf)
+            let mut take = u - 4
+            if take > left {
+                take = left
+            }
+            out = std::array::concat(out, std::array::slice(pg, 4, 4 + take))
+            left -= take
+            ovf = sq_u32(pg, 0)
+        }
+    }
+    out
+}
+
+// Páginas de desbordamiento de una celda (lista de números).
+fn sqt_ovf_pages(p: SqPg, kind: int, a: array, start: int, pl: int) -> array {
+    let u = p.psize
+    let loc = sqt_local(kind, pl, u)
+    let mut pages = []
+    if pl > loc {
+        let mut ovf = sq_u32(a, start + loc)
+        let mut left = pl - loc
+        while ovf != 0 && left > 0 {
+            pages = std::array::push(pages, ovf)
+            let pg = sqp_read(p, ovf)
+            left -= u - 4
+            ovf = sq_u32(pg, 0)
+        }
+    }
+    pages
+}
+
+// Posición del cuerpo y tamaño de carga de una celda (array exacto de la celda).
+// Devuelve (inicio del cuerpo, tamaño de carga).
+fn sqt_cell_body(kind: int, c: array) -> (int, int) {
+    if kind == 13 {
+        let (pl, n1) = sq_varint(c, 0)
+        let (_, n2) = sq_varint(c, n1)
+        return (n1 + n2, pl)
+    }
+    if kind == 10 {
+        let (pl, n1) = sq_varint(c, 0)
+        return (n1, pl)
+    }
+    let (pl, n1) = sq_varint(c, 4)
+    return (4 + n1, pl)
+}
+
+fn sqt_cell_payload(p: SqPg, kind: int, c: array) -> array {
+    let (st, pl) = sqt_cell_body(kind, c)
+    sqt_payload(p, kind, c, st, pl)
+}
+
+fn sqt_free_cell(p: SqPg, kind: int, c: array) -> SqPg {
+    if kind == 5 {
+        return p
+    }
+    let (st, pl) = sqt_cell_body(kind, c)
+    let pages = sqt_ovf_pages(p, kind, c, st, pl)
+    let mut q = p
+    for no in pages {
+        q = sqp_free(q, no)
+    }
+    q
+}
+
+// Construye la celda con prefijo (varints de tamaño/rowid o hijo) y carga útil.
+fn sqt_mk_cell(p: SqPg, kind: int, prefix: array, payload: array) -> (SqPg, array) {
+    let u = p.psize
+    let pl = len(payload)
+    let loc = sqt_local(kind, pl, u)
+    if pl <= loc {
+        let mut cell = std::array::concat(prefix, payload)
+        if len(cell) < 4 {
+            cell = std::array::concat(cell, sq_zeros(4 - len(cell)))
+        }
+        return (p, cell)
+    }
+    let mut q = p
+    let mut nums = []
+    let mut o = loc
+    while o < pl {
+        let (q2, no) = sqp_alloc(q)
+        q = q2
+        nums = std::array::push(nums, no)
+        o += u - 4
+    }
+    let mut i = 0
+    o = loc
+    while i < len(nums) {
+        let mut e = o + u - 4
+        if e > pl {
+            e = pl
+        }
+        let mut next = 0
+        if i + 1 < len(nums) {
+            next = nums[i + 1]
+        }
+        let mut pg = std::array::concat(sq_be32(next), std::array::slice(payload, o, e))
+        if len(pg) < u {
+            pg = std::array::concat(pg, sq_zeros(u - len(pg)))
+        }
+        q = sqp_write(q, nums[i], pg)
+        o = e
+        i += 1
+    }
+    let mut cell = std::array::concat(prefix, std::array::slice(payload, 0, loc))
+    cell = std::array::concat(cell, sq_be32(nums[0]))
+    return (q, cell)
+}
+
+// ------------------------------------------------------------ árboles nuevos
+
+// Crea una raíz vacía (kind 13 o 10). Devuelve (paginador, número de página).
+fn sqt_new_root(p: SqPg, kind: int) -> (SqPg, int) {
+    let (q, no) = sqp_alloc(p)
+    return (sqt_pc_write(q, no, SPc { kind: kind, cells: [], right: 0 }), no)
+}
+
+// ------------------------------------------------------------ búsqueda
+
+// Elemento de camino: [página, índice, nº de celdas].
+fn sqt_t_path(p: SqPg, root: int, rowid: int) -> array {
+    let u = p.psize
+    let mut path = []
+    let mut no = root
+    while true {
+        let a = sqp_read(p, no)
+        let hdr = sqt_hdr(no)
+        let kind = a[hdr]
+        let n = sq_u16(a, hdr + 3)
+        if kind == 5 {
+            let ptr0 = hdr + 12
+            let mut lo = 0
+            let mut hi = n
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                let off = sq_u16(a, ptr0 + 2 * mid)
+                let (k, _) = sq_varint(a, off + 4)
+                if k >= rowid {
+                    hi = mid
+                } else {
+                    lo = mid + 1
+                }
+            }
+            path = std::array::push(path, [no, lo, n, 0, kind])
+            if lo < n {
+                no = sq_u32(a, sq_u16(a, ptr0 + 2 * lo))
+            } else {
+                no = sq_u32(a, hdr + 8)
+            }
+        } else {
+            let ptr0 = hdr + 8
+            let mut lo = 0
+            let mut hi = n
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                let off = sq_u16(a, ptr0 + 2 * mid)
+                let (pl, n1) = sq_varint(a, off)
+                let (k, _) = sq_varint(a, off + n1)
+                if k >= rowid {
+                    hi = mid
+                } else {
+                    lo = mid + 1
+                }
+            }
+            path = std::array::push(path, [no, lo, n, 0, kind])
+            return path
+        }
+    }
+    path
+}
+
+fn sqt_cell_rowid(c: array) -> int {
+    let (_, n1) = sq_varint(c, 0)
+    let (k, _) = sq_varint(c, n1)
+    k
+}
+
+// Busca un rowid. Devuelve (encontrado, carga útil).
+fn sqt_t_find(p: SqPg, root: int, rowid: int) -> (bool, array) {
+    let path = sqt_t_path(p, root, rowid)
+    let last = path[len(path) - 1]
+    let no = last[0]
+    let i = last[1]
+    if i >= last[2] {
+        return (false, [])
+    }
+    let a = sqp_read(p, no)
+    let hdr = sqt_hdr(no)
+    let off = sq_u16(a, hdr + 8 + 2 * i)
+    let (pl, n1) = sq_varint(a, off)
+    let (k, n2) = sq_varint(a, off + n1)
+    if k != rowid {
+        return (false, [])
+    }
+    return (true, sqt_payload(p, 13, a, off + n1 + n2, pl))
+}
+
+// ------------------------------------------------------------ división de páginas
+
+fn sqt_cum(cells: array, a: int, b: int) -> int {
+    let mut t = 0
+    let mut i = a
+    while i < b {
+        t += len(cells[i]) + 2
+        i += 1
+    }
+    t
+}
+
+// Reparto de las celdas en grupos que caben. Devuelve (grupos, separadores):
+// separadores[i] = celda promovida entre el grupo i y el i+1 (en hojas de tabla es nil y
+// el separador se calcula con el rowid máximo del grupo).
+fn sqt_split(no: int, kind: int, cells: array, u: int) -> (array, array) {
+    let n = len(cells)
+    let cap = sqt_pc_cap(no, kind, u)
+    let promote = kind != 13
+    let total = sqt_cum(cells, 0, n)
+    // intento equilibrado en dos
+    let mut k = 1
+    let mut acc = 0
+    while k < n - 1 && acc + len(cells[k - 1]) + 2 < total / 2 {
+        acc += len(cells[k - 1]) + 2
+        k += 1
+    }
+    if !promote {
+        // grupos [0,k) [k,n)
+        let mut kk = k
+        while kk > 1 && sqt_cum(cells, 0, kk) > cap {
+            kk -= 1
+        }
+        while kk < n - 1 && sqt_cum(cells, kk, n) > cap {
+            kk += 1
+        }
+        if kk >= 1 && kk < n && sqt_cum(cells, 0, kk) <= cap && sqt_cum(cells, kk, n) <= cap {
+            return ([std::array::slice(cells, 0, kk), std::array::slice(cells, kk, n)], [nil])
+        }
+    } else {
+        let mut kk = k
+        while kk > 1 && sqt_cum(cells, 0, kk) > cap {
+            kk -= 1
+        }
+        while kk < n - 2 && sqt_cum(cells, kk + 1, n) > cap {
+            kk += 1
+        }
+        if kk >= 1 && kk <= n - 2 && sqt_cum(cells, 0, kk) <= cap && sqt_cum(cells, kk + 1, n) <= cap {
+            return ([std::array::slice(cells, 0, kk), std::array::slice(cells, kk + 1, n)], [cells[kk]])
+        }
+    }
+    // reparto voraz
+    let mut groups = []
+    let mut seps = []
+    let mut cur = []
+    let mut used = 0
+    let mut i = 0
+    while i < n {
+        let c = cells[i]
+        let need = len(c) + 2
+        if used + need > cap && len(cur) > 0 {
+            if promote {
+                // c se promueve si no es la última
+                if i < n - 1 {
+                    groups = std::array::push(groups, cur)
+                    seps = std::array::push(seps, c)
+                    cur = []
+                    used = 0
+                    i += 1
+                    continue
+                }
+                groups = std::array::push(groups, cur)
+                seps = std::array::push(seps, cells[i - 1])
+                cur = [c]
+                used = need
+                i += 1
+                continue
+            }
+            groups = std::array::push(groups, cur)
+            seps = std::array::push(seps, nil)
+            cur = [c]
+            used = need
+            i += 1
+            continue
+        }
+        cur = std::array::push(cur, c)
+        used += need
+        i += 1
+    }
+    groups = std::array::push(groups, cur)
+    return (groups, seps)
+}
+
+fn sqt_kind_up(kind: int) -> int {
+    if kind == 13 {
+        return 5
+    }
+    if kind == 10 {
+        return 2
+    }
+    kind
+}
+
+// Fija el contenido `pc` de la página path[lvl] y propaga las divisiones hacia arriba.
+fn sqt_commit_pc(p: SqPg, path: array, lvl: int, pc: SPc, rightmost: bool) -> SqPg {
+    let u = p.psize
+    let no = path[lvl][0]
+    if sqt_pc_fits(no, pc, u) {
+        return sqt_pc_write(p, no, pc)
+    }
+    let kind = pc.kind
+    let mut groups = []
+    let mut seps = []
+    let n = len(pc.cells)
+    // añadido al final de la hoja derecha de una tabla: la celda nueva va sola
+    if kind == 13 && rightmost && n >= 2 && sqt_cum(pc.cells, 0, n - 1) <= sqt_pc_cap(no, kind, u) {
+        groups = [std::array::slice(pc.cells, 0, n - 1), [pc.cells[n - 1]]]
+        seps = [nil]
+    } else {
+        let (g, s) = sqt_split(no, kind, pc.cells, u)
+        groups = g
+        seps = s
+    }
+    let m = len(groups)
+    let inter = sqt_interior(kind)
+    let ukind = sqt_kind_up(kind)
+    let mut q = p
+    // páginas destino
+    let mut nums = []
+    let mut gi = 0
+    while gi < m {
+        if gi == 0 && lvl > 0 {
+            nums = std::array::push(nums, no)
+        } else {
+            let (q2, nn) = sqp_alloc(q)
+            q = q2
+            nums = std::array::push(nums, nn)
+        }
+        gi += 1
+    }
+    // escribir cada grupo
+    let mut divs = []
+    gi = 0
+    while gi < m {
+        let g = groups[gi]
+        let mut right = 0
+        if inter {
+            if gi < m - 1 {
+                right = sq_u32(seps[gi], 0)
+            } else {
+                right = pc.right
+            }
+        }
+        q = sqt_pc_write(q, nums[gi], SPc { kind: kind, cells: g, right: right })
+        if gi < m - 1 {
+            // celda divisoria para el padre
+            let mut d = []
+            if kind == 13 {
+                let lastc = g[len(g) - 1]
+                d = std::array::concat(sq_be32(nums[gi]), sq_varint_enc(sqt_cell_rowid(lastc)))
+            } else if kind == 10 {
+                d = std::array::concat(sq_be32(nums[gi]), seps[gi])
+            } else {
+                d = std::array::concat(sq_be32(nums[gi]), std::array::slice(seps[gi], 4, len(seps[gi])))
+            }
+            divs = std::array::push(divs, d)
+        }
+        gi += 1
+    }
+    if lvl == 0 {
+        let last = nums[m - 1]
+        return sqt_pc_write(q, no, SPc { kind: ukind, cells: divs, right: last })
+    }
+    // actualizar el padre
+    let par = sqt_pc_read(q, path[lvl - 1][0])
+    let ci = path[lvl - 1][1]
+    let pn = len(par.cells)
+    let lastp = nums[m - 1]
+    let mut cells2 = []
+    let mut right2 = par.right
+    if ci < pn {
+        let old = par.cells[ci]
+        let upd = std::array::concat(sq_be32(lastp), std::array::slice(old, 4, len(old)))
+        cells2 = std::array::concat(std::array::slice(par.cells, 0, ci), divs)
+        cells2 = std::array::push(cells2, upd)
+        cells2 = std::array::concat(cells2, std::array::slice(par.cells, ci + 1, pn))
+    } else {
+        cells2 = std::array::concat(par.cells, divs)
+        right2 = lastp
+    }
+    sqt_commit_pc(q, path, lvl - 1, SPc { kind: par.kind, cells: cells2, right: right2 }, rightmost)
+}
+
+fn sqt_rightmost(path: array) -> bool {
+    let mut i = 0
+    while i < len(path) - 1 {
+        if path[i][1] != path[i][2] {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+// ------------------------------------------------------------ tablas: insertar y borrar
+
+fn sqt_t_put(p: SqPg, root: int, rowid: int, payload: array) -> SqPg {
+    let path = sqt_t_path(p, root, rowid)
+    let lvl = len(path) - 1
+    let leaf = path[lvl]
+    let no = leaf[0]
+    let idx = leaf[1]
+    let pc = sqt_pc_read(p, no)
+    let n = len(pc.cells)
+    let mut q = p
+    let prefix = std::array::concat(sq_varint_enc(len(payload)), sq_varint_enc(rowid))
+    let mut tail = idx
+    if idx < n && sqt_cell_rowid(pc.cells[idx]) == rowid {
+        q = sqt_free_cell(q, 13, pc.cells[idx])
+        tail = idx + 1
+    }
+    let (q2, cell) = sqt_mk_cell(q, 13, prefix, payload)
+    q = q2
+    let mut cells = std::array::slice(pc.cells, 0, idx)
+    cells = std::array::push(cells, cell)
+    cells = std::array::concat(cells, std::array::slice(pc.cells, tail, n))
+    let rm = idx == n && sqt_rightmost(path)
+    sqt_commit_pc(q, path, lvl, SPc { kind: 13, cells: cells, right: 0 }, rm)
+}
+
+// Sustituye en el padre (nivel lvl-1) el hijo path[lvl] por `child` (colapso).
+fn sqt_t_del(p: SqPg, root: int, rowid: int) -> SqPg {
+    let path = sqt_t_path(p, root, rowid)
+    let lvl = len(path) - 1
+    let leaf = path[lvl]
+    let no = leaf[0]
+    let idx = leaf[1]
+    let pc = sqt_pc_read(p, no)
+    let n = len(pc.cells)
+    if idx >= n || sqt_cell_rowid(pc.cells[idx]) != rowid {
+        return p
+    }
+    let mut q = sqt_free_cell(p, 13, pc.cells[idx])
+    let cells = std::array::concat(std::array::slice(pc.cells, 0, idx), std::array::slice(pc.cells, idx + 1, n))
+    if len(cells) == 0 && lvl > 0 {
+        q = sqp_free(q, no)
+        let (q3, _) = sqt_unlink(q, path, lvl - 1)
+        return q3
+    }
+    sqt_pc_write(q, no, SPc { kind: 13, cells: cells, right: 0 })
+}
+
+// Quita del interior path[lvl] el hijo por el que se bajó (que ya quedó libre).
+// Devuelve (paginador, celda interior quitada junto con el hijo).
+fn sqt_unlink(p: SqPg, path: array, lvl: int) -> (SqPg, array) {
+    let no = path[lvl][0]
+    let ci = path[lvl][1]
+    let par = sqt_pc_read(p, no)
+    let pn = len(par.cells)
+    let mut cells = []
+    let mut right = par.right
+    let mut gone = []
+    if ci < pn {
+        gone = par.cells[ci]
+        cells = std::array::concat(std::array::slice(par.cells, 0, ci), std::array::slice(par.cells, ci + 1, pn))
+    } else {
+        // el hijo derecho desaparece: el último hijo de celda pasa a ser el derecho
+        gone = par.cells[pn - 1]
+        right = sq_u32(par.cells[pn - 1], 0)
+        cells = std::array::slice(par.cells, 0, pn - 1)
+    }
+    if len(cells) == 0 {
+        // interior sin celdas: tiene un solo hijo (right)
+        if lvl == 0 {
+            // raíz: copiar el hijo dentro de la raíz
+            let ch = sqt_pc_read(p, right)
+            let q = sqp_free(p, right)
+            return (sqt_pc_write(q, no, ch), gone)
+        }
+        // reemplazar este interior por su hijo en el abuelo
+        let q = sqp_free(p, no)
+        return (sqt_replace_child(q, path, lvl - 1, right), gone)
+    }
+    return (sqt_pc_write(p, no, SPc { kind: par.kind, cells: cells, right: right }), gone)
+}
+
+fn sqt_replace_child(p: SqPg, path: array, lvl: int, child: int) -> SqPg {
+    let no = path[lvl][0]
+    let ci = path[lvl][1]
+    let par = sqt_pc_read(p, no)
+    let pn = len(par.cells)
+    if ci < pn {
+        let old = par.cells[ci]
+        let upd = std::array::concat(sq_be32(child), std::array::slice(old, 4, len(old)))
+        let cells = std::array::push(std::array::slice(par.cells, 0, ci), upd)
+        let cells2 = std::array::concat(cells, std::array::slice(par.cells, ci + 1, pn))
+        return sqt_pc_write(p, no, SPc { kind: par.kind, cells: cells2, right: par.right })
+    }
+    sqt_pc_write(p, no, SPc { kind: par.kind, cells: par.cells, right: child })
+}
+
+// ------------------------------------------------------------ recorrido de una tabla
+
+// Recorre todos los rowids en orden. Devuelve array de [rowid, carga útil].
+fn sqt_t_scan(p: SqPg, no: int) -> array {
+    let pc = sqt_pc_read(p, no)
+    let mut out = []
+    if pc.kind == 13 {
+        for c in pc.cells {
+            let (st, pl) = sqt_cell_body(13, c)
+            out = std::array::push(out, [sqt_cell_rowid(c), sqt_payload(p, 13, c, st, pl)])
+        }
+        return out
+    }
+    for c in pc.cells {
+        out = std::array::concat(out, sqt_t_scan(p, sq_u32(c, 0)))
+    }
+    std::array::concat(out, sqt_t_scan(p, pc.right))
+}

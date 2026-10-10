@@ -11,7 +11,7 @@
 //   -> si difieren, degrada a Unknown SIN error
 //
 // Ejecutar con:
-//     zett run examples/qol_if_branches.titan
+//     titan run examples/qol_if_branches.titan
 
 fn side_effect() {
     print("  side effect ejecutado")

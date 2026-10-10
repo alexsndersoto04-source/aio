@@ -1,0 +1,23 @@
+fn apply(f, x) { f(x) }
+fn make(n: int) -> any { |z| z + n }
+fn main() {
+    let add = make(10)
+    print(apply(add, 5))
+    let mut total = 0
+    for i in 0..5 { total += i }
+    for i in 0..=5 { total += i }
+    print(total)
+    let names = ["a", "b", "c"]
+    for n in names { print(n) }
+    let m = std::map::insert(std::map::insert(std::map::new(), "x", 1), "y", 2)
+    print(std::map::get(m, "y"))
+    let nested = [[1, 2], [3, 4]]
+    print(nested)
+    let big = 9223372036854775807
+    print(big)
+    let neg = -9223372036854775807
+    print(neg)
+    let t = std::try::catch(|| { std::math::abs(-3) })
+    print(t)
+    "fin"
+}

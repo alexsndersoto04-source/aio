@@ -1,0 +1,2182 @@
+// Motor de inferencia ONNX de std::onnx, en Titan "normal" (sin std::raw ni
+// rt_*): corre igual bajo la VM de Rust que dentro del runtime nativo, así que
+// se prueba con `zett run` contra onnxruntime y contra tract (selfhost/tests/onnx).
+//
+// Alcance REAL (subconjunto; lo que no está aquí se rechaza al cargar con un
+// error explícito, nunca se simula):
+//   - Formato: ModelProto/GraphProto/NodeProto/TensorProto/AttributeProto leídos
+//     del protobuf a mano. Tipos de tensor: FLOAT, INT32, INT64.
+//   - Operadores: Add Sub Mul Div, MatMul, Gemm, Conv (1-D/2-D, grupos,
+//     dilataciones, auto_pad), MaxPool, AveragePool, GlobalAveragePool,
+//     GlobalMaxPool, BatchNormalization (inferencia), Relu, LeakyRelu, Sigmoid,
+//     Tanh, Exp, Log, Sqrt, Neg, Abs, Clip, Softmax, LogSoftmax, Flatten, Reshape,
+//     Transpose, Concat, Gather, Squeeze, Unsqueeze, Shape, Cast, Constant,
+//     Identity, Dropout (inferencia), ReduceMean, ReduceSum, ReduceMax.
+//   - Aritmética: f64 con redondeo a f32 al salir de cada operador. tract
+//     acumula en f32 (con su propio orden de sumas), así que los resultados
+//     coinciden con él en ≈1e-6 relativo, no bit a bit.
+// Prefijo `ox_`.
+
+struct OxT {
+    dt: int,
+    shape: array,
+    data: array,
+}
+
+struct OxF {
+    field: int,
+    wire: int,
+    a: int,
+    b: int,
+}
+
+struct OxN {
+    op: string,
+    name: string,
+    ins: array,
+    outs: array,
+    attrs: map,
+}
+
+struct OxV {
+    name: string,
+    elem: int,
+    dims: array,
+}
+
+struct OxM {
+    nodes: array,
+    inits: map,
+    inputs: array,
+    outputs: array,
+    opset: int,
+}
+
+// ------------------------------------------------------------ protobuf
+
+// Byte i del búfer (el búfer lleva 4 ceros de relleno al final).
+fn ox_byte(buf: any, i: int) -> int {
+    std::bytes::read_u32_le(buf, i) % 256
+}
+
+fn ox_varint(buf: any, pos: int) -> (int, int) {
+    let mut value = 0
+    let mut mul = 1
+    let mut i = pos
+    let mut count = 0
+    while count < 10 {
+        let byte = ox_byte(buf, i)
+        i += 1
+        count += 1
+        let low = byte % 128
+        if count == 10 {
+            if low != 0 {
+                value = value + (-9223372036854775807 - 1)
+            }
+            return (value, i)
+        }
+        value = value + low * mul
+        if byte < 128 {
+            return (value, i)
+        }
+        if count < 9 {
+            mul = mul * 128
+        }
+    }
+    return (value, i)
+}
+
+fn ox_fields(buf: any, start: int, end: int) -> array {
+    let mut out = []
+    let mut pos = start
+    while pos < end {
+        let (key, p1) = ox_varint(buf, pos)
+        let field = key / 8
+        let wire = key % 8
+        pos = p1
+        if wire == 0 {
+            let (v, p2) = ox_varint(buf, pos)
+            out = std::array::push(out, OxF { field: field, wire: 0, a: v, b: 0 })
+            pos = p2
+        } else if wire == 2 {
+            let (n, p2) = ox_varint(buf, pos)
+            out = std::array::push(out, OxF { field: field, wire: 2, a: p2, b: p2 + n })
+            pos = p2 + n
+        } else if wire == 5 {
+            out = std::array::push(out, OxF { field: field, wire: 5, a: std::bytes::read_u32_le(buf, pos), b: 0 })
+            pos += 4
+        } else if wire == 1 {
+            out = std::array::push(out, OxF { field: field, wire: 1, a: pos, b: pos + 8 })
+            pos += 8
+        } else {
+            return std::array::push(out, OxF { field: -1, wire: wire, a: 0, b: 0 })
+        }
+        let advanced = true
+    }
+    if pos > end {
+        return std::array::push(out, OxF { field: -1, wire: 9, a: 0, b: 0 })
+    }
+    out
+}
+
+fn ox_str(buf: any, a: int, b: int) -> string {
+    std::encoding::utf8_decode(std::bytes::slice(buf, a, b))
+}
+
+// Enteros de un campo repetido: empaquetado (wire 2) o suelto (wire 0).
+fn ox_ints(buf: any, fields: array, field: int) -> array {
+    let mut out = []
+    for f in fields {
+        if f.field == field {
+            if f.wire == 0 {
+                out = std::array::push(out, f.a)
+            } else if f.wire == 2 {
+                let mut pos = f.a
+                while pos < f.b {
+                    let (v, p) = ox_varint(buf, pos)
+                    out = std::array::push(out, v)
+                    pos = p
+                }
+            }
+            let seen = true
+        }
+    }
+    out
+}
+
+fn ox_pow2_table() -> array {
+    // t[k] = 2^(k-149), k = 0..276 (de 2^-149 a 2^127).
+    let mut v = 1.0
+    let mut i = 0
+    while i < 149 {
+        v = v * 0.5
+        i += 1
+    }
+    let mut t = []
+    i = 0
+    while i < 277 {
+        t = std::array::push(t, v)
+        v = v * 2.0
+        i += 1
+    }
+    t
+}
+
+// f32 (como u32) -> f64 exacto. Infinitos y NaN no se admiten (el llamador
+// los comprueba antes con ox_u32_special).
+fn ox_dec32(u: int, p2: array) -> float {
+    let rest = u % 2147483648
+    let e = rest / 8388608
+    let m = rest % 8388608
+    let mut v = 0.0
+    if e == 0 {
+        v = std::math::to_float(m) * p2[0]
+    } else {
+        v = (1.0 + std::math::to_float(m) / 8388608.0) * p2[e + 22]
+    }
+    if u >= 2147483648 {
+        v = 0.0 - v
+    }
+    v
+}
+
+fn ox_u32_special(u: int) -> bool {
+    (u % 2147483648) / 8388608 == 255
+}
+
+// Redondeo al f32 más cercano (separación de Veltkamp: 53 - 29 = 24 bits).
+fn ox_f32(x: float) -> float {
+    if x == 0.0 {
+        return x
+    }
+    let c = x * 536870913.0
+    c - (c - x)
+}
+
+// ------------------------------------------------------------ tensores
+
+fn ox_numel(shape: array) -> int {
+    let mut n = 1
+    for d in shape {
+        n = n * d
+    }
+    n
+}
+
+fn ox_strides(shape: array) -> array {
+    let r = len(shape)
+    let mut s = std::array::filled(r, 1)
+    let mut acc = 1
+    let mut i = r - 1
+    while i >= 0 {
+        s = std::array::set(s, i, acc)
+        acc = acc * shape[i]
+        i -= 1
+    }
+    s
+}
+
+fn ox_axis(axis: int, rank: int) -> int {
+    if axis < 0 {
+        return axis + rank
+    }
+    axis
+}
+
+fn ox_shape_text(shape: array) -> string {
+    let mut out = "["
+    let mut first = true
+    for d in shape {
+        if !first {
+            out += ", "
+        }
+        out += "{d}"
+        first = false
+    }
+    out + "]"
+}
+
+fn ox_same_shape(a: array, b: array) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+fn ox_t(dt: int, shape: array, data: array) -> OxT {
+    OxT { dt: dt, shape: shape, data: data }
+}
+
+// Redondea a f32 los datos de un tensor de coma flotante.
+fn ox_round(t: OxT) -> OxT {
+    if t.dt != 1 {
+        return t
+    }
+    let src = t.data
+    let n = len(src)
+    let mut out = std::array::filled(n, 0.0)
+    let mut i = 0
+    while i < n {
+        out = std::array::set(out, i, ox_f32(src[i]))
+        i += 1
+    }
+    OxT { dt: 1, shape: t.shape, data: out }
+}
+
+// Tensor de sondeo para deducir formas de salida: unos (así Log, Sqrt o una
+// división no fallan por el valor), o ceros enteros (ids).
+fn ox_probe(dt: int, shape: array) -> OxT {
+    let n = ox_numel(shape)
+    if dt == 1 {
+        return OxT { dt: 1, shape: shape, data: std::array::filled(n, 1.0) }
+    }
+    OxT { dt: dt, shape: shape, data: std::array::filled(n, 0) }
+}
+
+// ------------------------------------------------------------ lectura del modelo
+
+// TensorProto -> Result::Ok((nombre, OxT)).
+fn ox_tensor(buf: any, start: int, end: int, p2: array) -> Result {
+    let fields = ox_fields(buf, start, end)
+    let dims = ox_ints(buf, fields, 1)
+    let mut dtype = 1
+    let mut name = ""
+    let mut raw_a = -1
+    let mut raw_b = -1
+    let mut has_floats = false
+    let mut float_fields = []
+    for f in fields {
+        if f.field == -1 {
+            return Result::Err("malformed TensorProto")
+        }
+        if f.field == 2 {
+            dtype = f.a
+        } else if f.field == 8 {
+            name = ox_str(buf, f.a, f.b)
+        } else if f.field == 9 {
+            raw_a = f.a
+            raw_b = f.b
+        } else if f.field == 4 {
+            float_fields = std::array::push(float_fields, f)
+        } else if f.field == 10 {
+            return Result::Err("tensor '" + name + "': double_data is not supported (only FLOAT, INT32, INT64)")
+        }
+        let seen = true
+    }
+    let n = ox_numel(dims)
+    if dtype == 1 {
+        let mut data = []
+        if raw_a >= 0 {
+            if raw_b - raw_a != 4 * n {
+                return Result::Err("tensor '" + name + "': raw_data has the wrong size")
+            }
+            let mut i = 0
+            while i < n {
+                let u = std::bytes::read_u32_le(buf, raw_a + 4 * i)
+                if ox_u32_special(u) {
+                    return Result::Err("tensor '" + name + "': non-finite float values are not supported")
+                }
+                data = std::array::push(data, ox_dec32(u, p2))
+                i += 1
+            }
+        } else {
+            for f in float_fields {
+                if f.wire == 5 {
+                    if ox_u32_special(f.a) {
+                        return Result::Err("tensor '" + name + "': non-finite float values are not supported")
+                    }
+                    data = std::array::push(data, ox_dec32(f.a, p2))
+                } else if f.wire == 2 {
+                    let mut pos = f.a
+                    while pos < f.b {
+                        let u = std::bytes::read_u32_le(buf, pos)
+                        if ox_u32_special(u) {
+                            return Result::Err("tensor '" + name + "': non-finite float values are not supported")
+                        }
+                        data = std::array::push(data, ox_dec32(u, p2))
+                        pos += 4
+                    }
+                }
+                let seen = true
+            }
+        }
+        if len(data) != n {
+            return Result::Err("tensor '" + name + "': expected {n} values")
+        }
+        return Result::Ok((name, OxT { dt: 1, shape: dims, data: data }))
+    }
+    if dtype == 6 || dtype == 7 {
+        let mut data = []
+        if raw_a >= 0 {
+            let width = if dtype == 6 { 4 } else { 8 }
+            if raw_b - raw_a != width * n {
+                return Result::Err("tensor '" + name + "': raw_data has the wrong size")
+            }
+            let mut i = 0
+            while i < n {
+                let lo = std::bytes::read_u32_le(buf, raw_a + width * i)
+                if dtype == 6 {
+                    if lo >= 2147483648 {
+                        data = std::array::push(data, lo - 4294967296)
+                    } else {
+                        data = std::array::push(data, lo)
+                    }
+                } else {
+                    let hi = std::bytes::read_u32_le(buf, raw_a + width * i + 4)
+                    let mut hs = hi
+                    if hi >= 2147483648 {
+                        hs = hi - 4294967296
+                    }
+                    data = std::array::push(data, hs * 4294967296 + lo)
+                }
+                i += 1
+            }
+        } else {
+            data = ox_ints(buf, fields, if dtype == 6 { 5 } else { 7 })
+        }
+        if len(data) != n {
+            return Result::Err("tensor '" + name + "': expected {n} values")
+        }
+        return Result::Ok((name, OxT { dt: 7, shape: dims, data: data }))
+    }
+    if dtype == 9 {
+        let mut data = []
+        if raw_a >= 0 {
+            if raw_b - raw_a != n {
+                return Result::Err("tensor '" + name + "': raw_data has the wrong size")
+            }
+            let mut i = 0
+            while i < n {
+                let b = ox_byte(buf, raw_a + i)
+                if b != 0 {
+                    data = std::array::push(data, 1)
+                } else {
+                    data = std::array::push(data, 0)
+                }
+                i += 1
+            }
+        } else {
+            for v in ox_ints(buf, fields, 5) {
+                if v != 0 {
+                    data = std::array::push(data, 1)
+                } else {
+                    data = std::array::push(data, 0)
+                }
+            }
+        }
+        if len(data) != n {
+            return Result::Err("tensor '" + name + "': expected {n} values")
+        }
+        return Result::Ok((name, OxT { dt: 9, shape: dims, data: data }))
+    }
+    Result::Err("tensor '" + name + "': unsupported data type {dtype} (only FLOAT, INT32, INT64, BOOL)")
+}
+
+// AttributeProto -> (nombre, Map con las claves presentes: i f s ints floats t).
+fn ox_attribute(buf: any, start: int, end: int, p2: array) -> Result {
+    let fields = ox_fields(buf, start, end)
+    let mut name = ""
+    let mut m = std::map::new()
+    let mut floats = []
+    let mut has_floats = false
+    for f in fields {
+        if f.field == -1 {
+            return Result::Err("malformed AttributeProto")
+        }
+        if f.field == 1 {
+            name = ox_str(buf, f.a, f.b)
+        } else if f.field == 2 {
+            m = std::map::insert(m, "f", ox_dec32(f.a, p2))
+        } else if f.field == 3 {
+            m = std::map::insert(m, "i", f.a)
+        } else if f.field == 4 {
+            m = std::map::insert(m, "s", ox_str(buf, f.a, f.b))
+        } else if f.field == 5 {
+            let t = ox_tensor(buf, f.a, f.b, p2)?
+            let (tn, tt) = t
+            m = std::map::insert(m, "t", tt)
+        } else if f.field == 7 {
+            has_floats = true
+            if f.wire == 5 {
+                floats = std::array::push(floats, ox_dec32(f.a, p2))
+            } else if f.wire == 2 {
+                let mut pos = f.a
+                while pos < f.b {
+                    floats = std::array::push(floats, ox_dec32(std::bytes::read_u32_le(buf, pos), p2))
+                    pos += 4
+                }
+            }
+        }
+        let seen = true
+    }
+    if has_floats {
+        m = std::map::insert(m, "floats", floats)
+    }
+    let mut has_ints = false
+    for f in fields {
+        if f.field == 8 {
+            has_ints = true
+        }
+    }
+    if has_ints {
+        m = std::map::insert(m, "ints", ox_ints(buf, fields, 8))
+    }
+    Result::Ok((name, m))
+}
+
+fn ox_node(buf: any, start: int, end: int, p2: array) -> Result {
+    let fields = ox_fields(buf, start, end)
+    let mut op = ""
+    let mut name = ""
+    let mut ins = []
+    let mut outs = []
+    let mut attrs = std::map::new()
+    for f in fields {
+        if f.field == -1 {
+            return Result::Err("malformed NodeProto")
+        }
+        if f.field == 1 {
+            ins = std::array::push(ins, ox_str(buf, f.a, f.b))
+        } else if f.field == 2 {
+            outs = std::array::push(outs, ox_str(buf, f.a, f.b))
+        } else if f.field == 3 {
+            name = ox_str(buf, f.a, f.b)
+        } else if f.field == 4 {
+            op = ox_str(buf, f.a, f.b)
+        } else if f.field == 5 {
+            let a = ox_attribute(buf, f.a, f.b, p2)?
+            let (an, am) = a
+            attrs = std::map::insert(attrs, an, am)
+        }
+        let seen = true
+    }
+    Result::Ok(OxN { op: op, name: name, ins: ins, outs: outs, attrs: attrs })
+}
+
+// ValueInfoProto -> OxV (dims: -1 = dinámica o desconocida).
+fn ox_value_info(buf: any, start: int, end: int) -> OxV {
+    let fields = ox_fields(buf, start, end)
+    let mut name = ""
+    let mut elem = 0
+    let mut dims = []
+    for f in fields {
+        if f.field == 1 {
+            name = ox_str(buf, f.a, f.b)
+        } else if f.field == 2 {
+            for tf in ox_fields(buf, f.a, f.b) {
+                if tf.field == 1 {
+                    for xf in ox_fields(buf, tf.a, tf.b) {
+                        if xf.field == 1 {
+                            elem = xf.a
+                        } else if xf.field == 2 {
+                            for df in ox_fields(buf, xf.a, xf.b) {
+                                if df.field == 1 {
+                                    let mut d = -1
+                                    for vf in ox_fields(buf, df.a, df.b) {
+                                        if vf.field == 1 {
+                                            d = vf.a
+                                        }
+                                    }
+                                    dims = std::array::push(dims, d)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let seen = true
+    }
+    OxV { name: name, elem: elem, dims: dims }
+}
+
+fn ox_supported(op: string) -> bool {
+    let known = ["Add", "Sub", "Mul", "Div", "MatMul", "Gemm", "Conv", "MaxPool", "AveragePool", "GlobalAveragePool", "GlobalMaxPool", "BatchNormalization", "Relu", "LeakyRelu", "Sigmoid", "Tanh", "Exp", "Log", "Sqrt", "Neg", "Abs", "Clip", "Softmax", "LogSoftmax", "Flatten", "Reshape", "Transpose", "Concat", "Gather", "Squeeze", "Unsqueeze", "Shape", "Cast", "Constant", "Identity", "Dropout", "ReduceMean", "ReduceSum", "ReduceMax", "Equal", "Less", "Greater", "LessOrEqual", "GreaterOrEqual", "And", "Or", "Xor", "Not", "Pow", "Max", "Min", "Where", "Expand", "ConstantOfShape", "GatherElements", "GatherND", "Slice", "Range", "Split", "Erf", "Gelu", "Reciprocal", "Floor", "Ceil", "Sin", "Cos", "LayerNormalization", "ReduceMin", "ReduceProd", "ReduceL2", "ReduceSumSquare"]
+    for k in known {
+        if k == op {
+            return true
+        }
+    }
+    false
+}
+
+// Bytes del archivo -> Result::Ok(OxM) o Err(mensaje).
+fn ox_parse(bytes: any) -> Result {
+    let buf = std::bytes::concat(bytes, std::bytes::from_array([0, 0, 0, 0]))
+    let end = std::bytes::length(bytes)
+    let p2 = ox_pow2_table()
+    let top = ox_fields(buf, 0, end)
+    let mut graph_a = -1
+    let mut graph_b = -1
+    let mut opset = 1
+    for f in top {
+        if f.field == -1 {
+            return Result::Err("malformed ModelProto")
+        }
+        if f.field == 7 && f.wire == 2 {
+            graph_a = f.a
+            graph_b = f.b
+        } else if f.field == 8 && f.wire == 2 {
+            let mut domain = ""
+            let mut version = 0
+            for sf in ox_fields(buf, f.a, f.b) {
+                if sf.field == 1 {
+                    domain = ox_str(buf, sf.a, sf.b)
+                } else if sf.field == 2 {
+                    version = sf.a
+                }
+            }
+            if domain == "" || domain == "ai.onnx" {
+                opset = version
+            }
+        }
+        let seen = true
+    }
+    if graph_a < 0 {
+        return Result::Err("model has no graph")
+    }
+    let mut nodes = []
+    let mut inits = std::map::new()
+    let mut inputs = []
+    let mut outputs = []
+    for f in ox_fields(buf, graph_a, graph_b) {
+        if f.field == -1 {
+            return Result::Err("malformed GraphProto")
+        }
+        if f.field == 1 {
+            let n = ox_node(buf, f.a, f.b, p2)?
+            nodes = std::array::push(nodes, n)
+        } else if f.field == 5 {
+            let t = ox_tensor(buf, f.a, f.b, p2)?
+            let (tn, tt) = t
+            inits = std::map::insert(inits, tn, tt)
+        } else if f.field == 11 {
+            inputs = std::array::push(inputs, ox_value_info(buf, f.a, f.b))
+        } else if f.field == 12 {
+            outputs = std::array::push(outputs, ox_value_info(buf, f.a, f.b))
+        }
+        let seen = true
+    }
+    // Los inicializadores que también figuran como entradas (IR antiguo) no son
+    // entradas de verdad.
+    let mut real = []
+    for v in inputs {
+        if !std::map::contains(inits, v.name) {
+            real = std::array::push(real, v)
+        }
+    }
+    for n in nodes {
+        if !ox_supported(n.op) {
+            return Result::Err("unsupported operator '" + n.op + "' (node '" + n.name + "')")
+        }
+    }
+    Result::Ok(OxM { nodes: nodes, inits: inits, inputs: real, outputs: outputs, opset: opset })
+}
+
+// ------------------------------------------------------------ atributos
+
+fn ox_a_int(n: OxN, key: string, default: int) -> int {
+    if std::map::contains(n.attrs, key) {
+        let a = std::map::get(n.attrs, key)
+        if std::map::contains(a, "i") {
+            return std::map::get(a, "i")
+        }
+    }
+    default
+}
+
+fn ox_a_float(n: OxN, key: string, default: float) -> float {
+    if std::map::contains(n.attrs, key) {
+        let a = std::map::get(n.attrs, key)
+        if std::map::contains(a, "f") {
+            return std::map::get(a, "f")
+        }
+    }
+    default
+}
+
+fn ox_a_str(n: OxN, key: string, default: string) -> string {
+    if std::map::contains(n.attrs, key) {
+        let a = std::map::get(n.attrs, key)
+        if std::map::contains(a, "s") {
+            return std::map::get(a, "s")
+        }
+    }
+    default
+}
+
+// Los enteros de un atributo, o `none` si no está.
+fn ox_a_ints(n: OxN, key: string, none: any) -> any {
+    if std::map::contains(n.attrs, key) {
+        let a = std::map::get(n.attrs, key)
+        if std::map::contains(a, "ints") {
+            return std::map::get(a, "ints")
+        }
+    }
+    none
+}
+
+fn ox_has(n: OxN, key: string) -> bool {
+    std::map::contains(n.attrs, key)
+}
+
+// ------------------------------------------------------------ operadores
+
+fn ox_broadcast(a: array, b: array) -> Result {
+    let ra = len(a)
+    let rb = len(b)
+    let r = if ra > rb { ra } else { rb }
+    let mut out = []
+    let mut i = 0
+    while i < r {
+        let ia = i - (r - ra)
+        let ib = i - (r - rb)
+        let mut da = 1
+        let mut db = 1
+        if ia >= 0 {
+            da = a[ia]
+        }
+        if ib >= 0 {
+            db = b[ib]
+        }
+        if da == db || db == 1 {
+            out = std::array::push(out, da)
+        } else if da == 1 {
+            out = std::array::push(out, db)
+        } else {
+            return Result::Err("cannot broadcast " + ox_shape_text(a) + " with " + ox_shape_text(b))
+        }
+        let seen = true
+        i += 1
+    }
+    Result::Ok(out)
+}
+
+// Pasos de `shape` vistos desde una salida de forma `out` (0 en las dimensiones difundidas).
+fn ox_bstrides(shape: array, out: array) -> array {
+    let r = len(out)
+    let ri = len(shape)
+    let st = ox_strides(shape)
+    let mut res = []
+    let mut i = 0
+    while i < r {
+        let j = i - (r - ri)
+        if j < 0 || shape[j] == 1 {
+            res = std::array::push(res, 0)
+        } else {
+            res = std::array::push(res, st[j])
+        }
+        i += 1
+    }
+    res
+}
+
+fn ox_offset(flat: int, oshape: array, ostr: array, bs: array) -> int {
+    let mut off = 0
+    let mut d = 0
+    while d < len(oshape) {
+        off = off + ((flat / ostr[d]) % oshape[d]) * bs[d]
+        d += 1
+    }
+    off
+}
+
+fn ox_apply(code: int, a, b) -> any {
+    if code == 0 {
+        return a + b
+    }
+    if code == 1 {
+        return a - b
+    }
+    if code == 2 {
+        return a * b
+    }
+    a / b
+}
+
+fn ox_binary(op: string, x: OxT, y: OxT) -> Result {
+    if x.dt != y.dt {
+        return Result::Err(op + ": operands have different types")
+    }
+    let shape = ox_broadcast(x.shape, y.shape)?
+    let n = ox_numel(shape)
+    let mut code = 3
+    if op == "Add" {
+        code = 0
+    } else if op == "Sub" {
+        code = 1
+    } else if op == "Mul" {
+        code = 2
+    }
+    let xd = x.data
+    let yd = y.data
+    let mut out = []
+    if ox_same_shape(x.shape, y.shape) {
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, ox_apply(code, xd[i], yd[i]))
+            i += 1
+        }
+    } else if len(yd) == 1 && len(shape) == len(x.shape) {
+        let b = yd[0]
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, ox_apply(code, xd[i], b))
+            i += 1
+        }
+    } else {
+        let ostr = ox_strides(shape)
+        let sx = ox_bstrides(x.shape, shape)
+        let sy = ox_bstrides(y.shape, shape)
+        let mut i = 0
+        while i < n {
+            out = std::array::push(out, ox_apply(code, xd[ox_offset(i, shape, ostr, sx)], yd[ox_offset(i, shape, ostr, sy)]))
+            i += 1
+        }
+    }
+    Result::Ok(ox_round(OxT { dt: x.dt, shape: shape, data: out }))
+}
+
+fn ox_tanh(x: float) -> float {
+    if x > 20.0 {
+        return 1.0
+    }
+    if x < -20.0 {
+        return -1.0
+    }
+    let e = std::math::exp(2.0 * x)
+    return (e - 1.0) / (e + 1.0)
+}
+
+fn ox_sigmoid(x: float) -> float {
+    if x >= 0.0 {
+        let e = std::math::exp(0.0 - x)
+        return 1.0 / (1.0 + e)
+    }
+    let e = std::math::exp(x)
+    e / (1.0 + e)
+}
+
+// Operadores de un solo tensor (elemento a elemento).
+fn ox_unary(n: OxN, x: OxT, clip_min: any, clip_max: any) -> Result {
+    let op = n.op
+    let src = x.data
+    let count = len(src)
+    if x.dt != 1 {
+        if op == "Neg" || op == "Abs" {
+            let mut out = []
+            let mut i = 0
+            while i < count {
+                let v = src[i]
+                if op == "Neg" {
+                    out = std::array::push(out, 0 - v)
+                } else if v < 0 {
+                    out = std::array::push(out, 0 - v)
+                } else {
+                    out = std::array::push(out, v)
+                }
+                i += 1
+            }
+            return Result::Ok(OxT { dt: x.dt, shape: x.shape, data: out })
+        }
+        return Result::Err(op + ": only float tensors are supported")
+    }
+    let alpha = ox_a_float(n, "alpha", 0.01)
+    let mut out = []
+    let mut i = 0
+    while i < count {
+        let v = src[i]
+        let mut r = v
+        if op == "Relu" {
+            if v < 0.0 {
+                r = 0.0
+            }
+        } else if op == "LeakyRelu" {
+            if v < 0.0 {
+                r = v * alpha
+            }
+        } else if op == "Sigmoid" {
+            r = ox_sigmoid(v)
+        } else if op == "Tanh" {
+            r = ox_tanh(v)
+        } else if op == "Exp" {
+            r = std::math::exp(v)
+        } else if op == "Log" {
+            if v <= 0.0 {
+                return Result::Err("Log: input must be positive")
+            }
+            r = std::math::ln(v)
+        } else if op == "Sqrt" {
+            if v < 0.0 {
+                return Result::Err("Sqrt: input must not be negative")
+            }
+            r = std::math::sqrt(v)
+        } else if op == "Neg" {
+            r = 0.0 - v
+        } else if op == "Abs" {
+            if v < 0.0 {
+                r = 0.0 - v
+            }
+        } else if op == "Clip" {
+            if clip_min != nil && v < clip_min {
+                r = clip_min
+            }
+            if clip_max != nil && r > clip_max {
+                r = clip_max
+            }
+        }
+        out = std::array::push(out, r)
+        i += 1
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: x.shape, data: out }))
+}
+
+fn ox_matmul(x0: OxT, y0: OxT) -> Result {
+    let mut xs = x0.shape
+    let mut ys = y0.shape
+    let x_vec = len(xs) == 1
+    let y_vec = len(ys) == 1
+    if x_vec {
+        xs = [1, xs[0]]
+    }
+    if y_vec {
+        ys = [ys[0], 1]
+    }
+    if len(xs) < 2 || len(ys) < 2 {
+        return Result::Err("MatMul: scalar operands are not supported")
+    }
+    let rx = len(xs)
+    let ry = len(ys)
+    let m = xs[rx - 2]
+    let k = xs[rx - 1]
+    let n = ys[ry - 1]
+    if ys[ry - 2] != k {
+        return Result::Err("MatMul: incompatible shapes " + ox_shape_text(x0.shape) + " and " + ox_shape_text(y0.shape))
+    }
+    let bx = std::array::slice(xs, 0, rx - 2)
+    let by = std::array::slice(ys, 0, ry - 2)
+    let batch = ox_broadcast(bx, by)?
+    let nb = ox_numel(batch)
+    let bstr = ox_strides(batch)
+    let sbx = ox_bstrides(bx, batch)
+    let sby = ox_bstrides(by, batch)
+    let xd = x0.data
+    let yd = y0.data
+    let mut out = []
+    let mut b = 0
+    while b < nb {
+        let ox = ox_offset(b, batch, bstr, sbx) * m * k
+        let oy = ox_offset(b, batch, bstr, sby) * k * n
+        // El producto de matrices (el 99 % del tiempo de un transformer) lo hace ox_mm_kernel con
+        // aritmética cruda de f64 (std_onnx.titan); aquí solo se reparte por lotes.
+        let blk = ox_mm_kernel(xd, ox, yd, oy, m, k, n)
+        if nb == 1 {
+            out = blk
+        } else {
+            out = std::array::concat(out, blk)
+        }
+        b += 1
+    }
+    let mut shape = batch
+    if !x_vec {
+        shape = std::array::push(shape, m)
+    }
+    if !y_vec {
+        shape = std::array::push(shape, n)
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: shape, data: out }))
+}
+
+fn ox_gemm(n: OxN, a: OxT, b: OxT, c: any) -> Result {
+    if len(a.shape) != 2 || len(b.shape) != 2 {
+        return Result::Err("Gemm: inputs must be matrices")
+    }
+    let ta = ox_a_int(n, "transA", 0)
+    let tb = ox_a_int(n, "transB", 0)
+    let alpha = ox_a_float(n, "alpha", 1.0)
+    let beta = ox_a_float(n, "beta", 1.0)
+    let mut m = a.shape[0]
+    let mut k = a.shape[1]
+    if ta == 1 {
+        m = a.shape[1]
+        k = a.shape[0]
+    }
+    let mut kb = b.shape[0]
+    let mut nn = b.shape[1]
+    if tb == 1 {
+        kb = b.shape[1]
+        nn = b.shape[0]
+    }
+    if kb != k {
+        return Result::Err("Gemm: incompatible shapes " + ox_shape_text(a.shape) + " and " + ox_shape_text(b.shape))
+    }
+    let ad = a.data
+    let bd = b.data
+    let mut cd = []
+    let mut cs = []
+    let mut cstr = []
+    let oshape = [m, nn]
+    let ostr = [nn, 1]
+    if c != nil {
+        cd = c.data
+        let sh = ox_broadcast(c.shape, oshape)?
+        if !ox_same_shape(sh, oshape) {
+            return Result::Err("Gemm: bias shape " + ox_shape_text(c.shape) + " cannot be broadcast to " + ox_shape_text(oshape))
+        }
+        cs = ox_bstrides(c.shape, oshape)
+    }
+    let mut out = []
+    let mut i = 0
+    while i < m {
+        let mut j = 0
+        while j < nn {
+            let mut acc = 0.0
+            let mut p = 0
+            while p < k {
+                let mut av = 0.0
+                if ta == 1 {
+                    av = ad[p * m + i]
+                } else {
+                    av = ad[i * k + p]
+                }
+                let mut bv = 0.0
+                if tb == 1 {
+                    bv = bd[j * k + p]
+                } else {
+                    bv = bd[p * nn + j]
+                }
+                acc = acc + av * bv
+                p += 1
+            }
+            let mut v = alpha * acc
+            if c != nil {
+                v = v + beta * cd[ox_offset(i * nn + j, oshape, ostr, cs)]
+            }
+            out = std::array::push(out, v)
+            j += 1
+        }
+        i += 1
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: oshape, data: out }))
+}
+
+// Dimensión de salida de convolución/pooling (ceil_mode = 1 redondea hacia arriba).
+fn ox_out_dim(inp: int, pad_b: int, pad_e: int, dil: int, k: int, stride: int, ceil_mode: int) -> int {
+    let span = inp + pad_b + pad_e - dil * (k - 1) - 1
+    if span < 0 {
+        return 0
+    }
+    let mut o = span / stride + 1
+    if ceil_mode == 1 && span % stride != 0 {
+        o = o + 1
+        // La última ventana tiene que empezar dentro de la entrada (o del relleno inicial).
+        if (o - 1) * stride >= inp + pad_b {
+            o = o - 1
+        }
+    }
+    o
+}
+
+// Rellenos [inicio, fin] de una dimensión según auto_pad.
+fn ox_auto_pad(mode: string, inp: int, k: int, dil: int, stride: int, pb: int, pe: int) -> (int, int) {
+    if mode == "VALID" {
+        return (0, 0)
+    }
+    if mode == "SAME_UPPER" || mode == "SAME_LOWER" {
+        let out = (inp + stride - 1) / stride
+        let mut total = (out - 1) * stride + dil * (k - 1) + 1 - inp
+        if total < 0 {
+            total = 0
+        }
+        let small = total / 2
+        let big = total - small
+        if mode == "SAME_UPPER" {
+            return (small, big)
+        }
+        return (big, small)
+    }
+    return (pb, pe)
+}
+
+// Conv de 1 o 2 dimensiones espaciales (la 1-D se trata como alto 1).
+fn ox_conv(n: OxN, x: OxT, w: OxT, bias: any) -> Result {
+    let rank = len(x.shape)
+    if rank != 3 && rank != 4 {
+        return Result::Err("Conv: only 1-D and 2-D convolutions are supported")
+    }
+    let two = rank == 4
+    let nb = x.shape[0]
+    let c_in = x.shape[1]
+    let mut h = 1
+    let mut wd = x.shape[2]
+    if two {
+        h = x.shape[2]
+        wd = x.shape[3]
+    }
+    let m = w.shape[0]
+    let cg = w.shape[1]
+    let mut kh = 1
+    let mut kw = w.shape[2]
+    if two {
+        kh = w.shape[2]
+        kw = w.shape[3]
+    }
+    let group = ox_a_int(n, "group", 1)
+    if cg * group != c_in || m % group != 0 {
+        return Result::Err("Conv: channel/group mismatch (input has {c_in} channels, weights " + ox_shape_text(w.shape) + ", group {group})")
+    }
+    let mut strides = ox_a_ints(n, "strides", [1, 1])
+    let mut dil = ox_a_ints(n, "dilations", [1, 1])
+    let mut pads = ox_a_ints(n, "pads", [0, 0, 0, 0])
+    let mut sh = 1
+    let mut sw = 1
+    let mut dh = 1
+    let mut dw = 1
+    let mut pt = 0
+    let mut pl = 0
+    let mut pbm = 0
+    let mut pr = 0
+    if two {
+        sh = strides[0]
+        sw = strides[1]
+        dh = dil[0]
+        dw = dil[1]
+        pt = pads[0]
+        pl = pads[1]
+        pbm = pads[2]
+        pr = pads[3]
+    } else {
+        sw = strides[0]
+        dw = dil[0]
+        pl = pads[0]
+        pr = pads[1]
+        if !ox_has(n, "pads") {
+            pl = 0
+            pr = 0
+        }
+    }
+    let mode = ox_a_str(n, "auto_pad", "NOTSET")
+    if two {
+        let (a, b) = ox_auto_pad(mode, h, kh, dh, sh, pt, pbm)
+        pt = a
+        pbm = b
+    }
+    let (c, d) = ox_auto_pad(mode, wd, kw, dw, sw, pl, pr)
+    pl = c
+    pr = d
+    let oh = ox_out_dim(h, pt, pbm, dh, kh, sh, 0)
+    let ow = ox_out_dim(wd, pl, pr, dw, kw, sw, 0)
+    if oh <= 0 || ow <= 0 {
+        return Result::Err("Conv: kernel larger than the padded input")
+    }
+    let xd = x.data
+    let wdta = w.data
+    let mut bd = []
+    if bias != nil {
+        bd = bias.data
+    }
+    let per_group = m / group
+    let mut out = []
+    let mut b = 0
+    while b < nb {
+        let mut mi = 0
+        while mi < m {
+            let g = mi / per_group
+            let mut y = 0
+            while y < oh {
+                let mut xo = 0
+                while xo < ow {
+                    let mut acc = 0.0
+                    if bias != nil {
+                        acc = bd[mi]
+                    }
+                    let mut c2 = 0
+                    while c2 < cg {
+                        let cin = g * cg + c2
+                        let mut i = 0
+                        while i < kh {
+                            let ih = y * sh - pt + i * dh
+                            if ih >= 0 && ih < h {
+                                let mut j = 0
+                                while j < kw {
+                                    let iw = xo * sw - pl + j * dw
+                                    if iw >= 0 && iw < wd {
+                                        acc = acc + xd[((b * c_in + cin) * h + ih) * wd + iw] * wdta[((mi * cg + c2) * kh + i) * kw + j]
+                                    }
+                                    j += 1
+                                }
+                            }
+                            i += 1
+                        }
+                        c2 += 1
+                    }
+                    out = std::array::push(out, acc)
+                    xo += 1
+                }
+                y += 1
+            }
+            mi += 1
+        }
+        b += 1
+    }
+    let mut shape = [nb, m, ow]
+    if two {
+        shape = [nb, m, oh, ow]
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: shape, data: out }))
+}
+
+// MaxPool / AveragePool (is_max) de 1 o 2 dimensiones.
+fn ox_pool(n: OxN, x: OxT, is_max: bool) -> Result {
+    let rank = len(x.shape)
+    if rank != 3 && rank != 4 {
+        return Result::Err(n.op + ": only 1-D and 2-D pooling is supported")
+    }
+    let two = rank == 4
+    let ks = ox_a_ints(n, "kernel_shape", nil)
+    if ks == nil {
+        return Result::Err(n.op + ": missing kernel_shape")
+    }
+    let nb = x.shape[0]
+    let ch = x.shape[1]
+    let mut h = 1
+    let mut wd = x.shape[2]
+    if two {
+        h = x.shape[2]
+        wd = x.shape[3]
+    }
+    let strides = ox_a_ints(n, "strides", [1, 1])
+    let dil = ox_a_ints(n, "dilations", [1, 1])
+    let pads = ox_a_ints(n, "pads", [0, 0, 0, 0])
+    let mut kh = 1
+    let mut kw = ks[0]
+    let mut sh = 1
+    let mut sw = strides[0]
+    let mut dh = 1
+    let mut dw = dil[0]
+    let mut pt = 0
+    let mut pl = 0
+    let mut pbm = 0
+    let mut pr = 0
+    if two {
+        kh = ks[0]
+        kw = ks[1]
+        sh = strides[0]
+        sw = strides[1]
+        dh = dil[0]
+        dw = dil[1]
+        pt = pads[0]
+        pl = pads[1]
+        pbm = pads[2]
+        pr = pads[3]
+    } else if ox_has(n, "pads") {
+        pl = pads[0]
+        pr = pads[1]
+    }
+    let mode = ox_a_str(n, "auto_pad", "NOTSET")
+    if two {
+        let (a, b) = ox_auto_pad(mode, h, kh, dh, sh, pt, pbm)
+        pt = a
+        pbm = b
+    }
+    let (c, d) = ox_auto_pad(mode, wd, kw, dw, sw, pl, pr)
+    pl = c
+    pr = d
+    let ceil_mode = ox_a_int(n, "ceil_mode", 0)
+    let include_pad = ox_a_int(n, "count_include_pad", 0)
+    let oh = ox_out_dim(h, pt, pbm, dh, kh, sh, ceil_mode)
+    let ow = ox_out_dim(wd, pl, pr, dw, kw, sw, ceil_mode)
+    if oh <= 0 || ow <= 0 {
+        return Result::Err(n.op + ": kernel larger than the padded input")
+    }
+    let xd = x.data
+    let mut out = []
+    let mut b = 0
+    while b < nb {
+        let mut cc = 0
+        while cc < ch {
+            let base = (b * ch + cc) * h * wd
+            let mut y = 0
+            while y < oh {
+                let mut xo = 0
+                while xo < ow {
+                    let mut best = 0.0
+                    let mut sum = 0.0
+                    let mut cnt = 0
+                    let mut first = true
+                    let mut i = 0
+                    while i < kh {
+                        let ih = y * sh - pt + i * dh
+                        let mut j = 0
+                        while j < kw {
+                            let iw = xo * sw - pl + j * dw
+                            if ih >= 0 && ih < h && iw >= 0 && iw < wd {
+                                let v = xd[base + ih * wd + iw]
+                                if first || v > best {
+                                    best = v
+                                }
+                                first = false
+                                sum = sum + v
+                                cnt += 1
+                            }
+                            j += 1
+                        }
+                        i += 1
+                    }
+                    if is_max {
+                        out = std::array::push(out, best)
+                    } else {
+                        let mut div = cnt
+                        if include_pad == 1 {
+                            div = kh * kw
+                        }
+                        if div == 0 {
+                            out = std::array::push(out, 0.0)
+                        } else {
+                            out = std::array::push(out, sum / std::math::to_float(div))
+                        }
+                    }
+                    xo += 1
+                }
+                y += 1
+            }
+            cc += 1
+        }
+        b += 1
+    }
+    let mut shape = [nb, ch, ow]
+    if two {
+        shape = [nb, ch, oh, ow]
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: shape, data: out }))
+}
+
+fn ox_global_pool(x: OxT, is_max: bool) -> Result {
+    let rank = len(x.shape)
+    if rank < 3 {
+        return Result::Err("GlobalPool: input must have at least 3 dimensions")
+    }
+    let nb = x.shape[0]
+    let ch = x.shape[1]
+    let mut area = 1
+    let mut i = 2
+    while i < rank {
+        area = area * x.shape[i]
+        i += 1
+    }
+    let xd = x.data
+    let mut out = []
+    let mut q = 0
+    while q < nb * ch {
+        let mut best = xd[q * area]
+        let mut sum = 0.0
+        let mut p = 0
+        while p < area {
+            let v = xd[q * area + p]
+            if v > best {
+                best = v
+            }
+            sum = sum + v
+            p += 1
+        }
+        if is_max {
+            out = std::array::push(out, best)
+        } else {
+            out = std::array::push(out, sum / std::math::to_float(area))
+        }
+        q += 1
+    }
+    let mut shape = [nb, ch]
+    i = 2
+    while i < rank {
+        shape = std::array::push(shape, 1)
+        i += 1
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: shape, data: out }))
+}
+
+fn ox_batchnorm(n: OxN, x: OxT, scale: OxT, b: OxT, mean: OxT, var: OxT) -> Result {
+    let eps = ox_a_float(n, "epsilon", 0.00001)
+    if len(x.shape) < 2 {
+        return Result::Err("BatchNormalization: input must have at least 2 dimensions")
+    }
+    let ch = x.shape[1]
+    if len(scale.data) != ch || len(b.data) != ch || len(mean.data) != ch || len(var.data) != ch {
+        return Result::Err("BatchNormalization: parameter size does not match the channel count")
+    }
+    let mut inner = 1
+    let mut i = 2
+    while i < len(x.shape) {
+        inner = inner * x.shape[i]
+        i += 1
+    }
+    let xd = x.data
+    let total = len(xd)
+    let mut out = []
+    let mut k = 0
+    while k < total {
+        let c = (k / inner) % ch
+        let v = (xd[k] - mean.data[c]) / std::math::sqrt(var.data[c] + eps) * scale.data[c] + b.data[c]
+        out = std::array::push(out, v)
+        k += 1
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: x.shape, data: out }))
+}
+
+fn ox_softmax(n: OxN, x: OxT, opset: int, log: bool) -> Result {
+    let rank = len(x.shape)
+    let mut axis = 0
+    let mut inner = 1
+    let mut outer = 1
+    let mut len_axis = 1
+    if opset >= 13 {
+        axis = ox_axis(ox_a_int(n, "axis", -1), rank)
+        let mut i = 0
+        while i < rank {
+            if i < axis {
+                outer = outer * x.shape[i]
+            } else if i == axis {
+                len_axis = x.shape[i]
+            } else {
+                inner = inner * x.shape[i]
+            }
+            i += 1
+        }
+    } else {
+        // Antes del opset 13: se aplana a 2-D en `axis` y se normaliza cada fila.
+        axis = ox_axis(ox_a_int(n, "axis", 1), rank)
+        let mut i = 0
+        while i < rank {
+            if i < axis {
+                outer = outer * x.shape[i]
+            } else {
+                len_axis = len_axis * x.shape[i]
+            }
+            i += 1
+        }
+    }
+    if axis < 0 || axis >= rank {
+        return Result::Err(n.op + ": axis out of range")
+    }
+    let xd = x.data
+    let mut out = std::array::filled(len(xd), 0.0)
+    let mut o = 0
+    while o < outer {
+        let mut q = 0
+        while q < inner {
+            let base = o * len_axis * inner + q
+            let mut mx = xd[base]
+            let mut a = 1
+            while a < len_axis {
+                let v = xd[base + a * inner]
+                if v > mx {
+                    mx = v
+                }
+                a += 1
+            }
+            let mut sum = 0.0
+            a = 0
+            while a < len_axis {
+                sum = sum + std::math::exp(xd[base + a * inner] - mx)
+                a += 1
+            }
+            a = 0
+            while a < len_axis {
+                let e = xd[base + a * inner] - mx
+                if log {
+                    out = std::array::set(out, base + a * inner, e - std::math::ln(sum))
+                } else {
+                    out = std::array::set(out, base + a * inner, std::math::exp(e) / sum)
+                }
+                a += 1
+            }
+            q += 1
+        }
+        o += 1
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: x.shape, data: out }))
+}
+
+fn ox_reshape(x: OxT, target: array, allow_zero: int) -> Result {
+    let total = ox_numel(x.shape)
+    let mut shape = []
+    let mut known = 1
+    let mut infer = -1
+    let mut i = 0
+    while i < len(target) {
+        let mut d = target[i]
+        if d == 0 && allow_zero == 0 {
+            if i >= len(x.shape) {
+                return Result::Err("Reshape: 0 at position {i} has no matching input dimension")
+            }
+            d = x.shape[i]
+        }
+        if d == -1 {
+            if infer >= 0 {
+                return Result::Err("Reshape: more than one -1")
+            }
+            infer = i
+        } else {
+            known = known * d
+        }
+        shape = std::array::push(shape, d)
+        i += 1
+    }
+    if infer >= 0 {
+        if known == 0 || total % known != 0 {
+            return Result::Err("Reshape: cannot infer the -1 dimension for " + ox_shape_text(x.shape))
+        }
+        shape = std::array::set(shape, infer, total / known)
+    } else if known != total {
+        return Result::Err("Reshape: cannot reshape " + ox_shape_text(x.shape) + " into " + ox_shape_text(shape))
+    }
+    Result::Ok(OxT { dt: x.dt, shape: shape, data: x.data })
+}
+
+fn ox_transpose(x: OxT, perm0: any) -> Result {
+    let rank = len(x.shape)
+    let mut perm = []
+    if perm0 == nil {
+        let mut i = rank - 1
+        while i >= 0 {
+            perm = std::array::push(perm, i)
+            i -= 1
+        }
+    } else {
+        perm = perm0
+    }
+    if len(perm) != rank {
+        return Result::Err("Transpose: perm has the wrong length")
+    }
+    let mut shape = []
+    let st = ox_strides(x.shape)
+    let mut pst = []
+    for p in perm {
+        if p < 0 || p >= rank {
+            return Result::Err("Transpose: invalid perm")
+        }
+        shape = std::array::push(shape, x.shape[p])
+        pst = std::array::push(pst, st[p])
+    }
+    let total = ox_numel(shape)
+    let ostr = ox_strides(shape)
+    let xd = x.data
+    let mut out = []
+    let mut k = 0
+    while k < total {
+        out = std::array::push(out, xd[ox_offset(k, shape, ostr, pst)])
+        k += 1
+    }
+    Result::Ok(OxT { dt: x.dt, shape: shape, data: out })
+}
+
+fn ox_concat(ts: array, axis0: int) -> Result {
+    let first = ts[0]
+    let rank = len(first.shape)
+    let axis = ox_axis(axis0, rank)
+    if axis < 0 || axis >= rank {
+        return Result::Err("Concat: axis out of range")
+    }
+    let mut outer = 1
+    let mut i = 0
+    while i < axis {
+        outer = outer * first.shape[i]
+        i += 1
+    }
+    let mut inner = 1
+    i = axis + 1
+    while i < rank {
+        inner = inner * first.shape[i]
+        i += 1
+    }
+    let mut total_axis = 0
+    for t in ts {
+        if len(t.shape) != rank || t.dt != first.dt {
+            return Result::Err("Concat: inputs must have the same rank and type")
+        }
+        let mut d = 0
+        while d < rank {
+            if d != axis && t.shape[d] != first.shape[d] {
+                return Result::Err("Concat: shapes differ outside the concatenation axis")
+            }
+            d += 1
+        }
+        total_axis = total_axis + t.shape[axis]
+    }
+    let mut out = []
+    let mut o = 0
+    while o < outer {
+        for t in ts {
+            let chunk = t.shape[axis] * inner
+            let base = o * chunk
+            let td = t.data
+            let mut k = 0
+            while k < chunk {
+                out = std::array::push(out, td[base + k])
+                k += 1
+            }
+        }
+        o += 1
+    }
+    let mut shape = first.shape
+    shape = std::array::set(shape, axis, total_axis)
+    Result::Ok(OxT { dt: first.dt, shape: shape, data: out })
+}
+
+fn ox_gather(x: OxT, idx: OxT, axis0: int) -> Result {
+    let rank = len(x.shape)
+    let axis = ox_axis(axis0, rank)
+    if axis < 0 || axis >= rank {
+        return Result::Err("Gather: axis out of range")
+    }
+    if idx.dt != 7 {
+        return Result::Err("Gather: indices must be integers")
+    }
+    let mut outer = 1
+    let mut i = 0
+    while i < axis {
+        outer = outer * x.shape[i]
+        i += 1
+    }
+    let mut inner = 1
+    i = axis + 1
+    while i < rank {
+        inner = inner * x.shape[i]
+        i += 1
+    }
+    let dim = x.shape[axis]
+    let xd = x.data
+    let mut out = []
+    let mut o = 0
+    while o < outer {
+        for raw in idx.data {
+            let mut ix = raw
+            if ix < 0 {
+                ix = ix + dim
+            }
+            if ix < 0 || ix >= dim {
+                return Result::Err("Gather: index {raw} out of range for dimension {dim}")
+            }
+            let base = (o * dim + ix) * inner
+            let mut k = 0
+            while k < inner {
+                out = std::array::push(out, xd[base + k])
+                k += 1
+            }
+        }
+        o += 1
+    }
+    let mut shape = std::array::slice(x.shape, 0, axis)
+    shape = std::array::concat(shape, idx.shape)
+    shape = std::array::concat(shape, std::array::slice(x.shape, axis + 1, rank))
+    Result::Ok(OxT { dt: x.dt, shape: shape, data: out })
+}
+
+fn ox_squeeze(x: OxT, axes: any) -> Result {
+    let rank = len(x.shape)
+    let mut shape = []
+    let mut i = 0
+    while i < rank {
+        let mut drop = false
+        if axes == nil {
+            drop = x.shape[i] == 1
+        } else {
+            for a in axes {
+                if ox_axis(a, rank) == i {
+                    if x.shape[i] != 1 {
+                        return Result::Err("Squeeze: dimension {i} is not 1")
+                    }
+                    drop = true
+                }
+            }
+        }
+        if !drop {
+            shape = std::array::push(shape, x.shape[i])
+        }
+        i += 1
+    }
+    Result::Ok(OxT { dt: x.dt, shape: shape, data: x.data })
+}
+
+fn ox_unsqueeze(x: OxT, axes: array) -> Result {
+    let out_rank = len(x.shape) + len(axes)
+    let mut shape = []
+    let mut src = 0
+    let mut i = 0
+    while i < out_rank {
+        let mut is_new = false
+        for a in axes {
+            if ox_axis(a, out_rank) == i {
+                is_new = true
+            }
+        }
+        if is_new {
+            shape = std::array::push(shape, 1)
+        } else {
+            if src >= len(x.shape) {
+                return Result::Err("Unsqueeze: invalid axes")
+            }
+            shape = std::array::push(shape, x.shape[src])
+            src += 1
+        }
+        i += 1
+    }
+    Result::Ok(OxT { dt: x.dt, shape: shape, data: x.data })
+}
+
+// ReduceMean / ReduceSum / ReduceMax sobre `axes` (nil = todos).
+fn ox_reduce(op: string, x: OxT, axes: any, keep: int) -> Result {
+    let rank = len(x.shape)
+    let mut flags = std::array::filled(rank, false)
+    if axes == nil {
+        flags = std::array::filled(rank, true)
+    } else {
+        for a in axes {
+            let ax = ox_axis(a, rank)
+            if ax < 0 || ax >= rank {
+                return Result::Err(op + ": axis out of range")
+            }
+            flags = std::array::set(flags, ax, true)
+        }
+    }
+    let mut oshape = []
+    let mut kshape = []
+    let mut i = 0
+    while i < rank {
+        if flags[i] {
+            kshape = std::array::push(kshape, 1)
+        } else {
+            kshape = std::array::push(kshape, x.shape[i])
+            oshape = std::array::push(oshape, x.shape[i])
+        }
+        i += 1
+    }
+    let kstr = ox_strides(kshape)
+    let mut acc_shape = kshape
+    let outn = ox_numel(kshape)
+    let mut sums = std::array::filled(outn, 0.0)
+    let mut seen_n = std::array::filled(outn, 0)
+    let xs = ox_strides(x.shape)
+    let xd = x.data
+    let total = len(xd)
+    let mut k = 0
+    while k < total {
+        let mut off = 0
+        let mut d = 0
+        while d < rank {
+            if !flags[d] {
+                off = off + ((k / xs[d]) % x.shape[d]) * kstr[d]
+            }
+            d += 1
+        }
+        let v = xd[k]
+        if op == "ReduceMax" {
+            if seen_n[off] == 0 || v > sums[off] {
+                sums = std::array::set(sums, off, v)
+            }
+        } else {
+            sums = std::array::set(sums, off, sums[off] + v)
+        }
+        seen_n = std::array::set(seen_n, off, seen_n[off] + 1)
+        k += 1
+    }
+    if op == "ReduceMean" {
+        let mut j = 0
+        while j < outn {
+            sums = std::array::set(sums, j, sums[j] / std::math::to_float(seen_n[j]))
+            j += 1
+        }
+    }
+    let mut shape = oshape
+    if keep == 1 {
+        shape = kshape
+    }
+    Result::Ok(ox_round(OxT { dt: 1, shape: shape, data: sums }))
+}
+
+fn ox_cast(x: OxT, to: int) -> Result {
+    let mut out = []
+    if to == 1 {
+        if x.dt == 1 {
+            return Result::Ok(x)
+        }
+        for v in x.data {
+            out = std::array::push(out, ox_f32(std::math::to_float(v)))
+        }
+        return Result::Ok(OxT { dt: 1, shape: x.shape, data: out })
+    }
+    if to == 6 || to == 7 {
+        if x.dt == 7 {
+            return Result::Ok(x)
+        }
+        for v in x.data {
+            out = std::array::push(out, std::math::to_int(v))
+        }
+        return Result::Ok(OxT { dt: 7, shape: x.shape, data: out })
+    }
+    if to == 9 {
+        if x.dt == 9 {
+            return Result::Ok(x)
+        }
+        for v in x.data {
+            if v != 0 {
+                out = std::array::push(out, 1)
+            } else {
+                out = std::array::push(out, 0)
+            }
+        }
+        return Result::Ok(OxT { dt: 9, shape: x.shape, data: out })
+    }
+    Result::Err("Cast: target type {to} is not supported (only FLOAT, INT32, INT64, BOOL)")
+}
+
+// ------------------------------------------------------------ ejecución
+
+// Entrada `i` del nodo (nil si falta o está vacía).
+fn ox_in(n: OxN, i: int, env: map, inits: map) -> any {
+    if i >= len(n.ins) {
+        return nil
+    }
+    let name = n.ins[i]
+    if name == "" {
+        return nil
+    }
+    if std::map::contains(env, name) {
+        return std::map::get(env, name)
+    }
+    if std::map::contains(inits, name) {
+        return std::map::get(inits, name)
+    }
+    nil
+}
+
+fn ox_need(n: OxN, i: int, env: map, inits: map) -> Result {
+    let t = ox_in(n, i, env, inits)
+    if t == nil {
+        return Result::Err(n.op + ": input {i} is missing (node '" + n.name + "')")
+    }
+    Result::Ok(t)
+}
+
+// Ejecuta un nodo y devuelve Result::Ok(tensor de su primera salida).
+fn ox_node_run(n: OxN, env: map, inits: map, opset: int) -> Result {
+    let op = n.op
+    if op == "Constant" {
+        if ox_has(n, "value") {
+            let a = std::map::get(n.attrs, "value")
+            if std::map::contains(a, "t") {
+                return Result::Ok(std::map::get(a, "t"))
+            }
+        }
+        if ox_has(n, "value_float") {
+            return Result::Ok(OxT { dt: 1, shape: [], data: [ox_a_float(n, "value_float", 0.0)] })
+        }
+        if ox_has(n, "value_int") {
+            return Result::Ok(OxT { dt: 7, shape: [], data: [ox_a_int(n, "value_int", 0)] })
+        }
+        if ox_has(n, "value_ints") {
+            let v = ox_a_ints(n, "value_ints", [])
+            return Result::Ok(OxT { dt: 7, shape: [len(v)], data: v })
+        }
+        return Result::Err("Constant: unsupported value attribute")
+    }
+    let x = ox_need(n, 0, env, inits)?
+    if op == "Add" || op == "Sub" || op == "Mul" || op == "Div" {
+        let y = ox_need(n, 1, env, inits)?
+        return ox_binary(op, x, y)
+    }
+    if op == "MatMul" {
+        let y = ox_need(n, 1, env, inits)?
+        return ox_matmul(x, y)
+    }
+    if op == "Gemm" {
+        let b = ox_need(n, 1, env, inits)?
+        return ox_gemm(n, x, b, ox_in(n, 2, env, inits))
+    }
+    if op == "Conv" {
+        let w = ox_need(n, 1, env, inits)?
+        return ox_conv(n, x, w, ox_in(n, 2, env, inits))
+    }
+    if op == "MaxPool" {
+        return ox_pool(n, x, true)
+    }
+    if op == "AveragePool" {
+        return ox_pool(n, x, false)
+    }
+    if op == "GlobalAveragePool" {
+        return ox_global_pool(x, false)
+    }
+    if op == "GlobalMaxPool" {
+        return ox_global_pool(x, true)
+    }
+    if op == "BatchNormalization" {
+        if len(n.outs) > 1 {
+            return Result::Err("BatchNormalization: training outputs are not supported")
+        }
+        let s = ox_need(n, 1, env, inits)?
+        let b = ox_need(n, 2, env, inits)?
+        let m = ox_need(n, 3, env, inits)?
+        let v = ox_need(n, 4, env, inits)?
+        return ox_batchnorm(n, x, s, b, m, v)
+    }
+    if op == "Relu" || op == "LeakyRelu" || op == "Sigmoid" || op == "Tanh" || op == "Exp" || op == "Log" || op == "Sqrt" || op == "Neg" || op == "Abs" {
+        return ox_unary(n, x, nil, nil)
+    }
+    if op == "Clip" {
+        let mut lo: any = nil
+        let mut hi: any = nil
+        if opset < 11 {
+            if ox_has(n, "min") {
+                lo = ox_a_float(n, "min", 0.0)
+            }
+            if ox_has(n, "max") {
+                hi = ox_a_float(n, "max", 0.0)
+            }
+        } else {
+            let a = ox_in(n, 1, env, inits)
+            let b = ox_in(n, 2, env, inits)
+            if a != nil {
+                lo = a.data[0]
+            }
+            if b != nil {
+                hi = b.data[0]
+            }
+        }
+        return ox_unary(n, x, lo, hi)
+    }
+    if op == "Softmax" {
+        return ox_softmax(n, x, opset, false)
+    }
+    if op == "LogSoftmax" {
+        return ox_softmax(n, x, opset, true)
+    }
+    if op == "Flatten" {
+        let rank = len(x.shape)
+        let axis = ox_axis(ox_a_int(n, "axis", 1), rank)
+        if axis < 0 || axis > rank {
+            return Result::Err("Flatten: axis out of range")
+        }
+        let a = ox_numel(std::array::slice(x.shape, 0, axis))
+        let b = ox_numel(std::array::slice(x.shape, axis, rank))
+        return Result::Ok(OxT { dt: x.dt, shape: [a, b], data: x.data })
+    }
+    if op == "Reshape" {
+        let s = ox_need(n, 1, env, inits)?
+        return ox_reshape(x, s.data, ox_a_int(n, "allowzero", 0))
+    }
+    if op == "Transpose" {
+        return ox_transpose(x, ox_a_ints(n, "perm", nil))
+    }
+    if op == "Concat" {
+        let mut ts = []
+        let mut i = 0
+        while i < len(n.ins) {
+            let t = ox_need(n, i, env, inits)?
+            ts = std::array::push(ts, t)
+            i += 1
+        }
+        return ox_concat(ts, ox_a_int(n, "axis", 0))
+    }
+    if op == "Gather" {
+        let idx = ox_need(n, 1, env, inits)?
+        return ox_gather(x, idx, ox_a_int(n, "axis", 0))
+    }
+    if op == "Squeeze" || op == "Unsqueeze" {
+        let mut axes: any = ox_a_ints(n, "axes", nil)
+        let a = ox_in(n, 1, env, inits)
+        if a != nil {
+            axes = a.data
+        }
+        if op == "Squeeze" {
+            return ox_squeeze(x, axes)
+        }
+        if axes == nil {
+            return Result::Err("Unsqueeze: axes are required")
+        }
+        return ox_unsqueeze(x, axes)
+    }
+    if op == "Shape" {
+        return Result::Ok(OxT { dt: 7, shape: [len(x.shape)], data: x.shape })
+    }
+    if op == "Cast" {
+        return ox_cast(x, ox_a_int(n, "to", 1))
+    }
+    if op == "Identity" {
+        return Result::Ok(x)
+    }
+    if op == "Dropout" {
+        if len(n.outs) > 1 && n.outs[1] != "" {
+            return Result::Err("Dropout: the mask output is not supported")
+        }
+        return Result::Ok(x)
+    }
+    if op == "ReduceMean" || op == "ReduceSum" || op == "ReduceMax" {
+        let mut axes: any = ox_a_ints(n, "axes", nil)
+        let a = ox_in(n, 1, env, inits)
+        if a != nil {
+            axes = a.data
+        }
+        return ox_reduce(op, x, axes, ox_a_int(n, "keepdims", 1))
+    }
+    let zc = ox_zip_code(op)
+    if zc >= 10 && zc != 18 && zc != 19 {
+        let y = ox_need(n, 1, env, inits)?
+        return ox_zip(op, x, y)
+    }
+    if op == "Max" || op == "Min" {
+        let mut acc = x
+        let mut i = 1
+        while i < len(n.ins) {
+            let y = ox_need(n, i, env, inits)?
+            acc = ox_zip(op, acc, y)?
+            i += 1
+        }
+        return Result::Ok(acc)
+    }
+    if op == "Not" {
+        return ox_not(x)
+    }
+    if op == "Where" {
+        let a = ox_need(n, 1, env, inits)?
+        let b = ox_need(n, 2, env, inits)?
+        return ox_where(x, a, b)
+    }
+    if op == "Expand" {
+        let t = ox_need(n, 1, env, inits)?
+        return ox_expand(x, t)
+    }
+    if op == "ConstantOfShape" {
+        return ox_const_of_shape(n, x)
+    }
+    if op == "GatherElements" {
+        let idx = ox_need(n, 1, env, inits)?
+        return ox_gather_elements(x, idx, ox_a_int(n, "axis", 0))
+    }
+    if op == "GatherND" {
+        let idx = ox_need(n, 1, env, inits)?
+        return ox_gather_nd(x, idx, ox_a_int(n, "batch_dims", 0))
+    }
+    if op == "Slice" {
+        if opset < 10 {
+            let st = ox_a_ints(n, "starts", nil)
+            let en = ox_a_ints(n, "ends", nil)
+            if st == nil || en == nil {
+                return Result::Err("Slice: starts and ends are required")
+            }
+            return ox_slice(x, st, en, ox_a_ints(n, "axes", nil), nil)
+        }
+        let st = ox_need(n, 1, env, inits)?
+        let en = ox_need(n, 2, env, inits)?
+        let mut axes: any = nil
+        let mut steps: any = nil
+        let a = ox_in(n, 3, env, inits)
+        if a != nil {
+            axes = a.data
+        }
+        let b = ox_in(n, 4, env, inits)
+        if b != nil {
+            steps = b.data
+        }
+        return ox_slice(x, st.data, en.data, axes, steps)
+    }
+    if op == "Range" {
+        let b = ox_need(n, 1, env, inits)?
+        let c = ox_need(n, 2, env, inits)?
+        return ox_range(x, b, c)
+    }
+    if op == "Erf" || op == "Gelu" || op == "Reciprocal" || op == "Floor" || op == "Ceil" || op == "Sin" || op == "Cos" {
+        return ox_unary2(n, x)
+    }
+    if op == "LayerNormalization" {
+        let sc = ox_need(n, 1, env, inits)?
+        return ox_layernorm(n, x, sc, ox_in(n, 2, env, inits))
+    }
+    if op == "ReduceMin" || op == "ReduceProd" || op == "ReduceL2" || op == "ReduceSumSquare" {
+        let mut axes: any = ox_a_ints(n, "axes", nil)
+        let a = ox_in(n, 1, env, inits)
+        if a != nil {
+            axes = a.data
+        }
+        return ox_reduce2(op, x, axes, ox_a_int(n, "keepdims", 1))
+    }
+    Result::Err("unsupported operator '" + op + "'")
+}
+
+// Ejecuta el modelo con los tensores de entrada (en el orden de m.inputs) y
+// devuelve Result::Ok(array con el tensor de cada salida) o Err(mensaje).
+fn ox_run(m: OxM, inputs: array) -> Result {
+    let mut env = std::map::new()
+    let mut i = 0
+    while i < len(m.inputs) {
+        env = std::map::insert(env, m.inputs[i].name, inputs[i])
+        i += 1
+    }
+    for n in m.nodes {
+        if n.op == "Split" {
+            let x = ox_need(n, 0, env, m.inits)?
+            let mut sp: any = ox_a_ints(n, "split", nil)
+            let sin = ox_in(n, 1, env, m.inits)
+            if sin != nil {
+                sp = sin.data
+            }
+            let parts = ox_split(n, x, sp, m.opset)?
+            let mut k = 0
+            while k < len(n.outs) {
+                if n.outs[k] != "" {
+                    env = std::map::insert(env, n.outs[k], parts[k])
+                }
+                k += 1
+            }
+        } else {
+            let r = ox_node_run(n, env, m.inits, m.opset)?
+            if len(n.outs) > 0 && n.outs[0] != "" {
+                env = std::map::insert(env, n.outs[0], r)
+            }
+        }
+    }
+    let mut outs = []
+    for o in m.outputs {
+        if std::map::contains(env, o.name) {
+            outs = std::array::push(outs, std::map::get(env, o.name))
+        } else if std::map::contains(m.inits, o.name) {
+            outs = std::array::push(outs, std::map::get(m.inits, o.name))
+        } else {
+            return Result::Err("output '" + o.name + "' was not produced")
+        }
+    }
+    Result::Ok(outs)
+}
+
+// Forma fija de una entrada tras fijar la primera (`pin`: nil = la del modelo).
+fn ox_input_dims(m: OxM, index: int, pins: any) -> array {
+    if pins != nil && index < len(pins) {
+        return pins[index]
+    }
+    m.inputs[index].dims
+}
+
+// Formas de salida deducidas ejecutando el modelo con ceros: dos veces, con
+// las dimensiones dinámicas valiendo 1 y 2; las dimensiones de salida que
+// cambian entre las dos ejecuciones se informan como -1 (dinámicas).
+// Result::Ok(array de formas) o Err.
+fn ox_out_shapes(m: OxM, pin: any) -> Result {
+    let mut dynamic = false
+    let mut idx = 0
+    while idx < len(m.inputs) {
+        for d in ox_input_dims(m, idx, pin) {
+            if d < 0 {
+                dynamic = true
+            }
+        }
+        idx += 1
+    }
+    let first = ox_out_shapes_with(m, pin, 1)?
+    if !dynamic {
+        return Result::Ok(first)
+    }
+    let second = std::try::catch(|| {
+        ox_out_shapes_with(m, pin, 2)
+    })
+    let other = ox_ok_or_nil(ox_ok_or_nil(second))
+    let mut out = []
+    let mut o = 0
+    while o < len(first) {
+        let mut shape = []
+        let mut d = 0
+        while d < len(first[o]) {
+            if other == nil || len(other[o]) != len(first[o]) || other[o][d] != first[o][d] {
+                shape = std::array::push(shape, -1)
+            } else {
+                shape = std::array::push(shape, first[o][d])
+            }
+            d += 1
+        }
+        out = std::array::push(out, shape)
+        o += 1
+    }
+    Result::Ok(out)
+}
+
+fn ox_ok_or_nil(r: any) -> any {
+    let mut out: any = nil
+    match r {
+        Result::Ok(v) => {
+            out = v
+        },
+        _ => {
+            out = nil
+        },
+    }
+    out
+}
+
+fn ox_out_shapes_with(m: OxM, pin: any, fill: int) -> Result {
+    let mut ins = []
+    let mut idx = 0
+    while idx < len(m.inputs) {
+        let mut shape = []
+        for d in ox_input_dims(m, idx, pin) {
+            if d < 0 {
+                shape = std::array::push(shape, fill)
+            } else {
+                shape = std::array::push(shape, d)
+            }
+        }
+        let dt = if m.inputs[idx].elem == 1 { 1 } else { 7 }
+        ins = std::array::push(ins, ox_probe(dt, shape))
+        idx += 1
+    }
+    let outs = ox_run(m, ins)?
+    let mut shapes = []
+    for t in outs {
+        shapes = std::array::push(shapes, t.shape)
+    }
+    Result::Ok(shapes)
+}

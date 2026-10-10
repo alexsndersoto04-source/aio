@@ -9,19 +9,7 @@
 // ni la VM para funcionar.
 import args
 import frontend
-import native::backend
-
-fn build(program: string, runtime: string) -> Result {
-    let gu = front(program, native_table())?
-    let rt_natives = std::array::concat(native_table(), raw_signatures())
-    let gr = match front(runtime, rt_natives) {
-        Result::Ok(g) => g,
-        Result::Err(message) => {
-            return Result::Err("native runtime: " + message)
-        },
-    }
-    bk_build(gu, gr)
-}
+import native_build
 
 fn main() {
     let args = ar_user_args()
@@ -34,7 +22,7 @@ fn main() {
     // que debe estar en selfhost/).
     let here = std::path::parent(std::path::canonical(ar_program()))
     let runtime = std::path::join(std::path::join(here, "native"), "runtime.titan")
-    match build(args[0], runtime) {
+    match build(args[0], runtime, ar_program()) {
         Result::Ok(built) => {
             let (bytes, symbols) = built
             el_write_executable(args[1], bytes)

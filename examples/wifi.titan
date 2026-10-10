@@ -1,6 +1,6 @@
 // Demo Fase 13' — Wi-Fi scan y estado de conexion.
 // Ejecutar con:
-//     zett run examples/wifi.titan
+//     titan run examples/wifi.titan
 //
 // Requiere el paquete termux-api instalado y la app Termux:API:
 //   pkg install termux-api

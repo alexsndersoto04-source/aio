@@ -1,0 +1,148 @@
+name: Linux ARM64 (Termux)
+
+# 1. En x86-64: bootstrap sin Rust, y la CLI `titan` se compila para ARM64 por LLVM (cruzado).
+# 2. En un ARM64 de verdad (ubuntu-24.04-arm): el ejecutable se prueba, compila programas con LLVM y su salida se
+#    compara con la del compilador x86-64 (selfhost/tests/arm64_diff.sh).
+# Termux usa el mismo núcleo Linux sobre ARM64, pero esta CI no es un teléfono: ver selfhost/ESTADO.md.
+on:
+  push:
+    branches: [ main, "arena/**" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  origen:
+    name: origen de los artefactos
+    runs-on: ubuntu-24.04
+    outputs:
+      reusar: ${{ steps.r.outputs.reusar }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        run: |
+          # Si existe .github/arm64-reuse-run (con un id de ejecución), se reutiliza esa construcción en vez de rehacerla.
+          if [ -f .github/arm64-reuse-run ]; then echo "reusar=$(tr -dc 0-9 < .github/arm64-reuse-run)" >> "$GITHUB_OUTPUT"; else echo "reusar=" >> "$GITHUB_OUTPUT"; fi
+  construir:
+    name: construir (x86-64 -> ARM64 cruzado)
+    needs: origen
+    if: ${{ needs.origen.outputs.reusar == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar clang y lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+      - name: Bootstrap (semilla -> titanc1 == titanc2 == titanc3 -> titan)
+        run: bash selfhost/bootstrap.sh
+      - name: Compilar titan para ARM64 (LLVM, cruzado)
+        run: selfhost/titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+      - name: Salidas del compilador x86-64 (referencia)
+        run: bash selfhost/tests/arm64_diff.sh generar selfhost/titan x86out
+      - name: Paquetes
+        run: |
+          bash selfhost/empaquetar.sh selfhost/titan x86_64 paquetes
+          bash selfhost/empaquetar.sh titan-aarch64 aarch64 paquetes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-entrada
+          path: |
+            titan-aarch64
+            x86out
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paquetes
+          path: paquetes
+          retention-days: 30
+
+  probar:
+    name: probar en ARM64 real
+    needs: [origen, construir]
+    if: ${{ always() && (needs.construir.result == 'success' || needs.construir.result == 'skipped') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar clang y lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-entrada
+          run-id: ${{ needs.origen.outputs.reusar || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: El ejecutable ARM64 arranca
+        run: |
+          uname -m
+          cp titan-aarch64 selfhost/titan-arm
+          chmod +x selfhost/titan-arm
+          selfhost/titan-arm version
+      - name: Un programa compilado y ejecutado en ARM64
+        run: |
+          printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
+          test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
+      - name: "zett (gestor de paquetes) y arranque invocado por el PATH en ARM64"
+        run: |
+          mkdir -p /tmp/bin
+          ln -s "$PWD/selfhost/titan-arm" /tmp/bin/zett
+          ln -s "$PWD/selfhost/titan-arm" /tmp/bin/titan
+          export PATH=/tmp/bin:$PATH
+          zett version | grep -q "zett (gestor de paquetes de Titan)"
+          zett help | grep -q "uso: zett"
+          test "$(titan run /tmp/hola.titan)" = "respuesta 42"
+      - name: Procesos hijos y servidor HTTP en ARM64
+        run: |
+          selfhost/titan-arm run selfhost/tests/diag/arm_proc.titan > proc.out
+          grep -q "8 fin" proc.out
+          grep -q "200 OK" proc.out
+      - name: Diferencial contra x86-64
+        run: |
+          bash selfhost/tests/arm64_diff.sh generar selfhost/titan-arm armout > generar.txt 2>&1
+          rc=0
+          bash selfhost/tests/arm64_diff.sh comparar x86out armout > comparar.txt 2>&1 || rc=$?
+          cat generar.txt comparar.txt
+          # La salida completa del log no se puede leer por API: se publica como anotación.
+          msg=$(head -c 6000 comparar.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          if [ $rc -ne 0 ]; then
+            echo "::error title=diferencial ARM64::$msg"
+          else
+            echo "::notice title=diferencial ARM64::$msg"
+          fi
+          exit $rc
+      - name: titan compilado por titan en ARM64 (informativo)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          rc=0
+          { time selfhost/titan-arm compile selfhost/titan.titan -o selfhost/titan-arm2; } > auto.txt 2>&1 || rc=$?
+          { echo "compilación nativa: código $rc"; sha256sum titan-aarch64 selfhost/titan-arm2; cmp titan-aarch64 selfhost/titan-arm2 && echo "IGUALES: coincide con el cruzado"; } >> auto.txt 2>&1 || true
+          cat auto.txt
+          msg=$(head -c 3000 auto.txt | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          echo "::notice title=autocompilacion ARM64::$msg"
+          test $rc -eq 0
+          cp selfhost/titan-arm2 selfhost/titan-arm
+          test "$(selfhost/titan-arm run /tmp/hola.titan)" = "respuesta 42"
+
+  publicar:
+    name: publicar los paquetes (solo en etiquetas v*)
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [construir, probar]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paquetes
+          path: paquetes
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd paquetes
+          # Nombres fijos para que instalar-termux.sh encuentre siempre «latest/download/…».
+          cp titan-*-linux-aarch64.tar.gz titan-linux-aarch64.tar.gz
+          cp titan-*-linux-x86_64.tar.gz titan-linux-x86_64.tar.gz
+          sha256sum titan-linux-*.tar.gz > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
+            --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes para Linux x86-64 y ARM64/Termux; el de ARM64 se probó en un servidor ARM64 real, no en un teléfono. Descomprime y ejecuta ./titan (la carpeta native/ debe quedar junto al ejecutable). Ver LEEME.txt dentro del paquete. SHA256SUMS.txt trae las sumas de verificación." \
+            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz

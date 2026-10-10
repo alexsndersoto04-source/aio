@@ -1,0 +1,638 @@
+// Artefacto de bytecode `.tbc` (`titan build` / `titan exec`), en Titan.
+//
+// Traducción fiel de crates/titan_codegen/src/artifact.rs: el mismo formato
+// (cabecera `TITAN-BYTECODE 1`, sobre JSON con versión, CRC-32 del módulo
+// compacto y módulo), las mismas validaciones y los mismos mensajes. Para que el
+// archivo sea idéntico byte a byte al de Rust, el módulo se arma con mapas
+// (orden alfabético de claves, como `serde_json::Value`) y se serializa con
+// std::json::stringify / std::json::pretty.
+// Una llamada a `Call` con function = usize::MAX (la intrínseca de rangos) no cabe
+// en un entero de Titan: viaja como -1 y se sustituye por el texto
+// 18446744073709551615 al escribir (y al revés al leer).
+// Prefijo `ac_`.
+import codegen
+
+fn ac_magic() -> string {
+    "TITAN-BYTECODE 1\n"
+}
+
+fn ac_version() -> string {
+    "1.0.0"
+}
+
+fn ac_unit_text() -> string {
+    "PushNil Pop Dup Add Sub Mul Div Mod Neg Not BitNot Eq Neq Lt Gt Lte Gte BitAnd BitOr BitXor Try " +
+        "ArrayMap ArrayFilter ArrayFold ArraySortBy ArrayFind ArrayAny ArrayAll Spawn JoinTask " +
+        "JoinTaskTimeout CancelTask NewChannel ChannelSend ChannelRecv ChannelRecvTimeout ChannelSelect " +
+        "TcpListen TcpLocalAddr TcpAccept TcpConnect TcpRead TcpWrite TcpSetTimeout TcpClose " +
+        "HttpServeConnection HttpRouterNew HttpRouteAdd HttpMiddlewareAdd HttpAfterAdd " +
+        "HttpErrorHandlerAdd HttpDispatch TlsConnect TlsServerConfig TlsAccept TlsRead TlsWrite TlsClose " +
+        "WsDecoderNew WsDecoderPush WsDecoderNext WsConnect WsAttachTcp WsAttachTls WsSendText " +
+        "WsSendBinary WsReceive WsClose ServerControlNew ServerTryAcquire ServerRelease ServerShutdown " +
+        "ServerStats ServerHealthResponse SqliteOpen SqliteMemory SqliteExecute SqliteQuery SqliteBegin " +
+        "SqliteCommit SqliteRollback SqliteMigrate SqliteLastId SqliteClose SqlitePing SqlitePoolNew " +
+        "SqlitePoolAcquire SqlitePoolStats SqlitePoolHealth SqlitePoolClose PostgresConnect " +
+        "PostgresConnectTls PostgresExecute PostgresQuery PostgresBegin PostgresCommit PostgresRollback " +
+        "PostgresMigrate PostgresCancel PostgresClose PostgresPing PostgresPoolNew PostgresPoolAcquire " +
+        "PostgresPoolStats PostgresPoolHealth PostgresPoolClose MysqlConnect MysqlExecute MysqlQuery " +
+        "MysqlBegin MysqlCommit MysqlRollback MysqlMigrate MysqlLastId MysqlClose MysqlPing MysqlPoolNew " +
+        "MysqlPoolAcquire MysqlPoolStats MysqlPoolHealth MysqlPoolClose DbExecute DbQuery DbBegin " +
+        "DbCommit DbRollback DbMigrate DbClose DbPing RuntimeMemoryLimit RuntimeAllocatedBytes " +
+        "RuntimeGcLiveCount RuntimeGcCollect RuntimeGcThreshold RuntimeGcSetThreshold RuntimeActiveTasks " +
+        "RuntimeHeapDump RuntimeOptimizeLevel RuntimeFastPath RuntimeBenchmark SpawnQuota Ret Len " +
+        "ToString Index EnumPayload Nop Halt "
+}
+
+fn ac_units() -> map {
+    let mut m = std::map::new()
+    for name in std::text::words(ac_unit_text()) {
+        m = std::map::insert(m, name, true)
+    }
+    m
+}
+
+// Número de parámetros de cada nativa ("nombre P1,P2 -> R").
+fn ac_native_arity() -> map {
+    let mut m = std::map::new()
+    for line in native_table() {
+        let parts = split_on(line, ' ')
+        let name = parts[0]
+        let mut i = 0
+        let mut cut = len(line)
+        while i + 4 <= len(line) {
+            if std::text::substring(line, i, i + 4) == " -> " {
+                cut = i
+                i = len(line)
+            }
+            i += 1
+        }
+        let head = std::text::substring(line, 0, cut)
+        let rest = std::text::substring(head, len(name), len(head))
+        let params = std::text::trim(rest)
+        let mut count = 0
+        if params != "" {
+            count = len(split_on(params, ','))
+        }
+        m = std::map::insert(m, name, count)
+    }
+    m
+}
+
+// ------------------------------------------------------------ tipos (texto Debug <-> JSON)
+
+fn ac_is_letter(c: int) -> bool {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn ac_skip_spaces(t: array, pos: int) -> int {
+    let mut p = pos
+    while p < len(t) && t[p] == 32 {
+        p += 1
+    }
+    p
+}
+
+// Lee un identificador en `pos`: (texto, posición siguiente).
+fn ac_ident(t: array, pos: int) -> (string, int) {
+    let mut p = pos
+    let mut out = ""
+    while p < len(t) && ac_is_letter(t[p]) {
+        out += std::text::from_char_code(t[p])
+        p += 1
+    }
+    return (out, p)
+}
+
+// Lee un texto entre comillas dobles (sin escapes) en `pos`.
+fn ac_quoted(t: array, pos: int) -> (string, int) {
+    let mut p = pos + 1
+    let mut out = ""
+    while p < len(t) && t[p] != 34 {
+        out += std::text::from_char_code(t[p])
+        p += 1
+    }
+    return (out, p + 1)
+}
+
+// Tipo en texto Debug de Rust -> valor JSON (como lo serializa serde).
+fn ac_ty_parse(t: array, pos0: int) -> (any, int) {
+    let pos = ac_skip_spaces(t, pos0)
+    let (name, p1) = ac_ident(t, pos)
+    if p1 >= len(t) || t[p1] != 40 {
+        return (name, p1)
+    }
+    // Hay un paréntesis: `Nombre(argumentos)`.
+    let mut p = p1 + 1
+    let mut payload: any = nil
+    if name == "Struct" || name == "Enum" {
+        let (s, p2) = ac_quoted(t, ac_skip_spaces(t, p))
+        payload = s
+        p = p2
+    } else if name == "ArrayOf" {
+        let (a, p2) = ac_ty_parse(t, p)
+        payload = a
+        p = p2
+    } else if name == "TupleOf" {
+        let (a, p2) = ac_ty_list(t, ac_skip_spaces(t, p))
+        payload = a
+        p = p2
+    } else if name == "EnumOf" {
+        let (s, p2) = ac_quoted(t, ac_skip_spaces(t, p))
+        let p3 = ac_skip_spaces(t, p2)
+        // coma
+        let (a, p4) = ac_ty_list(t, ac_skip_spaces(t, p3 + 1))
+        payload = [s, a]
+        p = p4
+    } else if name == "MapOf" {
+        let (a, p2) = ac_ty_parse(t, p)
+        let p3 = ac_skip_spaces(t, p2)
+        let (b, p4) = ac_ty_parse(t, p3 + 1)
+        payload = [a, b]
+        p = p4
+    }
+    // cierra el paréntesis
+    p = ac_skip_spaces(t, p)
+    return (std::map::insert(std::map::new(), name, payload), p + 1)
+}
+
+// `[T, T, ...]` -> array de JSON.
+fn ac_ty_list(t: array, pos: int) -> (any, int) {
+    let mut p = pos + 1
+    let mut out = []
+    p = ac_skip_spaces(t, p)
+    while p < len(t) && t[p] != 93 {
+        let (v, p2) = ac_ty_parse(t, p)
+        out = std::array::push(out, v)
+        p = ac_skip_spaces(t, p2)
+        if p < len(t) && t[p] == 44 {
+            p += 1
+        }
+        p = ac_skip_spaces(t, p)
+    }
+    return (out, p + 1)
+}
+
+fn ac_ty_json(text: string) -> any {
+    let mut codes = []
+    for c in std::text::chars(text) {
+        codes = std::array::push(codes, std::text::char_code(c))
+    }
+    let (v, p) = ac_ty_parse(codes, 0)
+    v
+}
+
+// Valor JSON de un tipo -> texto Debug de Rust.
+fn ac_is_str(v: any) -> bool {
+    std::text::starts_with(std::json::stringify(v), "\"")
+}
+
+fn ac_ty_text(v: any) -> string {
+    if ac_is_str(v) {
+        return "{v}"
+    }
+    let name = std::map::keys(v)[0]
+    let payload = std::map::get(v, name)
+    if name == "Struct" || name == "Enum" {
+        return name + "(" + q(payload) + ")"
+    }
+    if name == "ArrayOf" {
+        return name + "(" + ac_ty_text(payload) + ")"
+    }
+    if name == "TupleOf" {
+        return name + "(" + ac_ty_texts(payload) + ")"
+    }
+    if name == "EnumOf" {
+        return name + "(" + q(payload[0]) + ", " + ac_ty_texts(payload[1]) + ")"
+    }
+    name + "(" + ac_ty_text(payload[0]) + ", " + ac_ty_text(payload[1]) + ")"
+}
+
+fn ac_ty_texts(list: array) -> string {
+    let mut parts = []
+    for item in list {
+        parts = std::array::push(parts, ac_ty_text(item))
+    }
+    "[" + ld_join(parts, ", ") + "]"
+}
+
+// ------------------------------------------------------------ validación
+
+fn ac_invalid(msg: string) -> Result {
+    Result::Err("invalid bytecode: " + msg)
+}
+
+fn ac_validate(g: G) -> Result {
+    let nfuncs = len(g.funcs)
+    if nfuncs == 0 {
+        return ac_invalid("module has no functions")
+    }
+    if nfuncs > 100000 {
+        return ac_invalid("function count exceeds safety limit")
+    }
+    if g.entry >= nfuncs {
+        return ac_invalid("entry function is out of bounds")
+    }
+    if len(g.table) > 1000000 {
+        return ac_invalid("string table exceeds safety limit")
+    }
+    let mut total = 0
+    for f in g.funcs {
+        total += len(f.code)
+    }
+    if total > 10000000 {
+        return ac_invalid("instruction count exceeds safety limit")
+    }
+    let natives = ac_native_arity()
+    let mut fi = 0
+    for f in g.funcs {
+        let name = f.name
+        if len(name) > 4096 {
+            return ac_invalid("function {fi} name is too long")
+        }
+        if f.file != nil && len(f.file) > 32768 {
+            return ac_invalid("function '{name}' source path is too long")
+        }
+        if len(f.locs) > 0 && len(f.locs) != len(f.code) {
+            return ac_invalid("function '{name}' has a malformed source map")
+        }
+        if len(f.params) > 0 && len(f.params) != f.arity {
+            return ac_invalid("function '{name}' has malformed parameter type metadata")
+        }
+        if f.captures + f.arity > f.locals {
+            return ac_invalid("function '{name}' has fewer locals than captures and arguments")
+        }
+        if f.max_stack == 0 || f.max_stack > 1000000 {
+            return ac_invalid("function '{name}' has invalid max stack")
+        }
+        let mut ii = 0
+        for op in f.code {
+            let k = op.k
+            let n = op.n
+            let loc = "function '{name}' instruction {ii}"
+            if k == "PushStr" && n >= len(g.table) {
+                return ac_invalid(loc + " references missing string {n}")
+            }
+            if (k == "PushLocal" || k == "StoreLocal") && n >= f.locals {
+                return ac_invalid(loc + " references missing local {n}")
+            }
+            if k == "Jump" || k == "JumpIfFalse" {
+                if op.flag {
+                    return ac_invalid(loc + " has invalid jump target 18446744073709551615")
+                }
+                if n > len(f.code) {
+                    return ac_invalid(loc + " has invalid jump target {n}")
+                }
+            }
+            if k == "Call" {
+                let argc = op.m
+                if op.flag {
+                    if argc != 3 {
+                        return ac_invalid(loc + " has a malformed range intrinsic")
+                    }
+                } else {
+                    if n >= nfuncs {
+                        return ac_invalid(loc + " calls missing function {n}")
+                    }
+                    let target = g.funcs[n]
+                    if argc != target.arity {
+                        return ac_invalid(loc + " calls '" + target.name + "' with wrong arity")
+                    }
+                    if target.captures != 0 {
+                        return ac_invalid(loc + " directly calls closure body '" + target.name + "'")
+                    }
+                }
+            }
+            if k == "CallNative" {
+                let native = op.s
+                if !std::map::contains(natives, native) {
+                    return ac_invalid(loc + " calls unknown native '" + native + "'")
+                }
+                if n != std::map::get(natives, native) {
+                    return ac_invalid(loc + " calls native '" + native + "' with wrong arity")
+                }
+            }
+            if k == "MakeClosure" {
+                if n >= nfuncs {
+                    return ac_invalid(loc + " references missing closure {n}")
+                }
+                let target = g.funcs[n]
+                if len(op.list) != target.captures {
+                    return ac_invalid(loc + " supplies wrong capture count for '" + target.name + "'")
+                }
+                for c in op.list {
+                    if c >= f.locals {
+                        return ac_invalid(loc + " captures a missing local")
+                    }
+                }
+            }
+            if (k == "NewArray" || k == "NewTuple" || k == "Print" || k == "CallValue") && n > 1000000 {
+                return ac_invalid(loc + " has an excessive operand count")
+            }
+            if k == "NewStruct" && (len(op.s) > 4096 || len(op.list) > 100000) {
+                return ac_invalid(loc + " has invalid struct metadata")
+            }
+            ii += 1
+        }
+        fi += 1
+    }
+    Result::Ok(true)
+}
+
+// ------------------------------------------------------------ codificación
+
+fn ac_op_json(op: Op, units: map) -> any {
+    let k = op.k
+    if std::map::contains(units, k) {
+        return k
+    }
+    let mut payload: any = nil
+    if k == "PushInt" || k == "TakeLocal" || k == "PushStr" || k == "PushLocal" || k == "StoreLocal" || k == "CallValue" || k == "TryCall" || k == "Print" || k == "NewArray" || k == "NewTuple" || k == "Jump" || k == "JumpIfFalse" {
+        payload = op.n
+    } else if k == "PushFloat" {
+        let parsed = std::text::parse_float(op.s)
+        let mut v = 0.0
+        match parsed {
+            Option::Some(x) => {
+                v = x
+            },
+            _ => {
+                v = 0.0
+            },
+        }
+        payload = v
+    } else if k == "PushBool" {
+        payload = op.flag
+    } else if k == "PushChar" || k == "GetField" {
+        payload = op.s
+    } else if k == "Call" {
+        let mut function = op.n
+        if op.flag {
+            function = -1
+        }
+        payload = std::map::insert(std::map::insert(std::map::new(), "argc", op.m), "function", function)
+    } else if k == "CallNative" {
+        payload = std::map::insert(std::map::insert(std::map::new(), "argc", op.n), "name", op.s)
+    } else if k == "CallMethod" {
+        payload = std::map::insert(std::map::insert(std::map::new(), "argc", op.n), "method", op.s)
+    } else if k == "MakeClosure" {
+        payload = std::map::insert(std::map::insert(std::map::new(), "captures", op.list), "function", op.n)
+    } else if k == "NewStruct" {
+        payload = std::map::insert(std::map::insert(std::map::new(), "fields", op.list), "name", op.s)
+    } else if k == "NewEnum" {
+        let mut m = std::map::insert(std::map::new(), "has_payload", op.flag)
+        m = std::map::insert(m, "name", op.s)
+        payload = std::map::insert(m, "variant", op.s2)
+    } else if k == "EnumIs" {
+        payload = std::map::insert(std::map::insert(std::map::new(), "name", op.s), "variant", op.s2)
+    }
+    std::map::insert(std::map::new(), k, payload)
+}
+
+fn ac_func_json(f: Func, units: map) -> any {
+    let mut code = []
+    for op in f.code {
+        code = std::array::push(code, ac_op_json(op, units))
+    }
+    let mut locs = []
+    for l in f.locs {
+        if l == nil {
+            locs = std::array::push(locs, nil)
+        } else {
+            let mut m = std::map::insert(std::map::new(), "column", l.col)
+            m = std::map::insert(m, "end", l.end)
+            m = std::map::insert(m, "line", l.line)
+            m = std::map::insert(m, "start", l.start)
+            locs = std::array::push(locs, m)
+        }
+    }
+    let mut params = []
+    for p in f.params {
+        params = std::array::push(params, ac_ty_json(p))
+    }
+    let mut ret: any = nil
+    if f.ret != nil {
+        ret = ac_ty_json(f.ret)
+    }
+    let mut m = std::map::insert(std::map::new(), "arity", f.arity)
+    m = std::map::insert(m, "captures", f.captures)
+    m = std::map::insert(m, "code", code)
+    m = std::map::insert(m, "debug_locations", locs)
+    m = std::map::insert(m, "locals", f.locals)
+    m = std::map::insert(m, "max_stack", f.max_stack)
+    m = std::map::insert(m, "name", f.name)
+    m = std::map::insert(m, "param_types", params)
+    m = std::map::insert(m, "return_type", ret)
+    std::map::insert(m, "source_file", f.file)
+}
+
+// Pone de vuelta usize::MAX donde viajó como -1.
+fn ac_restore_max(text: string) -> string {
+    let a = std::text::replace(text, "\"function\":-1", "\"function\":18446744073709551615")
+    std::text::replace(a, "\"function\": -1", "\"function\": 18446744073709551615")
+}
+
+// g -> Result::Ok(bytes del artefacto) o Err(mensaje).
+fn ac_encode(g: G) -> Result {
+    let valid = ac_validate(g)?
+    let units = ac_units()
+    let mut funcs = []
+    for f in g.funcs {
+        funcs = std::array::push(funcs, ac_func_json(f, units))
+    }
+    let mut module = std::map::insert(std::map::new(), "entry", g.entry)
+    module = std::map::insert(module, "enum_schemas", g.enums)
+    module = std::map::insert(module, "functions", funcs)
+    module = std::map::insert(module, "method_table", g.methods)
+    module = std::map::insert(module, "string_table", g.table)
+    module = std::map::insert(module, "struct_schemas", g.structs)
+    let compact = ac_restore_max(std::json::stringify(module))
+    let crc = std::checksum::crc32(std::encoding::utf8_encode(compact))
+    // El sobre es un struct de Rust (campos en orden de declaración, no
+    // alfabético): se escribe a mano alrededor del módulo ya formateado.
+    let inner = std::text::replace(ac_restore_max(std::json::pretty(module)), "\n", "\n  ")
+    let text = ac_magic() + "{\n  \"format_version\": 1,\n  \"compiler_version\": \"" + ac_version() + "\",\n  \"checksum_crc32\": {crc},\n  \"module\": " + inner + "\n}\n"
+    let bytes = std::encoding::utf8_encode(text)
+    if std::bytes::length(bytes) > 67108864 {
+        return Result::Err("bytecode artifact exceeds the 67108864 byte limit")
+    }
+    Result::Ok(bytes)
+}
+
+// ------------------------------------------------------------ decodificación
+
+fn ac_json_op(v: any, units: map) -> Op {
+    let mut op = Op { k: "", n: 0, m: 0, s: "", s2: "", flag: false, list: [] }
+    if ac_is_str(v) {
+        // Variante sin datos: el valor es su nombre.
+        return Op { k: "{v}", n: 0, m: 0, s: "", s2: "", flag: false, list: [] }
+    }
+    let k = std::map::keys(v)[0]
+    let p = std::map::get(v, k)
+    if k == "PushFloat" {
+        let x = std::math::to_float(0) + p
+        return Op { k: k, n: 0, m: 0, s: "{x}", s2: "", flag: false, list: [] }
+    }
+    if k == "PushBool" {
+        return Op { k: k, n: 0, m: 0, s: "", s2: "", flag: p, list: [] }
+    }
+    if k == "PushChar" || k == "GetField" {
+        return Op { k: k, n: 0, m: 0, s: p, s2: "", flag: false, list: [] }
+    }
+    if k == "Call" {
+        let f = std::map::get(p, "function")
+        let mut max = false
+        let mut n = 0
+        if f < 0 {
+            max = true
+        } else {
+            n = f
+        }
+        return Op { k: k, n: n, m: std::map::get(p, "argc"), s: "", s2: "", flag: max, list: [] }
+    }
+    if k == "CallNative" {
+        return Op { k: k, n: std::map::get(p, "argc"), m: 0, s: std::map::get(p, "name"), s2: "", flag: false, list: [] }
+    }
+    if k == "CallMethod" {
+        return Op { k: k, n: std::map::get(p, "argc"), m: 0, s: std::map::get(p, "method"), s2: "", flag: false, list: [] }
+    }
+    if k == "MakeClosure" {
+        return Op { k: k, n: std::map::get(p, "function"), m: 0, s: "", s2: "", flag: false, list: std::map::get(p, "captures") }
+    }
+    if k == "NewStruct" {
+        return Op { k: k, n: 0, m: 0, s: std::map::get(p, "name"), s2: "", flag: false, list: std::map::get(p, "fields") }
+    }
+    if k == "NewEnum" {
+        return Op { k: k, n: 0, m: 0, s: std::map::get(p, "name"), s2: std::map::get(p, "variant"), flag: std::map::get(p, "has_payload"), list: [] }
+    }
+    if k == "EnumIs" {
+        return Op { k: k, n: 0, m: 0, s: std::map::get(p, "name"), s2: std::map::get(p, "variant"), flag: false, list: [] }
+    }
+    Op { k: k, n: p, m: 0, s: "", s2: "", flag: false, list: [] }
+}
+
+fn ac_json_func(v: any, units: map) -> Func {
+    let mut code = []
+    for o in v.code {
+        code = std::array::push(code, ac_json_op(o, units))
+    }
+    let mut locs = []
+    for l in v.debug_locations {
+        if l == nil {
+            locs = std::array::push(locs, nil)
+        } else {
+            locs = std::array::push(locs, Span { line: l.line, col: l.column, start: l.start, end: l.end })
+        }
+    }
+    let mut params = []
+    for p in v.param_types {
+        params = std::array::push(params, ac_ty_text(p))
+    }
+    let mut ret: any = nil
+    if v.return_type != nil {
+        ret = ac_ty_text(v.return_type)
+    }
+    Func { name: v.name, file: v.source_file, arity: v.arity, params: params, ret: ret, captures: v.captures, locals: v.locals, max_stack: v.max_stack, code: code, locs: locs }
+}
+
+// Valida que cada op tenga una forma conocida (nombre y campos), como lo
+// haría serde al deserializar: Err(mensaje) si no.
+fn ac_check_shapes(module: any, units: map) -> Result {
+    let payloads = std::map::new()
+    for f in module.functions {
+        for o in f.code {
+            if ac_is_str(o) {
+                if !std::map::contains(units, "{o}") {
+                    return Result::Err("malformed bytecode JSON: unknown variant `{o}`")
+                }
+            }
+        }
+    }
+    Result::Ok(true)
+}
+
+// Bytes del artefacto -> Result::Ok(G) o Err(mensaje).
+fn ac_decode(bytes: any) -> Result {
+    if std::bytes::length(bytes) > 67108864 {
+        return Result::Err("bytecode artifact exceeds the 67108864 byte limit")
+    }
+    let decoded = std::try::catch(|| {
+        std::encoding::utf8_decode(bytes)
+    })
+    let mut text = ""
+    match decoded {
+        Result::Ok(t) => {
+            text = t
+        },
+        Result::Err(e) => {
+            return Result::Err("invalid TITAN bytecode header")
+        },
+    }
+    if !std::text::starts_with(text, ac_magic()) {
+        return Result::Err("invalid TITAN bytecode header")
+    }
+    let payload = std::text::substring(text, len(ac_magic()), len(text))
+    // usize::MAX no cabe en un entero de Titan: se lee como -1.
+    let readable = std::text::replace(payload, "\"function\": 18446744073709551615", "\"function\": -1")
+    let parsed = std::try::catch(|| {
+        std::json::parse(readable)
+    })
+    let mut env: any = nil
+    match parsed {
+        Result::Ok(v) => {
+            env = v
+        },
+        Result::Err(e) => {
+            // Quita el prefijo "native function '...' failed: " del error de la nativa.
+            let mut detail = "{e}"
+            let mark = "failed: "
+            let mut i = 0
+            while i + len(mark) <= len(detail) {
+                if std::text::substring(detail, i, i + len(mark)) == mark {
+                    detail = std::text::substring(detail, i + len(mark), len(detail))
+                    i = len(detail)
+                }
+                i += 1
+            }
+            return Result::Err("malformed bytecode JSON: " + detail)
+        },
+    }
+    let shape = std::try::catch(|| {
+        ac_from_envelope(env)
+    })
+    match shape {
+        Result::Ok(r) => {
+            return r
+        },
+        Result::Err(e) => {
+            return Result::Err("malformed bytecode JSON: unexpected structure")
+        },
+    }
+    Result::Err("unreachable")
+}
+
+fn ac_from_envelope(env: any) -> Result {
+    let version = env.format_version
+    if version != 1 {
+        return Result::Err("unsupported bytecode format version {version}")
+    }
+    let module = env.module
+    let compact = ac_restore_max(std::json::stringify(module))
+    if std::checksum::crc32(std::encoding::utf8_encode(compact)) != env.checksum_crc32 {
+        return Result::Err("bytecode checksum mismatch")
+    }
+    let units = ac_units()
+    let shapes = ac_check_shapes(module, units)?
+    let mut funcs = []
+    for f in module.functions {
+        funcs = std::array::push(funcs, ac_json_func(f, units))
+    }
+    let mut g = cg_new(std::map::new())
+    g = gs_funcs(g, funcs)
+    g = gs_table(g, module.string_table)
+    g = gs_structs(g, module.struct_schemas)
+    g = gs_enums(g, module.enum_schemas)
+    g = gs_methods(g, module.method_table)
+    g = gs_entry(g, module.entry)
+    let valid = ac_validate(g)?
+    Result::Ok(g)
+}
