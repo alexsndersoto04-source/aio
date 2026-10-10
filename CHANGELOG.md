@@ -5,7 +5,7 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
-## Sin publicar
+## 1.2.1 — 2026-10-10
 
 - **Teléfonos (Termux de 32 bits):** `titan` detectaba mal la arquitectura y generaba un binario de PC
   (`ENOEXEC: std::process::run_timeout`) en teléfonos como el Redmi 9C, donde `uname -m` dice `armv8l`
