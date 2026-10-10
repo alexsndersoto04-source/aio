@@ -1,19 +1,19 @@
 # Guía de Contribución a Titan
 
-Gracias por tu interés en contribuir a **Titan / Zett**. Este documento describe cómo configurar el entorno de desarrollo, la arquitectura general del repositorio, las pruebas de verificación y el flujo recomendado para enviar mejoras o correcciones.
+Gracias por tu interés en contribuir a **Titan / Zett**. Damos la bienvenida a colaboraciones de la comunidad en el compilador, el runtime, la biblioteca estándar, las herramientas de desarrollo (LSP, DAP, Zett) y la documentación.
 
 ---
 
 ## 1. Configuración del entorno de desarrollo
 
-Titan es un lenguaje autoalojado (*self-hosted*): el compilador, el runtime y las 812 funciones de la biblioteca estándar están escritos íntegramente en Titan.
+Titan es un lenguaje compilado y autoalojado (*self-hosted*): el compilador, el runtime y la biblioteca estándar están implementados en Titan.
 
-### Requisitos básicos (Linux x86-64)
+### Requisitos del sistema (Linux x86-64)
 - `bash`, `gzip` y utilidades estándar de sistema (`coreutils`, `tar`, `sha256sum`).
 - **Opcional (Backend LLVM y compilación cruzada ARM64):** `clang` y `lld`.
-- **Opcional (Generador del sitio web y documentación):** `python3` y el paquete `markdown` (`pip install markdown`).
+- **Opcional (Generación del sitio web estático):** `python3` y el paquete `markdown` (`pip install markdown`).
 
-### Construcción desde las fuentes (*Bootstrap*)
+### Construcción desde el código fuente (*Bootstrap*)
 
 ```bash
 git clone https://github.com/alexsndersoto04-source/aio.git
@@ -22,78 +22,81 @@ bash selfhost/bootstrap.sh
 selfhost/titan version
 ```
 
-El script `selfhost/bootstrap.sh` descomprime la semilla inicial (`selfhost/semilla/titanc-linux-x86_64.gz`), compila el compilador en tres etapas sucesivas (`titanc1`, `titanc2`, `titanc3`) comprobando que produzcan el mismo binario byte a byte (punto fijo), y finalmente genera la herramienta completa `selfhost/titan`.
+El script `selfhost/bootstrap.sh` construye el compilador en tres etapas sucesivas (`titanc1`, `titanc2`, `titanc3`), verifica la reproducibilidad determinista del binario (punto fijo) y genera el ejecutable unificado `selfhost/titan`.
 
-### Instalación desde paquetes precompilados (Linux x86-64 y ARM64)
-Si prefieres instalar directamente los binarios oficiales precompilados para **Linux x86-64** o **Linux ARM64 (`aarch64` / Termux)**, puedes descargarlos desde [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest):
+### Instalación mediante paquetes precompilados
+También puedes descargar los binarios oficiales precompilados para **Linux x86-64** y **Linux ARM64 (`aarch64` / Termux)** desde [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest):
 
 - **Linux x86-64:** `titan-linux-x86_64.tar.gz`
 - **Linux ARM64 / Termux:** `titan-linux-aarch64.tar.gz`
 
 ---
 
-## 2. Estructura del repositorio
+## 2. Arquitectura del repositorio
 
 | Directorio | Descripción |
 |---|---|
-| `selfhost/` | Código fuente del compilador (`lexer`, `parser`, `typechecker`, `codegen`, `opt`, `wasm`), la CLI unificada (`titan.titan`) y herramientas (LSP, DAP, Zett). |
-| `selfhost/native/` | Runtime nativo, generadores de código (`x64.titan`, `llvm.titan`, `elf.titan`) y la biblioteca estándar (`std_*.titan`). |
-| `selfhost/tests/` | Suites de pruebas automatizadas del compilador, biblioteca estándar, depurador y validación diferencial ARM64. |
+| `selfhost/` | Compilador principal (`lexer`, `parser`, `typechecker`, `codegen`, `opt`, `wasm`), CLI (`titan.titan`) y servidores LSP/DAP. |
+| `selfhost/native/` | Runtime nativo, generadores de código (`x64.titan`, `llvm.titan`, `elf.titan`) y los 73 módulos de la biblioteca estándar (`std_*.titan`). |
+| `selfhost/tests/` | Suites de pruebas automatizadas del compilador, biblioteca estándar, depurador y validación multiplataforma. |
 | `stdlib/` | Módulos adicionales de la biblioteca estándar en archivos `.titan`. |
-| `examples/` | Más de 50 programas de ejemplo que muestran el uso del lenguaje y de su biblioteca estándar. |
-| `docs/` | Documentación técnica del lenguaje, la biblioteca estándar, la arquitectura y las herramientas. |
-| `site-src/` | Plantillas, hojas de estilo y generador (`generar.py`) del sitio web oficial publicado en `site/`. |
+| `examples/` | Programas de ejemplo que demuestran las capacidades del lenguaje y su biblioteca estándar. |
+| `docs/` | Documentación técnica del lenguaje, especificación formal, arquitectura y guías de uso. |
+| `site-src/` | Plantillas, estilos y generador (`generar.py`) del sitio web oficial publicado en `site/`. |
 
-Para más detalles sobre las etapas internas del compilador, consulta [`selfhost/README.md`](selfhost/README.md) y [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Para profundizar en el diseño interno del compilador, consulta [`selfhost/README.md`](selfhost/README.md) y [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## 3. Verificación y pruebas de calidad
+## 3. Estándares de ingeniería y código
 
-Antes de enviar un *Pull Request*, ejecuta las comprobaciones correspondientes al área que hayas modificado:
+Para mantener la estabilidad, el rendimiento y la mantenibilidad del proyecto, recomendamos seguir estos principios al desarrollar cambios:
 
-| Área modificada | Comando de verificación |
+1. **Diseño modular y claridad:** Escribe código legible, bien estructurado y fácil de mantener, respetando las convenciones de estilo existentes en cada módulo.
+2. **Reproducibilidad del compilador:** Cualquier cambio en las etapas del compilador (`lexer`, `parser`, `typechecker`, `codegen`, `opt`) debe mantener la propiedad de punto fijo determinista verificada por `verify_fixpoint.sh`.
+3. **Cobertura de pruebas:** Acompaña las nuevas características o correcciones de errores con casos de prueba automatizados dentro de `selfhost/tests/` o `examples/`.
+4. **Compatibilidad multiplataforma:** Asegúrate de que los cambios en el runtime o en la generación de código sean compatibles tanto con `x86-64` como con `ARM64` (`aarch64`) y `WebAssembly` cuando corresponda.
+5. **Documentación sincronizada:** Cuando incorpores nuevas funciones, comandos o sintaxis, actualiza la documentación técnica correspondiente en `docs/` y regenera el sitio estático con `python3 site-src/generar.py claro`.
+
+---
+
+## 4. Verificación y suite de pruebas
+
+Antes de enviar un *Pull Request*, ejecuta las pruebas correspondientes a los componentes modificados:
+
+| Componente modificado | Comando de verificación |
 |---|---|
-| **Compilador (`selfhost/*.titan`)** | `bash selfhost/verify_fixpoint.sh` (verifica la autocompilación en 3 etapas) |
-| **Genéricos y sistema de tipos** | `bash selfhost/tests/genericos/probar.sh ./selfhost/titan` y `bash selfhost/tests/errores/probar.sh ./selfhost/titan` |
-| **Biblioteca estándar (`selfhost/native/`)** | `bash selfhost/native/cobertura.sh -v` y ejecución de un programa de prueba relacionado |
+| **Compilador (`selfhost/*.titan`)** | `bash selfhost/verify_fixpoint.sh` |
+| **Sistema de tipos y genéricos** | `bash selfhost/tests/genericos/probar.sh ./selfhost/titan` y `bash selfhost/tests/errores/probar.sh ./selfhost/titan` |
+| **Biblioteca estándar (`selfhost/native/`)** | `bash selfhost/native/cobertura.sh -v` |
 | **Ejemplos o proyectos (`examples/`, `projects/`)** | `./selfhost/titan check <archivo.titan>` |
 | **Sitio web y documentación (`site-src/`, `docs/`)** | `python3 site-src/generar.py claro` |
 
-Todas las pruebas se ejecutan automáticamente mediante **GitHub Actions** en cada *Pull Request*, tanto en entornos `Linux x86-64` como en servidores `Linux ARM64`.
+El sistema de integración continua (**GitHub Actions**) ejecuta automáticamente estas validaciones en cada *Pull Request*.
 
 ---
 
-## 4. Buenas prácticas de desarrollo
+## 5. Proceso para enviar un Pull Request
 
-- **Documentación y diagnósticos:** Los mensajes de usuario de la CLI, los diagnósticos del compilador y la documentación principal se mantienen en español claro y técnico.
-- **Estado técnico:** Si agregas una funcionalidad nueva al lenguaje o a la biblioteca estándar, actualiza la documentación correspondiente en `docs/` y el registro técnico en [`selfhost/ESTADO.md`](selfhost/ESTADO.md).
-- **Sitio web oficial:** Los archivos dentro de `site/` se generan automáticamente a partir de `site-src/` y `docs/`. Realiza siempre los cambios en `site-src/` o `docs/` y ejecuta `python3 site-src/generar.py claro` para actualizar `site/`.
-- **Control de versiones:** Evita incluir binarios compilados o artefactos temporales en los commits; el repositorio mantiene únicamente el código fuente y la semilla verificada en `selfhost/semilla/`.
-
----
-
-## 5. Cómo enviar un Pull Request
-
-1. Crea una rama descriptiva a partir de `main` (por ejemplo, `feat/nueva-funcion`, `fix/correccion-parser` o `docs/mejora-guia`).
-2. Realiza commits claros y enfocados que expliquen el propósito del cambio.
-3. Verifica que las pruebas locales pasen sin errores.
-4. Abre un **Pull Request** detallando:
-   - Qué problema resuelve o qué funcionalidad incorpora.
-   - Qué pruebas ejecutaste para validarlo.
+1. Crea una rama descriptiva a partir de `main` (por ejemplo, `feat/nueva-funcionalidad`, `fix/correccion-tipos` o `docs/actualizacion-guia`).
+2. Realiza commits atómicos y descriptivos que expliquen claramente el propósito técnico del cambio.
+3. Comprueba que la suite de pruebas local finalice correctamente.
+4. Abre un **Pull Request** incluyendo:
+   - Una descripción clara de la mejora o del problema resuelto.
+   - Los pasos o comandos utilizados para verificar el cambio.
 
 ---
 
-## 6. Reporte de errores y sugerencias (Issues)
+## 6. Reporte de errores y propuestas de mejora (Issues)
 
-Si encuentras un error o deseas proponer una mejora, abre un [Issue en GitHub](https://github.com/alexsndersoto04-source/aio/issues) incluyendo, en la medida de lo posible:
+Para reportar un defecto o proponer una nueva característica, abre un [Issue en GitHub](https://github.com/alexsndersoto04-source/aio/issues) indicando:
 
-- La salida de `titan version` y la arquitectura del sistema (`uname -a`).
-- Un fragmento mínimo de código `.titan` que permita reproducir el comportamiento.
-- El resultado esperado y el resultado obtenido.
+- Versión de la herramienta (`titan version`) y plataforma (`uname -a`).
+- Un ejemplo mínimo reproducible en código `.titan`.
+- El comportamiento esperado y el resultado observado.
 
 ---
 
-## 7. Licencia
+## 7. Código de conducta y Licencia
 
-Al contribuir a este repositorio, aceptas que tus aportaciones se distribuyan bajo los términos de la licencia [MIT](LICENSE) del proyecto.
+Fomentamos un entorno de colaboración respetuoso, constructivo y orientado a la excelencia técnica. Al contribuir a este repositorio, aceptas que tus aportaciones se distribuyan bajo los términos de la licencia [MIT](LICENSE).
