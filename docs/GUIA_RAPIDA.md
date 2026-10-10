@@ -32,9 +32,8 @@ Titan 1 3.14159 true
 - `let` crea una variable que **no** cambia; `let mut` crea una que sí.
 - Los tipos básicos son `int`, `float`, `string` y `bool`. El compilador los
   deduce, pero se pueden escribir: `let n: int = 3`.
-- Dentro de un texto, `{nombre}` inserta el valor de una variable. Solo admite
-  nombres de variables, no expresiones como `{a.b}` ni llamadas: calcula el valor
-  en una variable antes.
+- Dentro de un texto, `{...}` inserta el valor de una variable o de cualquier
+  expresión (`"{nombre}"`, `"{contador + 1}"`, `"{p.x}"`, `"{factorial(5)}"`).
 - Un `int` no se convierte solo en `float`: `1 + 0.5` es un error de tipos.
 
 ## 2. Funciones, condiciones y bucles
@@ -314,11 +313,11 @@ version = "^1"
 | Usar y publicar paquetes | [`ZETT.md`](ZETT.md) |
 | Ver una aplicación completa | [`projects/moon`](../projects/moon) |
 
-## Trampas frecuentes
+## Consideraciones importantes
 
-- `go`, `first` y `last` dan problemas como nombres de variable: usa otros.
-- No hay conversión automática de `int` a `float`.
-- Un `match` sobre un `Result` necesita cubrir `Ok` y `Err` (o `_`).
-- `"{a.b}"` no se evalúa dentro de un texto: guarda el valor en una variable.
-- No hay genéricos definidos por el usuario ni referencias (`&T`).
-- Los límites conocidos de cada pieza están en [`selfhost/ESTADO.md`](../selfhost/ESTADO.md).
+- **Tipado numérico estricto:** No hay conversión implícita entre `int` y `float` (`1 + 0.5` se rechaza en compilación).
+- **Exhaustividad en `match`:** Un `match` sobre `Result` u `Option` debe cubrir todas las variantes (`Ok`/`Err`, `Some`/`None`) o incluir un comodín (`_`).
+- **Interpolación de textos:** Dentro de `"{...}"` se puede evaluar cualquier expresión de Titan (`"{a + 1}"`, `"{p.x}"`, `"{f(x)}"`), cuidando que las llaves vayan pegadas a la expresión.
+- **Genéricos `<T>`:** Puedes definir funciones, `struct<T>`, `enum<T>`, `type<T>` e `impl<T>` parametrizados por tipo (ver `examples/genericos.titan`).
+- **Palabras reservadas:** `go` es palabra reservada (alias de `spawn`), por lo que no debe usarse como identificador de variable.
+- El estado detallado de cada módulo está documentado en [`selfhost/ESTADO.md`](../selfhost/ESTADO.md).

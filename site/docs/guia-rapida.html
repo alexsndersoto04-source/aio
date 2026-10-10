@@ -93,9 +93,8 @@ construido desde este repositorio).</p>
 <li><code>let</code> crea una variable que <strong>no</strong> cambia; <code>let mut</code> crea una que sí.</li>
 <li>Los tipos básicos son <code>int</code>, <code>float</code>, <code>string</code> y <code>bool</code>. El compilador los
   deduce, pero se pueden escribir: <code>let n: int = 3</code>.</li>
-<li>Dentro de un texto, <code>{nombre}</code> inserta el valor de una variable. Solo admite
-  nombres de variables, no expresiones como <code>{a.b}</code> ni llamadas: calcula el valor
-  en una variable antes.</li>
+<li>Dentro de un texto, <code>{...}</code> inserta el valor de una variable o de cualquier
+  expresión (<code>"{nombre}"</code>, <code>"{contador + 1}"</code>, <code>"{p.x}"</code>, <code>"{factorial(5)}"</code>).</li>
 <li>Un <code>int</code> no se convierte solo en <code>float</code>: <code>1 + 0.5</code> es un error de tipos.</li>
 </ul>
 <h2 id="2-funciones-condiciones-y-bucles">2. Funciones, condiciones y bucles</h2>
@@ -357,14 +356,14 @@ version = &quot;^1&quot;
 </tr>
 </tbody>
 </table></div>
-<h2 id="trampas-frecuentes">Trampas frecuentes</h2>
+<h2 id="consideraciones-importantes">Consideraciones importantes</h2>
 <ul>
-<li><code>go</code>, <code>first</code> y <code>last</code> dan problemas como nombres de variable: usa otros.</li>
-<li>No hay conversión automática de <code>int</code> a <code>float</code>.</li>
-<li>Un <code>match</code> sobre un <code>Result</code> necesita cubrir <code>Ok</code> y <code>Err</code> (o <code>_</code>).</li>
-<li><code>"{a.b}"</code> no se evalúa dentro de un texto: guarda el valor en una variable.</li>
-<li>No hay genéricos definidos por el usuario ni referencias (<code>&amp;T</code>).</li>
-<li>Los límites conocidos de cada pieza están en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</li>
+<li><strong>Tipado numérico estricto:</strong> No hay conversión implícita entre <code>int</code> y <code>float</code> (<code>1 + 0.5</code> se rechaza en compilación).</li>
+<li><strong>Exhaustividad en <code>match</code>:</strong> Un <code>match</code> sobre <code>Result</code> u <code>Option</code> debe cubrir todas las variantes (<code>Ok</code>/<code>Err</code>, <code>Some</code>/<code>None</code>) o incluir un comodín (<code>_</code>).</li>
+<li><strong>Interpolación de textos:</strong> Dentro de <code>"{...}"</code> se puede evaluar cualquier expresión de Titan (<code>"{a + 1}"</code>, <code>"{p.x}"</code>, <code>"{f(x)}"</code>), cuidando que las llaves vayan pegadas a la expresión.</li>
+<li><strong>Genéricos <code>&lt;T&gt;</code>:</strong> Puedes definir funciones, <code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code> e <code>impl&lt;T&gt;</code> parametrizados por tipo (ver <code>examples/genericos.titan</code>).</li>
+<li><strong>Palabras reservadas:</strong> <code>go</code> es palabra reservada (alias de <code>spawn</code>), por lo que no debe usarse como identificador de variable.</li>
+<li>El estado detallado de cada módulo está documentado en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>.</li>
 </ul><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/GUIA_RAPIDA.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">
   <div class="foot-cols">

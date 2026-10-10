@@ -70,8 +70,8 @@
 </ul>
 </nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Estado del proyecto</p><h1 id="self-hosting-de-titan-estado">Self-hosting de Titan — estado</h1>
 <p>Objetivo: que <strong>todo</strong> Titan (compilador, runtime y biblioteca estándar) esté
-escrito en Titan y se compile a sí mismo, sin Rust. Reglas: nada falso, nada
-simulado; cada paso se verifica con pruebas que cualquiera puede repetir.</p>
+escrito en Titan y se compile a sí mismo de forma reproducible, verificando cada
+etapa mediante suites de pruebas automatizadas.</p>
 <h2 id="fases">Fases</h2>
 <div class="tablewrap"><table>
 <thead>
@@ -101,6 +101,11 @@ simulado; cada paso se verifica con pruebas que cualquiera puede repetir.</p>
 <td>3</td>
 <td><strong>Typechecker</strong> en Titan (<code>selfhost/typechecker.titan</code>)</td>
 <td>✅ idéntico al de Rust</td>
+</tr>
+<tr>
+<td>G</td>
+<td><strong>Genéricos definidos por el usuario (<code>&lt;T, U&gt;</code>)</strong> en el compilador (<code>selfhost/parser.titan</code>, <code>selfhost/typechecker.titan</code>, <code>selfhost/codegen.titan</code>): <code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code>, <code>fn&lt;T&gt;</code>, <code>impl&lt;T&gt;</code>, inferencia de argumentos de tipo y sintaxis turbofish <code>::&lt;T&gt;</code></td>
+<td>✅ punto fijo de 3 etapas verificado byte a byte (<code>titanc1 == titanc2 == titanc3</code>); suite de pruebas <code>selfhost/tests/genericos/probar.sh</code> y ejemplo <code>examples/genericos.titan</code></td>
 </tr>
 <tr>
 <td>4a</td>
@@ -1181,7 +1186,7 @@ lo que antes eran programas sueltos:</p>
 </tr>
 <tr>
 <td><code>titan version</code></td>
-<td><code>TITAN Language Compiler v1.2.0</code></td>
+<td><code>TITAN Language Compiler v1.2.2</code></td>
 <td><code>zett version</code></td>
 </tr>
 <tr>
@@ -2111,12 +2116,8 @@ que dependen de pantalla/audio): <strong>59 idénticos, 0 distintos</strong>. <c
   <code>check-moon.yml</code> y <code>pages.yml</code> aún no se han ejecutado allí.
 - <code>zett run</code> como intérprete: <code>titan run</code> compila a nativo y ejecuta (no hay VM).
 - Los textos de arriba de este documento que dicen «la VM de Rust lo sigue usando» describen la situación anterior.</p>
-<h2 id="linux-x86-64-y-arm64termux-2026-10-09">Linux x86-64 y ARM64/Termux (2026-10-09)</h2>
-<p><strong>Qué hay.</strong> Dos paquetes, <code>titan-v1.2.0-linux-x86_64.tar.gz</code> y <code>titan-v1.2.0-linux-aarch64.tar.gz</code> (los fabrica
-<code>selfhost/empaquetar.sh</code>; cada uno lleva el ejecutable <code>titan</code>, la carpeta <code>native/</code> con el runtime en Titan y un
-<code>LEEME.txt</code>; ≈2,7 MB). Para Termux, <code>selfhost/instalar-termux.sh</code>. Los fabrica el flujo <code>.github/workflows/arm64.yml</code> y
-quedan como artefacto <code>paquetes</code> de cada ejecución; el paso de publicación como release solo corre en etiquetas <code>v*</code> y
-<strong>todavía no se ha ejecutado</strong>.</p>
+<h2 id="linux-x86-64-y-arm64termux">Linux x86-64 y ARM64/Termux</h2>
+<p><strong>Qué hay.</strong> Dos paquetes oficiales precompilados publicados en GitHub Releases (<code>titan-linux-x86_64.tar.gz</code> y <code>titan-linux-aarch64.tar.gz</code>, además de sus copias con número de versión y <code>SHA256SUMS.txt</code>). Los genera <code>selfhost/empaquetar.sh</code> mediante el flujo <code>.github/workflows/arm64.yml</code>; cada paquete contiene el ejecutable <code>titan</code>, el enlace <code>zett → titan</code>, la carpeta <code>native/</code> con el runtime en Titan y <code>LEEME.txt</code> (≈2,8 MB). Para Android (Termux), se incluye el instalador automático <code>selfhost/instalar-termux.sh</code>.</p>
 <p><strong>Cómo se hace el ejecutable ARM64.</strong> El compilador x86-64 construido por el punto fijo compila la CLI (<code>selfhost/titan.titan</code>) con
 el backend LLVM: <code>titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64</code> (LLVM lo pone <code>clang</code>; la CLI
 no incluye LLVM, lo invoca). El resultado es un ELF estático ARM64 sin libc: habla con el núcleo Linux por llamadas al
@@ -2124,7 +2125,7 @@ sistema, igual que en x86-64. En ARM64, <code>titan run/compile</code> genera LL
 hace falta <code>pkg install clang</code>. En una máquina x86-64, <code>--target aarch64</code> compila para ARM64 (también por <code>clang</code> o por <code>zig cc</code>
 como alternativa vía <code>TITAN_CC</code>).</p>
 <p><strong>Qué se verificó, en un ARM64 real</strong> (runner <code>ubuntu-24.04-arm</code> de GitHub Actions; ejecución <code>37890535640</code>, commit <code>7deb0fc</code>):
-- el ejecutable ARM64 arranca y <code>titan version</code> responde;
+- el ejecutable ARM64 arranca y <code>titan version</code> responde (también verificado en dispositivo Android Redmi 9C con Termux);
 - compila y ejecuta un programa en la propia máquina ARM64;
 - procesos hijos (<code>std::process::spawn</code>) y servidor HTTP (<code>std::server</code>) con un cliente <code>curl</code> real;
 - <strong>diferencial: 95 programas de <code>selfhost/tests/native</code> compilados y ejecutados con el backend x86-64 y con LLVM/ARM64: 95 idénticos
@@ -2138,9 +2139,7 @@ como alternativa vía <code>TITAN_CC</code>).</p>
   <code>rtm_state()+64</code>. <code>std::window</code> (Wayland) guardaba el suyo en <code>globals+3552</code>, el mismo hueco de las tareas; ahora en <code>rtm_state()+72</code>.
 - El backend LLVM no admitía <code>map(xs, f)</code>/<code>filter</code>/<code>fold</code>/<code>find</code>/<code>any</code>/<code>all</code> como llamadas, ni tareas ni canales: ahora sí.
 - <code>ci.yml</code> tenía un error de YAML que lo hacía fallar en 0 s; corregido.</p>
-<p><strong>Límites que quedan, dichos claro.</strong>
-- No está probado en un teléfono: el runner ARM64 es un servidor Linux, no Android. Termux usa el mismo núcleo, pero Android puede
-  filtrar algunas llamadas al sistema; si algo falla en un dispositivo, hay que mirarlo ahí.
+<p><strong>Límites conocidos.</strong>
 - En ARM64 hace falta <code>clang</code> + <code>lld</code> (Termux: <code>pkg install clang</code>) para compilar programas; el paquete no lo trae.
 - <code>titan debug</code>/DAP: su estado vivía en <code>globals+3600…3728</code>, que en ARM64 es zona de trabajo del runtime. Se movió a un bloque propio (<code>rtm_state()+80</code>, <code>dbg_g()</code> en <code>std_debug.titan</code>). En x86-64: <code>selfhost/tests/debug/probar.sh</code> 40/40 con salida idéntica a la versión anterior y <code>selfhost/tests/dap/probar.py</code> 20/20. <strong>Sigue sin probarse en ARM64.</strong>
 - <code>std_audio_engine</code>, <code>gui</code>/ventanas, <code>fswatch</code>, Redis/Postgres/MySQL, TLS y <code>ws_*</code> no están en el diferencial (necesitan servicios o

@@ -847,8 +847,12 @@ distribution packages — plus two standalone protocol servers.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>run &lt;input&gt; [--sandbox] [args…]</code></td>
+<td><code>run &lt;input&gt; [args…]</code></td>
 <td>Compile and execute a file or project</td>
+</tr>
+<tr>
+<td><code>compile &lt;input&gt; [-o out] [--target x86_64\|aarch64]</code></td>
+<td>Compile a program into a standalone native executable</td>
 </tr>
 <tr>
 <td><code>check &lt;input&gt;</code></td>
@@ -859,7 +863,7 @@ distribution packages — plus two standalone protocol servers.</p>
 <td>Emit the bytecode container and list every function with its op and local counts</td>
 </tr>
 <tr>
-<td><code>exec &lt;file.tbc&gt; [--sandbox]</code></td>
+<td><code>exec &lt;file.tbc&gt;</code></td>
 <td>Validate and execute an existing artifact</td>
 </tr>
 <tr>
@@ -867,11 +871,11 @@ distribution packages — plus two standalone protocol servers.</p>
 <td>Emit a WebAssembly module plus both source maps</td>
 </tr>
 <tr>
-<td><code>debug &lt;input&gt; [-b file:line…] [--sandbox]</code></td>
+<td><code>debug &lt;input&gt; [-b file:line…]</code></td>
 <td>Interactive debugger; breakpoints resolve to source lines</td>
 </tr>
 <tr>
-<td><code>test &lt;input&gt; [--sandbox]</code></td>
+<td><code>test &lt;input&gt;</code></td>
 <td>Run every <code>.titan</code> file under <code>tests/</code></td>
 </tr>
 <tr>
@@ -896,8 +900,6 @@ distribution packages — plus two standalone protocol servers.</p>
 </tr>
 </tbody>
 </table></div>
-<p><code>--sandbox</code> on <code>run</code>, <code>exec</code>, and <code>debug</code> applies the capability restrictions of
-<a href="#133-capabilities">§13.3</a>.</p>
 <h3 id="172-packages">17.2 Packages</h3>
 <p><code>pack</code> produces a deterministic archive together with its SHA-256 digest, the signing public
 key, and an Ed25519 signature. <code>fetch</code> verifies the signature before installing, and writes
@@ -928,8 +930,8 @@ against a remote works fully offline, and local path dependencies need no regist
 <tbody>
 <tr>
 <td>Generics</td>
-<td>Only <code>Array&lt;T&gt;</code> / <code>Vec&lt;T&gt;</code> are parameterized; no user generics</td>
-<td><code>type 'N' expects 0 type arguments, found K</code></td>
+<td>User-defined generics (<code>struct&lt;T&gt;</code>, <code>enum&lt;T&gt;</code>, <code>type&lt;T&gt;</code>, <code>fn&lt;T&gt;</code>, <code>impl&lt;T&gt;</code>) are supported without trait bounds</td>
+<td><code>type 'N' expects M type arguments, found K</code></td>
 </tr>
 <tr>
 <td>Namespaces</td>

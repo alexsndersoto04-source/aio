@@ -26,7 +26,7 @@ The execution thread blocks while stopped and resumes only after a debugger comm
 
 ```bash
 titan debug . --break src/main.titan:4
-titan debug --sandbox . -b src/main.titan:4 -b src/math.titan:2
+titan debug . -b src/main.titan:4 -b src/math.titan:2
 ```
 
 At every stop it displays source location, call depth, function identity, locals and operand stack. Interactive commands are `continue`, `step`, `next` (step over), `out`, `print`, and `quit`. With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.

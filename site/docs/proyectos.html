@@ -137,9 +137,7 @@ version = &quot;0.3.0&quot;
 </code></pre>
 <p>Run recursively and deterministically:</p>
 <pre><code class="language-bash">titan test
-titan test --sandbox
 </code></pre>
-<p>Sandbox mode permits pure standard-library functions but rejects filesystem, process, network, and environment natives.</p>
 <h2 id="current-namespace-rule">Current namespace rule</h2>
 <p>Loaded declarations currently share the executable module namespace. Duplicate function names are rejected by codegen. Imports control loading and dependency boundaries, but aliases do not yet qualify declarations (<code>shared::function</code>) at runtime. Full symbol namespaces require HIR name resolution and are tracked as a separate language feature; the loader does not pretend they already exist.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/PROJECTS.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">

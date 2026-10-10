@@ -1,8 +1,8 @@
-# Moon — Servidor real (API + WebSocket + PostgreSQL)
+# Moon — Servidor (API + WebSocket + PostgreSQL)
 
-Este es el servidor de Moon: **no hay nada simulado**. Cada cuenta, publicación,
-mensaje, notificación o reporte que se ve en la aplicación vive en una base de
-datos PostgreSQL de verdad.
+Este es el servidor de Moon: cada cuenta, publicación,
+mensaje, notificación o reporte de la aplicación se almacena de forma persistente
+en una base de datos PostgreSQL.
 
 Está escrito en Node.js (22) y usa **el mismo esquema** que el servidor Titan que
 se despliega en producción: las migraciones no se escriben aquí, se extraen de

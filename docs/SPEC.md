@@ -732,21 +732,19 @@ distribution packages — plus two standalone protocol servers.
 
 | Command | Purpose |
 |---|---|
-| `run <input> [--sandbox] [args…]` | Compile and execute a file or project |
+| `run <input> [args…]` | Compile and execute a file or project |
+| `compile <input> [-o out] [--target x86_64\|aarch64]` | Compile a program into a standalone native executable |
 | `check <input>` | Parse and type-check only; reports files and function count |
 | `build <input> [-o out.tbc]` | Emit the bytecode container and list every function with its op and local counts |
-| `exec <file.tbc> [--sandbox]` | Validate and execute an existing artifact |
+| `exec <file.tbc>` | Validate and execute an existing artifact |
 | `wasm <input> [-o out.wasm]` | Emit a WebAssembly module plus both source maps |
-| `debug <input> [-b file:line…] [--sandbox]` | Interactive debugger; breakpoints resolve to source lines |
-| `test <input> [--sandbox]` | Run every `.titan` file under `tests/` |
+| `debug <input> [-b file:line…]` | Interactive debugger; breakpoints resolve to source lines |
+| `test <input>` | Run every `.titan` file under `tests/` |
 | `repl` | Read-eval-print loop; each line is wrapped in a synthetic `fn main` |
 | `new <path>` | Create `Titan.toml` and `src/main.titan` |
 | `add`, `fetch`, `update` | Declare, resolve, download, and verify dependencies |
 | `keygen`, `pack`, `publish` | Ed25519 key generation, deterministic signed `.tpkg`, upload |
 | `version` | Print version details |
-
-`--sandbox` on `run`, `exec`, and `debug` applies the capability restrictions of
-[§13.3](#133-capabilities).
 
 ### 17.2 Packages
 
@@ -774,7 +772,7 @@ against a remote works fully offline, and local path dependencies need no regist
 
 | Area | Limitation | Diagnostic |
 |---|---|---|
-| Generics | Only `Array<T>` / `Vec<T>` are parameterized; no user generics | `type 'N' expects 0 type arguments, found K` |
+| Generics | User-defined generics (`struct<T>`, `enum<T>`, `type<T>`, `fn<T>`, `impl<T>`) are supported without trait bounds | `type 'N' expects M type arguments, found K` |
 | Namespaces | One flat executable namespace; `mod` does not scope names; `pub` is ignored | `duplicate function 'f'` |
 | References | `&T`, `&mut T`, `*x`, `&x` | `references and dereferencing` |
 | Arrays | Fixed-size array types `[T; N]` | `fixed-size array types` |
