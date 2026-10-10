@@ -165,9 +165,12 @@ Defectos reales del Titan en Rust encontrados en esta fase:
 4. (corregido) Leer de un mapa copiaba el mapa entero: 20.000 lecturas
    tardaban 31,9 s; ahora 13 ms.
 5. (corregido) El orden de los errores cambiaba entre ejecuciones.
-6. (pendiente) Un `if` con ramas de tipos distintos, como **última**
-   expresión del cuerpo de un `for`, da "type mismatch"; en cualquier otro
-   sitio se acepta. El código Titan lo esquiva con `continue`.
+6. (corregido 2026-10-10) Un `if` con ramas de tipos distintos, como **última**
+   expresión del cuerpo de un `for`, daba "type mismatch"; en cualquier otro
+   sitio se aceptaba. Ahora el valor del cuerpo de un `for`/`while`/`loop` se
+   tipa en posición de sentencia (se descarta): aceptado y con pruebas en
+   `selfhost/prueba_arreglos.titan`. El `zett` congelado sigue con el defecto
+   (divergencia deliberada, ver verify_typechecker.sh).
 7. (pendiente) Varios errores dentro de `main` salen con posición `1:1` o la
    de la función en lugar de la línea real.
 8. (pendiente) `zett check`/`zett run` imprimen cada error de compilación dos
@@ -896,12 +899,17 @@ más abajo (el párrafo que decía que se había eliminado quedó obsoleto).
 
 ## Pendientes conocidos (anotados para no olvidarlos)
 
-- **Asignación al final de una rama `if`** (VM de Rust y compilador en Titan,
-  igual en los dos): si la rama `then` termina en una llamada y la `else` en
-  `x = [..]`, el verificador exige que las dos ramas tengan el mismo tipo y
-  falla con "expected Nil, found Array". Una asignación en posición de
-  sentencia debería valer `()`. Se mantiene igual en los dos mientras la VM
-  de Rust exista; en el código se evita con un `continue`/sentencia al final.
+- **Asignación al final de una rama `if`** (corregido 2026-10-10 en las
+  posiciones de sentencia): si la rama `then` terminaba en una llamada y la
+  `else` en `x = [..]`, el verificador exigía que las dos ramas tuvieran el
+  mismo tipo y fallaba con "expected Nil, found Array". Ahora una asignación
+  en posición de sentencia vale `()` (el cuerpo de un bucle y las sentencias
+  sueltas se tipan así), que era lo prescrito aquí. Queda **igual a propósito**
+  en posición de valor: las colas de función y los `let` con el valor en uso
+  siguen exigiendo ramas del mismo tipo (igual que `if c { 1 } else { "a" }`),
+  y `let y = (x = 5)` / `fn f() -> int { x = 5 }` siguen valiendo el valor
+  asignado. Pruebas: `selfhost/prueba_arreglos.titan` y los rechazos de
+  `selfhost/tests/arreglos/`.
 - **Tupla al inicio de línea tras un bloque** se parsea como llamada:
   `loop { ... }` + salto de línea + `(a, b)` ⇒ `loop{...}(a, b)`. En el
   código Titan se usa `return (a, b)`. El parser en Titan debe reproducir el

@@ -1,0 +1,10 @@
+// DEBE SEGUIR FALLANDO: en posición de valor, las ramas de un if tienen que
+// tener el mismo tipo. Este archivo comprueba que el arreglo de los bucles NO
+// abrió las compuertas en las posiciones de valor. Esperado:
+//   type mismatch: expected Int, found String
+
+fn main() {
+    let cond = true
+    let v = if cond { 1 } else { "a" }
+    print("{v}")
+}

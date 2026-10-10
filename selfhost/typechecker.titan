@@ -2602,6 +2602,17 @@ fn check_expr_expected(e0: Env, x, expected: Ty) -> (Ty, Env) {
         } else {
             found = ttup(types)
         }
+    } else if k == "assign" && (er.k == "Unknown" || er.k == "Unit" || er.k == "Nil") {
+        // Una asignación en posición de sentencia (se espera (), Nil, o el
+        // resultado se descarta) vale (). En posición de valor conserva el
+        // valor asignado: `let y = (x = 5)` sigue dando y == 5.
+        let (t, e2) = check_assignment(e, x.a, x.text, x.b)
+        e = e2
+        if t.k == "Never" {
+            found = mkt("Never")
+        } else {
+            found = mkt("Unit")
+        }
     } else {
         let (t, e2) = check_expr(e, x)
         e = e2
@@ -2762,7 +2773,8 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
         e = set_loop_depth(e, e.loop_depth + 1)
         e = set_breaks(e, std::array::push(e.breaks, false))
         let count = cand_count(e)
-        let (bt, e3) = check_block(e, x.b)
+        // El valor del cuerpo se descarta: se tipa en posición de sentencia.
+        let (bt, e3) = check_block_expected(e, x.b, mkt("Unknown"))
         let (may_break, e4) = pop_break(e3)
         e = set_loop_depth(e4, e4.loop_depth - 1)
         let mut literal: any = nil
@@ -2783,7 +2795,8 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
     if k == "loop" {
         e = set_loop_depth(e, e.loop_depth + 1)
         e = set_breaks(e, std::array::push(e.breaks, false))
-        let (bt, e2) = check_block(e, x.a)
+        // El valor del cuerpo se descarta: se tipa en posición de sentencia.
+        let (bt, e2) = check_block_expected(e, x.a, mkt("Unknown"))
         let (may_break, e3) = pop_break(e2)
         e = set_loop_depth(e3, e3.loop_depth - 1)
         if may_break {
@@ -3063,7 +3076,10 @@ fn check_for(e0: Env, x) -> (Ty, Env) {
     e = set_loop_depth(e, e.loop_depth + 1)
     e = set_breaks(e, std::array::push(e.breaks, false))
     let count = cand_count(e)
-    let (bt, e3) = check_block(e, x.c)
+    // El valor del cuerpo se descarta: se tipa en posición de sentencia
+    // (un `if` con ramas de tipos distintos al final del cuerpo es legal,
+    // igual que como sentencia suelta).
+    let (bt, e3) = check_block_expected(e, x.c, mkt("Unknown"))
     let (b, e4) = pop_break(e3)
     e = set_loop_depth(e4, e4.loop_depth - 1)
     e = pop_scope(e)
