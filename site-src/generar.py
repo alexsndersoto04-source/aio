@@ -15,6 +15,7 @@ import markdown
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(AQUI)
 REPO = "https://github.com/alexsndersoto04-source/aio"
+SITE_URL = "https://alexsndersoto04-source.github.io/aio"
 VARIANTE = sys.argv[1] if len(sys.argv) > 1 else "claro"
 SALIDA = sys.argv[2] if len(sys.argv) > 2 else os.path.join(RAIZ, "site")
 os.makedirs(os.path.join(SALIDA, "docs"), exist_ok=True)
@@ -117,9 +118,10 @@ def render(plantilla, base):
     return plantilla.replace("{{REPO}}", REPO).replace("{{BASE}}", base)
 
 
-def cabecera(titulo, descripcion, base, activo=""):
+def cabecera(titulo, descripcion, base, activo="", ruta_rel="index.html"):
     c = leer(os.path.join(AQUI, "plantillas", "cabecera.html"))
-    c = c.replace("{{TITULO}}", html.escape(titulo)).replace("{{DESC}}", html.escape(descripcion))
+    canon = SITE_URL + "/" if ruta_rel == "index.html" else "%s/%s" % (SITE_URL, ruta_rel)
+    c = c.replace("{{TITULO}}", html.escape(titulo)).replace("{{DESC}}", html.escape(descripcion)).replace("{{CANONICAL}}", canon)
     return c.replace('data-a="%s"' % activo, 'aria-current="page"')
 
 
@@ -127,14 +129,19 @@ def pie():
     return leer(os.path.join(AQUI, "plantillas", "pie.html"))
 
 
+URLS_SITEMAP = []
+
+
 def escribir(ruta_rel, contenido):
     with open(os.path.join(SALIDA, ruta_rel), "w", encoding="utf-8") as f:
         f.write(contenido)
+    if ruta_rel.endswith(".html"):
+        URLS_SITEMAP.append(ruta_rel)
 
 
 # ---------------------------------------------------------------- páginas principales
 def pagina(nombre, titulo, descripcion, cuerpo, activo=""):
-    escribir(nombre, render(cabecera(titulo, descripcion, "", activo) + cuerpo + pie(), ""))
+    escribir(nombre, render(cabecera(titulo, descripcion, "", activo, nombre) + cuerpo + pie(), ""))
 
 
 def filas_biblioteca():
@@ -215,8 +222,8 @@ for grupo, items in GRUPOS:
                   '<p class="crumb"><a href="../documentacion.html">Documentación</a> / %s</p>%s'
                   '<p class="editar"><a href="%s/blob/main/%s">Ver este archivo en GitHub</a></p></article></div>'
                   % (menu_docs(nombre), html.escape(grupo), h, REPO, ruta))
-        escribir("docs/%s.html" % nombre,
-                 render(cabecera("%s — Documentación de Titan" % titulo, descripcion, "../", "docs") + cuerpo + pie(), "../"))
+        rel = "docs/%s.html" % nombre
+        escribir(rel, render(cabecera("%s — Documentación de Titan" % titulo, descripcion, "../", "docs", rel) + cuerpo + pie(), "../"))
 
 # índice de documentación
 cuerpo = ['<div class="docs wrap"><aside>%s</aside><article class="md"><h1>Documentación</h1>' % menu_docs("")]
@@ -229,13 +236,25 @@ for grupo, items in GRUPOS:
         cuerpo.append('<a class="docitem" href="docs/%s.html"><b>%s</b><span>%s</span></a>' % (nombre, html.escape(titulo), html.escape(d)))
     cuerpo.append("</div>")
 cuerpo.append("</article></div>")
-escribir("documentacion.html", render(cabecera("Documentación — Titan", "Guías y referencias del lenguaje Titan.", "", "docs")
+escribir("documentacion.html", render(cabecera("Documentación — Titan", "Guías y referencias del lenguaje Titan.", "", "docs", "documentacion.html")
                                       + "\n".join(cuerpo) + pie(), ""))
 
-# ---------------------------------------------------------------- estilos y recursos
+# ---------------------------------------------------------------- estilos, recursos y SEO (sitemap.xml + robots.txt)
 css = leer(os.path.join(AQUI, "estilos", "base.css")) + "\n" + leer(os.path.join(AQUI, "estilos", VARIANTE + ".css"))
 escribir("style.css", css)
 for destino in ("favicon.svg", "zett-marca.svg"):
     shutil.copy(os.path.join(AQUI, "recursos", "zett-marca.svg"), os.path.join(SALIDA, destino))
 open(os.path.join(SALIDA, ".nojekyll"), "w").close()
+
+# sitemap.xml y robots.txt para indexación rápida en Google
+sm = ['<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+for rel in URLS_SITEMAP:
+    loc = SITE_URL + "/" if rel == "index.html" else "%s/%s" % (SITE_URL, rel)
+    prio = "1.0" if rel == "index.html" else ("0.9" if "/" not in rel else "0.8")
+    sm.append("  <url><loc>%s</loc><changefreq>weekly</changefreq><priority>%s</priority></url>" % (loc, prio))
+sm.append("</urlset>\n")
+escribir("sitemap.xml", "\n".join(sm))
+escribir("robots.txt", "User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n" % SITE_URL)
+
 print("ok", VARIANTE, SALIDA)
