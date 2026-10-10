@@ -1,0 +1,13 @@
+// Fallita #4: los errores dentro de `main` salían con la posición 1:1 (el
+// inicio de la función) en vez de la línea real. Esperado (2026-10-10):
+//   ...:2:5: unknown type 'TipoRaro'
+//   ...:2:21: type mismatch: expected Named("TipoRaro"), found Int
+// y NINGUNO en 1:1. (El mensaje exacto del type mismatch puede variar; lo que
+// importa es que cite la línea 2 y nunca la 1:1.)
+
+fn main() {
+    let e: TipoRaro = 1
+    print("{e}")
+}
+// (los comentarios de arriba sitúan el `let` en una línea concreta; la
+// aserción de probar.sh la lee del archivo para no quedar enganchada a ella)

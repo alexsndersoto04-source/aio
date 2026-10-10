@@ -1,0 +1,5 @@
+// El error de esta declaración (tipo inexistente en la firma) tiene que
+// citar ESTE archivo, no el de principal.titan.
+fn raro() -> TipoInexistente {
+    0
+}

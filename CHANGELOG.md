@@ -5,6 +5,18 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar
+
+- **Errores:** las posiciones de los errores dentro de `main` ya no caen en `1:1` (citaban el inicio
+  de la función): todos citan la línea real (fallita 4).
+- **Errores:** los errores de declaración (tipo desconocido en una firma, función duplicada…) citan
+  el archivo donde están escritos, no el de la última función del programa (fallita 5). Ejemplo:
+  `selfhost/tests/codegen/decl_wrong_file/` ahora dice `dup.titan:5:1`, que es la verdad.
+- **Errores:** `titan check`/`run` (y `zett`, que es un enlace a la CLI) imprimen cada error UNA
+  sola vez; antes lo imprimían dos (fallita 6). Pruebas: `selfhost/tests/errores/`.
+- El oráculo congelado `zett` (Rust) conserva estos tres defectos: son divergencias deliberadas a
+  favor de la verdad; la paridad diferencial se mantiene para lo demás.
+
 ## 1.2.1 — 2026-10-10
 
 - **Teléfonos (Termux de 32 bits):** `titan` detectaba mal la arquitectura y generaba un binario de PC

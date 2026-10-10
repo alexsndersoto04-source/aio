@@ -1,0 +1,12 @@
+// Fallita #5: los errores de declaración citaban el archivo de la ÚLTIMA
+// función revisada (o ninguno). Este archivo es el «último» del proyecto de
+// pruebas; el error vive en libreta.titan y tiene que citar libreta.titan.
+import libreta
+
+fn main() {
+    println("hola")
+}
+
+fn otro() -> int {
+    1
+}
