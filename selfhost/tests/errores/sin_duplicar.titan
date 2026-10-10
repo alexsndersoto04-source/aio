@@ -1,0 +1,7 @@
+// Fallita #6: cada error se imprimía dos veces (el mensaje aplanado de la
+// primera línea y luego cada error con su formato). Esperado: dos errores,
+// cada uno UNA sola vez.
+fn main() {
+    let e: TipoRaro = 1
+    print("{e}")
+}

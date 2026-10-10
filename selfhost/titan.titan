@@ -105,14 +105,13 @@ fn cl_flat(message: string) -> string {
     out
 }
 
-// fatal_message de la CLI de Rust: la primera línea lleva el mensaje aplanado
-// y, si era multilínea, se repite debajo con su formato.
+// fatal_message de la CLI de Rust imprimía cada error DOS veces (el mensaje
+// aplanado y luego el multilínea); defecto #6 corregido el 2026-10-10: el
+// mensaje sale UNA vez, con su formato. La línea ::error de GitHub Actions
+// sigue llevando el mensaje aplanado.
 fn cl_fatal(label: string, message: string) {
     let flat = cl_flat(message)
-    cl_eprint(label + ": " + flat)
-    if std::text::trim(message) != flat {
-        cl_eprint(message)
-    }
+    cl_eprint(label + ": " + message)
     if cl_env("GITHUB_ACTIONS") != "" {
         let escaped = std::text::replace(std::text::replace(flat, "%", "%25"), "\r", "%0D")
         cl_eprint("::error title=" + label + "::" + escaped)

@@ -26,9 +26,15 @@ trap 'rm -rf "$tmp"' EXIT
 # Divergencias deliberadas con el oráculo congelado `zett` (2026-10-10): el
 # typechecker escrito en Titan corrige defectos que el `zett` en Rust aún
 # reproduce (asignación en posición de sentencia = (), if con ramas de tipos
-# distintos en cola de un bucle). En esos archivos la verdad es el SPEC, no el
-# oráculo: se verifican con `bash selfhost/tests/arreglos/probar.sh`.
-DELIBERADAS=" selfhost/prueba_arreglos.titan "
+# distintos en cola de un bucle, posiciones de errores que caían en el span de
+# la función, y los casos de selfhost/tests/errores/ que documentan esas
+# correcciones). En esos archivos la verdad es el SPEC, no el oráculo: se
+# verifican con `bash selfhost/tests/arreglos/probar.sh` y
+# `bash selfhost/tests/errores/probar.sh`. OJO: las posiciones corregidas
+# pueden cambiar el volcado de CUALQUIER archivo del corpus que tenga errores
+# antes emitidos sin span; si al reconstruir `zett` algo difiere en la
+# posición pero el mensaje coincide, la corrección de Titan es la buena.
+DELIBERADAS=" selfhost/prueba_arreglos.titan selfhost/tests/errores/posicion.titan selfhost/tests/errores/sin_duplicar.titan selfhost/tests/errores/proyecto/libreta.titan selfhost/tests/errores/proyecto/principal.titan "
 
 for f in "${FILES[@]}"; do
   case "$DELIBERADAS" in

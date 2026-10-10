@@ -450,6 +450,12 @@ fn err_at(e: Env, msg: string, span: Span) -> Env {
     set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: span, file: e.cur_file }))
 }
 
+// Diagnóstico con archivo explícito (para los errores de declaración, que se
+// emiten fuera de las funciones y no tienen `e.cur_file`).
+fn err_full(e: Env, msg: string, span: Span, file) -> Env {
+    set_errors(e, std::array::push(e.errors, Diag { msg: msg, span: span, file: file }))
+}
+
 // assign_error_span: los errores emitidos desde `start` que aún no tienen
 // ubicación reciben `span`, y los que aún no tienen archivo reciben el
 // archivo actual (por separado, igual que en Rust).
@@ -1046,16 +1052,21 @@ fn type_expr_list(list: array) -> string {
 // ------------------------------------------ validación de declaraciones
 
 // Estado de declaration_errors: conjuntos (mapas nombre -> true) y la lista
-// de (mensaje, span).
+// de (mensaje, span, archivo).
 struct DeclSt {
     values: map,
     types: map,
     impls: map,
     errs: array,
+    file: any,
+}
+
+fn decl_set_file(st: DeclSt, file) -> DeclSt {
+    DeclSt { values: st.values, types: st.types, impls: st.impls, errs: st.errs, file: file }
 }
 
 fn decl_err(st: DeclSt, msg: string, span: Span) -> DeclSt {
-    DeclSt { values: st.values, types: st.types, impls: st.impls, errs: std::array::push(st.errs, (msg, span)) }
+    DeclSt { values: st.values, types: st.types, impls: st.impls, errs: std::array::push(st.errs, (msg, span, st.file)), file: st.file }
 }
 
 fn decl_insert(st: DeclSt, namespace: string, kind: string, name: string, span: Span) -> DeclSt {
@@ -1063,12 +1074,12 @@ fn decl_insert(st: DeclSt, namespace: string, kind: string, name: string, span: 
         if std::map::contains(st.values, name) {
             return decl_err(st, m_duplicate(kind, name), span)
         }
-        return DeclSt { values: std::map::insert(st.values, name, true), types: st.types, impls: st.impls, errs: st.errs }
+        return DeclSt { values: std::map::insert(st.values, name, true), types: st.types, impls: st.impls, errs: st.errs, file: st.file }
     }
     if std::map::contains(st.types, name) {
         return decl_err(st, m_duplicate(kind, name), span)
     }
-    DeclSt { values: st.values, types: std::map::insert(st.types, name, true), impls: st.impls, errs: st.errs }
+    DeclSt { values: st.values, types: std::map::insert(st.types, name, true), impls: st.impls, errs: st.errs, file: st.file }
 }
 
 fn decl_parameters(st0: DeclSt, owner: string, params: array) -> DeclSt {
@@ -1115,6 +1126,7 @@ fn decl_members(st0: DeclSt, owner: string, members: array, kind: string) -> Dec
 fn decl_visit(st0: DeclSt, items: array) -> DeclSt {
     let mut st = st0
     for item in items {
+        st = decl_set_file(st, source_file_of(item))
         let k = item.kind
         if k == "fn" {
             st = decl_insert(st, "value", "function", item.text, item.span)
@@ -1158,7 +1170,7 @@ fn decl_visit(st0: DeclSt, items: array) -> DeclSt {
                 if std::map::contains(st.impls, implementation) {
                     st = decl_err(st, m_duplicate("impl", implementation), item.span)
                 } else {
-                    st = DeclSt { values: st.values, types: st.types, impls: std::map::insert(st.impls, implementation, true), errs: st.errs }
+                    st = DeclSt { values: st.values, types: st.types, impls: std::map::insert(st.impls, implementation, true), errs: st.errs, file: st.file }
                 }
             }
             let mut seen = std::map::new()
@@ -1186,7 +1198,7 @@ fn declaration_errors(base: map, items: array) -> array {
             values = std::map::insert(values, name, true)
         }
     }
-    let st = DeclSt { values: values, types: builtin_type_names(base), impls: std::map::new(), errs: [] }
+    let st = DeclSt { values: values, types: builtin_type_names(base), impls: std::map::new(), errs: [], file: nil }
     decl_visit(st, items).errs
 }
 
@@ -1241,19 +1253,25 @@ fn collect_declared_type_names(items: array, names0: map) -> map {
 
 // ---------------------------------------- declared_type_errors (tipos usados)
 
-// unknown: nombre -> span; invalid: clave -> (nombre, esperado, hallado, span);
-// unsupported: rasgo -> span. En los tres gana el primer span visto.
+// unknown: nombre -> (span, archivo); invalid: clave -> (nombre, esperado,
+// hallado, span, archivo); unsupported: rasgo -> (span, archivo). En los tres
+// gana el primer span visto.
 struct Issues {
     unknown: map,
     invalid: map,
     unsupported: map,
+    file: any,
+}
+
+fn iss_set_file(is: Issues, file) -> Issues {
+    Issues { unknown: is.unknown, invalid: is.invalid, unsupported: is.unsupported, file: file }
 }
 
 fn iss_unknown(is: Issues, name: string, span: Span) -> Issues {
     if std::map::contains(is.unknown, name) {
         return is
     }
-    Issues { unknown: std::map::insert(is.unknown, name, span), invalid: is.invalid, unsupported: is.unsupported }
+    Issues { unknown: std::map::insert(is.unknown, name, (span, is.file)), invalid: is.invalid, unsupported: is.unsupported, file: is.file }
 }
 
 fn iss_invalid(is: Issues, name: string, expected: int, found: int, span: Span) -> Issues {
@@ -1261,14 +1279,14 @@ fn iss_invalid(is: Issues, name: string, expected: int, found: int, span: Span) 
     if std::map::contains(is.invalid, key) {
         return is
     }
-    Issues { unknown: is.unknown, invalid: std::map::insert(is.invalid, key, (name, expected, found, span)), unsupported: is.unsupported }
+    Issues { unknown: is.unknown, invalid: std::map::insert(is.invalid, key, (name, expected, found, span, is.file)), unsupported: is.unsupported, file: is.file }
 }
 
 fn iss_unsupported(is: Issues, feature: string, span: Span) -> Issues {
     if std::map::contains(is.unsupported, feature) {
         return is
     }
-    Issues { unknown: is.unknown, invalid: is.invalid, unsupported: std::map::insert(is.unsupported, feature, span) }
+    Issues { unknown: is.unknown, invalid: is.invalid, unsupported: std::map::insert(is.unsupported, feature, (span, is.file)), file: is.file }
 }
 
 fn dt_type(t, known: map, is0: Issues, span: Span) -> Issues {
@@ -1498,20 +1516,22 @@ fn dt_item(item, known: map, is0: Issues) -> Issues {
 // (nombre, esperado, hallado), luego rasgos no soportados por nombre. Las
 // claves de los mapas de Titan ya salen ordenadas (BTreeMap).
 fn declared_type_errors(items: array, known: map) -> array {
-    let mut is = Issues { unknown: std::map::new(), invalid: std::map::new(), unsupported: std::map::new() }
+    let mut is = Issues { unknown: std::map::new(), invalid: std::map::new(), unsupported: std::map::new(), file: nil }
     for item in items {
-        is = dt_item(item, known, is)
+        is = dt_item(item, known, iss_set_file(is, source_file_of(item)))
     }
     let mut out = []
     for name in std::map::keys(is.unknown) {
-        out = std::array::push(out, (m_unknown_type(name), std::map::get(is.unknown, name)))
+        let sp_file = std::map::get(is.unknown, name)
+        out = std::array::push(out, (m_unknown_type(name), sp_file.0, sp_file.1))
     }
     let invalid = sort_by(std::map::values(is.invalid), |l, r| cmp_invalid(l, r))
     for entry in invalid {
-        out = std::array::push(out, (m_invalid_type_args(entry.0, entry.1, entry.2), entry.3))
+        out = std::array::push(out, (m_invalid_type_args(entry.0, entry.1, entry.2), entry.3, entry.4))
     }
     for feature in std::map::keys(is.unsupported) {
-        out = std::array::push(out, (m_unsupported(feature), std::map::get(is.unsupported, feature)))
+        let sp_file = std::map::get(is.unsupported, feature)
+        out = std::array::push(out, (m_unsupported(feature), sp_file.0, sp_file.1))
     }
     out
 }
@@ -1845,14 +1865,16 @@ fn self_params(params: array, type_name: string) -> array {
 }
 
 fn collect_declarations(e0: Env, items: array) -> Env {
+    let previous = e0.cur_file
     let mut e = collect_traits(collect_type_aliases(e0, items), items)
     e = collect_items(e, items)
-    e
+    set_cur_file(e, previous)
 }
 
 fn collect_items(e0: Env, items: array) -> Env {
     let mut e = e0
     for item in items {
+        e = set_cur_file(e, source_file_of(item))
         let k = item.kind
         if k == "fn" {
             let mut params = []
@@ -1926,20 +1948,15 @@ fn collect_impl(e0: Env, block) -> Env {
 
 // ------------------------------------------------------------ validación
 
-// Como en Rust, los errores de declaración reciben el archivo de la ÚLTIMA
-// función de nivel superior (defecto anotado en selfhost/ESTADO.md).
+// Los errores de declaración se atribuyen al archivo de la declaración que
+// los provoca (defecto #5; en Rust se citaba el de la ÚLTIMA función de nivel
+// superior, y así estaba portado hasta el 2026-10-10).
 fn validate_declarations(e0: Env, items: array) -> Env {
-    let previous = e0.cur_file
-    let mut e = set_cur_file(e0, nil)
-    for item in items {
-        if item.kind == "fn" {
-            e = set_cur_file(e, source_file_of(item))
-        }
-    }
+    let mut e = e0
     for d in declaration_errors(e.base, items) {
-        e = err_at(e, d.0, d.1)
+        e = err_full(e, d.0, d.1, d.2)
     }
-    set_cur_file(e, previous)
+    e
 }
 
 // FunctionDecl::source_file: el parser deja `text2` vacío; el cargador de
@@ -1975,7 +1992,7 @@ fn collect_type_alias_spans(items: array, spans0: map) -> map {
     let mut spans = spans0
     for item in items {
         if item.kind == "typealias" {
-            spans = std::map::insert(spans, item.text, item.span)
+            spans = std::map::insert(spans, item.text, (item.span, source_file_of(item)))
         } else if item.kind == "module" {
             spans = collect_type_alias_spans(item.list, spans)
         }
@@ -1996,7 +2013,8 @@ fn validate_type_aliases(e0: Env, items: array) -> Env {
     let sorted = sort_by(recursive, |l, r| cmp_alias(l, r))
     for entry in sorted {
         if entry.1 != nil {
-            e = err_at(e, m_recursive_alias(entry.0), entry.1)
+            let sp_file = entry.1
+            e = err_full(e, m_recursive_alias(entry.0), sp_file.0, sp_file.1)
         } else {
             e = err(e, m_recursive_alias(entry.0))
         }
@@ -2005,9 +2023,17 @@ fn validate_type_aliases(e0: Env, items: array) -> Env {
 }
 
 // Option<(line, column)> ordena None antes que Some, como en Rust.
+// El valor de los mapas de alias es (span, archivo) o nil; se compara por span.
+fn cmp_alias_span(entry) -> any {
+    if entry == nil {
+        return nil
+    }
+    entry.0
+}
+
 fn cmp_alias(l, r) -> int {
-    let ls = l.1
-    let rs = r.1
+    let ls = cmp_alias_span(l.1)
+    let rs = cmp_alias_span(r.1)
     if ls == nil && rs != nil {
         return -1
     }
@@ -2035,19 +2061,21 @@ fn validate_declared_types(e0: Env, items: array) -> Env {
     let mut e = e0
     let known = collect_declared_type_names(items, builtin_type_names(e.base))
     for d in declared_type_errors(items, known) {
-        e = err_at(e, d.0, d.1)
+        e = err_full(e, d.0, d.1, d.2)
     }
     e
 }
 
 fn validate_impl_contracts(e: Env, items: array) -> Env {
-    validate_impl_contracts_in(e, items, std::map::new()).0
+    let previous = e.cur_file
+    set_cur_file(validate_impl_contracts_in(e, items, std::map::new()).0, previous)
 }
 
 fn validate_impl_contracts_in(e0: Env, items: array, methods0: map) -> (Env, map) {
     let mut e = e0
     let mut methods = methods0
     for item in items {
+        e = set_cur_file(e, source_file_of(item))
         if item.kind == "module" {
             let (e2, m2) = validate_impl_contracts_in(e, item.list, methods)
             e = e2
@@ -2241,8 +2269,11 @@ fn check_constants_in(e0: Env, items: array) -> Env {
     for item in items {
         if item.kind == "const" {
             let start = len(e.errors)
+            let previous = e.cur_file
+            e = set_cur_file(e, source_file_of(item))
             e = check_constant(e, item.text).1
             e = assign_file(e, start)
+            e = set_cur_file(e, previous)
         } else if item.kind == "module" {
             e = check_constants_in(e, item.list)
         }
@@ -2553,6 +2584,15 @@ fn check_evaluated_expr(e0: Env, x, expected, reachable: bool) -> (Ty, Env, bool
 }
 
 fn check_expr_expected(e0: Env, x, expected: Ty) -> (Ty, Env) {
+    // Igual que check_expr: los errores sin ubicación de esta expresión
+    // reciben su span (defecto #4: antes se quedaban con el de la función,
+    // que en `main` es 1:1).
+    let start = len(e0.errors)
+    let (t, e) = check_expr_expected_inner(e0, x, expected)
+    return (t, assign_span(e, start, x.span))
+}
+
+fn check_expr_expected_inner(e0: Env, x, expected: Ty) -> (Ty, Env) {
     let mut e = e0
     let er = resolve_alias(e, expected)
     let k = x.kind

@@ -536,8 +536,10 @@ fn ld_resolve_stdlib_module(segments: array) -> any {
     nil
 }
 
-// assign_source_files: la ruta del archivo en cada función y método
-// (campo `text2` del nodo, que el parser deja vacío).
+// assign_source_files: la ruta del archivo en cada declaración (campo `text2`
+// del nodo, que el parser deja vacío) y en cada función y método. Así los
+// errores de declaración se atribuyen al archivo donde están escritos
+// (defecto #5: antes se citaba el de la última función).
 fn ld_assign_source_files(items: array, file: string) -> array {
     let mut out = []
     for item in items {
@@ -551,14 +553,14 @@ fn ld_assign_source_files(items: array, file: string) -> array {
             for m in item.list {
                 methods = std::array::push(methods, ld_with_file(m, file))
             }
-            out = std::array::push(out, Node { kind: k, text: item.text, text2: item.text2, flag: item.flag, a: item.a, b: item.b, c: item.c, list: methods, list2: item.list2, span: item.span })
+            out = std::array::push(out, Node { kind: k, text: item.text, text2: file, flag: item.flag, a: item.a, b: item.b, c: item.c, list: methods, list2: item.list2, span: item.span })
             continue
         }
         if k == "module" {
-            out = std::array::push(out, Node { kind: k, text: item.text, text2: item.text2, flag: item.flag, a: item.a, b: item.b, c: item.c, list: ld_assign_source_files(item.list, file), list2: item.list2, span: item.span })
+            out = std::array::push(out, Node { kind: k, text: item.text, text2: file, flag: item.flag, a: item.a, b: item.b, c: item.c, list: ld_assign_source_files(item.list, file), list2: item.list2, span: item.span })
             continue
         }
-        out = std::array::push(out, item)
+        out = std::array::push(out, ld_with_file(item, file))
     }
     out
 }

@@ -171,10 +171,14 @@ Defectos reales del Titan en Rust encontrados en esta fase:
    tipa en posición de sentencia (se descarta): aceptado y con pruebas en
    `selfhost/prueba_arreglos.titan`. El `zett` congelado sigue con el defecto
    (divergencia deliberada, ver verify_typechecker.sh).
-7. (pendiente) Varios errores dentro de `main` salen con posición `1:1` o la
-   de la función en lugar de la línea real.
-8. (pendiente) `zett check`/`zett run` imprimen cada error de compilación dos
-   veces.
+7. (corregido 2026-10-10) Varios errores dentro de `main` salían con posición
+   `1:1` o la de la función en lugar de la línea real (los emitidos sin span
+   por `check_expr_expected`, que no lo asignaba como `check_expr`). Ahora
+   todos citan la línea real; pruebas en `selfhost/tests/errores/`.
+8. (corregido 2026-10-10) `zett check`/`zett run` imprimían cada error de
+   compilación dos veces (la CLI aplanada y la multilínea, defecto portado de
+   Rust). Ahora cada error sale una sola vez; pruebas en
+   `selfhost/tests/errores/`.
 
 ## Fase 4a — cargador de `import` y generador de bytecode
 
@@ -208,10 +212,13 @@ Defectos reales del Titan en Rust encontrados en esta fase (pendientes; el
 código en Titan los reproduce a propósito para que la comparación sea exacta
 y se corregirán en los dos a la vez):
 
-9. Los errores de declaración (p. ej. función duplicada) salen con el archivo
-   de la **última** función del programa, no con el suyo:
-   `tests/codegen/decl_wrong_file/` dice `main.titan:5:1` cuando el duplicado
-   está en `dup.titan:5:1`.
+9. (corregido en Titan el 2026-10-10) Los errores de declaración (p. ej.
+   función duplicada) salían con el archivo de la **última** función del
+   programa, no con el suyo: `selfhost/tests/codegen/decl_wrong_file/` decía
+   `main.titan:5:1` cuando el duplicado está en `dup.titan:5:1`. Ahora el
+   archivo es el de cada declaración (los errores de declaración llevan su
+   archivo desde el cargador); pruebas en `selfhost/tests/errores/`. El
+   `zett` congelado sigue con el defecto (divergencia deliberada).
 10. (Resuelto el 2026-10-08) El cargador de Titan ya admite proyectos con
     `Titan.toml`; ver «Titan.toml en el cargador».
 11. `std::uuid::nil()` no se podía llamar desde Titan: `nil` es palabra clave

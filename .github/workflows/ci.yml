@@ -38,6 +38,9 @@ jobs:
       - name: "Arreglos 2026-10-10: tipos de bucles, asignación en posición de sentencia y arquitectura"
         run: bash selfhost/tests/arreglos/probar.sh
 
+      - name: "Errores 2026-10-10: posiciones reales, archivo correcto, sin duplicar"
+        run: bash selfhost/tests/errores/probar.sh
+
       - name: "Registro de paquetes: publicar, servir por HTTPS y usar con fetch (servidor local)"
         run: bash selfhost/tests/pkg/registro/estatico.sh
 
