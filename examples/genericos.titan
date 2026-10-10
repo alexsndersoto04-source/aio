@@ -1,0 +1,147 @@
+// ============================================================================
+// Demostración de Genéricos definidos por el usuario (<T>) en Titan
+// ============================================================================
+
+// 1. Structs genéricos con uno y múltiples parámetros de tipo
+struct Caja<T> {
+    valor: T,
+}
+
+struct Par<A, B> {
+    primero: A,
+    segundo: B,
+}
+
+struct Pila<T> {
+    elementos: [T],
+}
+
+// 2. Enum genérico con variantes con y sin carga útil
+enum Quizas<T> {
+    Alguno(T),
+    Nada,
+}
+
+// 3. Alias de tipo genérico
+type ParConEtiqueta<T> = (string, T)
+
+// 4. Funciones genéricas con inferencia automática de tipos
+fn identidad<T>(x: T) -> T {
+    x
+}
+
+fn intercambiar<A, B>(par: Par<A, B>) -> Par<B, A> {
+    Par {
+        primero: par.segundo,
+        segundo: par.primero,
+    }
+}
+
+fn mapear<T, U>(xs: [T], f: fn(T) -> U) -> [U] {
+    let mut out: [U] = []
+    for x in xs {
+        out = std::array::push(out, f(x))
+    }
+    out
+}
+
+fn filtrar<T>(xs: [T], pred: fn(T) -> bool) -> [T] {
+    let mut out: [T] = []
+    for x in xs {
+        if pred(x) {
+            out = std::array::push(out, x)
+        }
+    }
+    out
+}
+
+fn reducir<T, A>(xs: [T], inicial: A, f: fn(A, T) -> A) -> A {
+    let mut acc = inicial
+    for x in xs {
+        acc = f(acc, x)
+    }
+    acc
+}
+
+// 5. Bloques impl<T> con métodos genéricos adicionales <U>
+impl<T> Caja<T> {
+    fn obtener(self) -> T {
+        self.valor
+    }
+
+    fn transformar<U>(self, f: fn(T) -> U) -> Caja<U> {
+        Caja { valor: f(self.valor) }
+    }
+}
+
+impl<T> Pila<T> {
+    fn apilar(self, item: T) -> Pila<T> {
+        Pila { elementos: std::array::push(self.elementos, item) }
+    }
+
+    fn tamano(self) -> int {
+        len(self.elementos)
+    }
+
+    fn tope(self) -> Quizas<T> {
+        let n = len(self.elementos)
+        if n == 0 {
+            return Quizas::Nada
+        }
+        Quizas::Alguno(self.elementos[n - 1])
+    }
+}
+
+fn abrir_con_defecto<T>(q: Quizas<T>, defecto: T) -> T {
+    match q {
+        Quizas::Alguno(v) => v,
+        Quizas::Nada => defecto,
+    }
+}
+
+fn verificar(cond: bool, msg: string) {
+    if !cond {
+        println("FALLO:", msg)
+    }
+}
+
+fn main() {
+    // Inferencia directa y sintaxis turbofish ::<T>
+    let a: int = identidad(42)
+    let b: string = identidad::<string>("Titan <T>")
+    verificar(a == 42, "identidad(42)")
+    verificar(b == "Titan <T>", "identidad::<string>")
+
+    // Structs genéricos y métodos polimórficos
+    let c_num = Caja { valor: 21 }
+    let c_doble: Caja<int> = c_num.transformar(|n| n * 2)
+    let c_texto: Caja<string> = c_doble.transformar(|n| "Resultado: {n}")
+    verificar(c_doble.obtener() == 42, "c_doble.obtener()")
+    verificar(c_texto.obtener() == "Resultado: 42", "c_texto.obtener()")
+
+    // Intercambio de Par<A, B> -> Par<B, A>
+    let p1 = Par { primero: 100, segundo: "puntos" }
+    let p2: Par<string, int> = intercambiar(p1)
+    verificar(p2.primero == "puntos", "p2.primero")
+    verificar(p2.segundo == 100, "p2.segundo")
+
+    // Pila<T> y Quizas<T> con pattern matching tipado
+    let pila0 = Pila::<int> { elementos: [] }
+    let pila1 = pila0.apilar(10).apilar(20).apilar(30)
+    verificar(pila1.tamano() == 3, "pila1.tamano()")
+    let ultimo: int = abrir_con_defecto(pila1.tope(), 0)
+    let vacio: int = abrir_con_defecto(pila0.tope(), -1)
+    verificar(ultimo == 30, "pila1.tope()")
+    verificar(vacio == -1, "pila0.tope()")
+
+    // Funciones de orden superior genéricas con closures inferidos
+    let nums = [1, 2, 3, 4, 5, 6]
+    let pares: [int] = filtrar(nums, |x| x % 2 == 0)
+    let cuadrados: [int] = mapear(pares, |x| x * x)
+    let suma: int = reducir(cuadrados, 0, |acc, x| acc + x)
+    verificar(suma == 56, "reducir cuadrados pares")
+
+    // Alias de tipo genérico
+    let etq: ParConEtiqueta<int> = ("suma_cuadrados_pares", suma)
+    println("ok: genericos <T> verificados ->", b, "|", c_texto.obtener(), "|", etq.0, "=", etq.1)
+}

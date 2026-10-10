@@ -60,6 +60,14 @@ fn tnamed(name: string) -> Ty {
     Ty { k: "Named", name: name, items: [], ret: nil }
 }
 
+fn tnamed_args(name: string, args: array) -> Ty {
+    Ty { k: "Named", name: name, items: args, ret: nil }
+}
+
+fn tparam(name: string) -> Ty {
+    Ty { k: "Param", name: name, items: [], ret: nil }
+}
+
 fn tfn(params: array, result: Ty) -> Ty {
     Ty { k: "Function", name: "", items: params, ret: result }
 }
@@ -128,7 +136,13 @@ fn tdebug(t: Ty) -> string {
         return "Tuple([" + tdebug_list(t.items) + "])"
     }
     if k == "Named" {
+        if len(t.items) > 0 {
+            return "Named(" + debug_str(t.name) + "<" + tdebug_list(t.items) + ">)"
+        }
         return "Named(" + debug_str(t.name) + ")"
+    }
+    if k == "Param" {
+        return "TypeParam(" + debug_str(t.name) + ")"
     }
     if k == "Function" {
         return "Function([" + tdebug_list(t.items) + "], " + tdebug(t.ret) + ")"
@@ -482,12 +496,229 @@ fn assign_span(e: Env, start: int, span: Span) -> Env {
     set_errors(e, out)
 }
 
-// ------------------------------------------------------ AST -> tipo
+// ------------------------------------------------------ genéricos y AST -> tipo
+
+fn tp_list_to_map(tparams: array) -> map {
+    let mut m = std::map::new()
+    for tp in tparams {
+        m = std::map::insert(m, tp, true)
+    }
+    m
+}
+
+fn merge_tparams(a: array, b: array) -> array {
+    let mut out = a
+    let mut seen = tp_list_to_map(a)
+    for x in b {
+        if !std::map::contains(seen, x) {
+            seen = std::map::insert(seen, x, true)
+            out = std::array::push(out, x)
+        }
+    }
+    out
+}
+
+fn tp_set_type_params(e: Env, name: string, tparams: array) -> Env {
+    if len(tparams) == 0 {
+        return e
+    }
+    set_base_variants(e, std::map::insert(e.base_variants, "tp_type::" + name, tparams))
+}
+
+fn tp_get_type_params(e: Env, name: string) -> array {
+    let k = "tp_type::" + name
+    if std::map::contains(e.base_variants, k) {
+        return std::map::get(e.base_variants, k)
+    }
+    return []
+}
+
+fn tp_set_fn_params(e: Env, name: string, tparams: array) -> Env {
+    if len(tparams) == 0 {
+        return e
+    }
+    set_base_variants(e, std::map::insert(e.base_variants, "tp_fn::" + name, tparams))
+}
+
+fn tp_get_fn_params(e: Env, name: string) -> array {
+    let k = "tp_fn::" + name
+    if std::map::contains(e.base_variants, k) {
+        return std::map::get(e.base_variants, k)
+    }
+    return []
+}
+
+fn tp_active_map(e: Env) -> map {
+    if std::map::contains(e.base_variants, "active_tp") {
+        return std::map::get(e.base_variants, "active_tp")
+    }
+    std::map::new()
+}
+
+fn tp_with_active(e: Env, tparams: array) -> Env {
+    let mut m = tp_active_map(e)
+    for tp in tparams {
+        m = std::map::insert(m, tp, true)
+    }
+    set_base_variants(e, std::map::insert(e.base_variants, "active_tp", m))
+}
+
+fn tp_restore_active(e: Env, old_map: map) -> Env {
+    set_base_variants(e, std::map::insert(e.base_variants, "active_tp", old_map))
+}
+
+fn subst_ty(t: Ty, mapping: map) -> Ty {
+    if std::map::length(mapping) == 0 {
+        return t
+    }
+    if t.k == "Param" {
+        if std::map::contains(mapping, t.name) {
+            return std::map::get(mapping, t.name)
+        }
+        return t
+    }
+    if t.k == "Array" {
+        return tarr(subst_ty(t.items[0], mapping))
+    }
+    if t.k == "Tuple" {
+        let mut items = []
+        for it in t.items {
+            items = std::array::push(items, subst_ty(it, mapping))
+        }
+        return ttup(items)
+    }
+    if t.k == "Function" {
+        let mut params = []
+        for p in t.items {
+            params = std::array::push(params, subst_ty(p, mapping))
+        }
+        return tfn(params, subst_ty(t.ret, mapping))
+    }
+    if t.k == "Named" && len(t.items) > 0 {
+        let mut items = []
+        for it in t.items {
+            items = std::array::push(items, subst_ty(it, mapping))
+        }
+        return tnamed_args(t.name, items)
+    }
+    t
+}
+
+fn unify_ty(pattern: Ty, actual: Ty, mapping0: map) -> map {
+    let mut mapping = mapping0
+    if actual.k == "Unknown" || actual.k == "Never" {
+        return mapping
+    }
+    if pattern.k == "Param" {
+        if !std::map::contains(mapping, pattern.name) {
+            mapping = std::map::insert(mapping, pattern.name, actual)
+        }
+        return mapping
+    }
+    if pattern.k == "Array" && actual.k == "Array" {
+        return unify_ty(pattern.items[0], actual.items[0], mapping)
+    }
+    if pattern.k == "Tuple" && actual.k == "Tuple" && len(pattern.items) == len(actual.items) {
+        let mut i = 0
+        while i < len(pattern.items) {
+            mapping = unify_ty(pattern.items[i], actual.items[i], mapping)
+            i += 1
+        }
+        return mapping
+    }
+    if pattern.k == "Function" && actual.k == "Function" && len(pattern.items) == len(actual.items) {
+        let mut i = 0
+        while i < len(pattern.items) {
+            mapping = unify_ty(pattern.items[i], actual.items[i], mapping)
+            i += 1
+        }
+        return unify_ty(pattern.ret, actual.ret, mapping)
+    }
+    if pattern.k == "Named" && actual.k == "Named" && pattern.name == actual.name && len(pattern.items) == len(actual.items) {
+        let mut i = 0
+        while i < len(pattern.items) {
+            mapping = unify_ty(pattern.items[i], actual.items[i], mapping)
+            i += 1
+        }
+        return mapping
+    }
+    mapping
+}
+
+fn has_unbound_param(t: Ty, mapping: map) -> bool {
+    if t.k == "Param" {
+        return !std::map::contains(mapping, t.name)
+    }
+    if t.k == "Array" {
+        return has_unbound_param(t.items[0], mapping)
+    }
+    if t.k == "Tuple" || (t.k == "Named" && len(t.items) > 0) {
+        return has_unbound_params_list(t.items, mapping)
+    }
+    if t.k == "Function" {
+        return has_unbound_params_list(t.items, mapping) || has_unbound_param(t.ret, mapping)
+    }
+    false
+}
+
+fn has_unbound_params_list(list: array, mapping: map) -> bool {
+    for it in list {
+        if has_unbound_param(it, mapping) {
+            return true
+        }
+    }
+    false
+}
+
+fn erase_unbound_params(t: Ty, mapping: map) -> Ty {
+    if t.k == "Param" {
+        if std::map::contains(mapping, t.name) {
+            return std::map::get(mapping, t.name)
+        }
+        return mkt("Unknown")
+    }
+    if t.k == "Array" {
+        return tarr(erase_unbound_params(t.items[0], mapping))
+    }
+    if t.k == "Tuple" {
+        let mut items = []
+        for it in t.items {
+            items = std::array::push(items, erase_unbound_params(it, mapping))
+        }
+        return ttup(items)
+    }
+    if t.k == "Function" {
+        let mut params = []
+        for p in t.items {
+            params = std::array::push(params, erase_unbound_params(p, mapping))
+        }
+        return tfn(params, erase_unbound_params(t.ret, mapping))
+    }
+    if t.k == "Named" && len(t.items) > 0 {
+        let mut items = []
+        for it in t.items {
+            items = std::array::push(items, erase_unbound_params(it, mapping))
+        }
+        return tnamed_args(t.name, items)
+    }
+    t
+}
 
 fn type_from_ast(t) -> Ty {
+    type_from_ast_tp(t, std::map::new())
+}
+
+fn type_from_ast_env(e: Env, t) -> Ty {
+    type_from_ast_tp(t, tp_active_map(e))
+}
+
+fn type_from_ast_tp(t, tp_map: map) -> Ty {
     let k = t.kind
     if k == "t_named" {
         let name = t.text
+        if len(t.list) == 0 && std::map::contains(tp_map, name) {
+            return tparam(name)
+        }
         if name == "int" || name == "i32" || name == "i64" || name == "u64" || name == "usize" {
             return mkt("Int")
         }
@@ -504,7 +735,7 @@ fn type_from_ast(t) -> Ty {
             return mkt("Char")
         }
         if (name == "Array" || name == "Vec") && len(t.list) > 0 {
-            return tarr(type_from_ast(t.list[0]))
+            return tarr(type_from_ast_tp(t.list[0], tp_map))
         }
         if name == "array" {
             return tarr(mkt("Unknown"))
@@ -515,16 +746,19 @@ fn type_from_ast(t) -> Ty {
         if name == "any" {
             return mkt("Unknown")
         }
+        if len(t.list) > 0 {
+            return tnamed_args(name, types_from_ast_tp(t.list, tp_map))
+        }
         return tnamed(name)
     }
     if k == "t_slice" || k == "t_array" {
-        return tarr(type_from_ast(t.a))
+        return tarr(type_from_ast_tp(t.a, tp_map))
     }
     if k == "t_tuple" {
-        return ttup(types_from_ast(t.list))
+        return ttup(types_from_ast_tp(t.list, tp_map))
     }
     if k == "t_fn" {
-        return tfn(types_from_ast(t.list), type_from_ast(t.a))
+        return tfn(types_from_ast_tp(t.list, tp_map), type_from_ast_tp(t.a, tp_map))
     }
     if k == "t_unit" {
         return mkt("Unit")
@@ -533,13 +767,17 @@ fn type_from_ast(t) -> Ty {
         return mkt("Never")
     }
     // t_ref
-    type_from_ast(t.a)
+    type_from_ast_tp(t.a, tp_map)
 }
 
 fn types_from_ast(list: array) -> array {
+    types_from_ast_tp(list, std::map::new())
+}
+
+fn types_from_ast_tp(list: array, tp_map: map) -> array {
     let mut out = []
     for t in list {
-        out = std::array::push(out, type_from_ast(t))
+        out = std::array::push(out, type_from_ast_tp(t, tp_map))
     }
     out
 }
@@ -552,8 +790,22 @@ fn ann_or(t, default: Ty) -> Ty {
     type_from_ast(t)
 }
 
+fn ann_or_tp(t, default: Ty, tp_map: map) -> Ty {
+    if t == nil {
+        return default
+    }
+    type_from_ast_tp(t, tp_map)
+}
+
+fn ann_or_env(e: Env, t, default: Ty) -> Ty {
+    if t == nil {
+        return default
+    }
+    type_from_ast_env(e, t)
+}
+
 fn direct_named_type(t) -> string {
-    if t.kind == "t_named" && len(t.list) == 0 {
+    if t.kind == "t_named" && (len(t.list) == 0 || (t.text != "Array" && t.text != "Vec")) {
         return t.text
     }
     ""
@@ -575,6 +827,22 @@ fn compatible(a: Ty, b: Ty) -> bool {
         return true
     }
     if (a.k == "Unit" && b.k == "Nil") || (a.k == "Nil" && b.k == "Unit") {
+        return true
+    }
+    if a.k == "Named" && b.k == "Named" && a.name == b.name {
+        if len(a.items) == 0 || len(b.items) == 0 {
+            return true
+        }
+        if len(a.items) != len(b.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(a.items) {
+            if !compatible(a.items[i], b.items[i]) {
+                return false
+            }
+            i += 1
+        }
         return true
     }
     if a.k == "Array" && b.k == "Array" {
@@ -609,6 +877,22 @@ fn function_parameter_accepts(parameter: Ty, argument: Ty) -> bool {
     if (parameter.k == "Unit" && argument.k == "Nil") || (parameter.k == "Nil" && argument.k == "Unit") {
         return true
     }
+    if parameter.k == "Named" && argument.k == "Named" && parameter.name == argument.name {
+        if len(parameter.items) == 0 || len(argument.items) == 0 {
+            return true
+        }
+        if len(parameter.items) != len(argument.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(parameter.items) {
+            if !function_parameter_accepts(parameter.items[i], argument.items[i]) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
     if parameter.k == "Array" && argument.k == "Array" {
         return function_parameter_accepts(parameter.items[0], argument.items[0])
     }
@@ -639,6 +923,22 @@ fn function_result_compatible(expected: Ty, found: Ty) -> bool {
         return false
     }
     if (expected.k == "Unit" && found.k == "Nil") || (expected.k == "Nil" && found.k == "Unit") {
+        return true
+    }
+    if expected.k == "Named" && found.k == "Named" && expected.name == found.name {
+        if len(expected.items) == 0 || len(found.items) == 0 {
+            return true
+        }
+        if len(expected.items) != len(found.items) {
+            return false
+        }
+        let mut i = 0
+        while i < len(expected.items) {
+            if !function_result_compatible(expected.items[i], found.items[i]) {
+                return false
+            }
+            i += 1
+        }
         return true
     }
     if expected.k == "Array" && found.k == "Array" {
@@ -1205,7 +1505,7 @@ fn declaration_errors(base: map, items: array) -> array {
 fn collect_type_names(t: Ty, names0: map) -> map {
     let mut names = names0
     if t.k == "Named" {
-        return std::map::insert(names, t.name, true)
+        return std::map::insert(names, t.name, 0)
     }
     if t.k == "Array" {
         return collect_type_names(t.items[0], names)
@@ -1228,7 +1528,11 @@ fn collect_type_names(t: Ty, names0: map) -> map {
 fn builtin_type_names(base: map) -> map {
     let mut names = std::map::new()
     for n in ["int", "i32", "i64", "u64", "usize", "float", "f32", "f64", "bool", "string", "str", "char", "Array", "Vec", "array", "map", "any", "Option", "Result"] {
-        names = std::map::insert(names, n, true)
+        let mut arity = 0
+        if n == "Array" || n == "Vec" {
+            arity = 1
+        }
+        names = std::map::insert(names, n, arity)
     }
     for sig in std::map::values(base) {
         for p in sig.params {
@@ -1243,12 +1547,20 @@ fn collect_declared_type_names(items: array, names0: map) -> map {
     let mut names = names0
     for item in items {
         if item.kind == "struct" || item.kind == "enum" || item.kind == "typealias" {
-            names = std::map::insert(names, item.text, true)
+            names = std::map::insert(names, item.text, len(item.list2))
         } else if item.kind == "module" {
             names = collect_declared_type_names(item.list, names)
         }
     }
     names
+}
+
+fn dt_with_tparams(known0: map, tparams: array) -> map {
+    let mut known = known0
+    for tp in tparams {
+        known = std::map::insert(known, tp, 0)
+    }
+    known
 }
 
 // ---------------------------------------- declared_type_errors (tipos usados)
@@ -1294,12 +1606,17 @@ fn dt_type(t, known: map, is0: Issues, span: Span) -> Issues {
     let k = t.kind
     if k == "t_named" {
         if std::map::contains(known, t.text) {
-            let mut expected = 0
+            let expected = std::map::get(known, t.text)
             if t.text == "Array" || t.text == "Vec" {
-                expected = 1
-            }
-            if len(t.list) != expected {
-                is = iss_invalid(is, t.text, expected, len(t.list), span)
+                if len(t.list) != 1 {
+                    is = iss_invalid(is, t.text, 1, len(t.list), span)
+                }
+            } else if expected > 0 {
+                if len(t.list) != 0 && len(t.list) != expected {
+                    is = iss_invalid(is, t.text, expected, len(t.list), span)
+                }
+            } else if len(t.list) != 0 {
+                is = iss_invalid(is, t.text, 0, len(t.list), span)
             }
         } else {
             is = iss_unknown(is, t.text, span)
@@ -1391,13 +1708,27 @@ fn dt_exprs(list: array, known: map, is0: Issues) -> Issues {
     is
 }
 
+fn dt_type_args(targs, known: map, is0: Issues, span: Span) -> Issues {
+    if targs == nil {
+        return is0
+    }
+    let mut is = is0
+    for g in targs {
+        is = dt_type(g, known, is, span)
+    }
+    is
+}
+
 fn dt_expr(x, known: map, is: Issues) -> Issues {
     let k = x.kind
+    if k == "ident" {
+        return dt_type_args(x.a, known, is, x.span)
+    }
     if k == "array" || k == "tuple" {
         return dt_exprs(x.list, known, is)
     }
     if k == "structlit" {
-        return dt_exprs(x.list2, known, is)
+        return dt_exprs(x.list2, known, dt_type_args(x.a, known, is, x.span))
     }
     if k == "binary" || k == "range" || k == "index" || k == "assign" {
         return dt_expr(x.b, known, dt_expr(x.a, known, is))
@@ -1405,8 +1736,11 @@ fn dt_expr(x, known: map, is: Issues) -> Issues {
     if k == "unary" || k == "field" || k == "spawn" || k == "try" {
         return dt_expr(x.a, known, is)
     }
-    if k == "call" || k == "methodcall" {
+    if k == "call" {
         return dt_exprs(x.list, known, dt_expr(x.a, known, is))
+    }
+    if k == "methodcall" {
+        return dt_exprs(x.list, known, dt_type_args(x.b, known, dt_expr(x.a, known, is), x.span))
     }
     if k == "if" {
         let mut r = dt_block(x.b, known, dt_expr(x.a, known, is))
@@ -1457,19 +1791,21 @@ fn dt_expr(x, known: map, is: Issues) -> Issues {
 fn dt_methods(methods: array, known: map, is0: Issues) -> Issues {
     let mut is = is0
     for m in methods {
-        is = dt_params(m.list, known, is)
+        let mknown = dt_with_tparams(known, m.list2)
+        is = dt_params(m.list, mknown, is)
         if m.b != nil {
-            is = dt_type(m.b, known, is, m.span)
+            is = dt_type(m.b, mknown, is, m.span)
         }
         if m.c != nil {
-            is = dt_block(m.c, known, is)
+            is = dt_block(m.c, mknown, is)
         }
     }
     is
 }
 
-fn dt_item(item, known: map, is0: Issues) -> Issues {
+fn dt_item(item, known0: map, is0: Issues) -> Issues {
     let mut is = is0
+    let mut known = dt_with_tparams(known0, item.list2)
     let k = item.kind
     if k == "fn" {
         return dt_methods([item], known, is)
@@ -1492,6 +1828,13 @@ fn dt_item(item, known: map, is0: Issues) -> Issues {
         return dt_methods(item.list, known, is)
     }
     if k == "impl" {
+        if item.b.kind == "t_named" && std::map::contains(known, item.b.text) && std::map::get(known, item.b.text) > 0 {
+            for g in item.b.list {
+                if g.kind == "t_named" && len(g.list) == 0 && !std::map::contains(known, g.text) {
+                    known = std::map::insert(known, g.text, 0)
+                }
+            }
+        }
         is = dt_type(item.b, known, is, item.span)
         return dt_methods(item.list, known, is)
     }
@@ -1551,6 +1894,11 @@ fn cmp_invalid(l, r) -> int {
 
 fn alias_reaches(origin: string, t: Ty, aliases: map, visited: map) -> bool {
     if t.k == "Named" {
+        for item in t.items {
+            if alias_reaches(origin, item, aliases, visited) {
+                return true
+            }
+        }
         if t.name == origin {
             return true
         }
@@ -1714,13 +2062,36 @@ fn resolve_alias(e: Env, t: Ty) -> Ty {
 
 fn resolve_alias_inner(e: Env, t: Ty, visited: map) -> Ty {
     if t.k == "Named" {
+        let mut resolved_items = []
+        for it in t.items {
+            resolved_items = std::array::push(resolved_items, resolve_alias_inner(e, it, visited))
+        }
         if !std::map::contains(e.aliases, t.name) {
-            return t
+            if len(resolved_items) == 0 {
+                return t
+            }
+            return tnamed_args(t.name, resolved_items)
         }
         if std::map::contains(visited, t.name) {
             return mkt("Unknown")
         }
-        return resolve_alias_inner(e, std::map::get(e.aliases, t.name), std::map::insert(visited, t.name, true))
+        let raw_target = std::map::get(e.aliases, t.name)
+        let tparams = tp_get_type_params(e, t.name)
+        let mut target = raw_target
+        if len(tparams) > 0 {
+            let mut mapping = std::map::new()
+            let mut i = 0
+            while i < len(tparams) {
+                if i < len(resolved_items) {
+                    mapping = std::map::insert(mapping, tparams[i], resolved_items[i])
+                } else {
+                    mapping = std::map::insert(mapping, tparams[i], mkt("Unknown"))
+                }
+                i += 1
+            }
+            target = subst_ty(raw_target, mapping)
+        }
+        return resolve_alias_inner(e, target, std::map::insert(visited, t.name, true))
     }
     if t.k == "Array" {
         return tarr(resolve_alias_inner(e, t.items[0], visited))
@@ -1816,11 +2187,25 @@ fn count_inference_targets(items: array) -> int {
 
 // --------------------------------------------------------- recolección
 
+fn collect_type_params_in(e0: Env, items: array) -> Env {
+    let mut e = e0
+    for item in items {
+        if item.kind == "struct" || item.kind == "enum" || item.kind == "typealias" {
+            e = tp_set_type_params(e, item.text, item.list2)
+        } else if item.kind == "module" {
+            e = collect_type_params_in(e, item.list)
+        }
+    }
+    e
+}
+
 fn collect_type_aliases(e: Env, items: array) -> Env {
     let mut r = e
     for item in items {
         if item.kind == "typealias" {
-            r = set_aliases(r, std::map::insert(r.aliases, item.text, type_from_ast(item.a)))
+            r = tp_set_type_params(r, item.text, item.list2)
+            let tp_map = tp_list_to_map(item.list2)
+            r = set_aliases(r, std::map::insert(r.aliases, item.text, type_from_ast_tp(item.a, tp_map)))
         } else if item.kind == "module" {
             r = collect_type_aliases(r, item.list)
         }
@@ -1848,16 +2233,53 @@ fn impl_type_name(t) -> string {
     ""
 }
 
+fn impl_tparams(e: Env, block) -> array {
+    let mut tps = block.list2
+    if block.b != nil && block.b.kind == "t_named" && len(tp_get_type_params(e, block.b.text)) > 0 {
+        for g in block.b.list {
+            if g.kind == "t_named" && len(g.list) == 0 && !std::map::contains(e.structs, g.text) && !std::map::contains(e.aliases, g.text) {
+                let bt = type_from_ast(g)
+                if bt.k == "Named" && bt.name == g.text {
+                    tps = merge_tparams(tps, [g.text])
+                }
+            }
+        }
+    }
+    tps
+}
+
+fn impl_self_ty(e: Env, block, type_name: string, tp_map: map) -> Ty {
+    if type_name == "" {
+        return mkt("Unknown")
+    }
+    if block != nil && block.b != nil && block.b.kind == "t_named" && len(block.b.list) > 0 {
+        return type_from_ast_tp(block.b, tp_map)
+    }
+    let stps = tp_get_type_params(e, type_name)
+    if len(stps) > 0 {
+        let mut args = []
+        for stp in stps {
+            args = std::array::push(args, tparam(stp))
+        }
+        return tnamed_args(type_name, args)
+    }
+    tnamed(type_name)
+}
+
 // Parámetros con `self` sin anotar convertido en Named(tipo) (si hay tipo).
 fn self_params(params: array, type_name: string) -> array {
+    self_params_tp(params, type_name, tnamed(type_name), std::map::new())
+}
+
+fn self_params_tp(params: array, type_name: string, self_ty: Ty, tp_map: map) -> array {
     let mut out = []
     let mut i = 0
     while i < len(params) {
         let p = params[i]
         if i == 0 && p.text == "self" && p.a == nil && type_name != "" {
-            out = std::array::push(out, tnamed(type_name))
+            out = std::array::push(out, self_ty)
         } else {
-            out = std::array::push(out, ann_or(p.a, mkt("Unknown")))
+            out = std::array::push(out, ann_or_tp(p.a, mkt("Unknown"), tp_map))
         }
         i += 1
     }
@@ -1866,7 +2288,8 @@ fn self_params(params: array, type_name: string) -> array {
 
 fn collect_declarations(e0: Env, items: array) -> Env {
     let previous = e0.cur_file
-    let mut e = collect_traits(collect_type_aliases(e0, items), items)
+    let e1 = collect_type_params_in(e0, items)
+    let mut e = collect_traits(collect_type_aliases(e1, items), items)
     e = collect_items(e, items)
     set_cur_file(e, previous)
 }
@@ -1877,22 +2300,28 @@ fn collect_items(e0: Env, items: array) -> Env {
         e = set_cur_file(e, source_file_of(item))
         let k = item.kind
         if k == "fn" {
+            e = tp_set_fn_params(e, item.text, item.list2)
+            let tp_map = tp_list_to_map(item.list2)
             let mut params = []
             for p in item.list {
-                params = std::array::push(params, ann_or(p.a, mkt("Unknown")))
+                params = std::array::push(params, ann_or_tp(p.a, mkt("Unknown"), tp_map))
             }
-            e = set_functions(e, std::map::insert(e.functions, item.text, Sig { params: params, result: ann_or(item.b, mkt("Unknown")) }))
+            e = set_functions(e, std::map::insert(e.functions, item.text, Sig { params: params, result: ann_or_tp(item.b, mkt("Unknown"), tp_map) }))
         } else if k == "struct" {
+            e = tp_set_type_params(e, item.text, item.list2)
+            let tp_map = tp_list_to_map(item.list2)
             let mut fields = std::map::new()
             for f in item.list {
-                fields = std::map::insert(fields, f.text, type_from_ast(f.a))
+                fields = std::map::insert(fields, f.text, type_from_ast_tp(f.a, tp_map))
             }
             e = set_structs(e, std::map::insert(e.structs, item.text, fields))
         } else if k == "enum" {
+            e = tp_set_type_params(e, item.text, item.list2)
+            let tp_map = tp_list_to_map(item.list2)
             for v in item.list {
                 let mut payload = []
                 if v.a != nil {
-                    payload = [type_from_ast(v.a)]
+                    payload = [type_from_ast_tp(v.a, tp_map)]
                 }
                 e = set_variants(e, std::map::insert(e.variants, item.text + "::" + v.text, payload))
             }
@@ -1904,15 +2333,20 @@ fn collect_items(e0: Env, items: array) -> Env {
         } else if k == "impl" {
             e = collect_impl(e, item)
         } else if k == "trait" {
-            e = set_traits(e, std::map::insert(e.traits, item.text, item))
+            e = set_traits(r_or_e(e), std::map::insert(e.traits, item.text, item))
         }
     }
+    e
+}
+
+fn r_or_e(e: Env) -> Env {
     e
 }
 
 fn collect_impl(e0: Env, block) -> Env {
     let mut e = e0
     let type_name = impl_type_name(block.b)
+    let impl_tps = impl_tparams(e, block)
     let mut provided = std::map::new()
     for method in block.list {
         provided = std::map::insert(provided, method.text, true)
@@ -1920,7 +2354,11 @@ fn collect_impl(e0: Env, block) -> Env {
         if type_name != "" {
             qualified = type_name + "::" + method.text
         }
-        let sig = Sig { params: self_params(method.list, type_name), result: ann_or(method.b, mkt("Unit")) }
+        let all_tps = merge_tparams(impl_tps, method.list2)
+        e = tp_set_fn_params(e, qualified, all_tps)
+        let tp_map = tp_list_to_map(all_tps)
+        let self_ty = impl_self_ty(e, block, type_name, tp_map)
+        let sig = Sig { params: self_params_tp(method.list, type_name, self_ty, tp_map), result: ann_or_tp(method.b, mkt("Unit"), tp_map) }
         e = set_functions(e, std::map::insert(e.functions, qualified, sig))
     }
     if block.a == nil || type_name == "" {
@@ -1937,7 +2375,11 @@ fn collect_impl(e0: Env, block) -> Env {
         }
         let qualified = type_name + "::" + tm.text
         if tm.c != nil {
-            let sig = Sig { params: self_params(tm.list, type_name), result: ann_or(tm.b, mkt("Unit")) }
+            let all_tps = merge_tparams(impl_tps, tm.list2)
+            e = tp_set_fn_params(e, qualified, all_tps)
+            let tp_map = tp_list_to_map(all_tps)
+            let self_ty = impl_self_ty(e, block, type_name, tp_map)
+            let sig = Sig { params: self_params_tp(tm.list, type_name, self_ty, tp_map), result: ann_or_tp(tm.b, mkt("Unit"), tp_map) }
             e = set_functions(e, std::map::insert(e.functions, qualified, sig))
         } else {
             e = err_at(e, m_missing_trait_method(trait_name, type_name, tm.text), block.span)
@@ -2209,6 +2651,10 @@ fn fn_node(name: string, params: array, ret, body, span: Span) -> Node {
 
 // Copia de los parámetros con `self` sin anotar anotado como el tipo.
 fn annotate_self(params: array, type_name: string) -> array {
+    annotate_self_node(params, type_name, nil, [])
+}
+
+fn annotate_self_node(params: array, type_name: string, target_node, struct_tps: array) -> array {
     if len(params) == 0 || type_name == "" {
         return params
     }
@@ -2216,7 +2662,15 @@ fn annotate_self(params: array, type_name: string) -> array {
     if first.text != "self" || first.a != nil {
         return params
     }
-    let t = Node { kind: "t_named", text: type_name, text2: "", flag: false, a: nil, b: nil, c: nil, list: [], list2: [], span: zero_span() }
+    let mut targs = []
+    if target_node != nil && target_node.kind == "t_named" && len(target_node.list) > 0 {
+        targs = target_node.list
+    } else if len(struct_tps) > 0 {
+        for stp in struct_tps {
+            targs = std::array::push(targs, Node { kind: "t_named", text: stp, text2: "", flag: false, a: nil, b: nil, c: nil, list: [], list2: [], span: zero_span() })
+        }
+    }
+    let t = Node { kind: "t_named", text: type_name, text2: "", flag: false, a: nil, b: nil, c: nil, list: targs, list2: [], span: zero_span() }
     let fixed = Node { kind: first.kind, text: first.text, text2: first.text2, flag: first.flag, a: t, b: first.b, c: first.c, list: first.list, list2: first.list2, span: first.span }
     std::array::set(params, 0, fixed)
 }
@@ -2229,6 +2683,8 @@ fn check_item(e0: Env, item) -> Env {
     }
     if k == "impl" {
         let type_name = impl_type_name(item.b)
+        let impl_tps = impl_tparams(e, item)
+        let struct_tps = tp_get_type_params(e, type_name)
         let mut provided = std::map::new()
         for method in item.list {
             provided = std::map::insert(provided, method.text, true)
@@ -2238,7 +2694,8 @@ fn check_item(e0: Env, item) -> Env {
             if type_name != "" {
                 name = type_name + "::" + method.text
             }
-            let annotated = Node { kind: method.kind, text: name, text2: method.text2, flag: method.flag, a: method.a, b: method.b, c: method.c, list: annotate_self(method.list, type_name), list2: method.list2, span: method.span }
+            let all_tps = merge_tparams(impl_tps, method.list2)
+            let annotated = Node { kind: method.kind, text: name, text2: method.text2, flag: method.flag, a: method.a, b: method.b, c: method.c, list: annotate_self_node(method.list, type_name, item.b, struct_tps), list2: all_tps, span: method.span }
             e = check_function(e, annotated)
         }
         if item.a != nil && type_name != "" && std::map::contains(e.traits, item.a) {
@@ -2247,7 +2704,9 @@ fn check_item(e0: Env, item) -> Env {
                 if std::map::contains(provided, tm.text) || tm.c == nil {
                     continue
                 }
-                e = check_function(e, fn_node(type_name + "::" + tm.text, annotate_self(tm.list, type_name), tm.b, tm.c, tm.span))
+                let all_tps = merge_tparams(impl_tps, tm.list2)
+                let fn_tm = Node { kind: "fn", text: type_name + "::" + tm.text, text2: "", flag: false, a: nil, b: tm.b, c: tm.c, list: annotate_self_node(tm.list, type_name, item.b, struct_tps), list2: all_tps, span: tm.span }
+                e = check_function(e, fn_tm)
             }
         }
         return e
@@ -2387,9 +2846,10 @@ fn check_function(e0: Env, function) -> Env {
 }
 
 fn check_function_inner(e0: Env, function) -> Env {
-    let mut e = push_scope(e0)
+    let old_active_tp = tp_active_map(e0)
+    let mut e = push_scope(tp_with_active(e0, function.list2))
     for p in function.list {
-        let param_type = ann_or(p.a, mkt("Unknown"))
+        let param_type = ann_or_env(e, p.a, mkt("Unknown"))
         if p.b != nil {
             let (found, e2) = check_expr(e, p.b)
             e = require_compatible(e2, param_type, found)
@@ -2399,7 +2859,7 @@ fn check_function_inner(e0: Env, function) -> Env {
     let old_return = e.ret
     let old_loop_depth = e.loop_depth
     let old_breaks = e.breaks
-    e = set_ret(e, ann_or(function.b, mkt("Unknown")))
+    e = set_ret(e, ann_or_env(e, function.b, mkt("Unknown")))
     e = set_loop_depth(e, 0)
     e = set_breaks(e, [])
     e = set_fdepth(e, e.fdepth + 1)
@@ -2449,7 +2909,7 @@ fn check_function_inner(e0: Env, function) -> Env {
     e = set_loop_depth(e, old_loop_depth)
     e = set_breaks(e, old_breaks)
     e = set_ret(e, old_return)
-    pop_scope(e)
+    tp_restore_active(pop_scope(e), old_active_tp)
 }
 
 fn infer_return_type(e: Env, name: string, candidates: array) -> (Ty, Env) {
@@ -2497,7 +2957,7 @@ fn check_block_inner(e0: Env, block, expected) -> (Ty, Env) {
         let k = stmt.kind
         if k == "slet" {
             if stmt.a != nil {
-                let binding_type = type_from_ast(stmt.a)
+                let binding_type = type_from_ast_env(e, stmt.a)
                 let (vt, e2) = check_expr_expected(e, stmt.b, binding_type)
                 e = define_mutable(e2, stmt.text, binding_type, stmt.flag)
                 st = vt
@@ -2694,11 +3154,26 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
         return (mkt("Nil"), e)
     }
     if k == "ident" {
-        let (t, e2) = check_identifier(e, x.text)
-        if resolve_alias(e2, t).k == "Never" {
-            return (mkt("Never"), e2)
+        let (t0, e2) = check_identifier(e, x.text)
+        let mut t = t0
+        let mut e3 = e2
+        if x.a != nil && t.k == "Named" {
+            let tparams = tp_get_type_params(e3, t.name)
+            if len(tparams) > 0 {
+                if len(x.a) != len(tparams) {
+                    e3 = err(e3, m_invalid_type_args(t.name, len(tparams), len(x.a)))
+                }
+                let mut targs = []
+                for g in x.a {
+                    targs = std::array::push(targs, type_from_ast_env(e3, g))
+                }
+                t = tnamed_args(t.name, targs)
+            }
         }
-        return (t, e2)
+        if resolve_alias(e3, t).k == "Never" {
+            return (mkt("Never"), e3)
+        }
+        return (t, e3)
     }
     if k == "array" {
         let mut reachable = true
@@ -2765,7 +3240,7 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
         return (result, e2)
     }
     if k == "methodcall" {
-        let (result, e2) = check_method_call(e, x.a, x.text, x.list)
+        let (result, e2) = check_method_call_node(e, x)
         if resolve_alias(e2, result).k == "Never" || expr_definitely_returns(x.a) || any_definitely_returns(x.list) {
             return (mkt("Never"), e2)
         }
@@ -2788,7 +3263,22 @@ fn check_expr_inner(e0: Env, x) -> (Ty, Env) {
             if std::map::contains(e.structs, t.name) {
                 let fields = std::map::get(e.structs, t.name)
                 if std::map::contains(fields, x.text) {
-                    return (std::map::get(fields, x.text), e)
+                    let raw_field = std::map::get(fields, x.text)
+                    let tparams = tp_get_type_params(e, t.name)
+                    if len(tparams) > 0 {
+                        let mut mapping = std::map::new()
+                        let mut i = 0
+                        while i < len(tparams) {
+                            if i < len(t.items) {
+                                mapping = std::map::insert(mapping, tparams[i], t.items[i])
+                            } else {
+                                mapping = std::map::insert(mapping, tparams[i], mkt("Unknown"))
+                            }
+                            i += 1
+                        }
+                        return (subst_ty(raw_field, mapping), e)
+                    }
+                    return (raw_field, e)
                 }
             }
             return (mkt("Unknown"), err(e, m_unknown_field(t.name, x.text)))
@@ -2949,7 +3439,19 @@ fn check_struct_literal(e0: Env, x) -> (Ty, Env) {
     let mut e = e0
     let name = x.text
     let mut reachable = true
+    let tparams = tp_get_type_params(e, name)
+    let mut mapping = std::map::new()
     if std::map::contains(e.structs, name) {
+        if x.a != nil {
+            if len(x.a) != len(tparams) {
+                e = err(e, m_invalid_type_args(name, len(tparams), len(x.a)))
+            }
+            let mut j = 0
+            while j < len(tparams) && j < len(x.a) {
+                mapping = std::map::insert(mapping, tparams[j], type_from_ast_env(e, x.a[j]))
+                j += 1
+            }
+        }
         let expected_fields = std::map::get(e.structs, name)
         let mut supplied = std::map::new()
         let mut i = 0
@@ -2962,9 +3464,19 @@ fn check_struct_literal(e0: Env, x) -> (Ty, Env) {
                 supplied = std::map::insert(supplied, field, true)
             }
             if std::map::contains(expected_fields, field) {
-                let (t, e2, r2) = check_evaluated_expr(e, value, std::map::get(expected_fields, field), reachable)
-                e = e2
-                reachable = r2
+                let raw_expected = std::map::get(expected_fields, field)
+                if len(tparams) > 0 && has_unbound_param(raw_expected, mapping) {
+                    let (vt, e2, r2) = check_evaluated_expr(e, value, nil, reachable)
+                    e = e2
+                    reachable = r2
+                    mapping = unify_ty(raw_expected, resolve_alias(e, vt), mapping)
+                    e = require_compatible(e, erase_unbound_params(raw_expected, mapping), vt)
+                } else {
+                    let sub_expected = subst_ty(raw_expected, mapping)
+                    let (t, e2, r2) = check_evaluated_expr(e, value, sub_expected, reachable)
+                    e = e2
+                    reachable = r2
+                }
             } else {
                 let (t, e2, r2) = check_evaluated_expr(e, value, nil, reachable)
                 e = err(e2, m_unknown_field(name, field))
@@ -2989,6 +3501,17 @@ fn check_struct_literal(e0: Env, x) -> (Ty, Env) {
     }
     if !reachable {
         return (mkt("Never"), e)
+    }
+    if len(tparams) > 0 {
+        let mut targs = []
+        for tp in tparams {
+            if std::map::contains(mapping, tp) {
+                targs = std::array::push(targs, std::map::get(mapping, tp))
+            } else {
+                targs = std::array::push(targs, mkt("Unknown"))
+            }
+        }
+        return (tnamed_args(name, targs), e)
     }
     return (tnamed(name), e)
 }
@@ -3642,7 +4165,23 @@ fn bind_pattern(e0: Env, p, subject: Ty) -> Env {
     if std::map::contains(e.variants, qualified) {
         let payload = std::map::get(e.variants, qualified)
         if len(payload) > 0 && p.a != nil {
-            return bind_pattern(e, p.a, payload[0])
+            let mut pty = payload[0]
+            let tparams = tp_get_type_params(e, name)
+            if len(tparams) > 0 {
+                let sr = resolve_alias(e, subject)
+                let mut mapping = std::map::new()
+                let mut i = 0
+                while i < len(tparams) {
+                    if sr.k == "Named" && sr.name == name && i < len(sr.items) {
+                        mapping = std::map::insert(mapping, tparams[i], sr.items[i])
+                    } else {
+                        mapping = std::map::insert(mapping, tparams[i], mkt("Unknown"))
+                    }
+                    i += 1
+                }
+                pty = subst_ty(pty, mapping)
+            }
+            return bind_pattern(e, p.a, pty)
         }
         if len(payload) == 0 && p.a != nil {
             e = err(e, m_invalid_pattern("variant '" + name + "::" + variant + "' has no payload"))
@@ -3683,7 +4222,7 @@ fn check_closure(e0: Env, params: array, declared_return, body, contextual_param
     while i < len(params) {
         let p = params[i]
         if p.a != nil {
-            parameter_types = std::array::push(parameter_types, type_from_ast(p.a))
+            parameter_types = std::array::push(parameter_types, type_from_ast_env(e, p.a))
         } else if contextual_params != nil && i < len(contextual_params) {
             parameter_types = std::array::push(parameter_types, contextual_params[i])
         } else {
@@ -3699,7 +4238,7 @@ fn check_closure(e0: Env, params: array, declared_return, body, contextual_param
     // declared_result: Option<Type>.
     let mut declared_result: any = nil
     if declared_return != nil {
-        declared_result = type_from_ast(declared_return)
+        declared_result = type_from_ast_env(e, declared_return)
     }
     let mut expected_result = mkt("Unknown")
     if declared_result != nil {
@@ -3971,7 +4510,54 @@ fn unknown_method_result(e: Env, receiver: Ty, method: string, reachable: bool) 
     return (never_or(reachable, mkt("Unknown")), err(e, m_unknown_method(receiver, method)))
 }
 
+fn check_generic_arg(e0: Env, arg, raw_param: Ty, mapping0: map, reachable0: bool) -> (Env, map, bool) {
+    let mut e = e0
+    let mut mapping = mapping0
+    let mut reachable = reachable0
+    if !has_unbound_param(raw_param, mapping) {
+        let sub_param = subst_ty(raw_param, mapping)
+        let (at, e2, r2) = check_evaluated_expr(e, arg, sub_param, reachable)
+        return (e2, mapping, r2)
+    }
+    if arg.kind == "closure" && raw_param.k == "Function" && !has_unbound_params_list(raw_param.items, mapping) {
+        let mut ctx_params = []
+        for p in raw_param.items {
+            ctx_params = std::array::push(ctx_params, subst_ty(p, mapping))
+        }
+        let mut ctx_ret: any = nil
+        if !has_unbound_param(raw_param.ret, mapping) {
+            ctx_ret = subst_ty(raw_param.ret, mapping)
+        }
+        let count = cand_count(e)
+        let broke = loop_broke(e)
+        let (ct, e2) = check_closure(e, arg.list, arg.a, arg.b, ctx_params, ctx_ret)
+        e = e2
+        if !reachable {
+            e = restore_control_flow(e, count, broke)
+        } else if resolve_alias(e, ct).k == "Never" {
+            reachable = false
+        }
+        mapping = unify_ty(raw_param, resolve_alias(e, ct), mapping)
+        e = require_compatible(e, erase_unbound_params(raw_param, mapping), ct)
+        return (e, mapping, reachable)
+    }
+    let (at, e2, r2) = check_evaluated_expr(e, arg, nil, reachable)
+    e = e2
+    reachable = r2
+    mapping = unify_ty(raw_param, resolve_alias(e, at), mapping)
+    e = require_compatible(e, erase_unbound_params(raw_param, mapping), at)
+    return (e, mapping, reachable)
+}
+
+fn check_method_call_node(e0: Env, x) -> (Ty, Env) {
+    check_method_call_targs(e0, x.a, x.text, x.b, x.list)
+}
+
 fn check_method_call(e0: Env, receiver, method: string, args: array) -> (Ty, Env) {
+    check_method_call_targs(e0, receiver, method, nil, args)
+}
+
+fn check_method_call_targs(e0: Env, receiver, method: string, targs_ast, args: array) -> (Ty, Env) {
     let (rraw, e1, r1) = check_evaluated_expr(e0, receiver, nil, true)
     let mut e = e1
     let mut reachable = r1
@@ -3984,7 +4570,7 @@ fn check_method_call(e0: Env, receiver, method: string, args: array) -> (Ty, Env
         }
         return (mkt("Never"), e)
     }
-    let (handled, ut, e2, r2) = check_user_method_call(e, rt, method, args, reachable)
+    let (handled, ut, e2, r2) = check_user_method_call_targs(e, rt, method, targs_ast, args, reachable)
     if handled {
         return (ut, e2)
     }
@@ -4054,6 +4640,10 @@ fn check_method_call(e0: Env, receiver, method: string, args: array) -> (Ty, Env
 
 // -> (manejado, tipo, env, reachable)
 fn check_user_method_call(e0: Env, rt: Ty, method: string, args: array, reachable0: bool) -> (bool, Ty, Env, bool) {
+    check_user_method_call_targs(e0, rt, method, nil, args, reachable0)
+}
+
+fn check_user_method_call_targs(e0: Env, rt: Ty, method: string, targs_ast, args: array, reachable0: bool) -> (bool, Ty, Env, bool) {
     let mut e = e0
     let mut reachable = reachable0
     if rt.k != "Named" {
@@ -4064,6 +4654,8 @@ fn check_user_method_call(e0: Env, rt: Ty, method: string, args: array, reachabl
         return (false, mkt("Unknown"), e, reachable)
     }
     let sig = std::map::get(e.functions, qualified)
+    let fn_tparams = tp_get_fn_params(e, qualified)
+    let struct_tparams = tp_get_type_params(e, rt.name)
     if len(sig.params) == 0 {
         for a in args {
             let (t, e2, r2) = check_evaluated_expr(e, a, nil, reachable)
@@ -4073,23 +4665,70 @@ fn check_user_method_call(e0: Env, rt: Ty, method: string, args: array, reachabl
         e = err(e, m_arity(0, len(args) + 1))
         return (true, never_or(reachable, sig.result), e, reachable)
     }
-    e = require_compatible(e, sig.params[0], rt)
+    if len(fn_tparams) == 0 && len(struct_tparams) == 0 {
+        e = require_compatible(e, sig.params[0], rt)
+        let params = std::array::slice(sig.params, 1, len(sig.params))
+        if len(params) != len(args) {
+            e = err(e, m_arity(len(params), len(args)))
+        }
+        let mut i = 0
+        while i < len(args) {
+            let mut expected: any = nil
+            if i < len(params) {
+                expected = params[i]
+            }
+            let (t, e2, r2) = check_evaluated_expr(e, args[i], expected, reachable)
+            e = e2
+            reachable = r2
+            i += 1
+        }
+        return (true, never_or(reachable, sig.result), e, reachable)
+    }
+    let mut mapping = std::map::new()
+    let mut j = 0
+    while j < len(struct_tparams) && j < len(rt.items) {
+        mapping = std::map::insert(mapping, struct_tparams[j], rt.items[j])
+        j += 1
+    }
+    mapping = unify_ty(sig.params[0], rt, mapping)
+    if targs_ast != nil {
+        let mut method_tps = []
+        let st_set = tp_list_to_map(struct_tparams)
+        for ftp in fn_tparams {
+            if !std::map::contains(st_set, ftp) {
+                method_tps = std::array::push(method_tps, ftp)
+            }
+        }
+        let mut bind_tps = method_tps
+        if len(targs_ast) == len(fn_tparams) {
+            bind_tps = fn_tparams
+        }
+        let mut k = 0
+        while k < len(bind_tps) && k < len(targs_ast) {
+            mapping = std::map::insert(mapping, bind_tps[k], type_from_ast_env(e, targs_ast[k]))
+            k += 1
+        }
+    }
+    e = require_compatible(e, erase_unbound_params(sig.params[0], mapping), rt)
     let params = std::array::slice(sig.params, 1, len(sig.params))
     if len(params) != len(args) {
         e = err(e, m_arity(len(params), len(args)))
     }
     let mut i = 0
     while i < len(args) {
-        let mut expected: any = nil
         if i < len(params) {
-            expected = params[i]
+            let (e2, m2, r2) = check_generic_arg(e, args[i], params[i], mapping, reachable)
+            e = e2
+            mapping = m2
+            reachable = r2
+        } else {
+            let (t, e2, r2) = check_evaluated_expr(e, args[i], nil, reachable)
+            e = e2
+            reachable = r2
         }
-        let (t, e2, r2) = check_evaluated_expr(e, args[i], expected, reachable)
-        e = e2
-        reachable = r2
         i += 1
     }
-    return (true, never_or(reachable, sig.result), e, reachable)
+    return (true, never_or(reachable, erase_unbound_params(sig.result, mapping)), e, reachable)
 }
 
 // result: Option<Type>.
@@ -4406,6 +5045,37 @@ fn check_args_plain(e0: Env, args: array, from: int, reachable0: bool) -> (Env, 
     return (e, reachable)
 }
 
+fn check_generic_fn_call(e0: Env, static_name: string, targs_ast, args: array, tparams: array) -> (Ty, Env) {
+    let mut e = e0
+    let sig = std::map::get(e.functions, static_name)
+    let mut mapping = std::map::new()
+    if targs_ast != nil {
+        if len(targs_ast) != len(tparams) {
+            e = err(e, m_invalid_type_args(static_name, len(tparams), len(targs_ast)))
+        }
+        let mut j = 0
+        while j < len(tparams) && j < len(targs_ast) {
+            mapping = std::map::insert(mapping, tparams[j], type_from_ast_env(e, targs_ast[j]))
+            j += 1
+        }
+    }
+    let params = sig.params
+    if len(params) != len(args) {
+        e = err(e, m_arity(len(params), len(args)))
+    }
+    let mut reachable = true
+    let mut i = 0
+    while i < len(args) && i < len(params) {
+        let (e2, m2, r2) = check_generic_arg(e, args[i], params[i], mapping, reachable)
+        e = e2
+        mapping = m2
+        reachable = r2
+        i += 1
+    }
+    let (e3, r3) = check_args_plain(e, args, len(params), reachable)
+    return (never_or(r3, erase_unbound_params(sig.result, mapping)), e3)
+}
+
 fn check_call(e0: Env, callee, args: array) -> (Ty, Env) {
     let mut e = e0
     // name: Option<String> ("" = None; un identificador nunca es vacío).
@@ -4454,21 +5124,57 @@ fn check_call(e0: Env, callee, args: array) -> (Ty, Env) {
             if len(args) != expected {
                 e = err(e, m_arity(expected, len(args)))
             }
-            let mut reachable = true
-            let mut checked = 0
-            if expected == 1 && len(args) > 0 {
-                let (t, e3, r3) = check_evaluated_expr(e, args[0], payload[0], reachable)
-                e = e3
-                reachable = r3
-                checked = 1
-            }
-            let (e4, r4) = check_args_plain(e, args, checked, reachable)
             let sep = find_sub(static_name, "::")
             let mut enum_name = static_name
             if sep >= 0 {
                 enum_name = std::text::substring(static_name, 0, sep)
             }
+            let tparams = tp_get_type_params(e, enum_name)
+            let mut mapping = std::map::new()
+            if callee.a != nil && len(tparams) > 0 {
+                if len(callee.a) != len(tparams) {
+                    e = err(e, m_invalid_type_args(enum_name, len(tparams), len(callee.a)))
+                }
+                let mut j = 0
+                while j < len(tparams) && j < len(callee.a) {
+                    mapping = std::map::insert(mapping, tparams[j], type_from_ast_env(e, callee.a[j]))
+                    j += 1
+                }
+            }
+            let mut reachable = true
+            let mut checked = 0
+            if expected == 1 && len(args) > 0 {
+                if len(tparams) > 0 {
+                    let (e3, m3, r3) = check_generic_arg(e, args[0], payload[0], mapping, reachable)
+                    e = e3
+                    mapping = m3
+                    reachable = r3
+                } else {
+                    let (t, e3, r3) = check_evaluated_expr(e, args[0], payload[0], reachable)
+                    e = e3
+                    reachable = r3
+                }
+                checked = 1
+            }
+            let (e4, r4) = check_args_plain(e, args, checked, reachable)
+            if len(tparams) > 0 {
+                let mut targs = []
+                for tp in tparams {
+                    if std::map::contains(mapping, tp) {
+                        targs = std::array::push(targs, std::map::get(mapping, tp))
+                    } else {
+                        targs = std::array::push(targs, mkt("Unknown"))
+                    }
+                }
+                return (never_or(r4, tnamed_args(enum_name, targs)), e4)
+            }
             return (never_or(r4, tnamed(enum_name)), e4)
+        }
+        if std::map::contains(e.functions, static_name) {
+            let fn_tps = tp_get_fn_params(e, static_name)
+            if len(fn_tps) > 0 {
+                return check_generic_fn_call(e, static_name, callee.a, args, fn_tps)
+            }
         }
     }
     let mut reachable = true
