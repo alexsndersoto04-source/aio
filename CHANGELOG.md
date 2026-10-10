@@ -5,7 +5,7 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
-## Sin publicar
+## 1.2.2 — 2026-10-10
 
 - **Errores:** las posiciones de los errores dentro de `main` ya no caen en `1:1` (citaban el inicio
   de la función): todos citan la línea real (fallita 4).
