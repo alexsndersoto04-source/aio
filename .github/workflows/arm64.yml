@@ -42,6 +42,7 @@ jobs:
         run: |
           bash selfhost/empaquetar.sh selfhost/titan x86_64 paquetes
           bash selfhost/empaquetar.sh titan-aarch64 aarch64 paquetes
+          bash selfhost/empaquetar.sh titan-armv7 armv7 paquetes
       - name: Compilar titan para ARM de 32 bits (LLVM, cruzado)
         run: selfhost/titan compile selfhost/titan.titan -o titan-armv7 --target armv7
       - name: Paquetes .deb (sistema y Termux) y repositorio apt
@@ -208,11 +209,19 @@ jobs:
           # Nombres fijos para que instalar-termux.sh encuentre siempre «latest/download/…».
           cp titan-*-linux-aarch64.tar.gz titan-linux-aarch64.tar.gz
           cp titan-*-linux-x86_64.tar.gz titan-linux-x86_64.tar.gz
+          cp titan-*-linux-armv7.tar.gz titan-linux-armv7.tar.gz
           cp repo/*.deb repo-termux/*.deb . 2> /dev/null || true
+          # Copias sin versión: las páginas y el README enlazan siempre «latest/download/zett_amd64.deb».
+          cp "zett_${GITHUB_REF_NAME#v}_amd64.deb" zett_amd64.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_arm64.deb" zett_arm64.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_armhf.deb" zett_armhf.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_x86_64.termux.deb" zett_x86_64.termux.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_aarch64.termux.deb" zett_aarch64.termux.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_arm.termux.deb" zett_arm.termux.deb 2> /dev/null || true
           sha256sum titan-linux-*.tar.gz zett_*.deb > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
             --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes .deb para Debian/Ubuntu (amd64, arm64, armhf) y para Termux (x86_64, aarch64, arm): se instalan con apt, que deja titan y zett en el PATH; el repositorio apt se publica en la rama zett-repo (sistema/ y termux/). El paquete de ARM64 se probó en un servidor ARM64 real (no en un teléfono) y el de ARM de 32 bits bajo el emulador; el de x86-64 en la propia CI. También están los tar.gz de siempre, que no necesitan instalación. SHA256SUMS.txt trae las sumas de verificación." \
-            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz zett_*.deb
+            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-linux-armv7.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz titan-*-linux-armv7.tar.gz zett_*.deb
       - name: Publicar el repositorio apt en la rama zett-repo
         env:
           GH_TOKEN: ${{ github.token }}

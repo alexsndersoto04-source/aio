@@ -132,6 +132,18 @@ getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
   actual borra sus datos: guarda antes lo que quieras conservar.</li>
 </ul>
 <h2 id="1-instalar">1. Instalar</h2>
+<h3 id="opcion-recomendada-el-paquete-zett-se-instala-con-pkg">Opción recomendada: el paquete <code>zett</code> (se instala con <code>pkg</code>)</h3>
+<p>El paquete del gestor de paquetes de Termux (<code>pkg</code>, que por dentro es <code>apt</code>) deja <code>titan</code> y <code>zett</code> en el
+<code>PATH</code> en un solo paso:</p>
+<pre><code class="language-sh">pkg install ./zett_aarch64.termux.deb    # Android ARM64 (lo normal hoy)
+pkg install ./zett_arm.termux.deb        # Android ARM de 32 bits (menos común)
+titan version &amp;&amp; zett version
+</code></pre>
+<p>Se descarga de <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">GitHub Releases</a> (el <code>.deb</code>
+del flujo <code>Linux ARM64 (Termux)</code>); el paquete de ARM64 se prueba en una máquina ARM64 real y el de ARM de 32
+bits con el emulador, y no se ha probado en un teléfono de 32 bits de verdad. También hay un repositorio apt
+propio (rama <code>zett-repo</code>, carpeta <code>termux/</code>) para actualizar con <code>pkg upgrade</code>.</p>
+<h3 id="o-con-el-targz-y-el-instalador-automatico">O con el tar.gz y el instalador automático</h3>
 <p>Necesitas el paquete <code>titan-linux-aarch64.tar.gz</code> de la última versión publicada en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">GitHub Releases</a> (generado y verificado por el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions).</p>
 <p>Con la release publicada (descarga e instalación automática):</p>
 <pre><code class="language-sh">pkg install -y curl

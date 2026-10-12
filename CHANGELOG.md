@@ -17,7 +17,7 @@ binarios».
   Determinista (fecha del último commit).
 - **Nuevo `selfhost/repo_apt.sh`**: escribe `Packages`, `Packages.gz` y `Release` (con sus hashes y tamaños) y
   comprueba con el `apt` de verdad que el repositorio se lee; firma el `Release` si se le da `GPG_KEY`.
-- **Nuevo `selfhost/probar_paquetes.sh`**: prueba los seis paquetes de una vez. En esta máquina: **pasan 23,
+- **Nuevo `selfhost/probar_paquetes.sh`**: prueba los seis paquetes de una vez. En esta máquina: **pasan 24,
   fallan 0**, y los 2 que no se pueden probar aquí (ejecutar el paquete de ARM64) los prueba la CI en una
   máquina ARM64 real. Se instaló con `apt` desde el repositorio, y el paquete instalado compiló y ejecutó un
   programa, generó su clave y firmó un `.tpkg`.
@@ -33,8 +33,14 @@ binarios».
 - **CI** (`.github/workflows/arm64.yml`): construye los seis paquetes y los dos índices, prueba el de x86-64 en
   la CI, el de ARM64 en la máquina ARM64 real y el de ARM de 32 bits con el emulador; al etiquetar una versión
   sube los `.deb` a la release y publica el repositorio en la rama `zett-repo` (`sistema/` y `termux/`).
-- README, `docs/GUIA_TERMUX.md` y `selfhost/ESTADO.md` al día (incluida la frase que decía que ARM de 32 bits
-  no estaba soportado, que ya no es cierta).
+- **El binario de ARM de 32 bits también va en la página oficial:** `selfhost/empaquetar.sh` acepta `armv7` y
+  la release publica `titan-linux-armv7.tar.gz` además de los `.deb` (y copias sin versión,
+  `zett_amd64.deb` y compañía, para que las direcciones del README y de la web no envejezcan). La página
+  (`site-src/plantillas/inicio.html`) enseña las tres arquitecturas, la instalación con `apt`/`pkg` y el
+  repositorio apt; regenerada y con los 121 enlaces comprobados.
+- README, `docs/GUIA_TERMUX.md` (con la instalación por `pkg install ./zett_aarch64.termux.deb`) y
+  `selfhost/ESTADO.md` al día (incluida la frase que decía que ARM de 32 bits no estaba soportado, que ya no
+  es cierta: hay paquete y binario, comprobados con el emulador).
 
 ## Sin publicar — 2026-10-12 (d) — `std::onnx` verificado sin el Rust
 

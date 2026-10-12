@@ -76,7 +76,7 @@
 <div class="wrap">
   <div class="facts">
     <div class="fact"><b>812</b><span>funciones en la biblioteca estándar, en 73 espacios de nombres</span></div>
-    <div class="fact"><b>2</b><span>arquitecturas Linux con descarga directa: x86-64 y ARM64 (aarch64)</span></div>
+    <div class="fact"><b>3</b><span>arquitecturas Linux con descarga directa: x86-64, ARM64 (aarch64) y ARM de 32 bits (armv7)</span></div>
     <div class="fact"><b>3</b><span>generadores de código: x86-64 propio, LLVM y WebAssembly</span></div>
     <div class="fact"><b>MIT</b><span>licencia de código abierto, repositorio público en GitHub</span></div>
   </div>
@@ -238,10 +238,11 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
 <section id="plataformas"><div class="wrap">
   <p class="eyebrow">Plataformas</p>
   <h2>Ejecutables nativos para Linux</h2>
-  <p class="sub">Los programas son ejecutables estáticos: el runtime llama directamente al núcleo de Linux, sin biblioteca C. Ambas arquitecturas principales de Linux cuentan con paquetes precompilados listos para descargar:</p>
+  <p class="sub">Los programas son ejecutables estáticos: el runtime llama directamente al núcleo de Linux, sin biblioteca C. Hay paquetes precompilados para x86-64, ARM64 y ARM de 32 bits, y cada binario tiene su paquete oficial <code>zett</code> con el gestor del sistema (apt en Debian/Ubuntu, pkg en Termux).</p>
   <div class="grid2 plat">
     <div class="card"><span class="badge ok">Probada · x86_64</span><h3>Linux x86-64</h3><p>Compilador nativo, herramienta <code>titan</code>, gestor de paquetes <code>zett</code> y programas generados sin dependencias externas. Punto fijo del compilador verificado.</p></div>
     <div class="card"><span class="badge ok">Probada · aarch64</span><h3>Linux ARM64 · Termux</h3><p>Paquete nativo de 64 bits (<code>aarch64</code>) para servidores ARM64 y Android (Termux). Compila y ejecuta programas mediante LLVM (requiere <code>clang</code> y <code>lld</code>); 95 programas verificados con salida idéntica a x86-64.</p></div>
+    <div class="card"><span class="badge ok">Comprobada con emulador · armv7</span><h3>Linux ARM de 32 bits</h3><p>Compilador para ARM de 32 bits (<code>armv7</code>), pensado para Android/Termux de 32 bits y equipos ARMv7. Compila con LLVM (requiere <code>clang</code> y <code>lld</code>). El binario del paquete se comprobó bajo el emulador de ARM32: arranca y compila un programa de verdad; en un aparato de 32 bits no se ha probado todavía.</p></div>
     <div class="card"><span class="badge ok">Disponible</span><h3>WebAssembly</h3><p><code>titan wasm</code> genera el módulo; DOM, eventos, <code>fetch</code>, Canvas 2D y WebGL2 funcionan con un host JavaScript.</p></div>
     <div class="card"><span class="badge plan">Previsto</span><h3>macOS y Windows</h3><p>Sin ejecutable por ahora: falta portar el runtime, que usa llamadas directas de Linux.</p></div>
   </div>
@@ -250,8 +251,18 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
 
 <section id="descargas" class="alt"><div class="wrap">
   <p class="eyebrow">Descargas oficiales</p>
-  <h2>Paquetes precompilados para Linux (x86-64 y ARM64)</h2>
-  <p class="sub">Descarga directamente el paquete compilado para tu arquitectura. Cada paquete incluye el ejecutable <code>titan</code>, el enlace a <code>zett</code> (gestor de paquetes) y la carpeta <code>native/</code> con el runtime y la biblioteca estándar.</p>
+  <h2>Paquetes oficiales <code>zett</code> y precompilados para Linux</h2>
+  <p class="sub">Cada binario del compilador (x86-64, ARM64 y ARM de 32 bits) tiene su paquete <code>.deb</code> con el nombre <code>zett</code>, que se instala con el gestor del sistema —<code>apt</code> en Debian/Ubuntu y <code>pkg</code> en Termux— y deja <code>titan</code> y <code>zett</code> en el <code>PATH</code>. También están los <code>.tar.gz</code> de siempre, que no necesitan instalación: dentro va el ejecutable <code>titan</code>, el enlace <code>zett</code> y la carpeta <code>native/</code>.</p>
+  <div class="code"><div class="cap">Instalación con el gestor del sistema (Debian/Ubuntu)</div><pre><code>curl -fLO https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett_amd64.deb
+sudo apt install ./zett_amd64.deb
+titan version
+zett version
+# ARM64: zett_arm64.deb   ARM de 32 bits: zett_armhf.deb</code></pre></div>
+  <div class="code"><div class="cap">Instalación en Termux (Android)</div><pre><code>pkg install ./zett_aarch64.termux.deb
+# ARM de 32 bits: zett_arm.termux.deb   x86_64: zett_x86_64.termux.deb
+titan version
+zett version</code></pre></div>
+  <p class="more">Repositorio apt propio (rama <a href="https://github.com/alexsndersoto04-source/aio/tree/zett-repo"><code>zett-repo</code></a>): <code>deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/sistema ./</code> · Termux: <code>deb [trusted=yes] …/zett-repo/termux ./</code></p>
   <div class="grid2 plat">
     <div class="card">
       <span class="badge ok">Linux x86-64 (64 bits)</span>
@@ -286,6 +297,24 @@ ln -sf &quot;$PWD&quot;/titan-*-linux-aarch64/titan ~/.local/bin/titan
 ln -sf &quot;$PWD&quot;/titan-*-linux-aarch64/zett ~/.local/bin/zett
 titan version</code></pre></div>
     </div>
+    <div class="card">
+      <span class="badge ok">Linux ARM de 32 bits / armv7</span>
+      <h3>Android/Termux de 32 bits y equipos ARMv7</h3>
+      <p>Ejecutable nativo para ARM de 32 bits (<code>armv7</code>), compilado con LLVM (requiere <code>clang</code> y <code>lld</code>). Probado bajo el emulador de ARM32: arranca, responde y compila un programa de verdad; en un aparato de 32 bits no se ha probado todavía.</p>
+      <div class="btns sp" style="margin-bottom:16px">
+        <a class="btn primary" href="https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-armv7.tar.gz">Descargar Linux ARM 32 bits (.tar.gz)</a>
+      </div>
+      <div class="code"><div class="cap">Instalación manual en ARM de 32 bits</div><pre><code>curl -fLO https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-armv7.tar.gz
+tar -xzf titan-linux-armv7.tar.gz
+mkdir -p ~/.local/bin
+ln -sf &quot;$PWD&quot;/titan-*-linux-armv7/titan ~/.local/bin/titan
+ln -sf &quot;$PWD&quot;/titan-*-linux-armv7/zett ~/.local/bin/zett
+titan version</code></pre></div>
+      <div class="code"><div class="cap">Paquete del gestor del sistema (ARM de 32 bits)</div><pre><code># Debian/Ubuntu ARM de 32 bits
+sudo apt install ./zett_armhf.deb
+# Termux de 32 bits (Android)
+pkg install ./zett_arm.termux.deb</code></pre></div>
+    </div>
   </div>
   <p class="more">Verificación de integridad: <a href="https://github.com/alexsndersoto04-source/aio/releases/latest/download/SHA256SUMS.txt">Descargar <code>SHA256SUMS.txt</code></a> · <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">Ver notas de la última versión en GitHub Releases →</a></p>
 </div></section>
@@ -309,7 +338,7 @@ titan run</code></pre></div></div></div>
   </div>
   <div class="grid2 sp">
     <div class="note"><b>Cómo se construye.</b> El repositorio incluye una semilla: una copia ya compilada del compilador (7,7 MB, <code>selfhost/semilla/</code>). <code>bootstrap.sh</code> la usa para compilar el compilador escrito en Titan, que luego se compila a sí mismo dos veces; el script comprueba que las tres versiones sean idénticas byte a byte.</div>
-    <div class="note"><b>Paquetes para Linux x86-64 y ARM64.</b> En cada lanzamiento, GitHub Actions construye y verifica automáticamente <code>titan-linux-x86_64.tar.gz</code> y <code>titan-linux-aarch64.tar.gz</code> junto con sus sumas SHA-256. En Termux (Android ARM64), el script <code>selfhost/instalar-termux.sh</code> descarga la última versión, instala <code>clang</code> y configura <code>titan</code> y <code>zett</code> en el <code>PATH</code>.</div>
+    <div class="note"><b>Paquetes para Linux x86-64, ARM64 y ARM de 32 bits.</b> En cada lanzamiento, GitHub Actions construye y verifica automáticamente los <code>.tar.gz</code> de las tres arquitecturas y los seis <code>.deb</code> (sistema y Termux) con sus repositorios apt, junto con las sumas SHA-256. El paquete de x86-64 se prueba en la propia CI, el de ARM64 en una máquina ARM64 real y el de ARM de 32 bits con el emulador. En Termux, el script <code>selfhost/instalar-termux.sh</code> descarga la última versión, instala <code>clang</code> y configura <code>titan</code> y <code>zett</code> en el <code>PATH</code>.</div>
   </div>
 </div></section>
 
@@ -389,7 +418,7 @@ titan run</code></pre></div></div></div>
 </div></section>
 
 <section class="cta"><div class="wrap cta-in">
-  <div><h2>Empieza con Titan</h2><p>Descarga el paquete para tu arquitectura (Linux x86-64 o ARM64) o construye el compilador desde el código fuente.</p></div>
+  <div><h2>Empieza con Titan</h2><p>Descarga el paquete <code>zett</code> de tu sistema (Debian/Ubuntu o Termux), el compilado de tu arquitectura (x86-64, ARM64 o ARM de 32 bits) o construye el compilador desde el código fuente.</p></div>
   <div class="btns"><a class="btn primary" href="#descargas">Descargar Titan</a><a class="btn" href="#instalar">Compilar desde fuentes</a><a class="btn" href="https://github.com/alexsndersoto04-source/aio">GitHub</a></div>
 </div></section>
 </main>

@@ -202,6 +202,23 @@ for f in "$out"/repo-termux/*.termux.deb; do
   rm -rf "$tmp"
 done
 
+# Copias sin versión en la raíz de la salida: son las que publica la release y
+# las que enlazan el README y la página (direcciones estables).
+for a in amd64 arm64 armhf; do
+  [ -f "$out/repo/zett_${ver}_${a}.deb" ] && cp -f "$out/repo/zett_${ver}_${a}.deb" "$out/zett_${a}.deb"
+done
+for a in x86_64 aarch64 arm; do
+  [ -f "$out/repo-termux/zett_${ver}_${a}.termux.deb" ] && \
+    cp -f "$out/repo-termux/zett_${ver}_${a}.termux.deb" "$out/zett_${a}.termux.deb"
+done
+if [ -f "$out/bin/titan-armv7" ]; then
+  if bash selfhost/empaquetar.sh "$out/bin/titan-armv7" armv7 "$out" > /dev/null 2>&1; then
+    ok "titan-…-linux-armv7.tar.gz (el tar.gz del binario de ARM de 32 bits)"
+  else
+    mal "no se pudo empaquetar el tar.gz de armv7"
+  fi
+fi
+
 echo
 echo "paquetes: pasan $pasan, fallan $fallan, no comprobados aquí $saltan"
 echo "los .deb y el repositorio están en $out/repo"

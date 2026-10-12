@@ -115,7 +115,7 @@ binarios».</p>
   Determinista (fecha del último commit).</li>
 <li><strong>Nuevo <code>selfhost/repo_apt.sh</code></strong>: escribe <code>Packages</code>, <code>Packages.gz</code> y <code>Release</code> (con sus hashes y tamaños) y
   comprueba con el <code>apt</code> de verdad que el repositorio se lee; firma el <code>Release</code> si se le da <code>GPG_KEY</code>.</li>
-<li><strong>Nuevo <code>selfhost/probar_paquetes.sh</code></strong>: prueba los seis paquetes de una vez. En esta máquina: <strong>pasan 23,
+<li><strong>Nuevo <code>selfhost/probar_paquetes.sh</code></strong>: prueba los seis paquetes de una vez. En esta máquina: <strong>pasan 24,
   fallan 0</strong>, y los 2 que no se pueden probar aquí (ejecutar el paquete de ARM64) los prueba la CI en una
   máquina ARM64 real. Se instaló con <code>apt</code> desde el repositorio, y el paquete instalado compiló y ejecutó un
   programa, generó su clave y firmó un <code>.tpkg</code>.</li>
@@ -131,8 +131,14 @@ binarios».</p>
 <li><strong>CI</strong> (<code>.github/workflows/arm64.yml</code>): construye los seis paquetes y los dos índices, prueba el de x86-64 en
   la CI, el de ARM64 en la máquina ARM64 real y el de ARM de 32 bits con el emulador; al etiquetar una versión
   sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).</li>
-<li>README, <code>docs/GUIA_TERMUX.md</code> y <code>selfhost/ESTADO.md</code> al día (incluida la frase que decía que ARM de 32 bits
-  no estaba soportado, que ya no es cierta).</li>
+<li><strong>El binario de ARM de 32 bits también va en la página oficial:</strong> <code>selfhost/empaquetar.sh</code> acepta <code>armv7</code> y
+  la release publica <code>titan-linux-armv7.tar.gz</code> además de los <code>.deb</code> (y copias sin versión,
+  <code>zett_amd64.deb</code> y compañía, para que las direcciones del README y de la web no envejezcan). La página
+  (<code>site-src/plantillas/inicio.html</code>) enseña las tres arquitecturas, la instalación con <code>apt</code>/<code>pkg</code> y el
+  repositorio apt; regenerada y con los 121 enlaces comprobados.</li>
+<li>README, <code>docs/GUIA_TERMUX.md</code> (con la instalación por <code>pkg install ./zett_aarch64.termux.deb</code>) y
+  <code>selfhost/ESTADO.md</code> al día (incluida la frase que decía que ARM de 32 bits no estaba soportado, que ya no
+  es cierta: hay paquete y binario, comprobados con el emulador).</li>
 </ul>
 <h2 id="sin-publicar-2026-10-12-d-stdonnx-verificado-sin-el-rust">Sin publicar — 2026-10-12 (d) — <code>std::onnx</code> verificado sin el Rust</h2>
 <p><strong>El lenguaje y el compilador no cambian</strong> (no se toca nada del runtime salvo pruebas): el punto fijo sigue

@@ -34,12 +34,12 @@ nombre, el gestor de paquetes de Titan) más un repositorio apt propio:
 
 ```bash
 # Debian / Ubuntu (x86-64, ARM64 o ARM de 32 bits)
-wget https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett_1.3.0_amd64.deb
-sudo apt install ./zett_1.3.0_amd64.deb      # deja titan y zett en el PATH
+wget https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett_amd64.deb
+sudo apt install ./zett_amd64.deb      # deja titan y zett en el PATH
 titan version && zett version
 
 # Termux (Android: x86_64, aarch64, arm) — usa pkg, que es apt con su prefijo
-pkg install ./zett_1.3.0_aarch64.termux.deb
+pkg install ./zett_aarch64.termux.deb
 
 # Repositorio apt (rama zett-repo), para actualizar con apt en vez de a mano:
 #   deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/sistema ./

@@ -2725,7 +2725,11 @@ tiene su <strong>paquete del gestor del sistema</strong>, con el nombre <code>ze
 </tr>
 </tbody>
 </table></div>
-<p><strong>Cómo se arma.</strong> <code>selfhost/empaquetar_deb.sh EJECUTABLE {amd64|arm64|armhf} SALIDA [--termux] [--version V]</code>
+<p><strong>Cómo se arma.</strong> Además de los <code>.deb</code>, la release publica el <code>titan-linux-armv7.tar.gz</code> del binario de ARM de 32 bits
+(<code>selfhost/empaquetar.sh</code> acepta ya <code>x86_64</code>, <code>aarch64</code> y <code>armv7</code>), y copias sin versión de los <code>.deb</code>
+(<code>zett_amd64.deb</code>, <code>zett_aarch64.termux.deb</code>, …) para que las direcciones del README y de la página sean
+estables.</p>
+<p><code>selfhost/empaquetar_deb.sh EJECUTABLE {amd64|arm64|armhf} SALIDA [--termux] [--version V]</code>
 escribe el <code>.deb</code> completo (control con <code>Provides: titan</code>, <code>Depends: clang, lld</code> en ARM, licencia, <code>LEEME.txt</code>,
 <code>/usr/bin/{titan,zett}</code> → <code>../lib/zett/titan</code>, runtime en <code>/usr/lib/zett/native/</code>); en Termux el prefijo es
 <code>/data/data/com.termux/files/usr</code>. Es determinista (<code>SOURCE_DATE_EPOCH</code> = fecha del último commit). El
@@ -2741,10 +2745,13 @@ apt de verdad</strong> que el repositorio se lee (<code>apt-get update</code> co
 cruzado lo que falte), comprueba que el binario de dentro es el compilado (sha256), escribe los dos
 repositorios, instala con <code>apt</code> desde el repositorio, usa el paquete instalado (compilar y ejecutar, <code>keygen</code>,
 <code>pack</code>), ejecuta los binarios de ARM bajo el emulador y comprueba los de Termux en un prefijo falso.
-<strong>Resultado de la corrida real en esta máquina</strong>: <code>pasan 23, fallan 0, no comprobados aquí 2</code> (los dos que
-necesitan un ARM64 de verdad). Para publicarlos, <code>.github/workflows/arm64.yml</code> construye los seis paquetes y
+<strong>Resultado de la corrida real en esta máquina</strong>: <code>pasan 24, fallan 0, no comprobados aquí 2</code> (los dos que
+necesitan un ARM64 de verdad; la corrida número 24 es el tar.gz de ARM de 32 bits, que también se arma y se
+comprueba). Para publicarlos, <code>.github/workflows/arm64.yml</code> construye los seis paquetes y
 los índices, prueba el de x86-64 en la CI, prueba el de ARM64 en la máquina ARM64 real y, al etiquetar una
-versión, sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).</p>
+versión, sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).
+Después de tocar el emulador, <code>bash selfhost/tests/arm32_diff.sh</code> (muestra corta) sigue en <strong>20 idénticos,
+0 distintos</strong>: los arreglos no cambiaron ninguna salida.</p>
 <p><strong>En el emulador de ARM32 (dos fallos de verdad corregidos).</strong> <code>native/arm32/correr.py</code> se tragaba cualquier
 argumento del programa que empezara por <code>--</code> (así <code>titan compile x --target armv7</code> corría sin <code>--target</code>), y
 contestaba <code>/proc/self/exe</code> con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
