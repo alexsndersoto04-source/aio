@@ -199,6 +199,8 @@ bash selfhost/native/verify_native.sh    # corpus: nativo vs la VM del port (VM=
 bash selfhost/native/verify_native.sh selfhost/tests/native/redis.titan # arranca un Redis real si redis-server/redis-cli están instalados
 bash selfhost/native/verify_native.sh VM=zett selfhost/tests/native/basico.titan # la comparación histórica contra `zett run`
 bash selfhost/native/verify_json.sh      # std::json::parse: nativo vs la VM del port en 97 casos (errores con línea/columna)
+# Comparación con glibc de verdad: sudo bash selfhost/native/net/comparar.sh /tmp/prueba_net
+# (necesita dns_falso.py en 127.0.0.53 y servidores.py; con ZETT=/ruta/a/zett usa la VM de Rust)
 bash selfhost/tests/vm_diff.sh           # corpus: nativo vs la VM del port (antes se comparaba contra la VM de Rust)
 bash selfhost/native/cobertura.sh [-v]   # definiciones Titan frente al inventario registrado
 python3 selfhost/native/auditar_pruebas.py # cruce de firmas con nombres citados en la suite (no mide ramas)
@@ -800,7 +802,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::net (1 de 1: http_get)</td>
 <td><code>std_net.titan</code>, <code>std_net_gai.titan</code>, <code>std_net_dns.titan</code></td>
-<td>lo mismo que net.rs y TcpStream::connect de Rust (IPv4/IPv6 estrictos de Rust, cada dirección en orden, mensajes de io::Error) sobre getaddrinfo de glibc 2.39 (la del ubuntu-24.04 de CI) traducido de su código: nsswitch.conf (acciones <code>[!STATUS=accion]</code>, módulos files y dns), host.conf (multi, reorder, trim y sus avisos), /etc/hosts con los límites de búfer de glibc, resolv.conf (nameserver, search, domain, options: ndots, timeout, attempts, rotate, edns0, single-request, single-request-reopen, use-vc, trust-ad, no-aaaa, no-tld-query, no-reload; LOCALDOMAIN, RES_OPTIONS, HOSTALIASES; recarga cuando cambia el archivo), el cliente DNS real (consultas A y AAAA con sendmmsg por UDP, paso a TCP si viene truncada, reintentos y tiempos de espera, respuestas con otro ID o pregunta distinta, SERVFAIL/REFUSED/NXDOMAIN, CNAME, compresión), gai.conf (label, precedence, scopev4, reload) y el orden RFC 3484 con check_pf (netlink) y la prueba de conexión UDP. Comparado con glibc real: <code>native/net/comparar.sh</code> monta un servidor DNS falso con 30 casos raros (<code>dns_falso.py</code>) y servidores HTTP locales y compara VM y nativo en 27 configuraciones distintas del sistema: 0 diferencias. Prueba <code>net_http</code></td>
+<td>lo mismo que net.rs y TcpStream::connect de Rust (IPv4/IPv6 estrictos de Rust, cada dirección en orden, mensajes de io::Error) sobre getaddrinfo de glibc 2.39 (la del ubuntu-24.04 de CI) traducido de su código: nsswitch.conf (acciones <code>[!STATUS=accion]</code>, módulos files y dns), host.conf (multi, reorder, trim y sus avisos), /etc/hosts con los límites de búfer de glibc, resolv.conf (nameserver, search, domain, options: ndots, timeout, attempts, rotate, edns0, single-request, single-request-reopen, use-vc, trust-ad, no-aaaa, no-tld-query, no-reload; LOCALDOMAIN, RES_OPTIONS, HOSTALIASES; recarga cuando cambia el archivo), el cliente DNS real (consultas A y AAAA con sendmmsg por UDP, paso a TCP si viene truncada, reintentos y tiempos de espera, respuestas con otro ID o pregunta distinta, SERVFAIL/REFUSED/NXDOMAIN, CNAME, compresión), gai.conf (label, precedence, scopev4, reload) y el orden RFC 3484 con check_pf (netlink) y la prueba de conexión UDP. Comparado con glibc real: <code>native/net/comparar.sh</code> monta un servidor DNS falso con 30 casos raros (<code>dns_falso.py</code>) y servidores HTTP locales y compara el nativo con glibc de verdad en 27 configuraciones distintas del sistema: 0 diferencias. La referencia la hace <code>native/net/oraculo_glibc.py</code> (getaddrinfo por ctypes y sockets reales) porque aquí Rust no tenía nada propio: <code>std::net</code> llamaba a esas mismas funciones de glibc. Con <code>ZETT=/ruta/a/zett</code> el arnés usa la VM de Rust para la comparación histórica. Los errores del oráculo salen con el mismo prefijo que el nativo (<code>native function 'std::net::http_get' failed: …</code>) y el arnés descarta configuraciones en las que alguno de los dos no produjo ninguna línea, para que dos salidas vacías no cuenten como iguales. Prueba <code>net_http</code></td>
 </tr>
 <tr>
 <td>std::qrcode (5 de 5: to_ascii, to_unicode, to_svg, to_png, save_png)</td>
@@ -2638,6 +2640,10 @@ una cadena TLS generada con <code>openssl</code>. Convertidos y ejecutados de ve
 </table></div>
 <p><code>native/llvm/arm64_comparar.sh</code> (enlazar y ejecutar en ARM64) sigue necesitando una máquina ARM64 real: aquí
 no hay qemu, así que esa mitad queda para la CI, igual que antes.</p>
+<p>La nativa nueva <code>std::process::run_inherit</code> (ver «Hallazgo 1») también pasa por el backend LLVM: un programa
+que la usa compilado por LLVM imprime la salida heredada del hijo y termina con 0, y el arnés sobre
+<code>tests/native/std_process_inherit.titan</code> da 1 idéntico, 0 distintos (la CI de LLVM correrá además la prueba
+en x86-64 y ARM64 con el corpus completo).</p>
 <p><strong>Hallazgo 1 — el lanzador no dejaba usar la terminal (resuelto con <code>--tty</code>).</strong> <code>titan run</code> y <code>titan exec</code>
 lanzan el programa con <code>/dev/null</code> como entrada y guardan su salida en un tubo para imprimirla al terminar
 (<code>std::process::run_timeout</code>, <code>native/std_process.titan:1475</code>; el <code>/dev/null</code> de la entrada está en la línea

@@ -5,6 +5,25 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar — 2026-10-12 (c) — `std::net` frente a glibc de verdad, sin el Rust
+
+**El lenguaje no cambia** y el punto fijo tampoco (no se toca nada del compilador):
+`titanc1 == titanc2 == titanc3`, SHA-256
+`02110549e9190578b2bb47e425045a3bb39d1aa1ebc49dff9c12fb5638bded8f`. Detalle en
+[`selfhost/ESTADO.md`](selfhost/ESTADO.md), fila de `std::net`.
+
+- **`native/net/comparar.sh` ya no necesita el `zett` de Rust.** Aquí Rust no tenía nada propio que comparar:
+  `std::net` llamaba a `getaddrinfo` de glibc, así que la referencia ahora es esa misma glibc de verdad, con
+  `native/net/oraculo_glibc.py` (getaddrinfo por ctypes, sockets y connect reales). Con `ZETT=/ruta/a/zett` el
+  arnés sigue usando la VM de Rust para la comparación histórica.
+- **Corregido un falso «igual»:** 24 de las 27 configuraciones ejecutaban `true` en vez del cliente (el comodín
+  sobraba), así que pasaban sin probar nada. Quitado; además el arnés ahora falla si alguno de los dos lados no
+  produce ninguna línea, para que dos salidas vacías no cuenten como iguales (probado con dos salidas vacías:
+  informa `DISTINTO … sin salida`).
+- **Resultado real:** `sudo bash native/net/comparar.sh /tmp/prueba_net` con `dns_falso.py` (127.0.0.53) y
+  `servidores.py` en marcha, 33 URLs × 27 configuraciones de `/etc` (resolv.conf, nsswitch.conf, host.conf,
+  gai.conf, hosts, variables de entorno): **27 iguales, 0 distintas**; `/etc` restaurado al terminar.
+
 ## Sin publicar — 2026-10-12 (b) — `titan run --tty` y `std::process::run_inherit`
 
 Sin cambios en el lenguaje para el código que ya existía (se **añade** una función a la biblioteca estándar).

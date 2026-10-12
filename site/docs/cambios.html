@@ -104,6 +104,24 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
+<h2 id="sin-publicar-2026-10-12-c-stdnet-frente-a-glibc-de-verdad-sin-el-rust">Sin publicar — 2026-10-12 (c) — <code>std::net</code> frente a glibc de verdad, sin el Rust</h2>
+<p><strong>El lenguaje no cambia</strong> y el punto fijo tampoco (no se toca nada del compilador):
+<code>titanc1 == titanc2 == titanc3</code>, SHA-256
+<code>02110549e9190578b2bb47e425045a3bb39d1aa1ebc49dff9c12fb5638bded8f</code>. Detalle en
+<a href="estado.html"><code>selfhost/ESTADO.md</code></a>, fila de <code>std::net</code>.</p>
+<ul>
+<li><strong><code>native/net/comparar.sh</code> ya no necesita el <code>zett</code> de Rust.</strong> Aquí Rust no tenía nada propio que comparar:
+  <code>std::net</code> llamaba a <code>getaddrinfo</code> de glibc, así que la referencia ahora es esa misma glibc de verdad, con
+  <code>native/net/oraculo_glibc.py</code> (getaddrinfo por ctypes, sockets y connect reales). Con <code>ZETT=/ruta/a/zett</code> el
+  arnés sigue usando la VM de Rust para la comparación histórica.</li>
+<li><strong>Corregido un falso «igual»:</strong> 24 de las 27 configuraciones ejecutaban <code>true</code> en vez del cliente (el comodín
+  sobraba), así que pasaban sin probar nada. Quitado; además el arnés ahora falla si alguno de los dos lados no
+  produce ninguna línea, para que dos salidas vacías no cuenten como iguales (probado con dos salidas vacías:
+  informa <code>DISTINTO … sin salida</code>).</li>
+<li><strong>Resultado real:</strong> <code>sudo bash native/net/comparar.sh /tmp/prueba_net</code> con <code>dns_falso.py</code> (127.0.0.53) y
+  <code>servidores.py</code> en marcha, 33 URLs × 27 configuraciones de <code>/etc</code> (resolv.conf, nsswitch.conf, host.conf,
+  gai.conf, hosts, variables de entorno): <strong>27 iguales, 0 distintas</strong>; <code>/etc</code> restaurado al terminar.</li>
+</ul>
 <h2 id="sin-publicar-2026-10-12-b-titan-run-tty-y-stdprocessrun_inherit">Sin publicar — 2026-10-12 (b) — <code>titan run --tty</code> y <code>std::process::run_inherit</code></h2>
 <p>Sin cambios en el lenguaje para el código que ya existía (se <strong>añade</strong> una función a la biblioteca estándar).
 Punto fijo verificado con estos cambios: <code>titanc1 == titanc2 == titanc3</code>, SHA-256

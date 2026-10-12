@@ -22,7 +22,7 @@ Los que **sí** siguen necesitando el `zett` de Rust (porque su oráculo son los
 lo usan para construir la herramienta): `verify_lexer.sh`, `verify_parser.sh`, `verify_typechecker.sh`,
 `verify_codegen.sh`, `tests/tbc_diff`, `tests/server_diff`, `tests/repl`, `tests/debug`,
 `tests/lsp/contraste_zett.py`, `tests/mysql/comparar.sh`, `tests/onnx/*`, `tests/audio/verificar.sh`,
-`tests/native/tokenize_dev/*`, `tests/pkg_diff` y `native/net/comparar.sh`.
+`tests/native/tokenize_dev/*` y `tests/pkg_diff`.
 (`native/profile.py` solo lo nombra en un comentario: es una herramienta de desarrollo.)
 - `bash selfhost/native/verify_json.sh` (97 casos de JSON, errores con línea y columna incluidos) y
   `bash selfhost/tests/vm_diff.sh` (muestra del corpus; `TITAN_VM_MUESTRA=1` para la amplia): el mismo
@@ -37,6 +37,12 @@ lo usan para construir la herramienta): `verify_lexer.sh`, `verify_parser.sh`, `
   archivo alterado; necesita `openssl` y `python3`).
 - `onnx/run.sh` y `onnx/run_bert.sh` (comparan con onnxruntime y con el tract de la VM; sin la VM comparan solo
   con onnxruntime si se desactiva la parte `ZETT`).
+- `bash native/net/comparar.sh EJECUTABLE` (`std::net::http_get` frente a glibc de verdad): la referencia es
+  `native/net/oraculo_glibc.py` (getaddrinfo por ctypes y sockets reales), no la VM de Rust, porque `std::net`
+  de Rust llamaba a esas mismas funciones de glibc. Necesita `sudo`, `native/net/dns_falso.py` en 127.0.0.53 y
+  `native/net/servidores.py`; restaura los archivos de `/etc` al terminar. Con `ZETT=/ruta/a/zett` compara
+  contra la VM de Rust (la comparación histórica). El ejecutable de prueba es
+  `selfhost/titan compile native/net/prueba.titan -o /tmp/prueba_net`.
 - Los tests de `tests/native/*.titan` como programas: `selfhost/titan run <prueba>`.
 - Los fuzzers de `native/` (regex, url, router, QR, archive, compress y yaml): comparan el nativo contra la
   VM de bytecode del port con el ayudante `native/vm_port.py`. Antes comparaban contra la VM de Rust;
