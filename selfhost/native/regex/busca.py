@@ -9,6 +9,9 @@ import random
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
+
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rnd = random.Random(seed)
 here = os.path.dirname(os.path.abspath(__file__))
@@ -74,7 +77,7 @@ path = '/tmp/rx_busca_%d.txt' % seed
 with open(path, 'w') as f:
     for p, t, r in cases:
         f.write(p.encode().hex() + '\n' + t.encode().hex() + '\n' + r.encode().hex() + '\n')
-vm = run(['zett', 'run', os.path.join(here, 'busca.titan'), path])
+vm = vm_run(__file__, 'busca.titan', path, capture_output=True, text=True).stdout.split('\n')
 na = run([nat, path])
 bad = 0
 errs = 0

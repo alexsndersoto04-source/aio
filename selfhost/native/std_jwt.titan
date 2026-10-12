@@ -168,7 +168,7 @@ fn jw_number(st: int, positive: bool) -> any {
     if !positive {
         start = start - 1
     }
-    let v = js_parse_integer(st, positive)
+    let v = js_parse_integer(st, positive, start)
     let end = std::raw::load(st + 16)
     let src = std::raw::load(st)
     let mut is_float = false

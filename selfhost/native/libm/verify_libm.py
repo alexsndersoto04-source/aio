@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # Compara std::math (exp, ln, sin, cos, tan, pow, log) de un ejecutable Titan
 # con la libm del sistema (la que usa la VM), bit a bit.
-# Uso: zett run selfhost/build.titan selfhost/native/libm/h.titan /tmp/h
-#      python3 selfhost/native/libm/verify_libm.py SEMILLA CASOS /tmp/h
-# (el ejecutable puede ser también un script que llame a `zett run h.titan`).
+# Uso (sin Rust): ./selfhost/titanc3 selfhost/native/libm/h.titan /tmp/h
+#                 python3 selfhost/native/libm/verify_libm.py SEMILLA CASOS /tmp/h
+# (antes el ejecutable lo armaba `zett run selfhost/build.titan`; ahora
+# cualquiera de los dos compiladores del port sirve, también `titan compile`).
 import ctypes, random, math, json, struct, subprocess, sys, tempfile, os
 libm = ctypes.CDLL('libm.so.6')
 for fn in ['exp','log','sin','cos','tan']:

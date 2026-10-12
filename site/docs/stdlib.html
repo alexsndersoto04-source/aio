@@ -4,20 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Visión general — Documentación de Titan</title>
-<meta name="description" content="Los 73 espacios de nombres y sus 812 funciones.">
+<meta name="description" content="Los 73 espacios de nombres y sus 813 funciones.">
 <meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
 <link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/docs/stdlib.html">
 <meta property="og:title" content="Visión general — Documentación de Titan">
-<meta property="og:description" content="Los 73 espacios de nombres y sus 812 funciones.">
+<meta property="og:description" content="Los 73 espacios de nombres y sus 813 funciones.">
 <meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/docs/stdlib.html">
 <meta property="og:site_name" content="Titan — Lenguaje de Programación">
 <meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Visión general — Documentación de Titan">
-<meta name="twitter:description" content="Los 73 espacios de nombres y sus 812 funciones.">
+<meta name="twitter:description" content="Los 73 espacios de nombres y sus 813 funciones.">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../style.css">
 <script type="application/ld+json">
@@ -36,7 +36,7 @@
     "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
     "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
   ],
-  "description": "Los 73 espacios de nombres y sus 812 funciones."
+  "description": "Los 73 espacios de nombres y sus 813 funciones."
 }
 </script>
 </head>
@@ -100,7 +100,7 @@
 </nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Biblioteca estándar</p><h1 id="biblioteca-estandar">Biblioteca estándar</h1>
 <p>Las funciones <code>std::*</code> están escritas en Titan (cuerpos en <code>selfhost/native/</code>) y se compilan junto con el programa; no hay
 código de otro lenguaje ni bibliotecas externas. La tabla de firmas es <code>selfhost/natives.titan</code> (la consulta el typechecker).
-Hoy son <strong>812 funciones en 73 espacios de nombres</strong>. Cuántas tienen cuerpo en Titan se mide con
+Hoy son <strong>813 funciones en 73 espacios de nombres</strong>. Cuántas tienen cuerpo en Titan se mide con
 <code>bash selfhost/native/cobertura.sh -v</code>.</p>
 <p>Además de estas, <code>std::sqlite</code>, <code>std::postgres</code>, <code>std::mysql</code>, <code>std::db</code>, <code>std::tls</code>, <code>std::runtime</code> y parte de <code>std::ws</code>, <code>std::net</code>,
 <code>std::http</code> y <code>std::server</code> se compilan a instrucciones propias del bytecode (<code>selfhost/codegen_tables.titan</code>).</p>
@@ -335,8 +335,8 @@ Hoy son <strong>812 funciones en 73 espacios de nombres</strong>. Cuántas tiene
 </tr>
 <tr>
 <td><code>std::process</code></td>
-<td>23</td>
-<td>procesos hijos, pipes, tiempo límite</td>
+<td>24</td>
+<td>procesos hijos, pipes, tiempo límite (<code>run_inherit</code> deja al hijo la terminal)</td>
 </tr>
 <tr>
 <td><code>std::procfs</code></td>

@@ -107,7 +107,8 @@ Termux de 32 bits) el binario aarch64 arranca (<code>titan version</code> sí co
 arquitectura para esos Termux de 32 bits (antes el compilador creía estar en una PC y pedía un binario que no era).</p>
 </blockquote>
 <h2 id="antes-de-instalar-tu-termux-corre-el-binario-de-64-bits">Antes de instalar: ¿tu Termux corre el binario de 64 bits?</h2>
-<p>Titan solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>); no existe versión para ARM de 32 bits. Pero cuidado:
+<p>El <strong>compilador</strong> solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>): Titan no se construye para ARM de 32 bits.
+Lo que sí existe es el destino <code>armv7</code> (ver abajo). Pero cuidado:
 <strong>un Termux de 32 bits puede estar en un teléfono con núcleo de 64 bits</strong>, y ahí el binario aarch64 corre igual.
 La prueba de verdad es intentarlo (el instalador lo hace al final):</p>
 <pre><code class="language-sh">uname -m                              # a | aarch64 → estupendo; armv8l / armv7l → mira abajo
@@ -119,7 +120,10 @@ getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
   tu teléfono ejecuta los binarios de 64 bits y <strong>todo funciona</strong> (caso del Redmi 9C, aunque <code>abilist</code> solo
   traiga <code>armeabi-v7a</code> y <code>armeabi</code>). Si ves «Exec format error», tu teléfono es de 32 bits de verdad: instala
   el Termux de 64 bits (APK <code>arm64-v8a</code>, de F-Droid o del GitHub oficial de Termux) <strong>si tu teléfono lo admite</strong>;
-  si no lo admite, no hay versión posible (hace falta un generador de código para ARM de 32 bits, que no existe).</li>
+  si no lo admite, no hay versión del <em>compilador</em> para ese teléfono. Sí hay <strong>destino</strong> <code>armv7</code> desde el
+  2026-10-11: compilando en otra máquina (x86-64 o ARM64) con <code>titan compile PROGRAMA.titan -o salida --target
+  armv7</code> se obtiene un ELF32 estático que ese teléfono ejecuta directamente. Detalles y límites, en
+  <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «ARM de 32 bits».</li>
 <li>Alternativa recomendada si puedes: instalar el Termux de 64 bits desde el principio. Desinstalar el Termux
   actual borra sus datos: guarda antes lo que quieras conservar.</li>
 </ul>

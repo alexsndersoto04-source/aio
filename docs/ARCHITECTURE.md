@@ -42,7 +42,7 @@ Linux, sin libc. En ARM64, `native/sys_arm64.titan` traduce las llamadas al sist
 
 `natives.titan` lista las firmas de las funciones `std::*` (el typechecker las consulta) y `codegen_tables.titan` dice cuáles
 se convierten en instrucciones propias del bytecode. El cuerpo de cada función está en `selfhost/native/` (SQLite, TLS,
-regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 812 funciones en 73 espacios de nombres; la medición
+regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 813 funciones en 73 espacios de nombres; la medición
 se repite con `bash selfhost/native/cobertura.sh -v`. Ver [STDLIB.md](STDLIB.md).
 
 ## Herramientas

@@ -1,13 +1,15 @@
 #!/bin/bash
 # Verificación de std::term en situaciones que la batería general no puede
 # reproducir: una terminal de verdad (pseudoterminal) y distintos entornos.
-# Compara byte a byte la VM de Rust (`zett run`) con el ejecutable nativo.
+# Compara byte a byte la referencia del anfitrión con el ejecutable nativo. Sin
+# Rust: la referencia la ejecuta la CLI del port (`titan run`; antes era
+# `zett run`, la VM de Rust) y el nativo lo arma `titan compile` (o COMPILER,
+# p. ej. el titanc3 del bootstrap).
 # Uso (desde la raíz del repositorio): bash selfhost/native/term/verificar.sh
-# ZETT selecciona el seed precompilado; COMPILER (opcional) usa titanc1 del bootstrap.
 set -u
-ZETT="${ZETT:-$(command -v zett)}"
-COMPILER="${COMPILER:-}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+TITAN="${TITAN:-$ROOT/selfhost/titan}"
+COMPILER="${COMPILER:-}"
 D="$ROOT/selfhost/native/term"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -21,7 +23,7 @@ for p in tamano teclas teclas_plazos; do
   if [ -n "$COMPILER" ]; then
     "$COMPILER" "$D/$p.titan" "$tmp/$p" > "$tmp/build.txt" 2>&1 || { cat "$tmp/build.txt"; exit 1; }
   else
-    "$ZETT" run build.titan "$D/$p.titan" "$tmp/$p" > "$tmp/build.txt" 2>&1 || { cat "$tmp/build.txt"; exit 1; }
+    "$TITAN" compile "$D/$p.titan" -o "$tmp/$p" > "$tmp/build.txt" 2>&1 || { cat "$tmp/build.txt"; exit 1; }
   fi
 done
 # terminal::size() sin terminal: tput según TERM, COLUMNS/LINES y PATH.
@@ -30,27 +32,32 @@ n=0
 for envs in "TERM=xterm" "TERM=xterm COLUMNS=120 LINES=40" "TERM=dumb" "PATH=/nonexistent" \
             "PATH=/root:/nonexist" "PATH=" "PATH=/root:/usr/bin TERM=vt100"; do
   n=$((n + 1))
-  env $envs "$ZETT" run "$D/tamano.titan" < /dev/null > "$tmp/v$n" 2>&1
+  env $envs "$TITAN" run "$D/tamano.titan" < /dev/null > "$tmp/v$n" 2>&1
   env $envs "$tmp/tamano" < /dev/null > "$tmp/n$n" 2>&1
   check "size con $envs" "$tmp/v$n" "$tmp/n$n"
 done
 # Dentro de una pseudoterminal de 33 x 77
-TERM=xterm python3 "$D/../progress/pty_run.py" 33 77 "$ZETT" run "$D/tamano.titan" > "$tmp/vp"
+TERM=xterm python3 "$D/../progress/pty_run.py" 33 77 "$TITAN" run --tty "$D/tamano.titan" > "$tmp/vp"
 TERM=xterm python3 "$D/../progress/pty_run.py" 33 77 "$tmp/tamano" > "$tmp/np"
 check "size en una terminal" "$tmp/vp" "$tmp/np"
-# Teclas en modo crudo (y la configuración de la terminal antes y después)
+# Teclas en modo crudo (y la configuración de la terminal antes y después).
+# Con el lanzador actual (`titan run`) estas dos pruebas dan DIFERENCIA y no es
+# fallo de std::term: el hijo recibe /dev/null como entrada y su salida se
+# captura hasta el final (native/std_process.titan:1475, :1508 y :1584), así que
+# no ve las teclas y el guion de pty_keys.py se desincroniza. El lado nativo lee
+# las 40 teclas bien. Ver native/term/NOTAS.md.
 S="t $(cat "$D/teclas_pasos.txt") s:0.5 t"
-TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$ZETT" run "$D/teclas.titan" > "$tmp/vk"
+TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$TITAN" run --tty "$D/teclas.titan" > "$tmp/vk"
 TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$tmp/teclas" > "$tmp/nk"
 check "read_key en modo crudo" "$tmp/vk" "$tmp/nk"
 # Plazos, SIGWINCH y modo normal
 S="s:0.8 r:40:100 s:0.5 k:61620a s:0.5 k:0a s:0.3 t"
-TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$ZETT" run "$D/teclas_plazos.titan" > "$tmp/vt"
+TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$TITAN" run --tty "$D/teclas_plazos.titan" > "$tmp/vt"
 TERM=xterm python3 "$D/pty_keys.py" 24 80 "$S" "$tmp/teclas_plazos" > "$tmp/nt"
 check "plazos, cambio de tamaño y modo normal" "$tmp/vt" "$tmp/nt"
 # NO_COLOR (memorizado la primera vez que se escribe un color)
-NO_COLOR=1 "$ZETT" run "$ROOT/selfhost/tests/native/term_std.titan" > "$tmp/vc" 2>&1
-"$ZETT" run build.titan "$ROOT/selfhost/tests/native/term_std.titan" "$tmp/term_std" > /dev/null 2>&1
+NO_COLOR=1 "$TITAN" run "$ROOT/selfhost/tests/native/term_std.titan" > "$tmp/vc" 2>&1
+"$TITAN" compile "$ROOT/selfhost/tests/native/term_std.titan" -o "$tmp/term_std" > /dev/null 2>&1
 NO_COLOR=1 "$tmp/term_std" > "$tmp/nc" 2>&1
 check "NO_COLOR" "$tmp/vc" "$tmp/nc"
 echo "pruebas: $((ok + bad))  iguales: $ok  distintas: $bad"

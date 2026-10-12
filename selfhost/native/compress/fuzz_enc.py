@@ -3,7 +3,7 @@
 
   python3 fuzz_enc.py DIR SEMILLA N [BIN_NATIVO]
 
-Genera N casos "G|Z|D NIVEL HEX", los pasa por la VM de Rust (zett run
+Genera N casos "G|Z|D NIVEL HEX", los pasa por la VM de bytecode del port (titan build + titan exec
 prueba.titan) y, si se da, por el binario nativo compilado desde Titan.
 Compara todo contra el modelo deflate_ref.py (port literal de miniz_oxide).
 """
@@ -11,6 +11,9 @@ import os
 import random
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, AQUI)
@@ -97,9 +100,8 @@ def main():
     salidas = {}
     env = dict(os.environ)
     env.pop("GITHUB_ACTIONS", None)
-    zett = os.environ.get("ZETT", os.path.expanduser("~/.local/bin/zett"))
-    salidas["vm"] = subprocess.run([zett, "run", os.path.join(AQUI, "prueba.titan"), ruta],
-                                   capture_output=True, text=True, env=env).stdout.splitlines()
+    salidas["vm"] = vm_run(__file__, "prueba.titan", ruta,
+                           capture_output=True, text=True, env=env).stdout.splitlines()
     if nativo:
         salidas["nativo"] = subprocess.run([nativo, ruta], capture_output=True,
                                            text=True).stdout.splitlines()

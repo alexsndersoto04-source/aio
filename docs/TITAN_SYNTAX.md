@@ -844,7 +844,7 @@ let n = std::collections::length(xs)
 ```
 
 Consultar `selfhost/natives.titan` para el registro
-completo (812 funciones nativas) y [`STDLIB.md`](STDLIB.md).
+completo (813 funciones nativas) y [`STDLIB.md`](STDLIB.md).
 
 ---
 

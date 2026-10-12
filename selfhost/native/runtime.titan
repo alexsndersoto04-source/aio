@@ -158,6 +158,7 @@ import image::std_image_webp_write
 import image::std_image_api
 import image::std_image_ops
 import image::std_image_codec
+import sys_arm32
 import sys_arm64
 import sys_bare
 //
@@ -2362,16 +2363,53 @@ fn std__env__current_dir() -> any {
     dr_lossy(rt_getcwd())
 }
 
-// argv y el entorno están en la pila inicial del proceso:
-// [argc][argv0]...[NULL][env0]...[NULL]
+// ------------------------------------------------- pila inicial y punteros
+// El núcleo deja argc, argv y el entorno en la pila inicial del proceso,
+// [argc][argv0]...[NULL][env0]...[NULL], y las listas de punteros que se le
+// pasan a execve (argv, envp) se escriben igual. Un puntero ocupa 8 bytes en
+// x86-64 y ARM64 y 4 en ARM de 32 bits, y `argc` es una palabra del tamaño de
+// un puntero según la ABI. Estas tres funciones son las únicas que lo saben.
+fn rt_psize() -> int {
+    if std::raw::arch() == 2 {
+        return 4
+    }
+    8
+}
+
+// El puntero guardado en `p`.
+fn rt_pget(p: int) -> int {
+    if rt_psize() == 4 {
+        return std::raw::load8(p) + 256 * std::raw::load8(p + 1) + 65536 * std::raw::load8(p + 2) + 16777216 * std::raw::load8(p + 3)
+    }
+    std::raw::load(p)
+}
+
+// Guarda el puntero `v` en `p`.
+fn rt_pset(p: int, v: int) {
+    if rt_psize() == 4 {
+        std::raw::store8(p, v & 255)
+        std::raw::store8(p + 1, std::raw::shr(v, 8) & 255)
+        std::raw::store8(p + 2, std::raw::shr(v, 16) & 255)
+        std::raw::store8(p + 3, std::raw::shr(v, 24) & 255)
+    } else {
+        std::raw::store(p, v)
+    }
+}
+
+// Dirección del puntero número `i` de una lista de la pila inicial o de argv
+// (el 0 es `argc`).
+fn rt_pslot(sp: int, i: int) -> int {
+    sp + rt_psize() * i
+}
+
 fn std__env__args() -> any {
     let sp = std::raw::load(std::raw::globals() + 32)
-    let argc = std::raw::load(sp)
+    let argc = rt_pget(sp)
     let out = rt_array_new(argc)
     let data = rt_seq_data(out)
     let mut i = 0
     while i < argc {
-        rt_seq_put(data, i, rt_from_cstr(std::raw::load(sp + 8 + 8 * i)))
+        rt_seq_put(data, i, rt_from_cstr(rt_pget(rt_pslot(sp, 1 + i))))
         i += 1
     }
     out
@@ -2387,7 +2425,8 @@ fn rt_environ() -> int {
         return own
     }
     let sp = std::raw::load(std::raw::globals() + 32)
-    sp + 16 + 8 * std::raw::load(sp)
+    // Tras argv (argc + sus punteros) va su NULL, y después el entorno.
+    rt_pslot(sp, 2 + rt_pget(sp))
 }
 
 // getenv de glibc: puntero al valor de la primera entrada "NOMBRE=...", o 0.
@@ -2400,8 +2439,8 @@ fn rt_getenv(name: any) -> int {
     }
     let pn = std::raw::bits(name) + 16
     let mut e = rt_environ()
-    while std::raw::load(e) != 0 {
-        let entry = std::raw::load(e)
+    while rt_pget(e) != 0 {
+        let entry = rt_pget(e)
         let mut i = 0
         while i < n && std::raw::load8(entry + i) != 0 && std::raw::load8(entry + i) == std::raw::load8(pn + i) {
             i += 1
@@ -2409,7 +2448,7 @@ fn rt_getenv(name: any) -> int {
         if i == n && std::raw::load8(entry + n) == 61 {
             return entry + n + 1
         }
-        e += 8
+        e += rt_psize()
     }
     0
 }

@@ -117,6 +117,7 @@ hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está e
 </code></pre>
 <p>Create and use a project:</p>
 <pre><code class="language-bash">titan new hello
+titan new hello --path /tmp/apps   # el proyecto queda en /tmp/apps/hello
 cd hello
 titan check
 titan run
@@ -157,7 +158,7 @@ version = &quot;0.3.0&quot;
 <p>A dependency entry loads <code>shared/src/lib.titan</code>; <code>import shared::models</code> loads a nested module. Transitive local dependencies are collected, package cycles are detected, and every dependency must have a valid <code>Titan.toml</code> with a semantic version.</p>
 <p><code>Titan.lock</code> is deterministic JSON. It records sorted dependency aliases, versions, and canonical <code>path+...</code> sources. Commands regenerate it from the resolved graph.</p>
 <h2 id="tests">Tests</h2>
-<p>Every <code>.titan</code> file under <code>tests/</code> is an independent test program with its own <code>fn main()</code>. A successful return is a pass; a compile error, runtime error, failed native assertion, or denied capability is a failure.</p>
+<p>Every <code>.titan</code> file under <code>tests/</code> is an independent test program with its own <code>fn main()</code>. A successful return is a pass; a compile error, a runtime error, a non-zero exit code, or a failed <code>std::testing</code> assertion is a failure.</p>
 <pre><code class="language-titan"><span class="k">import</span> math
 
 <span class="k">fn</span> main() {
@@ -167,6 +168,27 @@ version = &quot;0.3.0&quot;
 <p>Run recursively and deterministically:</p>
 <pre><code class="language-bash">titan test
 </code></pre>
+<pre><code class="language-text">test tests/math.titan ... ok
+
+test result: ok. 1 passed; 0 failed
+</code></pre>
+<p>Two rules that follow from "every file is a program":</p>
+<ul>
+<li>A file with <strong>no <code>fn main()</code></strong> is not a test — it is an auxiliary module meant to be imported by
+  the others. <code>titan test</code> reports it as <code>skipped (no entry point 'main'; auxiliary module)</code> and it
+  does not count as a failure; the summary then adds <code>; N skipped</code>.</li>
+<li>A test may import <strong>both</strong> the project's <code>src/</code> modules and its siblings in <code>tests/</code>. Both
+  directories are import roots, and the most specific one containing the importing file wins: from
+  <code>tests/math.titan</code>, <code>import util</code> resolves to <code>tests/util.titan</code> if it exists and to
+  <code>src/util.titan</code> otherwise. Neither root lets an import escape the project.</li>
+</ul>
+<p><code>std::testing::assert(condición, mensaje)</code> and <code>std::testing::assert_eq(izq, der, mensaje)</code> abort the
+program with a runtime error that names the values, so the failing test reports which assertion
+broke:</p>
+<pre><code class="language-text">test tests/math.titan ... FAILED
+  RUNTIME ERROR: native function 'std::testing::assert_eq' failed: assertion failed: double should multiply by two; left=21, right=42
+</code></pre>
+<p><code>titan test</code> exits 0 only when no test failed.</p>
 <h2 id="current-namespace-rule">Current namespace rule</h2>
 <p>Loaded declarations currently share the executable module namespace. Duplicate function names are rejected by codegen. Imports control loading and dependency boundaries, but aliases do not yet qualify declarations (<code>shared::function</code>) at runtime. Full symbol namespaces require HIR name resolution and are tracked as a separate language feature; the loader does not pretend they already exist.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/PROJECTS.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">

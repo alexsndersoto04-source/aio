@@ -68,9 +68,14 @@ Antes de enviar un *Pull Request*, ejecuta las pruebas correspondientes a los co
 |---|---|
 | **Compilador (`selfhost/*.titan`)** | `bash selfhost/verify_fixpoint.sh` |
 | **Sistema de tipos y genéricos** | `bash selfhost/tests/genericos/probar.sh ./selfhost/titan` y `bash selfhost/tests/errores/probar.sh ./selfhost/titan` |
-| **Biblioteca estándar (`selfhost/native/`)** | `bash selfhost/native/cobertura.sh -v` |
+| **Cargador, proyectos o `titan test` (`selfhost/loader.titan`, `selfhost/titan.titan`)** | `bash selfhost/tests/test_runner/probar.sh` y `bash selfhost/tests/pkg/registro/estatico.sh` |
+| **Biblioteca estándar (`selfhost/native/`)** | `bash selfhost/native/cobertura.sh -v` (usa `selfhost/titan`; no necesita nada fuera del repositorio) |
 | **Ejemplos o proyectos (`examples/`, `projects/`)** | `./selfhost/titan check <archivo.titan>` |
-| **Sitio web y documentación (`site-src/`, `docs/`)** | `python3 site-src/generar.py claro` |
+| **Sitio web y documentación (`site-src/`, `docs/`)** | `python3 site-src/generar.py claro` y **sube el `site/` regenerado en el mismo commit** (el sitio publicado se genera desde `docs/`, no se edita a mano) |
+
+Los arneses de `selfhost/tests/*/probar.sh` aceptan el compilador de las dos formas: como primer
+argumento (`probar.sh ./selfhost/titan`) o como variable de entorno (`TITAN=./selfhost/titan
+probar.sh`). Sin ninguno usan `selfhost/titan`.
 
 El sistema de integración continua (**GitHub Actions**) ejecuta automáticamente estas validaciones en cada *Pull Request*.
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prueba diferencial de std::archive: genera casos (tar y zip, válidos,
-mutados y cortados), los ejecuta con prueba.titan en la VM (zett run) y
-compilado con el backend nativo, y compara línea a línea.
+mutados y cortados), los ejecuta con prueba.titan en la VM de bytecode del port
+(titan build + titan exec) y compilado con el backend nativo, y compara línea a
+línea.
 
   python3 fuzz.py CASOS SEMILLA BINARIO_NATIVO [tar|zip|todo]
 
@@ -10,6 +11,9 @@ deflate cortado o con referencias a antes del principio, archivo almacenado
 sin bytes suficientes) se comprueban con zlib de Python: solo se aceptan si
 la entrada es realmente así y la VM devolvió datos."""
 import io, os, random, subprocess, sys, tarfile, zipfile, zlib, struct
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 R = None
 
@@ -365,8 +369,8 @@ def main():
         f.write("\n".join(cases) + "\n")
     here = os.path.dirname(os.path.abspath(__file__))
     env = dict(os.environ); env.pop("GITHUB_ACTIONS", None)
-    vm = subprocess.run([os.path.expanduser("~/.local/bin/zett"), "run", os.path.join(here, "prueba.titan"), path],
-                        capture_output=True, text=True, env=env).stdout.splitlines()
+    vm = vm_run(__file__, "prueba.titan", path,
+                capture_output=True, text=True, env=env).stdout.splitlines()
     na = subprocess.run([nat, path], capture_output=True, text=True).stdout.splitlines()
     bad = 0
     acc = 0

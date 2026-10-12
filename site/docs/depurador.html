@@ -121,7 +121,26 @@ hoy todo está en Titan y no hay VM al ejecutar. Lo vigente y verificado está e
 <pre><code class="language-bash">titan debug . --break src/main.titan:4
 titan debug . -b src/main.titan:4 -b src/math.titan:2
 </code></pre>
-<p>At every stop it displays source location, call depth, function identity, locals and operand stack. Interactive commands are <code>continue</code>, <code>step</code>, <code>next</code> (step over), <code>out</code>, <code>print</code>, and <code>quit</code>. With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.</p>
+<p>At every stop it displays source location, call depth, function identity, locals and operand stack:</p>
+<pre><code class="language-text">stopped at /tmp/dep.titan:3:13 [depth 0]
+function: main (id 0)
+locals:
+  [0] = 2
+  [1] = nil
+stack:
+debug [c=continue s=step n=next o=out p=print q=quit]&gt;
+</code></pre>
+<p>The accepted commands are exactly <code>continue</code>/<code>c</code>, <code>step</code>/<code>s</code>, <code>next</code>/<code>n</code> (step over), <code>out</code>/<code>o</code>,
+<code>print</code>/<code>p</code> and <code>quit</code>/<code>q</code>. Two things worth knowing before using it:</p>
+<ul>
+<li><code>print</code> takes <strong>no argument</strong>: it reprints the current locals and operand stack on one line
+  (<code>locals=[Int(2), Nil]</code>). There is no <code>print &lt;expression&gt;</code>; anything after the command makes the
+  line an unknown command.</li>
+<li>Locals are shown <strong>by slot index</strong> (<code>[0]</code>, <code>[1]</code>, …), not by name. The slot order is the
+  declaration order of the function's locals and parameters.</li>
+</ul>
+<p>Anything else answers <code>unknown debugger command</code>, and end of input is treated as <code>quit</code>
+(<code>debuggee terminated: execution terminated by debugger</code>). With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.</p>
 <p>The project loader now assigns canonical source paths to every function and impl method before programs are merged. Paths propagate through named functions and nested closures into <code>.tbc</code>, debugger frames and <code>SourceLine</code> breakpoints. Two files can therefore use the same line number without colliding; the breakpoint matches both canonical source path and one-based line.</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/docs/DEBUGGER.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">
   <div class="foot-cols">

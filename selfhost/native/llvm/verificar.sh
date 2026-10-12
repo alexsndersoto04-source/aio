@@ -5,28 +5,32 @@
 # LLVM IR; LLVM de verdad lo compila y optimiza (clang del sistema; si no,
 # python3 -m ziglang cc; como último recurso, llvmlite + ld, ver llc.py); se
 # ejecuta y se compara salida estándar,
-# salida de errores y código de salida con `zett run` (la VM de Rust).
-# Lo que el backend no admite se cuenta aparte ("no admitido"), nunca como
-# acierto.
+# salida de errores y código de salida con la misma referencia del anfitrión:
+# antes la VM de Rust (`zett run`), ahora el backend propio del port
+# (`titan run`). Lo que el backend no admite se cuenta aparte ("no admitido"),
+# nunca como acierto.
 #
 # Uso: bash selfhost/native/llvm/verificar.sh [archivos...]
 #      (sin archivos: selfhost/tests/native/*.titan)
-# Variables: OPT (por defecto -O2), ZETT, TIMEOUT (segundos por programa; 60).
+# Variables: OPT (por defecto -O2), TITAN, COMPILADOR, TIMEOUT (segundos por programa; 60).
 set -u
-ZETT="${ZETT:-zett}"
 OPT="${OPT:--O2}"
 TIMEOUT="${TIMEOUT:-60}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
+# Sin Rust: el backend LLVM lo recompila titanc3 (el compilador del bootstrap)
+# y la referencia del anfitrión la ejecuta la CLI del port.
+TITAN="${TITAN:-$ROOT/selfhost/titan}"
+COMPILADOR="${COMPILADOR:-$ROOT/selfhost/titanc3}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi
 
-# El compilador LLVM en Titan, compilado a ejecutable por el compilador
-# nativo en Titan (así no hay que pasar por la VM para cada programa).
+# El compilador LLVM en Titan, compilado a ejecutable por el compilador nativo
+# en Titan (así no hay que compilar el compilador para cada programa).
 if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -name '*.titan' -newer selfhost/build_llvm | head -1)" ]; then
   echo "compilando selfhost/build_llvm..."
-  (cd selfhost && "$ZETT" run build.titan build_llvm.titan build_llvm) || exit 1
+  "$COMPILADOR" selfhost/build_llvm.titan selfhost/build_llvm || exit 1
 fi
 
 if command -v clang >/dev/null 2>&1; then
@@ -106,9 +110,9 @@ for f in "${FILES[@]}"; do
       ;;
   esac
   if [ -n "$vm_arg" ]; then
-    run_limited "$tmp/vm.done" "${test_env[@]}" "$ZETT" run "$f" "$vm_arg" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
+    run_limited "$tmp/vm.done" "${test_env[@]}" "$TITAN" run "$f" "$vm_arg" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
   else
-    run_limited "$tmp/vm.done" "${test_env[@]}" "$ZETT" run "$f" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
+    run_limited "$tmp/vm.done" "${test_env[@]}" "$TITAN" run "$f" > "$tmp/vm.out" 2> "$tmp/vm.err"; vm=$?
   fi
   vm_timeout=0
   [ -e "$tmp/vm.done" ] || vm_timeout=1

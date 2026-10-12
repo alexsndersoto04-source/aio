@@ -98,3 +98,12 @@ general (no es determinista ni en Rust).
   normal y NO_COLOR. 11 de 11 iguales byte a byte.
 - `pty_keys.py` teclea en una pseudoterminal: espera "LISTO" y ejecuta pasos
   (esperar, escribir bytes, cambiar el tamaño, anotar termios).
+- Sin el Rust, `bash native/term/verificar.sh` da **11 de 11 iguales** usando
+  `titan run --tty`; ese programa conserva la terminal porque la CLI lo lanza con
+  `std::process::run_inherit` (sin capturar). Con `titan run` a secas las dos
+  pruebas de teclas darían DIFERENCIA: el programa recibe `/dev/null` como entrada
+  y su salida se guarda en un tubo hasta el final (`std::process::run_timeout`,
+  `native/std_process.titan:1475`; `/dev/null` en la 1508 y el tope de 4 MiB en la
+  1584), así que no ve las teclas y el "LISTO" con el que el guion de `pty_keys.py`
+  se sincroniza solo llega al terminar. El ejecutable nativo lee las 40 teclas bien
+  (la prueba de tamaño también pasaba con `run` a secas: `size()` cae a `/dev/tty`).

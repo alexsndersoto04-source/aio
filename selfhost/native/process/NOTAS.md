@@ -1,13 +1,16 @@
 # std::process en Titan — notas de diseño
 
-Código: `selfhost/native/std_process.titan` (22 funciones) y, en
-`runtime.titan`, `rt_environ` / `rt_getenv` (el entorno que ven todos).
+Código: `selfhost/native/std_process.titan` (26 funciones `std__process__*`,
+24 de ellas en la tabla de nativas más dos apoyos internos) y, en
+`runtime.titan`, `rt_environ` / `rt_getenv` (el entorno que ven todos). De las
+24 de la tabla, 23 están aquí y `exec_once` en `std_fs_extra.titan`.
 
 Referencia: `crates/titan_stdlib/src/process_mod.rs` (21 funciones, llamadas
 desde `crates/titan_vm/src/native.rs`) y `run_timeout` de
 `crates/titan_stdlib/src/process.rs` (`CommandSpec::output_timeout`). Rust
 lanza los programas con `std::process::Command`, que en Linux usa
-`posix_spawnp` de glibc.
+`posix_spawnp` de glibc. `run_inherit` no tiene referencia en Rust: es la
+variante sin capturar, como `Command::status()`.
 
 ## Entorno
 
@@ -91,6 +94,21 @@ con el mismo resultado: nadie se bloquea con un tubo lleno.
   a todas, leer sus stderr hasta el final y dar el error de lanzamiento.
 - `run_timeout`: Rust comprueba cada 5 ms (`try_wait`, ¿pasó el plazo?,
   dormir 5 ms). Aquí igual, pero esos 5 ms se pasan leyendo los tubos.
+
+## Sin capturar nada (`run_inherit`)
+
+`std::process::run_inherit(argv)` es la única función de la familia que **no**
+crea tubos: lanza el hijo con los descriptores 0, 1 y 2 del propio proceso
+(`ps_spawn(argv, 0, 1, 2)`), espera y devuelve su código. Sin entrada que
+escribir, sin salida que leer y sin plazo ni tope de 4 MiB. Es lo que hace
+`Command::status()` de Rust, y es lo que necesita un programa que hable con la
+terminal: con `run_timeout`, el hijo recibe `/dev/null` como entrada y su salida
+no sale hasta que termina.
+
+Lo usan `titan run --tty` y `titan exec --tty` (la CLI compila a un temporal y
+lo lanza con esto en vez de capturarlo). Errores y mensajes son los mismos que
+en `run` (prefijo de `spawn error:`, NUL en el argv, argv vacío, cupo de 32
+procesos); un hijo terminado por una señal devuelve -1, como en las demás.
 
 ## Procesos en segundo plano (`spawn`)
 

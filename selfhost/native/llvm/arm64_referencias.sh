@@ -1,20 +1,23 @@
 #!/bin/bash
-# Crea las salidas de referencia con el Zett x86-64 precompilado y actual.
+# Crea las salidas de referencia con el compilador x86-64 de este mismo commit.
 # El job ubuntu-24.04-arm ejecuta después los objetos AArch64 reales y compara
 # contra estas salidas. No compila Titan con Cargo ni emula ARM64.
 #
+# Sin Rust: la referencia la produce el backend nativo del port (`titan run`;
+# antes era `zett run`, la VM de Rust).
+#
 # Uso: bash selfhost/native/llvm/arm64_referencias.sh OBJETOS [archivos...]
 set -u
-ZETT="${ZETT:-zett}"
-ZETT_BIN="$(command -v "$ZETT" 2>/dev/null || true)"
-if [ -z "$ZETT_BIN" ]; then
-  echo "no se encuentra el Zett precompilado: $ZETT" >&2
-  exit 1
-fi
-ZETT_BIN="$(realpath "$ZETT_BIN")"
+TITAN="${TITAN:-}"
 TIMEOUT="${TIMEOUT:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+if [ -z "$TITAN" ]; then TITAN="$ROOT/selfhost/titan"; fi
+if [ ! -x "$TITAN" ]; then
+  echo "no se encuentra la CLI del port: $TITAN (TITAN=/ruta/a/titan)" >&2
+  exit 1
+fi
+TITAN="$(realpath "$TITAN")"
 out="$(realpath -m "$1")"; shift
 cd "$ROOT"
 source "$SCRIPT_DIR/arm64_entorno.sh"
@@ -60,7 +63,7 @@ for f in "${FILES[@]}"; do
   esac
   prefix="$expected/$base"
   run_limited "$tmp/$base.done" /usr/bin/env -i "${ARM64_TEST_ENV[@]}" \
-    "$ZETT_BIN" run "${args[@]}" > "$prefix.stdout" 2> "$prefix.stderr"
+    "$TITAN" run "${args[@]}" > "$prefix.stdout" 2> "$prefix.stderr"
   rc=$?
   if [ ! -e "$tmp/$base.done" ]; then
     timed_out=$((timed_out + 1))
@@ -72,5 +75,5 @@ for f in "${FILES[@]}"; do
   made=$((made + 1))
 done
 expected_count=${#FILES[@]}
-echo "referencias VM x86-64: $made  tiempos agotados: $timed_out"
+echo "referencias x86-64 (backend nativo del port): $made  tiempos agotados: $timed_out"
 [ "$timed_out" -eq 0 ] && [ "$made" -eq "$expected_count" ]

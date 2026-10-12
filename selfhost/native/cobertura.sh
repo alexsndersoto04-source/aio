@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cobertura de la biblioteca estándar en el runtime nativo (fase 6).
-# Compara la lista completa de nativas (selfhost/natives.titan, 816) con las
+# Compara la lista completa de nativas (selfhost/natives.titan, 813) con las
 # funciones `std__modulo__nombre` alcanzables desde los imports de
 # native/runtime.titan. Uso: bash selfhost/native/cobertura.sh [-v]
 #   -v: lista también las que faltan, por módulo.
@@ -8,11 +8,29 @@
 # selfhost/revisar_runtime.titan (cargador + typechecker de Titan sobre
 # native/runtime.titan). Si hay errores, el script termina con código 3 y no
 # imprime ninguna cifra. SIN_REVISION=1 se salta la revisión (solo para
-# depurar; esa cifra no se debe publicar). ZETT=/ruta/al/zett elige el binario.
+# depurar; esa cifra no se debe publicar).
+#
+# Con qué ejecutable se revisa: por defecto la CLI nativa selfhost/titan, que
+# construye `bash selfhost/bootstrap.sh` (el `zett` de Rust ya no está en el
+# repositorio, así que no se puede dar por sentado en el PATH). Se puede elegir
+# otro con TITAN=/ruta/al/ejecutable; ZETT=… sigue aceptándose por compatibilidad
+# con los guiones y la documentación que todavía usan ese nombre.
 set -u
 cd "$(dirname "$0")/.."
+REVISOR="${TITAN:-${ZETT:-}}"
+if [ -z "$REVISOR" ]; then
+  if [ -x ./titan ]; then
+    REVISOR=./titan
+  else
+    echo "cobertura: falta selfhost/titan: ejecuta antes bash selfhost/bootstrap.sh" >&2
+    echo "           (o indica otro ejecutable con TITAN=/ruta/al/ejecutable)" >&2
+    exit 2
+  fi
+fi
 if [ "${SIN_REVISION:-0}" != "1" ]; then
-  if ! out=$("${ZETT:-zett}" run revisar_runtime.titan 2>&1) || [ "$out" != "ok" ]; then
+  # La ruta del runtime se pasa explícita: revisar_runtime.titan ya no puede
+  # deducirla de ar_program() (en un ejecutable nativo eso es el binario temporal).
+  if ! out=$("$REVISOR" run revisar_runtime.titan "$PWD/native/runtime.titan" 2>&1) || [ "$out" != "ok" ]; then
     echo "cobertura: el runtime nativo NO compila; no se cuenta nada:" >&2
     echo "$out" | head -40 >&2
     exit 3

@@ -4,20 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Titan — lenguaje de programación</title>
-<meta name="description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
+<meta name="description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 813 funciones.">
 <meta name="google-site-verification" content="mrOC8SmbwJeez9nAzPspz_owzzfuE1442GYonjmY7-A" />
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="keywords" content="Titan, Zett, lenguaje de programación, compilador nativo, Linux x86-64, Linux ARM64, Termux, WebAssembly, LLVM, programación en español">
 <link rel="canonical" href="https://alexsndersoto04-source.github.io/aio/">
 <meta property="og:title" content="Titan — lenguaje de programación">
-<meta property="og:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
+<meta property="og:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 813 funciones.">
 <meta property="og:url" content="https://alexsndersoto04-source.github.io/aio/">
 <meta property="og:site_name" content="Titan — Lenguaje de Programación">
 <meta property="og:locale" content="es_ES">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Titan — lenguaje de programación">
-<meta name="twitter:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.">
+<meta name="twitter:description" content="Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 813 funciones.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 <script type="application/ld+json">
@@ -36,7 +36,7 @@
     "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-x86_64.tar.gz",
     "https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz"
   ],
-  "description": "Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones."
+  "description": "Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 813 funciones."
 }
 </script>
 </head>
@@ -221,8 +221,8 @@ sha256 = b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79</code>
     <div><b class="cn"><code>titan run</code></b><span>Compila a un ejecutable temporal y lo ejecuta.</span></div>
     <div><b class="cn"><code>titan compile</code></b><span>Genera un ejecutable; <code>--target x86_64|aarch64</code>.</span></div>
     <div><b class="cn"><code>titan wasm</code></b><span>Genera un módulo WebAssembly con mapas de fuente.</span></div>
-    <div><b class="cn"><code>titan test</code></b><span>Compila y ejecuta los archivos de <code>tests/</code>.</span></div>
-    <div><b class="cn"><code>titan repl</code></b><span>Intérprete interactivo.</span></div>
+    <div><b class="cn"><code>titan test</code></b><span>Compila y ejecuta los archivos de <code>tests/</code>; los auxiliares sin <code>main</code> se omiten.</span></div>
+    <div><b class="cn"><code>titan repl</code></b><span>Línea a línea: cada línea es un programa independiente, no guarda estado.</span></div>
     <div><b class="cn"><code>titan debug</code></b><span>Depurador con puntos de interrupción por <code>archivo:línea</code>.</span></div>
     <div><b class="cn"><code>titan lsp</code> · <code>dap</code></b><span>Servidores de lenguaje y de depuración para editores.</span></div>
     <div><b class="cn"><code>zett add</code> · <code>fetch</code></b><span>Zett, el gestor de paquetes: dependencias con SHA-256 y firma Ed25519.</span></div>

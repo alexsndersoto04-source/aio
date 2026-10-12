@@ -10,17 +10,22 @@ fn cl_env(name: string) -> string {
     v
 }
 
-// Arquitectura de la máquina ("aarch64" o "x86_64") a partir de dos datos: la
-// máquina del ejecutable que corre (e_machine del ELF: 183 = AArch64,
-// 62 = x86-64; -1 si no se pudo leer) y la salida de `uname -m`. Un Termux de
-// 32 bits sobre un núcleo de 64 bits (p. ej. un Redmi 9C) contesta `armv8l` o
-// `armv7l` aunque los binarios aarch64 sí corren ahí: en ese caso manda el ELF
-// del propio ejecutable ("si este binario corre, otro de su arquitectura
-// corre también"). Sin ELF, los nombres armv* se toman por aarch64: no existe
-// un Titan de 32 bits, así que quien ejecuta el compilador en ARM corre 64.
+// Arquitectura de la máquina ("aarch64", "armv7" o "x86_64") a partir de dos
+// datos: la máquina del ejecutable que corre (e_machine del ELF: 183 =
+// AArch64, 40 = ARM de 32 bits, 62 = x86-64; -1 si no se pudo leer) y la
+// salida de `uname -m`. Un Termux de 32 bits sobre un núcleo de 64 bits
+// (p. ej. un Redmi 9C) contesta `armv8l` o `armv7l` aunque los binarios
+// aarch64 sí corren ahí: en ese caso manda el ELF del propio ejecutable ("si
+// este binario corre, otro de su arquitectura corre también"). Sin ELF, los
+// nombres armv* se toman por aarch64 (es lo que hacía esta función cuando
+// solo había binarios de 64 bits), salvo `armv6l`, que en la práctica es un
+// núcleo de 32 bits: ahí se contesta armv7.
 fn cl_arch_from(machine: int, uname_out: string) -> string {
     if machine == 183 {
         return "aarch64"
+    }
+    if machine == 40 {
+        return "armv7"
     }
     if machine == 62 {
         return "x86_64"
@@ -28,7 +33,10 @@ fn cl_arch_from(machine: int, uname_out: string) -> string {
     if std::text::starts_with(uname_out, "aarch64") || std::text::starts_with(uname_out, "arm64") {
         return "aarch64"
     }
-    if std::text::starts_with(uname_out, "armv8") || std::text::starts_with(uname_out, "armv7") || std::text::starts_with(uname_out, "armv6") {
+    if std::text::starts_with(uname_out, "armv6") {
+        return "armv7"
+    }
+    if std::text::starts_with(uname_out, "armv8") || std::text::starts_with(uname_out, "armv7") {
         return "aarch64"
     }
     "x86_64"

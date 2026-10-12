@@ -158,7 +158,7 @@ Linux, sin libc. En ARM64, <code>native/sys_arm64.titan</code> traduce las llama
 <h2 id="biblioteca-estandar">Biblioteca estándar</h2>
 <p><code>natives.titan</code> lista las firmas de las funciones <code>std::*</code> (el typechecker las consulta) y <code>codegen_tables.titan</code> dice cuáles
 se convierten en instrucciones propias del bytecode. El cuerpo de cada función está en <code>selfhost/native/</code> (SQLite, TLS,
-regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 812 funciones en 73 espacios de nombres; la medición
+regex, compresión, audio, ONNX, tokenizadores, imágenes, PDF…). Hoy son 813 funciones en 73 espacios de nombres; la medición
 se repite con <code>bash selfhost/native/cobertura.sh -v</code>. Ver <a href="stdlib.html">STDLIB.md</a>.</p>
 <h2 id="herramientas">Herramientas</h2>
 <p><code>titan.titan</code> es la CLI (<code>new</code>, <code>check</code>, <code>run</code>, <code>build</code>, <code>exec</code>, <code>compile</code>, <code>wasm</code>, <code>test</code>, <code>repl</code>, <code>debug</code>, <code>add</code>, <code>fetch</code>,

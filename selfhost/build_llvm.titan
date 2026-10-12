@@ -1,6 +1,6 @@
 // Compilador de Titan con el backend LLVM.
 //
-// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64|aarch64|aarch64-none]
+// Uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64|aarch64|aarch64-none|armv7]
 //
 // Igual que build.titan (mismo cargador, typechecker, generador y runtime,
 // todo escrito en Titan), pero en vez de código máquina escribe LLVM IR
@@ -34,8 +34,8 @@ fn main() {
     if len(args) < 2 {
         print("uso: titan run selfhost/build_llvm.titan PROGRAMA.titan SALIDA.ll [x86_64]")
         print("     titan run selfhost/build_llvm.titan --lote DIRECTORIO PROGRAMA.titan...")
-        print("     (--lote-aarch64: lo mismo para ARM64; --lote-bare: ARM64 sin sistema")
-        print("      operativo, con DIRECTORIO/bare.ld para enlazar)")
+        print("     (--lote-aarch64: lo mismo para ARM64; --lote-armv7: ARM 32 bits;")
+        print("      --lote-bare: ARM64 sin sistema operativo, con DIRECTORIO/bare.ld para enlazar)")
         return
     }
     let here = std::path::parent(std::path::canonical(ar_program()))
@@ -43,7 +43,7 @@ fn main() {
     let gr = match runtime_graph(runtime) {
         Result::Ok(g) => g,
         Result::Err(message) => {
-            let is_batch = args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-bare"
+            let is_batch = args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-armv7" || args[0] == "--lote-bare"
             if is_batch {
                 let error = "error: " + message + "\n"
                 let mut i = 2
@@ -60,10 +60,13 @@ fn main() {
     }
     // Lote: el runtime se revisa una sola vez; cada PROGRAMA.titan da
     // DIRECTORIO/PROGRAMA.ll, o DIRECTORIO/PROGRAMA.err con el error.
-    if args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-bare" {
+    if args[0] == "--lote" || args[0] == "--lote-aarch64" || args[0] == "--lote-armv7" || args[0] == "--lote-bare" {
         let mut lote_target = "x86_64"
         if args[0] == "--lote-aarch64" {
             lote_target = "aarch64"
+        }
+        if args[0] == "--lote-armv7" {
+            lote_target = "armv7"
         }
         if args[0] == "--lote-bare" {
             lote_target = "aarch64-none"

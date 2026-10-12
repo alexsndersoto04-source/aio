@@ -1,10 +1,13 @@
-import subprocess, sys
+import os, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 bases = [r'[a-b]', 'a', r'\w', r'\d', r'\pL', '.', '(?s:.)', '(a)', '(?:ab|cd)', '[^a]', r'\b', '(?i)k', 'é', '[α-ω]', r'\W',
  r'(?-u:\w)', r'\p{Greek}', r'\S', 'a?', 'a*', '(?:a|b|c)+', 'x{2,5}', 'foo|bar|baz', r'\p{Han}', r'[\x{10000}-\x{10FFFF}]',
  '^a', 'a$', '(?m)^a$', r'\w+?', '(?U)a*', '[a-z]{0,3}', r'\p{any}', r'\w\d', '[[:alpha:]]', 'ab|ab', r'(?i)\w', r'\p{Lu}',
  'abc|abd|xyz', r'(?:(a)|b)', r'[\x{80}-\x{7FF}]', r'[\x{800}-\x{FFFF}]', r'(?i)[a-zé]', r'\B', r'(?-u)\b', 'a|', r'(?s).*?']
 open('b.txt','w').write('\n'.join(b.encode().hex() for b in bases)+'\n')
-r = subprocess.run(['zett','run','umbral.titan','b.txt'],capture_output=True,text=True)
+r = vm_run(__file__, 'umbral.titan', 'b.txt', capture_output=True, text=True)
 ths = r.stdout.split()
 assert len(ths)==len(bases), r.stderr
 pats=[]

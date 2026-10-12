@@ -88,14 +88,15 @@ fn ps_env_own() {
         return
     }
     let e = rt_environ()
+    let paso = rt_psize()
     let mut n = 0
-    while std::raw::load(e + 8 * n) != 0 {
+    while rt_pget(e + paso * n) != 0 {
         n += 1
     }
     let cap = n + 16
-    let own = rt_alloc(8 * cap + 8)
-    rt_copy(own, e, 8 * n)
-    std::raw::store(own + 8 * n, 0)
+    let own = rt_alloc(paso * cap + paso)
+    rt_copy(own, e, paso * n)
+    rt_pset(own + paso * n, 0)
     std::raw::store(g, own)
     std::raw::store(g + 8, n)
     std::raw::store(g + 16, cap)
@@ -148,10 +149,11 @@ fn std__process__env_set(name: any, value: any) -> any {
     let own = std::raw::load(g)
     let count = std::raw::load(g + 8)
     let pn = std::raw::bits(name) + 16
+    let paso = rt_psize()
     let mut i = 0
     while i < count {
-        if ps_env_match(std::raw::load(own + 8 * i), pn, n) {
-            std::raw::store(own + 8 * i, entry)
+        if ps_env_match(rt_pget(own + paso * i), pn, n) {
+            rt_pset(own + paso * i, entry)
             return nil
         }
         i += 1
@@ -159,14 +161,14 @@ fn std__process__env_set(name: any, value: any) -> any {
     let cap = std::raw::load(g + 16)
     let mut arr = own
     if count == cap {
-        arr = rt_alloc(16 * cap + 8)
-        rt_copy(arr, own, 8 * count)
+        arr = rt_alloc(2 * paso * cap + paso)
+        rt_copy(arr, own, paso * count)
         rt_free_block(own)
         std::raw::store(g, arr)
         std::raw::store(g + 16, 2 * cap)
     }
-    std::raw::store(arr + 8 * count, entry)
-    std::raw::store(arr + 8 * count + 8, 0)
+    rt_pset(arr + paso * count, entry)
+    rt_pset(arr + paso * count + paso, 0)
     std::raw::store(g + 8, count + 1)
     nil
 }
@@ -181,17 +183,18 @@ fn std__process__env_unset(name: any) -> any {
     let count = std::raw::load(g + 8)
     let pn = std::raw::bits(name) + 16
     let n = rt_slen(name)
+    let paso = rt_psize()
     let mut kept = 0
     let mut i = 0
     while i < count {
-        let entry = std::raw::load(own + 8 * i)
+        let entry = rt_pget(own + paso * i)
         if !ps_env_match(entry, pn, n) {
-            std::raw::store(own + 8 * kept, entry)
+            rt_pset(own + paso * kept, entry)
             kept += 1
         }
         i += 1
     }
-    std::raw::store(own + 8 * kept, 0)
+    rt_pset(own + paso * kept, 0)
     std::raw::store(g + 8, kept)
     nil
 }
@@ -201,16 +204,17 @@ fn std__process__env_unset(name: any) -> any {
 // bug 18) también las que no son UTF-8 válido. En el orden del entorno.
 fn std__process__env_vars() -> any {
     let e = rt_environ()
+    let paso = rt_psize()
     let mut total = 0
     let mut k = 0
-    while std::raw::load(e + 8 * k) != 0 {
+    while rt_pget(e + paso * k) != 0 {
         k += 1
     }
     let out = rt_array_new(k)
     let data = rt_seq_data(out)
     let mut i = 0
     while i < k {
-        let entry = std::raw::load(e + 8 * i)
+        let entry = rt_pget(e + paso * i)
         let mut len = 0
         while std::raw::load8(entry + len) != 0 {
             len += 1
@@ -440,7 +444,7 @@ fn ps_dup_to(src: int, dst: int) {
 // a la siguiente; cualquier otro error para. Devuelve el errno final (EACCES
 // si alguna entrada lo dio).
 fn ps_execvp(cargv: int) -> int {
-    let file = std::raw::load(cargv)
+    let file = rt_pget(cargv)
     let envp = rt_environ()
     let flen = ps_strlen(file)
     if flen == 0 {
@@ -560,13 +564,13 @@ fn ps_exit_code(status: int) -> int {
 // o -errno (el del exec que falló: posix_spawnp lo devuelve igual).
 fn ps_spawn(argv: any, fin: int, fout: int, ferr: int) -> int {
     let n = rt_seq_len(argv)
-    let cargv = rt_alloc(8 * n + 8)
+    let cargv = rt_alloc(rt_psize() * n + rt_psize())
     let mut i = 0
     while i < n {
-        std::raw::store(cargv + 8 * i, rt_cstr(rt_seq_get(argv, i)))
+        rt_pset(cargv + rt_psize() * i, rt_cstr(rt_seq_get(argv, i)))
         i += 1
     }
-    std::raw::store(cargv + 8 * n, 0)
+    rt_pset(cargv + rt_psize() * n, 0)
     let rep = ps_pipe()
     let mut pid = rep
     if rep >= 0 {
@@ -604,7 +608,7 @@ fn ps_spawn(argv: any, fin: int, fout: int, ferr: int) -> int {
     }
     i = 0
     while i < n {
-        rt_free_block(std::raw::load(cargv + 8 * i))
+        rt_free_block(rt_pget(cargv + rt_psize() * i))
         i += 1
     }
     rt_free_block(cargv)
@@ -1107,6 +1111,40 @@ fn ps_execute(fname: string, argv: any, input: any) -> any {
         rt_native_fail(fname, "captured process output bytes exceeds limit 4194304")
     }
     ps_output(dr_lossy(out), dr_lossy(err), ps_exit_code(status), ps_ms_since(started))
+}
+
+// std::process::run_inherit: ejecuta `argv` dejándole los descriptores 0, 1 y 2
+// del propio proceso —sin capturar nada, sin tope de salida y sin plazo— y
+// devuelve el código de salida. Es lo que hace `Command::status()` de Rust.
+// Lo usa la CLI (`titan run --tty`, `titan exec --tty`) para que el programa
+// pueda hablar con la terminal: con la captura normal (`run_timeout`) recibe
+// /dev/null como entrada y su salida no sale hasta que termina.
+fn std__process__run_inherit(argv: any) -> any {
+    let fname = "std::process::run_inherit"
+    rt_expect_array(argv, fname)
+    let n = rt_seq_len(argv)
+    if n == 0 {
+        rt_native_fail(fname, "shell syntax error: empty command")
+    }
+    let mut i = 0
+    while i < n {
+        rt_expect_str(rt_seq_get(argv, i), fname)
+        i += 1
+    }
+    ps_reserve(fname, 1, "process count exceeds limit 32")
+    if ps_argv_nul(argv) {
+        ps_fail_unreserve(fname, 1, "spawn error: nul byte found in provided data")
+    }
+    let pid = ps_spawn(argv, 0, 1, 2)
+    if pid < 0 {
+        ps_fail_unreserve(fname, 1, rt_concat("spawn error: ", rt_os_error(0 - pid)))
+    }
+    let status = ps_waitpid(pid, 0)
+    ps_unreserve(1)
+    if status < 0 {
+        rt_native_fail(fname, rt_concat("process io error: ", rt_os_error(0 - status)))
+    }
+    ps_exit_code(status)
 }
 
 // Ejecuta un proceso con entrada binaria, salida binaria y plazo total. Es un

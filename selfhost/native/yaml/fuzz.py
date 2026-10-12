@@ -2,11 +2,15 @@
 """Prueba diferencial de std::yaml (parse y parse_multi): genera textos YAML
 (válidos, mutados, sopa de caracteres especiales, documentos grandes para
 los trozos de 16 KB del lector), los ejecuta con prueba.titan en la VM
-(zett run) y compilado con el backend nativo, y compara línea a línea.
+(titan build + titan exec, la VM de bytecode del propio port) y compilado con
+el backend nativo, y compara línea a línea.
 
   python3 fuzz.py CASOS SEMILLA BINARIO_NATIVO
 """
 import os, random, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 R = None
 
@@ -214,8 +218,8 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     env = dict(os.environ)
     env.pop("GITHUB_ACTIONS", None)
-    vm = subprocess.run([os.path.expanduser("~/.local/bin/zett"), "run", os.path.join(here, "prueba.titan"), path],
-                        capture_output=True, text=True, env=env).stdout.splitlines()
+    vm = vm_run(__file__, "prueba.titan", path,
+                capture_output=True, text=True, env=env).stdout.splitlines()
     na = subprocess.run([nat, path], capture_output=True, text=True).stdout.splitlines()
     bad = 0
     for i, c in enumerate(cases):

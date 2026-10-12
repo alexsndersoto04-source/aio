@@ -29,6 +29,28 @@ titan debug . --break src/main.titan:4
 titan debug . -b src/main.titan:4 -b src/math.titan:2
 ```
 
-At every stop it displays source location, call depth, function identity, locals and operand stack. Interactive commands are `continue`, `step`, `next` (step over), `out`, `print`, and `quit`. With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.
+At every stop it displays source location, call depth, function identity, locals and operand stack:
+
+```text
+stopped at /tmp/dep.titan:3:13 [depth 0]
+function: main (id 0)
+locals:
+  [0] = 2
+  [1] = nil
+stack:
+debug [c=continue s=step n=next o=out p=print q=quit]>
+```
+
+The accepted commands are exactly `continue`/`c`, `step`/`s`, `next`/`n` (step over), `out`/`o`,
+`print`/`p` and `quit`/`q`. Two things worth knowing before using it:
+
+- `print` takes **no argument**: it reprints the current locals and operand stack on one line
+  (`locals=[Int(2), Nil]`). There is no `print <expression>`; anything after the command makes the
+  line an unknown command.
+- Locals are shown **by slot index** (`[0]`, `[1]`, …), not by name. The slot order is the
+  declaration order of the function's locals and parameters.
+
+Anything else answers `unknown debugger command`, and end of input is treated as `quit`
+(`debuggee terminated: execution terminated by debugger`). With no explicit breakpoint it stops at the entry instruction, making every program immediately debuggable.
 
 The project loader now assigns canonical source paths to every function and impl method before programs are merged. Paths propagate through named functions and nested closures into `.tbc`, debugger frames and `SourceLine` breakpoints. Two files can therefore use the same line number without colliding; the breakpoint matches both canonical source path and one-based line.

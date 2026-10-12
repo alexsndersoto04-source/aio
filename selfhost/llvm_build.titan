@@ -103,7 +103,27 @@ fn lb_link(cc: array, text: string, target: string, arch: string, host: string) 
     let ll = std::path::join(tmp, "titan-ll-{pid}-{now}.ll")
     std::fs::write_text(ll, text)
     let mut flags = ["-O2", "-nostdlib", "-static", "-fno-pie", "-no-pie", "-Wl,-e,_start"]
-    if lb_is_zig(cc) {
+    if arch == "armv7" {
+        // ARM 32 bits: el archivo .ll lleva su propia tripleta
+        // (armv7-unknown-linux-gnueabihf), así que al conductor se le dice lo
+        // mismo para que no avise; el enlazador es lld (el de ARM 32 no es el
+        // de por defecto de todas las distribuciones). Los ayudantes que en 32
+        // bits no son instrucciones (división de 64 bits, double <-> entero de
+        // 64) los escribe el propio backend en el .ll: no hace falta libc ni
+        // compiler-rt, que es justo lo que aquí no hay.
+        // Sin NEON: así el ejecutable corre en cualquier ARMv6/v7 (NEON no es
+        // obligatorio en ARMv7) y también en el emulador ARM de este
+        // repositorio (selfhost/native/arm32/correr.py), que implementa VFP
+        // pero no NEON. Lo que se pierde en vectorización se recupera en
+        // alcance; para una máquina concreta se puede compilar a mano con
+        // TITAN_LL_OUT guardando el .ll y quitando estas dos banderas.
+        flags = std::array::concat(["-Wno-override-module", "-fuse-ld=lld", "-fno-vectorize", "-fno-slp-vectorize"], flags)
+        if lb_is_zig(cc) {
+            flags = std::array::concat(["-target", "arm-linux-none"], flags)
+        } else {
+            flags = std::array::concat(["--target=armv7-linux-gnueabihf"], flags)
+        }
+    } else if lb_is_zig(cc) {
         flags = std::array::concat(["-target", arch + "-linux-none"], flags)
     } else {
         flags = std::array::concat(["--target=" + arch + "-linux-gnu"], flags)
@@ -115,6 +135,13 @@ fn lb_link(cc: array, text: string, target: string, arch: string, host: string) 
     let ran = std::try::catch(|| {
         std::process::run_timeout(cc[0], std::array::concat(std::array::slice(cc, 1, len(cc)), flags), 1800000)
     })
+    // Con TITAN_LL_OUT se guarda una copia del .ll: sirve para mirar lo que
+    // generó el backend (y para repetir la compilación a mano con otras
+    // banderas de LLVM).
+    let guardar = cl_env("TITAN_LL_OUT")
+    if guardar != "" {
+        std::fs::write_text(guardar, text)
+    }
     std::fs::remove_file(ll)
     match ran {
         Result::Ok(m) => {

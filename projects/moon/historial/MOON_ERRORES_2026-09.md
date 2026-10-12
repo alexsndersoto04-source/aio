@@ -8,7 +8,8 @@
 > *frontend-build*, Termux AArch64 y Termux ARM 32-bit). El backend arranca,
 > aplica las 15 migraciones y atiende todo el recorrido de la aplicación,
 > incluido el WebSocket en vivo. Detalle del recorrido y de los arreglos:
-> [`INFORME_PROYECTOS`](../../../docs/historico/INFORME_PROYECTOS_2026-09.md) §4.3 y §7.
+> `INFORME_PROYECTOS_2026-09` §4.3 y §7 (informe de la etapa en Rust; ya no está en el
+> repositorio: la carpeta `docs/historico/` se retiró y este archivo es la referencia que queda).
 
 `zett check projects/moon/src/main.titan` **pasa**. Evidencia: workflow
 *Moon checks*, job `titan-check`, paso «Compilar el backend Titan (zett check)»

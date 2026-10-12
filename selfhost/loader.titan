@@ -81,6 +81,24 @@ fn ld_load_project(requested: string) -> Result {
         deps = ld_collect_dependencies(root, manifest)?
     }
     let mut allowed = [source_root]
+    // Un proyecto también puede tener módulos bajo `tests/`: `titan test` ejecuta cada
+    // archivo de ahí, y esas pruebas necesitan importar tanto lo que hay en `src/` como
+    // auxiliares suyos (`tests/util.titan`). Sin esta raíz, un archivo de `tests/` no
+    // podía importar a sus hermanos: la única raíz permitida era `src/`. Las dos raíces
+    // siguen dentro del proyecto, así que el límite de seguridad no se relaja, y al
+    // resolver se elige la raíz más específica que contiene al archivo que importa
+    // (ver ld_resolve_import): desde `tests/` gana `tests/`, desde `src/` gana `src/`.
+    if has_manifest {
+        // Comprobar que existe ANTES de canonicalizar: `canonical` de una ruta que no
+        // está no devuelve error, mata el proceso («native function 'std::path::canonical'
+        // failed: No such file or directory»). `tests/` es opcional y `titan new` no lo
+        // crea, así que sin esta comprobación `titan run`/`check`/`dap` se caían con
+        // cualquier proyecto recién creado (lo delataba la prueba del DAP).
+        let tests_dir = std::path::join(root, "tests")
+        if std::fs::is_dir(tests_dir) {
+            allowed = std::array::push(allowed, std::path::canonical(tests_dir))
+        }
+    }
     for alias in std::map::keys(deps) {
         allowed = std::array::push(allowed, std::map::get(deps, alias))
     }
@@ -420,32 +438,62 @@ fn ld_parse_file(path: string, source: string) -> Result {
     Result::Ok(items)
 }
 
-// resolve_import: la primera parte puede ser el alias de una dependencia; si no,
-// la raíz permitida más específica que contiene al archivo que importa.
+// resolve_import: la primera parte puede ser el alias de una dependencia; si no, se prueba con
+// la raíz permitida más específica que contiene al archivo que importa y, si ahí no está, con la
+// raíz de fuentes del proyecto. El respaldo existe porque un archivo de `tests/` necesita poder
+// importar tanto a sus hermanos (auxiliares de las pruebas) como a los módulos de `src/` que
+// prueba; sin él solo vería una de las dos carpetas. Las raíces de dependencias NO entran en el
+// respaldo: un import sin el alias de la dependencia no puede resolverse dentro de ella.
 fn ld_resolve_import(ld: Ld, segments: array, from: string) -> Result {
     let display = ld_join(segments, "::")
-    let mut base = ld.source_root
+    let mut bases = [ld.source_root]
     let mut path_segments = segments
     if std::map::contains(ld.deps, segments[0]) {
-        base = std::map::get(ld.deps, segments[0])
+        bases = [std::map::get(ld.deps, segments[0])]
         path_segments = std::array::slice(segments, 1, len(segments))
     } else {
+        // La raíz permitida más específica que contiene al archivo que importa (la de antes),
+        // y detrás la raíz de fuentes si no es ya esa.
         let mut best = -1
+        let mut es_source = false
+        bases = []
         for root in ld.allowed {
             if ld_path_starts_with(from, root) {
                 let depth = len(ld_split_slash(root))
                 if depth > best {
                     best = depth
-                    base = root
+                    bases = [root]
+                    es_source = root == ld.source_root
                 }
             }
         }
+        if !es_source {
+            bases = std::array::push(bases, ld.source_root)
+        }
     }
+    for base in bases {
+        let (resuelto, grave) = ld_resolve_in(ld, base, path_segments, display)
+        if resuelto != nil {
+            return Result::Ok(resuelto)
+        }
+        // Un candidato que existe pero queda fuera de las raíces permitidas es un error de
+        // seguridad: se corta aquí, no se prueba con la raíz siguiente.
+        if grave != nil {
+            return Result::Err(grave)
+        }
+    }
+    Result::Err("cannot resolve import '" + display + "' from " + from)
+}
+
+// Busca `path_segments` bajo `base`. Devuelve (ruta canónica, nil) si resuelve, (nil, mensaje) si
+// el candidato existe pero escapa de las raíces permitidas, y (nil, nil) si ahí no está.
+fn ld_resolve_in(ld: Ld, base: string, path_segments: array, display: string) -> (any, any) {
     if len(path_segments) == 0 {
         let candidate = std::path::join(base, "lib.titan")
         if std::fs::is_file(candidate) {
-            return Result::Ok(std::path::canonical(candidate))
+            return ld_admitida(ld, candidate, base, display)
         }
+        return (nil, nil)
     }
     let mut length = len(path_segments)
     while length >= 1 {
@@ -453,22 +501,25 @@ fn ld_resolve_import(ld: Ld, segments: array, from: string) -> Result {
         let candidates = [std::path::join(base, relative + ".titan"), std::path::join(std::path::join(base, relative), "mod.titan")]
         for candidate in candidates {
             if std::fs::is_file(candidate) {
-                let canonical = std::path::canonical(candidate)
-                let mut inside = false
-                for root in ld.allowed {
-                    if ld_path_starts_with(canonical, root) {
-                        inside = true
-                    }
-                }
-                if !inside {
-                    return Result::Err("import '" + display + "' resolves outside source root " + base)
-                }
-                return Result::Ok(canonical)
+                return ld_admitida(ld, candidate, base, display)
             }
         }
         length -= 1
     }
-    Result::Err("cannot resolve import '" + display + "' from " + from)
+    // `return` explícito: una línea que empieza con `(` justo después de un `}` se
+    // pega al bloque anterior y se lee como una llamada.
+    return (nil, nil)
+}
+
+// Canoniza el candidato y comprueba que no salga de las raíces permitidas.
+fn ld_admitida(ld: Ld, candidate: string, base: string, display: string) -> (any, any) {
+    let canonical = std::path::canonical(candidate)
+    for root in ld.allowed {
+        if ld_path_starts_with(canonical, root) {
+            return (canonical, nil)
+        }
+    }
+    return (nil, "import '" + display + "' resolves outside source root " + base)
 }
 
 fn ld_split_slash(path: string) -> array {

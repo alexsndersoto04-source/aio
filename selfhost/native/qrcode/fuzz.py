@@ -4,10 +4,12 @@
 """
 import os, random, subprocess, sys, tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import artefacto, titan_path
+
 N = int(sys.argv[1])
 SEED = int(sys.argv[2])
 BIN = sys.argv[3]
-ZETT = os.environ.get("ZETT", "zett")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 HARNESS = os.path.join(os.path.dirname(__file__), "prueba.titan")
 R = random.Random(SEED)
@@ -53,7 +55,7 @@ for i in range(N):
         lv = "".join(R.choice("lmqhLMQH z") for _ in range(R.randint(0, 3)))
     open("/tmp/qr_in.txt", "wb").write(data)
     open("/tmp/qr_lv.txt", "w").write(lv)
-    vm = run([ZETT, "run", HARNESS])
+    vm = run([titan_path(), "exec", artefacto(HARNESS)])
     nat = run([BIN])
     if vm[1] != nat[1] or vm[0] != nat[0]:
         diff += 1

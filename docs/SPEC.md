@@ -1,7 +1,8 @@
 # Titan Language Specification
 
-**Document version:** 1.0 — 2026-08-21
-**Applies to:** TITAN / Zett compiler `1.0.0`. Written when the reference implementation was a bytecode VM; the language semantics
+**Document version:** 1.1 — 2026-10-10 (§3.2 generics, §3.3 function-type aliases and the §18 alias
+row corrected against compiler 1.3.0; the rest is unchanged from 1.0 of 2026-08-21)
+**Applies to:** TITAN / Zett compiler `1.3.0`. Written when the reference implementation was a bytecode VM; the language semantics
 it describes are what the native backends (x86-64, LLVM) implement. Where it says "VM", read "the program at run time".
 Language features listed as unsupported may differ from today's compiler: `selfhost/ESTADO.md` is the current record.
 **Canonical source extension:** `.titan`
@@ -134,14 +135,47 @@ structured runtime errors, never silent wraparound or undefined behavior.
 
 ### 3.2 Generics
 
-Titan is **monomorphic**. Exactly one parameterized shape exists: `Array<T>` / `Vec<T>`, which
-take one argument. Every other named type must be written with zero type arguments; writing
-`Option<int>` or `Map<K, V>` is rejected with
-`type 'Name' expects 0 type arguments, found N`.
+User-defined generics are **supported** (since 1.3.0) on every declaration kind:
 
-This is deliberate. Accepting and discarding type arguments would advertise generic guarantees
-the checker does not enforce. User-defined generic functions and generic structs are **not in
-the grammar**.
+```titan
+struct Caja<T> { valor: T }            // one parameter
+struct Par<A, B> { a: A, b: B }        // several
+enum Quizas<T> { Alguno(T), Nada }     // enums, variants with or without payload
+type Lista<T> = [T]                    // aliases
+fn identidad<T>(x: T) -> T { x }       // functions
+impl<T> Caja<T> {
+    fn obtener(self) -> T { self.valor }
+    fn transformar<U>(self, f: fn(T) -> U) -> Caja<U> { Caja { valor: f(self.valor) } }
+}
+```
+
+Type arguments are inferred from the call arguments; the turbofish form
+(`identidad::<string>("x")`) states them explicitly. A parameter written twice
+(`struct MismoPar<T> { a: T, b: T }`) really is one type. Inside a generic body the parameter is a
+type of its own (`TypeParam("T")`), **not** `any`: a body that returns it where an `int` is declared
+is rejected instead of assumed to work.
+
+Diagnostics — every row is asserted by `selfhost/tests/genericos/probar.sh`:
+
+| Program | Diagnostic |
+|---|---|
+| `let mal: string = identidad(99)` | `type mismatch: expected String, found Int` |
+| `MismoPar { a: 1, b: "no_es_int" }` | `type mismatch: expected Int, found String` |
+| `let c: Caja<int, string> = Caja { valor: 1 }` | `type 'Caja' expects 1 type arguments, found 2` |
+| `fn falso_int<T>(x: T) -> int { x }` | `type mismatch: expected Int, found TypeParam("T")` |
+
+**The prelude enums are still not parameterized.** Collections take exactly one argument —
+`[T]`, `Array<T>` and `Vec<T>` are the same shape — and `Option` / `Result` take none:
+
+| Form | Diagnostic |
+|---|---|
+| `let q: Option<int>` | `type 'Option' expects 0 type arguments, found 1` |
+| `fn f(r: Result<int, string>)` | `type 'Result' expects 0 type arguments, found 2` |
+
+`Map<K, V>` is parsed as a named type, but map literals and `std::map` values have type `map`, so
+nothing satisfies it (`type mismatch: expected Named("Map"<String, Int>), found Named("map")`).
+Use `map`. `Option` and `Result` are ordinary enums whose payload type is not tracked per
+instantiation; see [§11](#11-option-result-and-the--operator).
 
 ### 3.3 Type aliases
 
@@ -151,8 +185,17 @@ type Score  = int
 ```
 
 Aliases are resolved before compatibility checks and cost nothing at runtime. Recursive aliases
-are rejected (`type alias 'T' is recursive`). Aliases of **function types**
-(`type Handler = fn(int) -> string`) are not accepted by the type parser.
+are rejected (`type alias 'T' is recursive`). Aliases of **function types** are accepted and can be
+used anywhere a function is expected:
+
+```titan
+type Handler  = fn(int) -> string
+type Callback = fn(int, string) -> bool
+type Producer = fn() -> string
+```
+
+Aliases may also be generic (`type Lista<T> = [T]`, `type ParConEtiqueta<T> = (string, T)`), and a
+generic alias can be instantiated in a signature (`fn f(l: Lista<int>) -> int { len(l) }`).
 
 ### 3.4 Type forms that are parsed and rejected
 
@@ -560,7 +603,7 @@ The compiler knows **122 signatures** that are not registry natives:
 
 ### 13.2 The native registry
 
-`selfhost/natives.titan` declares **812 unique native functions across 73 `std::*`
+`selfhost/natives.titan` declares **813 unique native functions across 73 `std::*`
 namespaces** (their bodies are Titan code in `selfhost/native/`), each with a fixed parameter list, a result type, and an optional required
 capability. The compiler resolves qualified names through this registry and checks arity and
 parameter types **before** code generation. A native failure becomes a runtime error that names
@@ -694,12 +737,29 @@ generating code.
 
 ### 16.1 Supported in WebAssembly
 
-Integer and float arithmetic and comparisons, bitwise operators, locals, branches and loops,
+Integer arithmetic and comparisons, bitwise operators, locals, branches and loops,
 calls and returns, string literals and concatenation, `len`, arrays, tuples, structs, enums
-(construction, tag tests, payload extraction), indexing, `std::array::{push, pop, set, slice,
+(construction, tag tests, payload extraction), indexing, ranges (`start..end` / `start..=end`,
+materialized like the native runtime: exclusive end except in `..=`, empty when the start is not
+lower, and an unrecoverable error past one million elements), `std::array::{push, pop, set, slice,
 concat}`, `std::map::{new, insert, insert_new, get, contains, remove, keys, values, length}`,
 `std::text::{equals, hash64}`, `std::time::unix_millis`, the `std::wasm::heap_*` introspection
 API, and `print` with exactly one argument routed to the host.
+
+Closures are supported: `MakeClosure` copies the captured locals by value into a heap object
+(`[table slot, arity, captures…]`), every function that can become a closure gets one entry in a
+`funcref` table guarded by a shared canonical type `(arity_max arguments, closure object) → i64`,
+and calling a closure (`CallValue`, or the higher-order operations) goes through `call_indirect`
+after checking the stored arity. The higher-order array operations — `map`, `filter`, `fold`,
+`sort_by`, `find`, `any`, `all`, in both the method form `xs.map(f)` and the free form
+`map(xs, f)` — share one implementation per operation in the module and behave like the native
+runtime: `sort_by` is stable, extracts the first minimum on each pass, never modifies the
+original array, and the comparator receives `(candidate, current minimum)`.
+
+`print` receives a TITAN string handle, so the value has to be text. Numbers and any other
+non-text value are **not** formatted: the host decodes the raw bits as a handle, which in the
+browser host prints an empty line or raises `RangeError`. Formatting non-text values in this
+target is still pending.
 
 Browser integration is provided by host imports declared by the module and implemented in
 JavaScript (`examples/browser/host.js`): the `std::web::*` family covering DOM manipulation,
@@ -709,10 +769,12 @@ events, `fetch`, WebSocket, Canvas 2D, animation frames, and WebGL2.
 
 Every rejection is an explicit diagnostic naming the function and the operation:
 
-- **Ranges** — `start..end` / `start..=end` are not lowered yet, so `for i in 0..n` does not
-  compile to WebAssembly. Use a `while` loop with a counter.
-- Closures and the higher-order array operations (`map`, `filter`, `fold`, `sort_by`, `find`,
-  `any`, `all`), `TryCall`, and dynamic method dispatch.
+- `ToString` (string interpolation with a non-text value), and formatting non-text values in
+  `print`: see the note at the end of §16.1.
+- Floats: `PushFloat` has no encoding here, so a float literal is rejected and float arithmetic is
+  unreachable. Values are untyped `i64` in this target, so floats need their own representation
+  first.
+- `TryCall`, and dynamic method dispatch on non-struct receivers.
 - Concurrency (`spawn`, channels, `select`) and every task operation.
 - All host-facing intrinsic families: filesystem, process, TCP, TLS, WebSocket, HTTP server,
   SQLite, PostgreSQL, MySQL, `std::db`, `std::runtime`.
@@ -736,7 +798,7 @@ distribution packages — plus two standalone protocol servers.
 | `compile <input> [-o out] [--target x86_64\|aarch64]` | Compile a program into a standalone native executable |
 | `check <input>` | Parse and type-check only; reports files and function count |
 | `build <input> [-o out.tbc]` | Emit the bytecode container and list every function with its op and local counts |
-| `exec <file.tbc>` | Validate and execute an existing artifact |
+| `exec <file.tbc> [args…]` | Validate and execute an existing artifact; extra arguments go to the program |
 | `wasm <input> [-o out.wasm]` | Emit a WebAssembly module plus both source maps |
 | `debug <input> [-b file:line…]` | Interactive debugger; breakpoints resolve to source lines |
 | `test <input>` | Run every `.titan` file under `tests/` |
@@ -784,7 +846,7 @@ against a remote works fully offline, and local path dependencies need no regist
 | Values | Built-ins (`map`, `print`, …) used as values | `built-in function values ('map')` |
 | Traits | `impl` only on declared structs; no trait objects, no bounds | `impl target 'X' is not a declared struct` |
 | Traits | Default methods need an explicit return type | `trait default method 'T::m' without an explicit return type` |
-| Aliases | No function-type aliases | parse error |
+| Aliases | Recursive aliases | `type alias 'T' is recursive` |
 | Assignment | Only to mutable, non-captured locals; no field/index assignment | `assignment target must currently be a variable` |
 | Strings | A double quote inside an interpolation must be escaped (`\"`) | parse error |
 | Ranges | Eagerly materialized, capped at 1,000,000 elements | `range exceeds the one-million element safety limit` |

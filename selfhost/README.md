@@ -52,7 +52,7 @@ x86-64 con `--target aarch64` (ver [`../docs/GUIA_TERMUX.md`](../docs/GUIA_TERMU
 (dependencias y paquetes; es lo que usa **Zett**, el gestor de paquetes: ver [`../docs/ZETT.md`](../docs/ZETT.md)), `lsp.titan` (servidor de lenguaje), `dap.titan` y
 `debug_table.titan` (depuración), `rtcache.titan` (caché de la parte del runtime que no cambia entre programas).
 
-Herramientas auxiliares para verificar las etapas: `tokens.titan`, `ast.titan` y `check.titan` imprimen los tokens, el árbol y los diagnósticos de un archivo (las usan los `verify_*.sh`); `revisar_runtime.titan` revisa el runtime sin generar código; `prueba_interna.titan` es un compilador de pruebas que expone funciones internas y no se usa para programas normales.
+Herramientas auxiliares para verificar las etapas: `tokens.titan`, `ast.titan` y `check.titan` imprimen los tokens, el árbol y los diagnósticos de un archivo (las usan los `verify_*.sh`); `revisar_runtime.titan` revisa el runtime sin generar código; `prueba_interna.titan` es un compilador de pruebas que expone funciones internas y no se usa para programas normales (su front-end es el de `frontend.titan`; antes tenía copias que se quedaron atrás).
 
 ### El runtime y la biblioteca estándar: `native/`
 
@@ -64,7 +64,7 @@ hash, floats). El compilador lee esta carpeta cada vez que compila un programa,
 por eso el ejecutable `titan` debe tener `native/` a su lado.
 
 ```bash
-bash selfhost/native/cobertura.sh -v    # cuántas de las 812 funciones std:: tienen cuerpo en Titan
+bash selfhost/native/cobertura.sh -v    # cuántas de las 813 funciones std:: tienen cuerpo en Titan
 ```
 
 ### Otras carpetas

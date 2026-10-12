@@ -19,7 +19,27 @@ jobs:
         run: bash selfhost/bootstrap.sh
 
       - name: "Cobertura de la biblioteca estándar (funciones std con cuerpo en Titan)"
-        run: bash selfhost/native/cobertura.sh -v | tail -3
+        # Sin `| tail -3`: el pipe hacía que el código de salida del paso fuera el de `tail`
+        # (siempre 0), así que el paso salía en verde aunque cobertura.sh terminara con código 3
+        # (pasaba siempre desde que se borró el `zett` de Rust que el guion exigía). Ahora se
+        # guarda la salida completa y se exige cobertura COMPLETA de verdad: `set -euo pipefail`
+        # y comparaciones explícitas, porque un `test` fallido sin `set -e` no detiene el guion.
+        run: |
+          set -euo pipefail
+          bash selfhost/native/cobertura.sh -v > /tmp/cobertura.txt
+          tail -3 /tmp/cobertura.txt
+          total=$(sed -n 's|^TOTAL: [0-9]* / \([0-9]*\) nativas.*|\1|p' /tmp/cobertura.txt)
+          hechas=$(sed -n 's|^TOTAL: \([0-9]*\) / [0-9]* nativas.*|\1|p' /tmp/cobertura.txt)
+          if [ -z "$total" ] || [ -z "$hechas" ]; then
+            echo "FALLO: cobertura.sh no imprimió la línea TOTAL (¿no llegó a contar?)" >&2
+            exit 1
+          fi
+          if [ "$hechas" != "$total" ]; then
+            echo "FALLO: cobertura incompleta: $hechas de $total nativas tienen cuerpo en Titan" >&2
+            sed -n '/^--- faltan:/,$p' /tmp/cobertura.txt >&2
+            exit 1
+          fi
+          echo "cobertura completa: $hechas / $total nativas con cuerpo en Titan"
 
       - name: check de Moon y de los ejemplos
         run: |
@@ -40,6 +60,29 @@ jobs:
 
       - name: "Errores 2026-10-10: posiciones reales, archivo correcto, sin duplicar"
         run: bash selfhost/tests/errores/probar.sh
+
+      - name: "`titan test`: auxiliar omitido, imports desde src/ y tests/, fallo reportado"
+        run: bash selfhost/tests/test_runner/probar.sh
+
+      - name: "Diferencial del corpus: nativo vs la VM de bytecode del port (sin `zett`)"
+        # Sin Rust: cada programa se compila a nativo y se compara con el mismo programa pasado por el
+        # artefacto .tbc (`titan build` + `titan exec`). Incluye casos con argumentos, archivos de salida
+        # y variables de entorno, que es lo que [args...] de `titan exec` habilita.
+        run: |
+          bash selfhost/native/verify_native.sh \
+            selfhost/tests/native/basico.titan \
+            selfhost/tests/native/error_division.titan \
+            selfhost/tests/native/closures.titan \
+            selfhost/tests/native/colecciones.titan \
+            selfhost/tests/native/decimales.titan \
+            selfhost/tests/native/texto_std.titan \
+            selfhost/tests/native/vec_std.titan \
+            selfhost/tests/native/hash_std.titan \
+            selfhost/tests/native/json_std.titan \
+            selfhost/tests/native/dirs_std.titan \
+            selfhost/tests/native/archivos_bytes.titan \
+            selfhost/tests/native/image_io.titan \
+            selfhost/tests/native/kv_symlink_canonical.titan
 
       - name: "Registro de paquetes: publicar, servir por HTTPS y usar con fetch (servidor local)"
         run: bash selfhost/tests/pkg/registro/estatico.sh

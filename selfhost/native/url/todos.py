@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 # Todos los puntos de código (menos los sustitutos) dentro de un dominio,
-# "http://a<c>b.com/", y pares <c><marca>; compara la VM con el nativo.
+# "http://a<c>b.com/", y pares <c><marca>; compara la VM de bytecode del port
+# (titan build + titan exec) con el nativo.
 # Uso: python3 todos.py NATIVO DESDE HASTA
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 nat, lo, hi = sys.argv[1], int(sys.argv[2], 0), int(sys.argv[3], 0)
 marks = ['\u0301', '\u0308', '\u0345', '\u094D', '\u200D', '\u200C', '\u3099', '\u0F71']
@@ -15,7 +20,7 @@ for c in range(lo, hi):
     lines.append(('U', 'http://a' + ch + 'b.com/'))
     lines.append(('U', 'http://' + ch + marks[c % len(marks)] + '.x/'))
 open('/tmp/url_todos_in.txt', 'w', encoding='utf-8').write(''.join(x + '\n' for c in lines for x in c))
-vm = subprocess.run(['zett', 'run', 'selfhost/native/url/fuzz.titan', '/tmp/url_todos_in.txt'], capture_output=True)
+vm = vm_run(__file__, 'fuzz.titan', '/tmp/url_todos_in.txt', capture_output=True)
 na = subprocess.run([nat, '/tmp/url_todos_in.txt'], capture_output=True)
 a = vm.stdout.split(b'\n')
 b = na.stdout.split(b'\n')

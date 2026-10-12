@@ -30,6 +30,12 @@ struct Lv {
     stxt: array,
     objs: map,
     odef: array,
+    // ARM de 32 bits: las tablas estáticas de esquemas de struct y de las
+    // unidades de los enums llevan en cada hueco la dirección de un string.
+    // Un i64 no puede llevar la dirección de un puntero de 32 bits en un
+    // inicializador estático (LLVM lo rechaza), así que el hueco se deja a 0
+    // y la dirección se escribe al arrancar (lv_parches, en lv_start).
+    parches: array,
 }
 
 struct LvCtx {
@@ -47,11 +53,11 @@ struct LvCtx {
 }
 
 fn lv_new() -> Lv {
-    Lv { l: [], refs: [], errs: [], strs: std::map::new(), stxt: [], objs: std::map::new(), odef: [] }
+    Lv { l: [], refs: [], errs: [], strs: std::map::new(), stxt: [], objs: std::map::new(), odef: [], parches: [] }
 }
 
 fn lv_e(b: Lv, s: string) -> Lv {
-    Lv { l: std::array::push(b.l, s), refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+    Lv { l: std::array::push(b.l, s), refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: b.parches }
 }
 
 // Saca las líneas acumuladas (como un solo texto) y deja la lista vacía.
@@ -59,19 +65,19 @@ fn lv_e(b: Lv, s: string) -> Lv {
 // lista dentro de la estructura se copiaría entera con cada línea nueva.
 fn lv_flush(b: Lv) -> (Lv, string) {
     let text = std::collections::join(b.l, "\n") + "\n"
-    return (Lv { l: [], refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }, text)
+    return (Lv { l: [], refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: b.parches }, text)
 }
 
 fn lv_take_refs(b: Lv) -> (Lv, array) {
-    return (Lv { l: b.l, refs: [], errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }, b.refs)
+    return (Lv { l: b.l, refs: [], errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: b.parches }, b.refs)
 }
 
 fn lv_ref(b: Lv, label: string) -> Lv {
-    Lv { l: b.l, refs: std::array::push(b.refs, label), errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+    Lv { l: b.l, refs: std::array::push(b.refs, label), errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: b.parches }
 }
 
 fn lv_err(b: Lv, message: string) -> Lv {
-    Lv { l: b.l, refs: b.refs, errs: std::array::push(b.errs, message), strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef }
+    Lv { l: b.l, refs: b.refs, errs: std::array::push(b.errs, message), strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: b.parches }
 }
 
 // "{" + x + "}" (las llaves literales no se pueden escribir en un string).
@@ -90,21 +96,29 @@ fn lv_str(b: Lv, text: string) -> (Lv, string) {
         return (b, "ptrtoint (ptr @s.{id} to i64)")
     }
     let id = len(b.stxt)
-    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: std::map::insert(b.strs, text, id), stxt: std::array::push(b.stxt, text), objs: b.objs, odef: b.odef }
+    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: std::map::insert(b.strs, text, id), stxt: std::array::push(b.stxt, text), objs: b.objs, odef: b.odef, parches: b.parches }
     return (nb, "ptrtoint (ptr @s.{id} to i64)")
 }
 
 // Objeto estático (esquema de struct o enum sin contenido); `def` es su
-// inicializador ya escrito. Devuelve su dirección (i64).
-fn lv_obj(b: Lv, key: string, ty: string, def: string) -> (Lv, string) {
+// inicializador ya escrito. Devuelve su etiqueta (para lv_parche) y su
+// dirección (i64).
+fn lv_obj(b: Lv, key: string, ty: string, def: string) -> (Lv, string, string) {
     if std::map::contains(b.objs, key) {
         let id = std::map::get(b.objs, key)
-        return (b, "ptrtoint (ptr @o.{id} to i64)")
+        return (b, "@o.{id}", "ptrtoint (ptr @o.{id} to i64)")
     }
     let id = len(b.odef)
     let line = "@o.{id} = internal global " + ty + " " + def + ", align 16"
-    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: std::map::insert(b.objs, key, id), odef: std::array::push(b.odef, line) }
-    return (nb, "ptrtoint (ptr @o.{id} to i64)")
+    let nb = Lv { l: b.l, refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: std::map::insert(b.objs, key, id), odef: std::array::push(b.odef, line), parches: b.parches }
+    return (nb, "@o.{id}", "ptrtoint (ptr @o.{id} to i64)")
+}
+
+// Un hueco de una tabla estática que lleva una dirección, para rellenar en
+// lv_start (solo ARM de 32 bits; ver el campo `parches`).
+fn lv_parche(b: Lv, label: string, offset: int, valor: string) -> Lv {
+    let s = "  store i64 " + valor + ", ptr getelementptr inbounds (i8, ptr " + label + ", i64 {offset})"
+    Lv { l: b.l, refs: b.refs, errs: b.errs, strs: b.strs, stxt: b.stxt, objs: b.objs, odef: b.odef, parches: std::array::push(b.parches, s) }
 }
 
 fn lv_rt(ctx: LvCtx, name: string) -> string {
@@ -639,6 +653,17 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_f(b1, id + "w", a2)
         if ctx.target == "x86_64" {
             b1 = lv_e(b1, "  " + id + "z = call double asm \"vfmadd231sd $3, $2, $0\", \"=x,0,x,x\"(double " + id + "w, double " + id + "x, double " + id + "y)")
+        } else if ctx.target == "armv7" {
+            // ARM 32 bits sin VFPv4 no tiene FMA, y pedirle a LLVM
+            // `llvm.fma.f64` sería una llamada a `fma` que no existe sin
+            // libm. Aquí se deja la multiplicación más la suma (dos
+            // redondeos). No es una pérdida silenciosa: el runtime solo
+            // llama a ffma cuando lm_hw() dice que la CPU tiene FMA, y en
+            // ARM 32 bits lm_hw() siempre es falso (lm_detect mira cpuid,
+            // que en esta arquitectura no existe), así que este camino no
+            // se ejecuta. Ver ESTADO.md.
+            b1 = lv_e(b1, "  " + id + "m = fmul double " + id + "x, " + id + "y")
+            b1 = lv_e(b1, "  " + id + "z = fadd double " + id + "m, " + id + "w")
         } else {
             b1 = lv_e(b1, "  " + id + "z = call double @llvm.fma.f64(double " + id + "x, double " + id + "y, double " + id + "w)")
         }
@@ -700,6 +725,18 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         }
         b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_bare", args)
         b1 = lv_put(b1, res, "1", id + "sb")
+    } else if name == "std::raw::syscall" && ctx.target == "armv7" {
+        // Números y estructuras de x86-64: los traduce rt_sys_arm32 (sys_arm32.titan),
+        // que los pasa a las llamadas de ARM 32 bits (EABI: número en r7, svc #0).
+        let mut args = []
+        k = 0
+        while k < 7 {
+            args = std::array::push(args, "1")
+            args = std::array::push(args, id + "a{k}b")
+            k += 1
+        }
+        b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm32", args)
+        b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::syscall" && ctx.target == "aarch64" {
         // Números y estructuras de x86-64: los traduce rt_sys_arm64 (sys_arm64.titan).
         let mut args = []
@@ -712,9 +749,9 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_call_rt(b1, ctx, id + "s", "rt_sys_arm64", args)
         b1 = lv_put(b1, res, "1", id + "sb")
     } else if name == "std::raw::svc" {
-        if ctx.target != "aarch64" {
-            // Solo existe en ARM64: aquí es una trampa (el runtime la usa
-            // únicamente con std::raw::bare() == 1).
+        if ctx.target != "aarch64" && ctx.target != "armv7" {
+            // Solo existe en ARM (ARM64 y ARM de 32 bits): en x86-64 es una
+            // trampa (el runtime la usa únicamente con std::raw::bare() == 1).
             b1 = lv_e(b1, "  call void @llvm.trap()")
             b1 = lv_e(b1, "  " + id + "v = add i64 0, 0")
         } else {
@@ -743,10 +780,14 @@ fn lv_intrinsic(b: Lv, ctx: LvCtx, id: string, d: int, name: string, n: int, nex
         b1 = lv_e(b1, "  " + id + "v = call i64 @lv_syscall(" + a + ")")
         b1 = lv_put(b1, res, "1", id + "v")
     } else if name == "std::raw::arch" {
-        // 0 = x86-64, 1 = ARM64 (para lo que Rust hace distinto en cada una).
+        // 0 = x86-64, 1 = ARM64 (para lo que Rust hace distinto en cada una),
+        // 2 = ARM de 32 bits.
         let mut v = "0"
         if ctx.target == "aarch64" {
             v = "1"
+        }
+        if ctx.target == "armv7" {
+            v = "2"
         }
         b1 = lv_put(b1, res, "1", v)
     } else if name == "std::raw::globals" {
@@ -1063,18 +1104,34 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
         let (b1, name) = lv_str(b, op.s)
         b = b1
         let mut items = ""
+        let mut claves = []
         for f in sorted {
             let (b2, fs) = lv_str(b, f)
             b = b2
             if items != "" {
                 items += ", "
             }
-            items += "i64 " + fs
+            // En ARM de 32 bits la dirección se escribe al arrancar: en un
+            // inicializador estático no cabe (ver `parches` en Lv).
+            if ctx.target == "armv7" {
+                items += "i64 0"
+                claves = std::array::push(claves, fs)
+            } else {
+                items += "i64 " + fs
+            }
         }
         let ty = lv_br("i64, [{count} x i64]")
         let def = lv_br("i64 {count}, [{count} x i64] [" + items + "]")
-        let (b3, schema) = lv_obj(b, "schema:" + bk_join(sorted, "\n"), ty, def)
-        b = lv_call_rt(b3, ctx, id + "r", "rt_struct_new", ["5", name, "1", schema, "1", "{count}"])
+        let (b3, tabla, schema) = lv_obj(b, "schema:" + bk_join(sorted, "\n"), ty, def)
+        let mut b4 = b3
+        if ctx.target == "armv7" {
+            let mut v = 0
+            while v < count {
+                b4 = lv_parche(b4, tabla, 8 + 8 * v, claves[v])
+                v += 1
+            }
+        }
+        b = lv_call_rt(b4, ctx, id + "r", "rt_struct_new", ["5", name, "1", schema, "1", "{count}"])
         let mut j = 0
         while j < count {
             let e = id + "e{j}"
@@ -1098,9 +1155,20 @@ fn lv_op(b0: Lv, ctx: LvCtx, op: Op, pc: int) -> Lv {
             return lv_br_to(b, next)
         }
         let ty = lv_br("i64, i64, i64, i64, i64, i64")
-        let def = lv_br("i64 -1, i64 " + en + ", i64 " + vn + ", i64 0, i64 0, i64 0")
-        let (b3, unit) = lv_obj(b, "unit:" + op.s + "\n" + op.s2, ty, def)
-        return lv_br_to(lv_put(b3, d, "11", unit), next)
+        let mut cen = en
+        let mut cvn = vn
+        if ctx.target == "armv7" {
+            cen = "0"
+            cvn = "0"
+        }
+        let def = lv_br("i64 -1, i64 " + cen + ", i64 " + cvn + ", i64 0, i64 0, i64 0")
+        let (b3, tabla, unit) = lv_obj(b, "unit:" + op.s + "\n" + op.s2, ty, def)
+        let mut b4 = b3
+        if ctx.target == "armv7" {
+            b4 = lv_parche(b4, tabla, 8, en)
+            b4 = lv_parche(b4, tabla, 16, vn)
+        }
+        return lv_br_to(lv_put(b4, d, "11", unit), next)
     }
     if k == "EnumIs" {
         let (b1, en) = lv_str(b, op.s)
@@ -1293,6 +1361,19 @@ fn lv_effect(op: Op) -> (int, int) {
     if k == "CallValue" || k == "TryCall" {
         return (n + 1, 1)
     }
+    // Introspección del runtime y cuota de tareas: la VM las traduce a una
+    // llamada propia. Este backend todavía no las sabe hacer, pero la pila hay
+    // que contarla bien: si no, el error que sale es un «stack underflow» que
+    // no existe y esconde el de verdad («instrucción no soportada»).
+    if k == "RuntimeMemoryLimit" || k == "RuntimeAllocatedBytes" || k == "RuntimeGcLiveCount" || k == "RuntimeGcCollect" || k == "RuntimeGcThreshold" || k == "RuntimeActiveTasks" || k == "RuntimeOptimizeLevel" || k == "RuntimeFastPath" {
+        return (0, 1)
+    }
+    if k == "RuntimeGcSetThreshold" || k == "RuntimeHeapDump" {
+        return (1, 1)
+    }
+    if k == "RuntimeBenchmark" || k == "SpawnQuota" {
+        return (2, 1)
+    }
     // Ret y las desconocidas (que dan error al traducirse).
     return (0, 0)
 }
@@ -1351,6 +1432,10 @@ fn lv_depths(f: Func) -> Result {
 // ------------------------------------------------------------ funciones
 
 fn lv_function(b0: Lv, ctx0: LvCtx, f: Func, label: string) -> Lv {
+    // El nombre de verdad, como comentario: el .ll se lee mucho mejor y al
+    // depurar un binario ARM o ARM64 se sabe qué función del runtime es cada
+    // `rNNNN`. El comentario no cambia el código máquina.
+    let b0 = lv_e(b0, "; " + f.name)
     let mut locals = f.locals
     if f.arity + f.captures > locals {
         locals = f.arity + f.captures
@@ -1534,6 +1619,14 @@ fn lv_glue(ctx: LvCtx) -> array {
     let mut sj = []
     if ctx.target == "x86_64" {
         sj = [".text", ".globl t_setjmp", "t_setjmp:", "  movq %rbx, 0(%rdi)", "  movq %rbp, 8(%rdi)", "  movq %r12, 16(%rdi)", "  movq %r13, 24(%rdi)", "  movq %r14, 32(%rdi)", "  movq %r15, 40(%rdi)", "  leaq 8(%rsp), %rdx", "  movq %rdx, 48(%rdi)", "  movq (%rsp), %rdx", "  movq %rdx, 56(%rdi)", "  xorl %eax, %eax", "  ret", ".globl t_longjmp", "t_longjmp:", "  movq 0(%rdi), %rbx", "  movq 8(%rdi), %rbp", "  movq 16(%rdi), %r12", "  movq 24(%rdi), %r13", "  movq 32(%rdi), %r14", "  movq 40(%rdi), %r15", "  movq 48(%rdi), %rsp", "  movl $1, %eax", "  jmpq *56(%rdi)"]
+    } else if ctx.target == "armv7" {
+        // ARM 32 bits: r4-r11, sp y lr, y los dobles d8-d15 (los que conserva
+        // una llamada en la ABI de coma flotante dura). El búfer que reserva el
+        // runtime es de 192 bytes, así que sobra sitio (40 + 64 = 104). El
+        // resultado de t_setjmp es un i64 y en 32 bits vuelve en el par r0:r1
+        // (el código compilado comprueba r0|r1 contra cero): hay que poner los
+        // dos, no solo r0, o el catch se cree que el error ya ocurrió.
+        sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stmia r0, " + lv_br("r4-r11"), "  mov r1, sp", "  str r1, [r0, #32]", "  str lr, [r0, #36]", "  add r2, r0, #40", "  vstmia r2, " + lv_br("d8-d15"), "  mov r0, #0", "  mov r1, #0", "  bx lr", ".globl t_longjmp", "t_longjmp:", "  add r2, r0, #40", "  vldmia r2, " + lv_br("d8-d15"), "  ldmia r0, " + lv_br("r4-r11"), "  ldr r1, [r0, #32]", "  mov sp, r1", "  ldr lr, [r0, #36]", "  mov r0, #1", "  mov r1, #0", "  bx lr"]
     } else {
         sj = [".text", ".globl t_setjmp", "t_setjmp:", "  stp x19, x20, [x0]", "  stp x21, x22, [x0, #16]", "  stp x23, x24, [x0, #32]", "  stp x25, x26, [x0, #48]", "  stp x27, x28, [x0, #64]", "  stp x29, x30, [x0, #80]", "  mov x2, sp", "  str x2, [x0, #96]", "  stp d8, d9, [x0, #104]", "  stp d10, d11, [x0, #120]", "  stp d12, d13, [x0, #136]", "  stp d14, d15, [x0, #152]", "  mov x0, #0", "  ret", ".globl t_longjmp", "t_longjmp:", "  ldp x19, x20, [x0]", "  ldp x21, x22, [x0, #16]", "  ldp x23, x24, [x0, #32]", "  ldp x25, x26, [x0, #48]", "  ldp x27, x28, [x0, #64]", "  ldp x29, x30, [x0, #80]", "  ldr x2, [x0, #96]", "  mov sp, x2", "  ldp d8, d9, [x0, #104]", "  ldp d10, d11, [x0, #120]", "  ldp d12, d13, [x0, #136]", "  ldp d14, d15, [x0, #152]", "  mov x0, #1", "  ret"]
     }
@@ -1548,6 +1641,18 @@ fn lv_glue(ctx: LvCtx) -> array {
     let mut fs = []
     if ctx.target == "x86_64" {
         fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  pushq %rbp", "  pushq %rbx", "  pushq %r12", "  pushq %r13", "  pushq %r14", "  pushq %r15", "  pushq $1", "  movq %rsp, (%rdi)", "  movq %rsi, %rsp", "  popq %rax", "  testq %rax, %rax", "  jz 1f", "  popq %r15", "  popq %r14", "  popq %r13", "  popq %r12", "  popq %rbx", "  popq %rbp", "  ret", "1:", "  xorl %ebp, %ebp", "  ret"]
+    } else if ctx.target == "armv7" {
+        // La misma idea que en x86-64: en la pila que se abandona queda
+        // [1 (marca)][d8-d15][r4-r11, lr] y en la nueva [0 (marca)][entrada],
+        // que es lo que deja tk_prepare (dos huecos de 8 bytes). La marca se
+        // lee del tope: 0 = pila nueva, 1 = fibra que ya estaba andando. Los
+        // dobles d8-d15 son de la llamada en la ABI de coma flotante dura, así
+        // que también hay que guardarlos. Los dos argumentos son i64 y en ARM
+        // 32 bits llegan en r0:r1 y r2:r3 (no en r0 y r1 como en x86-64): el
+        // puntero de la pila nueva está en r2 y se aparta en r12 antes de usar
+        // r2 para la marca. Al entrar en una pila nueva se salta a la entrada
+        // con la pila alineada a 8 bytes, como pide la ABI.
+        fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  push " + lv_br("r4-r11, lr"), "  mov r12, r2", "  sub sp, sp, #4", "  sub sp, sp, #64", "  vstmia sp, " + lv_br("d8-d15"), "  mov r2, #1", "  str r2, [sp, #-4]!", "  mov r2, sp", "  str r2, [r0]", "  mov sp, r12", "  ldr r2, [sp]", "  cmp r2, #0", "  beq 1f", "  add sp, sp, #4", "  vldmia sp, " + lv_br("d8-d15"), "  add sp, sp, #68", "  pop " + lv_br("r4-r11, lr"), "  bx lr", "1:", "  ldr r2, [sp, #8]", "  add sp, sp, #16", "  bic sp, sp, #7", "  mov lr, #0", "  bx r2"]
     } else {
         fs = [".text", ".globl lv_fiber_switch", "lv_fiber_switch:", "  sub sp, sp, #176", "  stp x19, x20, [sp, #16]", "  stp x21, x22, [sp, #32]", "  stp x23, x24, [sp, #48]", "  stp x25, x26, [sp, #64]", "  stp x27, x28, [sp, #80]", "  stp x29, x30, [sp, #96]", "  stp d8, d9, [sp, #112]", "  stp d10, d11, [sp, #128]", "  stp d12, d13, [sp, #144]", "  stp d14, d15, [sp, #160]", "  mov x2, #1", "  str x2, [sp]", "  mov x2, sp", "  str x2, [x0]", "  ldr x2, [x1]", "  cbz x2, 1f", "  mov sp, x1", "  ldp x19, x20, [sp, #16]", "  ldp x21, x22, [sp, #32]", "  ldp x23, x24, [sp, #48]", "  ldp x25, x26, [sp, #64]", "  ldp x27, x28, [sp, #80]", "  ldp x29, x30, [sp, #96]", "  ldp d8, d9, [sp, #112]", "  ldp d10, d11, [sp, #128]", "  ldp d12, d13, [sp, #144]", "  ldp d14, d15, [sp, #160]", "  add sp, sp, #176", "  ret", "1:", "  ldr x19, [x1, #8]", "  add x2, x1, #16", "  and x2, x2, #-16", "  mov sp, x2", "  mov x29, xzr", "  mov x30, xzr", "  br x19"]
     }
@@ -1567,6 +1672,24 @@ fn lv_glue(ctx: LvCtx) -> array {
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_syscall(i64 9, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov $0, %rsp\\0A\\09call lv_main\\0A\\09ud2\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
     } else if ctx.bare {
         l = std::array::concat(l, lv_bare_prologue(lv_rt(ctx, "rt_bare_exception")))
+    } else if ctx.target == "armv7" {
+        // ARM 32 bits (EABI): el número de la llamada va en r7 y los argumentos
+        // en r0-r5; el resultado vuelve en r0. El IR usa i64 en todas partes, así
+        // que lv_svc conserva esa firma y recorta dentro: así los sitios de
+        // llamada son los mismos que en las otras arquitecturas y los números de
+        // `std::raw::svc` (los de ARM) se escriben una sola vez.
+        let cons = "\"=" + lv_br("r0") + "," + lv_br("r7") + "," + lv_br("r0") + "," + lv_br("r1") + "," + lv_br("r2") + "," + lv_br("r3") + "," + lv_br("r4") + "," + lv_br("r5") + ",~" + lv_br("memory") + "\""
+        l = std::array::push(l, "define internal i64 @lv_svc(i64 %n, i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f) alwaysinline " + lv_br("\n  %n1 = trunc i64 %n to i32\n  %a1 = trunc i64 %a to i32\n  %b1 = trunc i64 %b to i32\n  %c1 = trunc i64 %c to i32\n  %d1 = trunc i64 %d to i32\n  %e1 = trunc i64 %e to i32\n  %f1 = trunc i64 %f to i32\n  %r0 = call i32 asm sideeffect \"svc #0\", " + cons + "(i32 %n1, i32 %a1, i32 %b1, i32 %c1, i32 %d1, i32 %e1, i32 %f1)\n  %r = sext i32 %r0 to i64\n  ret i64 %r\n"))
+        l = std::array::push(l, "module asm \".globl _start\"")
+        l = std::array::push(l, "module asm \"_start:\"")
+        l = std::array::push(l, "module asm \"  mov r0, sp\"")
+        l = std::array::push(l, "module asm \"  bl lv_start\"")
+        l = std::array::push(l, "module asm \"  udf #0\"")
+        // mmap2 = 192 (el desplazamiento va en páginas de 4096). La pila propia
+        // es de 64 MiB, no de 1 GiB: en 32 bits el espacio de direcciones útil
+        // es de 3 GiB y 1 GiB de reserva es demasiado para un proceso.
+        l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  call void @lv_parches()\n  %m = call i64 @lv_svc(i64 192, i64 0, i64 67108864, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 67108864\n  %top32 = trunc i64 %top to i32\n  call void asm sideeffect \"mov sp, $0\\0Abl lv_main\\0Audf #0\", \"r,~" + lv_br("memory") + "\"(i32 %top32)\n  unreachable\n"))
+        l = std::array::concat(l, lv_arm32_rt_helpers())
     } else {
         // AArch64: número en x8, argumentos en x0-x5, resultado en x0.
         let cons = "\"=" + lv_br("x0") + "," + lv_br("x8") + "," + lv_br("x0") + "," + lv_br("x1") + "," + lv_br("x2") + "," + lv_br("x3") + "," + lv_br("x4") + "," + lv_br("x5") + ",~" + lv_br("memory") + "\""
@@ -1579,6 +1702,53 @@ fn lv_glue(ctx: LvCtx) -> array {
         // mmap de ARM64 = 222; mismas banderas.
         l = std::array::push(l, "define void @lv_start(i64 %sp) noreturn noinline " + lv_br("\n  %g = getelementptr i8, ptr @G, i64 32\n  store i64 %sp, ptr %g\n  %m = call i64 @lv_svc(i64 222, i64 0, i64 1073741824, i64 3, i64 16418, i64 -1, i64 0)\n  %top = add i64 %m, 1073741824\n  call void asm sideeffect \"mov sp, $0\\0Abl lv_main\\0Abrk #0\", \"r,~" + lv_br("memory") + "\"(i64 %top)\n  unreachable\n"))
     }
+    l
+}
+
+// Ayudantes que en ARM 32 bits no existen en hardware y que, sin libc, nadie
+// más pone: la división de 32 y 64 bits y las conversiones entre enteros de 64
+// bits y `double` (LLVM las emite como llamadas a `__aeabi_uidiv`,
+// `__divdi3`, `__floatdidf`, `__fixdfdi`...). Todo se escribe con operaciones
+// que ARM sí tiene (sumas, restas, desplazamientos, comparaciones y las
+// conversiones de 32 bits de la VFP), así que no queda ninguna llamada
+// pendiente. El algoritmo de la división es el de siempre: un bit por vuelta.
+fn lv_arm32_rt_helpers() -> array {
+    let d = "define "
+    let mut l = []
+    // --- división sin signo de 32 bits
+    l = std::array::push(l, d + "internal i32 @lv_udiv32(i32 %a, i32 %b) " + lv_br("\nentry:\n  %z = icmp eq i32 %b, 0\n  br i1 %z, label %cero, label %vuelta\ncero:\n  call void @llvm.trap()\n  unreachable\nvuelta:\n  %i = phi i32 [ 31, %entry ], [ %i2, %paso ]\n  %q = phi i32 [ 0, %entry ], [ %q2, %paso ]\n  %r = phi i32 [ 0, %entry ], [ %r2, %paso ]\n  %bit0 = lshr i32 %a, %i\n  %bit = and i32 %bit0, 1\n  %rs = shl i32 %r, 1\n  %r1 = or i32 %rs, %bit\n  %qs = shl i32 %q, 1\n  %mayor = icmp uge i32 %r1, %b\n  %r2o = sub i32 %r1, %b\n  %q2o = or i32 %qs, 1\n  %r2 = select i1 %mayor, i32 %r2o, i32 %r1\n  %q2 = select i1 %mayor, i32 %q2o, i32 %qs\n  %i2 = sub i32 %i, 1\n  %fin = icmp slt i32 %i, 1\n  br i1 %fin, label %salida, label %paso\npaso:\n  br label %vuelta\nsalida:\n  ret i32 %q2\n"))
+    // --- resto sin signo de 32 bits (la misma cuenta, devolviendo el resto)
+    l = std::array::push(l, d + "internal i32 @lv_umod32(i32 %a, i32 %b) " + lv_br("\nentry:\n  %z = icmp eq i32 %b, 0\n  br i1 %z, label %cero, label %vuelta\ncero:\n  call void @llvm.trap()\n  unreachable\nvuelta:\n  %i = phi i32 [ 31, %entry ], [ %i2, %paso ]\n  %q = phi i32 [ 0, %entry ], [ %q2, %paso ]\n  %r = phi i32 [ 0, %entry ], [ %r2, %paso ]\n  %bit0 = lshr i32 %a, %i\n  %bit = and i32 %bit0, 1\n  %rs = shl i32 %r, 1\n  %r1 = or i32 %rs, %bit\n  %qs = shl i32 %q, 1\n  %mayor = icmp uge i32 %r1, %b\n  %r2o = sub i32 %r1, %b\n  %q2o = or i32 %qs, 1\n  %r2 = select i1 %mayor, i32 %r2o, i32 %r1\n  %q2 = select i1 %mayor, i32 %q2o, i32 %qs\n  %i2 = sub i32 %i, 1\n  %fin = icmp slt i32 %i, 1\n  br i1 %fin, label %salida, label %paso\npaso:\n  br label %vuelta\nsalida:\n  ret i32 %r2\n"))
+    // --- división sin signo de 64 bits (cociente y resto a la vez, como
+    //     __udivmoddi4 de compiler-rt)
+    l = std::array::push(l, d + "internal %V @lv_udivmod64(i64 %a, i64 %b) " + lv_br("\nentry:\n  %z = icmp eq i64 %b, 0\n  br i1 %z, label %cero, label %vuelta\ncero:\n  call void @llvm.trap()\n  unreachable\nvuelta:\n  %i = phi i64 [ 63, %entry ], [ %i2, %paso ]\n  %q = phi i64 [ 0, %entry ], [ %q2, %paso ]\n  %r = phi i64 [ 0, %entry ], [ %r2, %paso ]\n  %bit0 = lshr i64 %a, %i\n  %bit = and i64 %bit0, 1\n  %rs = shl i64 %r, 1\n  %r1 = or i64 %rs, %bit\n  %qs = shl i64 %q, 1\n  %mayor = icmp uge i64 %r1, %b\n  %r2o = sub i64 %r1, %b\n  %q2o = or i64 %qs, 1\n  %r2 = select i1 %mayor, i64 %r2o, i64 %r1\n  %q2 = select i1 %mayor, i64 %q2o, i64 %qs\n  %i2 = sub i64 %i, 1\n  %fin = icmp slt i64 %i, 1\n  br i1 %fin, label %salida, label %paso\npaso:\n  br label %vuelta\nsalida:\n  %v0 = insertvalue %V undef, i64 %q2, 0\n  %v1 = insertvalue %V %v0, i64 %r2, 1\n  ret %V %v1\n"))
+    // --- __aeabi_uidiv / __aeabi_idiv: la división de 32 bits de la ABI de ARM
+    l = std::array::push(l, d + "i32 @__aeabi_uidiv(i32 %a, i32 %b) " + lv_br("\n  %q = call i32 @lv_udiv32(i32 %a, i32 %b)\n  ret i32 %q\n"))
+    l = std::array::push(l, d + "i32 @__aeabi_idiv(i32 %a, i32 %b) " + lv_br("\nentry:\n  %as = icmp slt i32 %a, 0\n  %bs = icmp slt i32 %b, 0\n  %na = sub i32 0, %a\n  %nb = sub i32 0, %b\n  %ua = select i1 %as, i32 %na, i32 %a\n  %ub = select i1 %bs, i32 %nb, i32 %b\n  %q = call i32 @lv_udiv32(i32 %ua, i32 %ub)\n  %nq = sub i32 0, %q\n  %distinto = xor i1 %as, %bs\n  %r = select i1 %distinto, i32 %nq, i32 %q\n  ret i32 %r\n"))
+    l = std::array::push(l, d + "%P @__aeabi_uidivmod(i32 %a, i32 %b) " + lv_br("\n  %q = call i32 @lv_udiv32(i32 %a, i32 %b)\n  %p = mul i32 %q, %b\n  %r = sub i32 %a, %p\n  %v0 = insertvalue %P undef, i32 %q, 0\n  %v1 = insertvalue %P %v0, i32 %r, 1\n  ret %P %v1\n"))
+    // --- los nombres «clásicos» de compiler-rt para las mismas cuentas:
+    //     clang los pide cuando no baja la división por la ABI de ARM (por
+    //     ejemplo `__udivsi3` para un `udiv i32` corriente).
+    l = std::array::push(l, d + "i32 @__udivsi3(i32 %a, i32 %b) " + lv_br("\n  %q = call i32 @lv_udiv32(i32 %a, i32 %b)\n  ret i32 %q\n"))
+    l = std::array::push(l, d + "i32 @__umodsi3(i32 %a, i32 %b) " + lv_br("\n  %r = call i32 @lv_umod32(i32 %a, i32 %b)\n  ret i32 %r\n"))
+    l = std::array::push(l, d + "i32 @__divsi3(i32 %a, i32 %b) " + lv_br("\n  %p = call %P @__aeabi_idivmod(i32 %a, i32 %b)\n  %q = extractvalue %P %p, 0\n  ret i32 %q\n"))
+    l = std::array::push(l, d + "i32 @__modsi3(i32 %a, i32 %b) " + lv_br("\n  %p = call %P @__aeabi_idivmod(i32 %a, i32 %b)\n  %r = extractvalue %P %p, 1\n  ret i32 %r\n"))
+    // El desenrollado de excepciones (unwinder) no existe sin libc: el único
+    // guiño a él que queda en un binario de Titan es el símbolo que el
+    // enlazador pone en `.ARM.exidx`. Se define aquí para que el ejecutable no
+    // tenga ninguna referencia pendiente; si alguien la llamara, es una trampa.
+    l = std::array::push(l, d + "void @__aeabi_unwind_cpp_pr0() noreturn " + lv_br("\n  call void @llvm.trap()\n  unreachable\n"))
+    l = std::array::push(l, d + "%P @__aeabi_idivmod(i32 %a, i32 %b) " + lv_br("\nentry:\n  %as = icmp slt i32 %a, 0\n  %bs = icmp slt i32 %b, 0\n  %na = sub i32 0, %a\n  %nb = sub i32 0, %b\n  %ua = select i1 %as, i32 %na, i32 %a\n  %ub = select i1 %bs, i32 %nb, i32 %b\n  %q = call i32 @lv_udiv32(i32 %ua, i32 %ub)\n  %nq = sub i32 0, %q\n  %distinto = xor i1 %as, %bs\n  %qr = select i1 %distinto, i32 %nq, i32 %q\n  %p = mul i32 %qr, %b\n  %r0 = sub i32 %a, %p\n  %v0 = insertvalue %P undef, i32 %qr, 0\n  %v1 = insertvalue %P %v0, i32 %r0, 1\n  ret %P %v1\n"))
+    // --- división de 64 bits con los nombres que pide LLVM
+    l = std::array::push(l, d + "i64 @__udivdi3(i64 %a, i64 %b) " + lv_br("\n  %v = call %V @lv_udivmod64(i64 %a, i64 %b)\n  %q = extractvalue %V %v, 0\n  ret i64 %q\n"))
+    l = std::array::push(l, d + "i64 @__umoddi3(i64 %a, i64 %b) " + lv_br("\n  %v = call %V @lv_udivmod64(i64 %a, i64 %b)\n  %r = extractvalue %V %v, 1\n  ret i64 %r\n"))
+    l = std::array::push(l, d + "i64 @__divdi3(i64 %a, i64 %b) " + lv_br("\nentry:\n  %as = icmp slt i64 %a, 0\n  %bs = icmp slt i64 %b, 0\n  %na = sub i64 0, %a\n  %nb = sub i64 0, %b\n  %ua = select i1 %as, i64 %na, i64 %a\n  %ub = select i1 %bs, i64 %nb, i64 %b\n  %v = call %V @lv_udivmod64(i64 %ua, i64 %ub)\n  %q = extractvalue %V %v, 0\n  %nq = sub i64 0, %q\n  %distinto = xor i1 %as, %bs\n  %r = select i1 %distinto, i64 %nq, i64 %q\n  ret i64 %r\n"))
+    l = std::array::push(l, d + "i64 @__moddi3(i64 %a, i64 %b) " + lv_br("\nentry:\n  %as = icmp slt i64 %a, 0\n  %bs = icmp slt i64 %b, 0\n  %na = sub i64 0, %a\n  %nb = sub i64 0, %b\n  %ua = select i1 %as, i64 %na, i64 %a\n  %ub = select i1 %bs, i64 %nb, i64 %b\n  %v = call %V @lv_udivmod64(i64 %ua, i64 %ub)\n  %r = extractvalue %V %v, 1\n  %nr = sub i64 0, %r\n  %out = select i1 %as, i64 %nr, i64 %r\n  ret i64 %out\n"))
+    // --- enteros de 64 bits <-> double
+    l = std::array::push(l, d + "double @__floatundidf(i64 %x) " + lv_br("\nentry:\n  %hi = lshr i64 %x, 32\n  %hit = trunc i64 %hi to i32\n  %lot = trunc i64 %x to i32\n  %dh = uitofp i32 %hit to double\n  %dl = uitofp i32 %lot to double\n  %esc = fmul double %dh, 4294967296.0\n  %s = fadd double %esc, %dl\n  ret double %s\n"))
+    l = std::array::push(l, d + "double @__floatdidf(i64 %x) " + lv_br("\nentry:\n  %neg = icmp slt i64 %x, 0\n  %nx = sub i64 0, %x\n  %u = select i1 %neg, i64 %nx, i64 %x\n  %d = call double @__floatundidf(i64 %u)\n  %nd = fsub double -0.000000e+00, %d\n  %r = select i1 %neg, double %nd, double %d\n  ret double %r\n"))
+    l = std::array::push(l, d + "i64 @__fixunsdfdi(double %x) " + lv_br("\nentry:\n  %chico = fcmp olt double %x, 2147483648.0\n  br i1 %chico, label %simple, label %partir\nsimple:\n  %i = fptoui double %x to i32\n  %z = zext i32 %i to i64\n  ret i64 %z\npartir:\n  %esc = fmul double %x, 2.3283064365386963e-10\n  %hit = fptoui double %esc to i32\n  %dh = uitofp i32 %hit to double\n  %p = fmul double %dh, 4294967296.0\n  %resto = fsub double %x, %p\n  %lot = fptoui double %resto to i32\n  %hz = zext i32 %hit to i64\n  %lz = zext i32 %lot to i64\n  %hs = shl i64 %hz, 32\n  %r = or i64 %hs, %lz\n  ret i64 %r\n"))
+    l = std::array::push(l, d + "i64 @__fixdfdi(double %x) " + lv_br("\nentry:\n  %neg = fcmp olt double %x, 0.000000e+00\n  %nx = fsub double -0.000000e+00, %x\n  %u = select i1 %neg, double %nx, double %x\n  %v = call i64 @__fixunsdfdi(double %u)\n  %nv = sub i64 0, %v\n  %r = select i1 %neg, i64 %nv, i64 %v\n  ret i64 %r\n"))
     l
 }
 
@@ -1757,8 +1927,8 @@ fn lv_asm_escape(s: string) -> string {
 
 // Programa (gu) + runtime (gr) -> Result::Ok(texto .ll) o Err(mensajes).
 fn lv_build(gu: G, gr: G, target: string) -> Result {
-    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" {
-        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64 or aarch64-none)")
+    if target != "x86_64" && target != "aarch64" && target != "aarch64-none" && target != "armv7" {
+        return Result::Err("LLVM backend: unknown target '" + target + "' (x86_64, aarch64, aarch64-none or armv7)")
     }
     // aarch64-none: ARM64 sin sistema operativo (arranca sola; ver
     // lv_bare_prologue y native/sys_bare.titan).
@@ -1829,6 +1999,10 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     head = std::array::push(head, "; Generado por selfhost/native/llvm.titan (compilador de Titan escrito en Titan).")
     if bare {
         head = std::array::push(head, "target triple = \"aarch64-unknown-none\"")
+    } else if target == "armv7" {
+        // ARM 32 bits: armv7-a, Linux, coma flotante dura (VFP, como el Termux
+        // de 32 bits). La pila y el ABI de las llamadas son los de ARM EABI.
+        head = std::array::push(head, "target triple = \"armv7-unknown-linux-gnueabihf\"")
     } else {
         head = std::array::push(head, "target triple = \"" + target + "-unknown-linux-gnu\"")
     }
@@ -1855,6 +2029,15 @@ fn lv_build(gu: G, gr: G, target: string) -> Result {
     }
     for line in b.odef {
         head = std::array::push(head, line)
+    }
+    // ARM de 32 bits: rellena con las direcciones los huecos que no caben en
+    // un inicializador estático (esquemas de struct y unidades de enum).
+    if arch == "armv7" {
+        let mut cuerpo = ""
+        for s in b.parches {
+            cuerpo += s + "\n"
+        }
+        head = std::array::push(head, "define internal void @lv_parches() " + lv_br("\n" + cuerpo + "  ret void\n"))
     }
     for line in lv_glue(rctx) {
         head = std::array::push(head, line)

@@ -7,6 +7,11 @@
 # Logs
 *.log
 
+# Caché de Python (el .pyc del cliente DAP estaba versionado por descuido y se
+# ensuciaba en cada corrida de selfhost/tests/dap/probar.py)
+__pycache__/
+*.pyc
+
 # Archivos de parcheo temporales
 *.bak
 fix_*.py
@@ -63,3 +68,7 @@ selfhost/build_c
 selfhost/tests/audio/fixtures/
 selfhost/titan_*
 selfhost/build_llvm
+selfhost/prueba_interna
+# Entradas que genera native/regex/umbral.py en su carpeta:
+selfhost/native/regex/b.txt
+selfhost/native/regex/p.txt

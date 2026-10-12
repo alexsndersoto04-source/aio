@@ -98,8 +98,9 @@
 <li><a href="validacion.html">Registro de validación (histórico)</a></li>
 </ul>
 </nav></aside><article class="md"><p class="crumb"><a href="../documentacion.html">Documentación</a> / Lenguaje</p><h1 id="titan-language-specification">Titan Language Specification</h1>
-<p><strong>Document version:</strong> 1.0 — 2026-08-21
-<strong>Applies to:</strong> TITAN / Zett compiler <code>1.0.0</code>. Written when the reference implementation was a bytecode VM; the language semantics
+<p><strong>Document version:</strong> 1.1 — 2026-10-10 (§3.2 generics, §3.3 function-type aliases and the §18 alias
+row corrected against compiler 1.3.0; the rest is unchanged from 1.0 of 2026-08-21)
+<strong>Applies to:</strong> TITAN / Zett compiler <code>1.3.0</code>. Written when the reference implementation was a bytecode VM; the language semantics
 it describes are what the native backends (x86-64, LLVM) implement. Where it says "VM", read "the program at run time".
 Language features listed as unsupported may differ from today's compiler: <code>selfhost/ESTADO.md</code> is the current record.
 <strong>Canonical source extension:</strong> <code>.titan</code>
@@ -290,20 +291,86 @@ fields and no user-visible representation.</p>
 <p>Integer arithmetic is <strong>checked</strong>: overflow, division by zero, and out-of-range indexing are
 structured runtime errors, never silent wraparound or undefined behavior.</p>
 <h3 id="32-generics">3.2 Generics</h3>
-<p>Titan is <strong>monomorphic</strong>. Exactly one parameterized shape exists: <code>Array&lt;T&gt;</code> / <code>Vec&lt;T&gt;</code>, which
-take one argument. Every other named type must be written with zero type arguments; writing
-<code>Option&lt;int&gt;</code> or <code>Map&lt;K, V&gt;</code> is rejected with
-<code>type 'Name' expects 0 type arguments, found N</code>.</p>
-<p>This is deliberate. Accepting and discarding type arguments would advertise generic guarantees
-the checker does not enforce. User-defined generic functions and generic structs are <strong>not in
-the grammar</strong>.</p>
+<p>User-defined generics are <strong>supported</strong> (since 1.3.0) on every declaration kind:</p>
+<pre><code class="language-titan"><span class="k">struct</span> Caja&lt;T&gt; { valor: T }            <span class="c">// one parameter</span>
+<span class="k">struct</span> Par&lt;A, B&gt; { a: A, b: B }        <span class="c">// several</span>
+<span class="k">enum</span> Quizas&lt;T&gt; { <span class="t">Alguno</span>(T), Nada }     <span class="c">// enums, variants with or without payload</span>
+<span class="k">type</span> Lista&lt;T&gt; = [T]                    <span class="c">// aliases</span>
+<span class="k">fn</span> identidad&lt;T&gt;(x: T) -&gt; T { x }       <span class="c">// functions</span>
+<span class="k">impl</span>&lt;T&gt; Caja&lt;T&gt; {
+    <span class="k">fn</span> obtener(self) -&gt; T { self.valor }
+    <span class="k">fn</span> transformar&lt;U&gt;(self, f: <span class="k">fn</span>(T) -&gt; U) -&gt; Caja&lt;U&gt; { Caja { valor: f(self.valor) } }
+}
+</code></pre>
+<p>Type arguments are inferred from the call arguments; the turbofish form
+(<code>identidad::&lt;string&gt;("x")</code>) states them explicitly. A parameter written twice
+(<code>struct MismoPar&lt;T&gt; { a: T, b: T }</code>) really is one type. Inside a generic body the parameter is a
+type of its own (<code>TypeParam("T")</code>), <strong>not</strong> <code>any</code>: a body that returns it where an <code>int</code> is declared
+is rejected instead of assumed to work.</p>
+<p>Diagnostics — every row is asserted by <code>selfhost/tests/genericos/probar.sh</code>:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Program</th>
+<th>Diagnostic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>let mal: string = identidad(99)</code></td>
+<td><code>type mismatch: expected String, found Int</code></td>
+</tr>
+<tr>
+<td><code>MismoPar { a: 1, b: "no_es_int" }</code></td>
+<td><code>type mismatch: expected Int, found String</code></td>
+</tr>
+<tr>
+<td><code>let c: Caja&lt;int, string&gt; = Caja { valor: 1 }</code></td>
+<td><code>type 'Caja' expects 1 type arguments, found 2</code></td>
+</tr>
+<tr>
+<td><code>fn falso_int&lt;T&gt;(x: T) -&gt; int { x }</code></td>
+<td><code>type mismatch: expected Int, found TypeParam("T")</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>The prelude enums are still not parameterized.</strong> Collections take exactly one argument —
+<code>[T]</code>, <code>Array&lt;T&gt;</code> and <code>Vec&lt;T&gt;</code> are the same shape — and <code>Option</code> / <code>Result</code> take none:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Diagnostic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>let q: Option&lt;int&gt;</code></td>
+<td><code>type 'Option' expects 0 type arguments, found 1</code></td>
+</tr>
+<tr>
+<td><code>fn f(r: Result&lt;int, string&gt;)</code></td>
+<td><code>type 'Result' expects 0 type arguments, found 2</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>Map&lt;K, V&gt;</code> is parsed as a named type, but map literals and <code>std::map</code> values have type <code>map</code>, so
+nothing satisfies it (<code>type mismatch: expected Named("Map"&lt;String, Int&gt;), found Named("map")</code>).
+Use <code>map</code>. <code>Option</code> and <code>Result</code> are ordinary enums whose payload type is not tracked per
+instantiation; see <a href="#11-option-result-and-the--operator">§11</a>.</p>
 <h3 id="33-type-aliases">3.3 Type aliases</h3>
 <pre><code class="language-titan"><span class="k">type</span> UserId = string
 <span class="k">type</span> Score  = int
 </code></pre>
 <p>Aliases are resolved before compatibility checks and cost nothing at runtime. Recursive aliases
-are rejected (<code>type alias 'T' is recursive</code>). Aliases of <strong>function types</strong>
-(<code>type Handler = fn(int) -&gt; string</code>) are not accepted by the type parser.</p>
+are rejected (<code>type alias 'T' is recursive</code>). Aliases of <strong>function types</strong> are accepted and can be
+used anywhere a function is expected:</p>
+<pre><code class="language-titan"><span class="k">type</span> Handler  = <span class="k">fn</span>(int) -&gt; string
+<span class="k">type</span> Callback = <span class="k">fn</span>(int, string) -&gt; bool
+<span class="k">type</span> Producer = <span class="k">fn</span>() -&gt; string
+</code></pre>
+<p>Aliases may also be generic (<code>type Lista&lt;T&gt; = [T]</code>, <code>type ParConEtiqueta&lt;T&gt; = (string, T)</code>), and a
+generic alias can be instantiated in a signature (<code>fn f(l: Lista&lt;int&gt;) -&gt; int { len(l) }</code>).</p>
 <h3 id="34-type-forms-that-are-parsed-and-rejected">3.4 Type forms that are parsed and rejected</h3>
 <div class="tablewrap"><table>
 <thead>
@@ -706,7 +773,7 @@ Each also exists in call form (<code>map(xs, f)</code>).</p>
   <code>std::runtime</code> (12).</li>
 </ul>
 <h3 id="132-the-native-registry">13.2 The native registry</h3>
-<p><code>selfhost/natives.titan</code> declares <strong>812 unique native functions across 73 <code>std::*</code>
+<p><code>selfhost/natives.titan</code> declares <strong>813 unique native functions across 73 <code>std::*</code>
 namespaces</strong> (their bodies are Titan code in <code>selfhost/native/</code>), each with a fixed parameter list, a result type, and an optional required
 capability. The compiler resolves qualified names through this registry and checks arity and
 parameter types <strong>before</strong> code generation. A native failure becomes a runtime error that names
@@ -839,22 +906,39 @@ structured dispatch loop, so arbitrary validated bytecode compiles without relyi
 The emitter validates operand-stack balance, jump targets, local indices, and call arity while
 generating code.</p>
 <h3 id="161-supported-in-webassembly">16.1 Supported in WebAssembly</h3>
-<p>Integer and float arithmetic and comparisons, bitwise operators, locals, branches and loops,
+<p>Integer arithmetic and comparisons, bitwise operators, locals, branches and loops,
 calls and returns, string literals and concatenation, <code>len</code>, arrays, tuples, structs, enums
-(construction, tag tests, payload extraction), indexing, <code>std::array::{push, pop, set, slice,
+(construction, tag tests, payload extraction), indexing, ranges (<code>start..end</code> / <code>start..=end</code>,
+materialized like the native runtime: exclusive end except in <code>..=</code>, empty when the start is not
+lower, and an unrecoverable error past one million elements), <code>std::array::{push, pop, set, slice,
 concat}</code>, <code>std::map::{new, insert, insert_new, get, contains, remove, keys, values, length}</code>,
 <code>std::text::{equals, hash64}</code>, <code>std::time::unix_millis</code>, the <code>std::wasm::heap_*</code> introspection
 API, and <code>print</code> with exactly one argument routed to the host.</p>
+<p>Closures are supported: <code>MakeClosure</code> copies the captured locals by value into a heap object
+(<code>[table slot, arity, captures…]</code>), every function that can become a closure gets one entry in a
+<code>funcref</code> table guarded by a shared canonical type <code>(arity_max arguments, closure object) → i64</code>,
+and calling a closure (<code>CallValue</code>, or the higher-order operations) goes through <code>call_indirect</code>
+after checking the stored arity. The higher-order array operations — <code>map</code>, <code>filter</code>, <code>fold</code>,
+<code>sort_by</code>, <code>find</code>, <code>any</code>, <code>all</code>, in both the method form <code>xs.map(f)</code> and the free form
+<code>map(xs, f)</code> — share one implementation per operation in the module and behave like the native
+runtime: <code>sort_by</code> is stable, extracts the first minimum on each pass, never modifies the
+original array, and the comparator receives <code>(candidate, current minimum)</code>.</p>
+<p><code>print</code> receives a TITAN string handle, so the value has to be text. Numbers and any other
+non-text value are <strong>not</strong> formatted: the host decodes the raw bits as a handle, which in the
+browser host prints an empty line or raises <code>RangeError</code>. Formatting non-text values in this
+target is still pending.</p>
 <p>Browser integration is provided by host imports declared by the module and implemented in
 JavaScript (<code>examples/browser/host.js</code>): the <code>std::web::*</code> family covering DOM manipulation,
 events, <code>fetch</code>, WebSocket, Canvas 2D, animation frames, and WebGL2.</p>
 <h3 id="162-rejected-by-the-webassembly-backend">16.2 Rejected by the WebAssembly backend</h3>
 <p>Every rejection is an explicit diagnostic naming the function and the operation:</p>
 <ul>
-<li><strong>Ranges</strong> — <code>start..end</code> / <code>start..=end</code> are not lowered yet, so <code>for i in 0..n</code> does not
-  compile to WebAssembly. Use a <code>while</code> loop with a counter.</li>
-<li>Closures and the higher-order array operations (<code>map</code>, <code>filter</code>, <code>fold</code>, <code>sort_by</code>, <code>find</code>,
-  <code>any</code>, <code>all</code>), <code>TryCall</code>, and dynamic method dispatch.</li>
+<li><code>ToString</code> (string interpolation with a non-text value), and formatting non-text values in
+  <code>print</code>: see the note at the end of §16.1.</li>
+<li>Floats: <code>PushFloat</code> has no encoding here, so a float literal is rejected and float arithmetic is
+  unreachable. Values are untyped <code>i64</code> in this target, so floats need their own representation
+  first.</li>
+<li><code>TryCall</code>, and dynamic method dispatch on non-struct receivers.</li>
 <li>Concurrency (<code>spawn</code>, channels, <code>select</code>) and every task operation.</li>
 <li>All host-facing intrinsic families: filesystem, process, TCP, TLS, WebSocket, HTTP server,
   SQLite, PostgreSQL, MySQL, <code>std::db</code>, <code>std::runtime</code>.</li>
@@ -892,8 +976,8 @@ distribution packages — plus two standalone protocol servers.</p>
 <td>Emit the bytecode container and list every function with its op and local counts</td>
 </tr>
 <tr>
-<td><code>exec &lt;file.tbc&gt;</code></td>
-<td>Validate and execute an existing artifact</td>
+<td><code>exec &lt;file.tbc&gt; [args…]</code></td>
+<td>Validate and execute an existing artifact; extra arguments go to the program</td>
 </tr>
 <tr>
 <td><code>wasm &lt;input&gt; [-o out.wasm]</code></td>
@@ -1019,8 +1103,8 @@ against a remote works fully offline, and local path dependencies need no regist
 </tr>
 <tr>
 <td>Aliases</td>
-<td>No function-type aliases</td>
-<td>parse error</td>
+<td>Recursive aliases</td>
+<td><code>type alias 'T' is recursive</code></td>
 </tr>
 <tr>
 <td>Assignment</td>
