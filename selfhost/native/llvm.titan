@@ -1757,6 +1757,27 @@ fn lv_arm32_rt_helpers() -> array {
     //     `undefined symbol: __aeabi_l2d` y compañía. Con el `zig cc`
     //     (arm-linux-none, coma flotante por software) no se veía: ahí la ABI
     //     del módulo ya es la base de ARM y su compiler-rt pone el resto.
+    // --- memoria de libc que clang se inventa él solo. Al optimizar, LLVM
+    //     cambia un bucle que rellena o copia bytes por una llamada a `memset`
+    //     o `memcpy` (lo hace el paso de reconocimiento de bucles, no el
+    //     programa). Sin libc no hay a quién llamar y el enlazado se quedaba en
+    //     `undefined symbol: memset`: eso pasó con el compilador de verdad, que
+    //     tiene bucles así dentro. Las firmas son las de libc en 32 bits
+    //     (`size_t` = i32) porque son las que clang espera; `__aeabi_memset`
+    //     lleva el orden de la RTABI, longitud antes que byte.
+    l = std::array::push(l, d + "ptr @memset(ptr %p, i32 %c, i32 %n) " + lv_br("\nentry:\n  %z = icmp eq i32 %n, 0\n  br i1 %z, label %fin, label %paso\npaso:\n  %i = phi i32 [ 0, %entry ], [ %i2, %paso ]\n  %q = getelementptr i8, ptr %p, i32 %i\n  %b = trunc i32 %c to i8\n  store i8 %b, ptr %q\n  %i2 = add i32 %i, 1\n  %f = icmp eq i32 %i2, %n\n  br i1 %f, label %fin, label %paso\nfin:\n  ret ptr %p\n"))
+    l = std::array::push(l, d + "ptr @memcpy(ptr %d, ptr %s, i32 %n) " + lv_br("\nentry:\n  %z = icmp eq i32 %n, 0\n  br i1 %z, label %fin, label %paso\npaso:\n  %i = phi i32 [ 0, %entry ], [ %i2, %paso ]\n  %sp = getelementptr i8, ptr %s, i32 %i\n  %dp = getelementptr i8, ptr %d, i32 %i\n  %b = load i8, ptr %sp\n  store i8 %b, ptr %dp\n  %i2 = add i32 %i, 1\n  %f = icmp eq i32 %i2, %n\n  br i1 %f, label %fin, label %paso\nfin:\n  ret ptr %d\n"))
+    l = std::array::push(l, d + "ptr @memmove(ptr %d, ptr %s, i32 %n) " + lv_br("\nentry:\n  %z = icmp eq i32 %n, 0\n  %di = ptrtoint ptr %d to i32\n  %si = ptrtoint ptr %s to i32\n  %antes = icmp ule i32 %di, %si\n  %adelante_o_z = or i1 %z, %antes\n  br i1 %adelante_o_z, label %adelante, label %atras\nadelante:\n  %za = icmp eq i32 %n, 0\n  br i1 %za, label %fin, label %pasoa\npasoa:\n  %ia = phi i32 [ 0, %adelante ], [ %ia2, %pasoa ]\n  %spa = getelementptr i8, ptr %s, i32 %ia\n  %dpa = getelementptr i8, ptr %d, i32 %ia\n  %ba = load i8, ptr %spa\n  store i8 %ba, ptr %dpa\n  %ia2 = add i32 %ia, 1\n  %fa = icmp eq i32 %ia2, %n\n  br i1 %fa, label %fin, label %pasoa\natras:\n  %i0 = sub i32 %n, 1\n  br label %pasob\npasob:\n  %ib = phi i32 [ %i0, %atras ], [ %ib2, %pasob ]\n  %spb = getelementptr i8, ptr %s, i32 %ib\n  %dpb = getelementptr i8, ptr %d, i32 %ib\n  %bb = load i8, ptr %spb\n  store i8 %bb, ptr %dpb\n  %ib2 = sub i32 %ib, 1\n  %fb = icmp eq i32 %ib, 0\n  br i1 %fb, label %fin, label %pasob\nfin:\n  ret ptr %d\n"))
+    l = std::array::push(l, d + "i32 @memcmp(ptr %a, ptr %b, i32 %n) " + lv_br("\nentry:\n  %z = icmp eq i32 %n, 0\n  br i1 %z, label %iguales, label %paso\npaso:\n  %i = phi i32 [ 0, %entry ], [ %i2, %sigue ]\n  %pa = getelementptr i8, ptr %a, i32 %i\n  %pb = getelementptr i8, ptr %b, i32 %i\n  %xa8 = load i8, ptr %pa\n  %xb8 = load i8, ptr %pb\n  %xa = zext i8 %xa8 to i32\n  %xb = zext i8 %xb8 to i32\n  %dif = sub i32 %xa, %xb\n  %distinto = icmp ne i32 %dif, 0\n  br i1 %distinto, label %salida, label %sigue\nsigue:\n  %i2 = add i32 %i, 1\n  %f = icmp eq i32 %i2, %n\n  br i1 %f, label %iguales, label %paso\niguales:\n  ret i32 0\nsalida:\n  ret i32 %dif\n"))
+    // `bcmp` es el `memcmp` de «¿son iguales?»: LLVM también lo inventa él
+    // solo al reconocer un bucle que compara memoria, así que se define igual.
+    l = std::array::push(l, d + "i32 @bcmp(ptr %a, ptr %b, i32 %n) " + lv_br("\n  %r = call i32 @memcmp(ptr %a, ptr %b, i32 %n)\n  ret i32 %r\n"))
+    // Los mismos cuatro con los nombres de la RTABI (`__aeabi_memset` lleva el
+    // byte al final, al revés que `memset`).
+    l = std::array::push(l, d + "ptr @__aeabi_memset(ptr %d, i32 %n, i32 %c) " + lv_br("\n  %p = call ptr @memset(ptr %d, i32 %c, i32 %n)\n  ret ptr %p\n"))
+    l = std::array::push(l, d + "ptr @__aeabi_memclr(ptr %d, i32 %n) " + lv_br("\n  %p = call ptr @memset(ptr %d, i32 0, i32 %n)\n  ret ptr %p\n"))
+    l = std::array::push(l, d + "ptr @__aeabi_memcpy(ptr %d, ptr %s, i32 %n) " + lv_br("\n  %p = call ptr @memcpy(ptr %d, ptr %s, i32 %n)\n  ret ptr %p\n"))
+    l = std::array::push(l, d + "ptr @__aeabi_memmove(ptr %d, ptr %s, i32 %n) " + lv_br("\n  %p = call ptr @memmove(ptr %d, ptr %s, i32 %n)\n  ret ptr %p\n"))
     // Estas cuatro llevan `arm_aapcscc` (la ABI base de ARM) y no la del
     // módulo: clang los llama así. En un módulo con coma flotante por
     // hardware (armv7-linux-gnueabihf, lo que enlaza la CI con clang y lld)

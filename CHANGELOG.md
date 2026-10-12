@@ -25,6 +25,14 @@ aporta lo que faltaba.
   devuelve en `d0`. Ahora esas cuatro funciones llevan `arm_aapcscc` y el llamante encuentra el número donde
   lo busca. Sin esto el enlazado **no se queja** y los números salen mal: `parse_float("1")` devolvía
   `5e-324` (los bits del entero, sin convertir) en vez de `1`.
+- **La memoria que clang se inventa él solo.** Con el enlazado ya resuelto salió el siguiente:
+  `ld.lld: error: undefined symbol: memset`. Al optimizar, LLVM cambia un bucle que rellena o copia bytes
+  por una llamada a `memset`, `memcpy` o `bcmp` (lo hace el paso que reconoce bucles, no el programa), y sin
+  libc no hay a quién llamar: el compilador, que tiene bucles así dentro, no enlazaba. Ahora el backend
+  escribe también esas funciones en el `.ll` para ARM de 32 bits: `memset`, `memcpy`, `memmove`, `memcmp` y
+  `bcmp`, más los nombres de la RTABI (`__aeabi_memset` —con la longitud antes del byte—, `__aeabi_memclr`,
+  `__aeabi_memcpy`, `__aeabi_memmove`). Comprobadas bajo el emulador llamándolas de verdad, con solapes
+  incluidos: las siete comprobaciones dan `si`.
 - **Prueba nueva en la CI**: `selfhost/tests/arm32_diff.sh decimales.titan basico.titan` compila esos
   programas para ARM de 32 bits con el camino real (clang + lld) y compara byte a byte su salida con la del
   mismo programa en x86-64, ya dentro del emulador de ARM32. Aquí, en esta máquina, la muestra corta entera

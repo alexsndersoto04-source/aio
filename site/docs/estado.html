@@ -2757,6 +2757,12 @@ hardware, en vez del <code>arm-linux-none</code> del clang de zig), también da 
 corre dos de esos programas (<code>decimales.titan</code> y <code>basico.titan</code>) en cada construcción, porque en ese camino
 un error de ABI en los ayudantes <code>__aeabi_*</code> no rompe el enlazado: solo da números mal (ver el changelog del
 2026-10-12 (f)).</p>
+<p><strong>Y con los ayudantes de la RTABI arreglados, el compilador de ARM 32 bits compila decimales.</strong> El binario
+<code>titan</code> de ARM 32 bits armado por el camino de la CI (clang + lld, coma flotante por hardware) compiló bajo el
+emulador, en <strong>39m27s</strong>, un programa con literales decimales (<code>1.5</code>, <code>2.25</code>, <code>0.1</code>) para x86-64. El
+ejecutable que dejó (ELF x86-64 de 1.144.608 bytes) imprime <code>1.5 2.25 0.1 3.475</code> y <code>25</code>: lo mismo que el
+compilador de x86-64, byte a byte. Es la prueba de que el arreglo del 2026-10-12 (f) llega al compilador
+mismo: con la ABI mal, esos literales entraban como números diminutos (los bits del entero sin convertir).</p>
 <p><strong>En el emulador de ARM32 (dos fallos de verdad corregidos).</strong> <code>native/arm32/correr.py</code> se tragaba cualquier
 argumento del programa que empezara por <code>--</code> (así <code>titan compile x --target armv7</code> corría sin <code>--target</code>), y
 contestaba <code>/proc/self/exe</code> con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
@@ -2967,9 +2973,11 @@ byte)</code>. El DAP queda en <strong>20 casos, 0 fallan</strong> y el LSP en <s
    un <code>i64</code> no puede llevar la dirección de un puntero de 32 bits en un inicializador), los ayudantes que en
    32 bits no son instrucciones (<code>__udivsi3</code>, <code>__divsi3</code>, <code>__umodsi3</code>, <code>__modsi3</code>, <code>__floatdidf</code>,
    <code>__fixdfdi</code>, <code>__aeabi_l2d</code>, <code>__aeabi_ul2d</code>, <code>__aeabi_d2lz</code>, <code>__aeabi_d2ulz</code>, <code>__aeabi_uldivmod</code>,
-   <code>__aeabi_ldivmod</code>, <code>__aeabi_uidiv</code>, <code>__aeabi_idiv</code>, …) los escribe el propio backend en el <code>.ll</code> (no hay
-   libgcc ni compiler-rt) —los que llevan <code>double</code> con <code>arm_aapcscc</code>, la ABI base de ARM, que es la que clang
-   les da cuando los llama; ver el changelog del 2026-10-12 (f)—, y <code>fma</code> se
+   <code>__aeabi_ldivmod</code>, <code>__aeabi_uidiv</code>, <code>__aeabi_idiv</code>, <code>memset</code>, <code>memcpy</code>, <code>memmove</code>, <code>memcmp</code>, <code>bcmp</code>,
+   <code>__aeabi_memcpy</code>, <code>__aeabi_memmove</code>, <code>__aeabi_memset</code>, <code>__aeabi_memclr</code>, …) los escribe el propio backend
+   en el <code>.ll</code> (no hay libgcc ni compiler-rt) —los que llevan <code>double</code> con <code>arm_aapcscc</code>, la ABI base de ARM,
+   que es la que clang les da cuando los llama; los de memoria porque LLVM cambia bucles por llamadas a
+   <code>memset</code>/<code>memcpy</code> al optimizar; ver el changelog del 2026-10-12 (f)—, y <code>fma</code> se
    sustituye por multiplicación + suma (dos redondeos) porque ARMv7 sin VFPv4 no tiene esa instrucción.</li>
 <li><strong><code>sys_arm32.titan</code></strong> (runtime): traduce las llamadas al sistema de Linux x86-64 —las que usa todo el
    runtime— a las de ARM de 32 bits (EABI: número en <code>r7</code>, argumentos en <code>r0</code>-<code>r5</code>), incluidas las que

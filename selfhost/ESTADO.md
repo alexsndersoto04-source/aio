@@ -1975,6 +1975,13 @@ corre dos de esos programas (`decimales.titan` y `basico.titan`) en cada constru
 un error de ABI en los ayudantes `__aeabi_*` no rompe el enlazado: solo da números mal (ver el changelog del
 2026-10-12 (f)).
 
+**Y con los ayudantes de la RTABI arreglados, el compilador de ARM 32 bits compila decimales.** El binario
+`titan` de ARM 32 bits armado por el camino de la CI (clang + lld, coma flotante por hardware) compiló bajo el
+emulador, en **39m27s**, un programa con literales decimales (`1.5`, `2.25`, `0.1`) para x86-64. El
+ejecutable que dejó (ELF x86-64 de 1.144.608 bytes) imprime `1.5 2.25 0.1 3.475` y `25`: lo mismo que el
+compilador de x86-64, byte a byte. Es la prueba de que el arreglo del 2026-10-12 (f) llega al compilador
+mismo: con la ABI mal, esos literales entraban como números diminutos (los bits del entero sin convertir).
+
 **En el emulador de ARM32 (dos fallos de verdad corregidos).** `native/arm32/correr.py` se tragaba cualquier
 argumento del programa que empezara por `--` (así `titan compile x --target armv7` corría sin `--target`), y
 contestaba `/proc/self/exe` con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
@@ -2119,9 +2126,11 @@ byte)`. El DAP queda en **20 casos, 0 fallan** y el LSP en **110 comprobaciones,
    un `i64` no puede llevar la dirección de un puntero de 32 bits en un inicializador), los ayudantes que en
    32 bits no son instrucciones (`__udivsi3`, `__divsi3`, `__umodsi3`, `__modsi3`, `__floatdidf`,
    `__fixdfdi`, `__aeabi_l2d`, `__aeabi_ul2d`, `__aeabi_d2lz`, `__aeabi_d2ulz`, `__aeabi_uldivmod`,
-   `__aeabi_ldivmod`, `__aeabi_uidiv`, `__aeabi_idiv`, …) los escribe el propio backend en el `.ll` (no hay
-   libgcc ni compiler-rt) —los que llevan `double` con `arm_aapcscc`, la ABI base de ARM, que es la que clang
-   les da cuando los llama; ver el changelog del 2026-10-12 (f)—, y `fma` se
+   `__aeabi_ldivmod`, `__aeabi_uidiv`, `__aeabi_idiv`, `memset`, `memcpy`, `memmove`, `memcmp`, `bcmp`,
+   `__aeabi_memcpy`, `__aeabi_memmove`, `__aeabi_memset`, `__aeabi_memclr`, …) los escribe el propio backend
+   en el `.ll` (no hay libgcc ni compiler-rt) —los que llevan `double` con `arm_aapcscc`, la ABI base de ARM,
+   que es la que clang les da cuando los llama; los de memoria porque LLVM cambia bucles por llamadas a
+   `memset`/`memcpy` al optimizar; ver el changelog del 2026-10-12 (f)—, y `fma` se
    sustituye por multiplicación + suma (dos redondeos) porque ARMv7 sin VFPv4 no tiene esa instrucción.
 2. **`sys_arm32.titan`** (runtime): traduce las llamadas al sistema de Linux x86-64 —las que usa todo el
    runtime— a las de ARM de 32 bits (EABI: número en `r7`, argumentos en `r0`-`r5`), incluidas las que
