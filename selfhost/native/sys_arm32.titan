@@ -1,0 +1,416 @@
+// Llamadas al sistema en ARM de 32 bits (EABI: placas ARMv7, teléfonos y
+// Termux de 32 bits).
+//
+// El runtime está escrito con los números y estructuras de Linux x86-64
+// (std::raw::syscall). En ARM 32 bits el backend LLVM convierte cada
+// std::raw::syscall en una llamada a rt_sys_arm32, que la traduce a la
+// llamada equivalente de ARM (std::raw::svc = instrucción `svc #0`, número en
+// r7 y argumentos en r0-r5):
+//   - números distintos, y en general sin parecido con los de x86-64 (aquí
+//     `read` es el 3 y `open` el 5);
+//   - llamadas que ARM no tiene, con su equivalente "at"/moderna (open ->
+//     openat, poll -> ppoll, ftruncate -> ftruncate64, lseek -> _llseek,
+//     epoll_wait -> epoll_pwait, ...);
+//   - estructuras con otra forma. En vez de copiar la `struct stat` de ARM
+//     (campos de 32 bits desalineados, y cambió varias veces), las llamadas
+//     de stat usan **statx** (397), que Linux define con campos de tamaño
+//     fijo iguales en todas las arquitecturas; de ahí se rellena la
+//     `struct stat` de x86-64 que reserva el runtime. Los tiempos usan las
+//     variantes de 64 bits (clock_gettime64 = 403, ppoll_time64 = 414), cuyas
+//     estructuras son idénticas a las de x86-64 (esto evita el lío de
+//     `timespec` de 32 bits, que ni siquiera ocupa lo mismo);
+//   - `mmap` en ARM 32 bits es `mmap2` (192) y el desplazamiento va en páginas
+//     de 4096 bytes;
+//   - los argumentos de 64 bits de algunas llamadas (ftruncate64, pread64,
+//     pwrite64, _llseek) van en un par de registros par/impar, así que los
+//     valores se colocan a mano.
+// Una llamada que no esté en la tabla devuelve -ENOSYS (-38): nunca se
+// inventa un resultado. Hoy quedan así las de señales (la `struct sigaction`
+// de ARM no se parece a la de x86-64 y haría falta un `restorer`) y las de
+// mensajes múltiples (sendmmsg/recvmmsg, con `struct msghdr` de otra forma).
+// Solo se compila para ARM 32 bits (en las otras arquitecturas nadie la
+// llama). Prefijo `ss_` para no chocar con `sa_` (ARM64) ni `sb_` (sin SO).
+
+fn ss_u32(p: int) -> int {
+    std::raw::load(p) & 4294967295
+}
+
+fn ss_put8(p: int, v: int, n: int) {
+    let mut i = 0
+    let mut x = v
+    while i < n {
+        std::raw::store8(p + i, x & 255)
+        x = std::raw::shr(x, 8)
+        i += 1
+    }
+}
+
+fn ss_get8(p: int, n: int) -> int {
+    let mut v = 0
+    let mut i = n - 1
+    while i >= 0 {
+        v = std::raw::shl(v, 8) | std::raw::load8(p + i)
+        i -= 1
+    }
+    v
+}
+
+// Zona de trabajo propia al final de las globales (el runtime reserva 512
+// bytes libres ahí: 3584..4095). La usan statx, _llseek y epoll.
+fn ss_scratch() -> int {
+    std::raw::globals() + 3584
+}
+
+fn ss_lo(v: int) -> int {
+    v & 4294967295
+}
+
+fn ss_hi(v: int) -> int {
+    std::raw::shr(v, 32) & 4294967295
+}
+
+// --- mmap2 ---------------------------------------------------------------
+// El kernel de 32 bits devuelve un valor de 32 bits: si cae en el rango de
+// error (-4094..-1) es un error y se devuelve tal cual; si no, es una
+// dirección y se devuelve **sin signo**, porque si no una dirección por
+// encima de 2 GiB parecería negativa y el runtime diría «out of memory».
+fn ss_mmap(addr: int, length: int, prot: int, flags: int, fd: int, off: int) -> int {
+    let r = std::raw::svc(192, addr, length, prot, flags, fd, off / 4096)
+    if r < 0 && r >= -4094 {
+        return r
+    }
+    r & 4294967295
+}
+
+// --- apertura ------------------------------------------------------------
+// Banderas de open: x86-64 -> ARM 32 bits. Solo cambian O_DIRECTORY y
+// O_NOFOLLOW; O_LARGEFILE (131072 en x86-64) no se usa en 32 bits.
+// Los indicadores de open de x86-64 no son los de ARM 32 bits: tres bits
+// cambian de sitio. En x86-64 16384 es O_DIRECT, 65536 O_DIRECTORY y 131072
+// O_NOFOLLOW; en ARM 16384 es O_DIRECTORY, 32768 O_NOFOLLOW y 65536 O_DIRECT
+// (131072 en ARM es O_LARGEFILE, que aquí no hace falta: la ABI ya es de
+// ficheros grandes). El resto — modo de acceso, O_CREAT, O_EXCL, O_TRUNC,
+// O_APPEND, O_NONBLOCK, O_SYNC/O_DSYNC, O_CLOEXEC — coincide.
+fn ss_open_flags(f: int) -> int {
+    let mut out = f & (-1 - 16384)
+    out = out & (-1 - 65536)
+    out = out & (-1 - 131072)
+    if (f & 16384) != 0 {
+        out = out | 65536   // O_DIRECT
+    }
+    if (f & 65536) != 0 {
+        out = out | 16384   // O_DIRECTORY
+    }
+    if (f & 131072) != 0 {
+        out = out | 32768   // O_NOFOLLOW
+    }
+    out
+}
+
+// --- stat ---------------------------------------------------------------
+// `struct stat` de x86-64 (144 bytes, la que reserva el runtime):
+//   dev@0 ino@8 nlink@16 mode:u32@24 uid:u32@28 gid:u32@32 rdev@40
+//   size@48 blksize@56 blocks@64 atime@72 mtime@88 ctime@104
+// `struct statx` (la que escribe el kernel, igual en todas las
+// arquitecturas): máscara@0 tamaño de bloque@4 atributos@8 enlaces@16
+// uid@20 gid@24 modo:u16@28 inodo@32 tamaño@40 bloques@48
+// atime@64 (segundos 8 + nanosegundos 4) btime@80 ctime@96 mtime@112
+// rdev mayor@128 menor@132 dev mayor@136 menor@140.
+fn ss_stat(buf: int, stx: int, r: int) -> int {
+    if r < 0 {
+        return r
+    }
+    std::raw::store(buf + 16, ss_u32(stx + 16))
+    std::raw::store(buf + 24, ss_u32(stx + 28) | std::raw::shl(ss_u32(stx + 20), 32))
+    std::raw::store(buf + 32, ss_u32(stx + 24))
+    std::raw::store(buf + 0, ss_dev(ss_u32(stx + 136), ss_u32(stx + 140)))
+    std::raw::store(buf + 40, ss_dev(ss_u32(stx + 128), ss_u32(stx + 132)))
+    std::raw::store(buf + 48, std::raw::load(stx + 40))
+    std::raw::store(buf + 64, std::raw::load(stx + 48))
+    std::raw::store(buf + 56, ss_u32(stx + 4))
+    ss_time(buf + 72, stx + 64)
+    ss_time(buf + 88, stx + 112)
+    ss_time(buf + 104, stx + 96)
+    std::raw::store(buf + 120, 0)
+    std::raw::store(buf + 128, 0)
+    std::raw::store(buf + 136, 0)
+    0
+}
+
+fn ss_time(dst: int, src: int) -> int {
+    std::raw::store(dst, std::raw::load(src))
+    std::raw::store(dst + 8, ss_u32(src + 8))
+    0
+}
+
+// major << 8 | minor & 0xff | (minor & ~0xff) << 12, como new_encode_dev.
+fn ss_dev(major: int, minor: int) -> int {
+    std::raw::shl(major, 8) | (minor & 255) | std::raw::shl(minor & 4294967040, 12)
+}
+
+// statx(fd, ruta, banderas, máscara, búfer). El búfer de statx (256 bytes) va
+// en la zona de trabajo: el runtime solo reserva los 144 de x86-64.
+fn ss_statx(dirfd: int, path: int, flags: int, buf: int) -> int {
+    let stx = ss_scratch()
+    let r = std::raw::svc(397, dirfd, path, flags, 4095, stx, 0)
+    ss_stat(buf, stx, r)
+}
+
+// statx con una ruta vacía y AT_EMPTY_PATH: así se pregunta por un descriptor
+// abierto (lo que en x86-64 es `fstat`).
+fn ss_fstat(fd: int, buf: int) -> int {
+    let stx = ss_scratch()
+    std::raw::store8(stx + 300, 0)
+    let r = std::raw::svc(397, fd, stx + 300, 4096, 4095, stx, 0)
+    ss_stat(buf, stx, r)
+}
+
+// --- statfs --------------------------------------------------------------
+// `statfs64` de ARM (84 bytes) -> la `struct statfs` de x86-64 (120 bytes):
+// tipo@0 tamaño-bloque@8 bloques@16 libres@24 disponibles@32 ficheros@40
+// libres@48 fsid@56 (8 bytes) longitud-nombre@64 tamaño-frsize@72
+// banderas@80 y cuatro palabras libres.
+fn ss_statfs(buf: int, sm: int, r: int) -> int {
+    if r < 0 {
+        return r
+    }
+    std::raw::store(buf + 0, ss_u32(sm + 0))
+    std::raw::store(buf + 8, ss_u32(sm + 4))
+    std::raw::store(buf + 16, std::raw::load(sm + 8))
+    std::raw::store(buf + 24, std::raw::load(sm + 16))
+    std::raw::store(buf + 32, std::raw::load(sm + 24))
+    std::raw::store(buf + 40, std::raw::load(sm + 32))
+    std::raw::store(buf + 48, std::raw::load(sm + 40))
+    std::raw::store(buf + 56, std::raw::load(sm + 48))
+    std::raw::store(buf + 64, ss_u32(sm + 56))
+    std::raw::store(buf + 72, ss_u32(sm + 60))
+    std::raw::store(buf + 80, ss_u32(sm + 64))
+    std::raw::store(buf + 88, 0)
+    std::raw::store(buf + 96, 0)
+    std::raw::store(buf + 104, 0)
+    std::raw::store(buf + 112, 0)
+    0
+}
+
+// --- epoll ---------------------------------------------------------------
+// epoll_event de x86-64 (empaquetada: eventos u32@0, dato u64@4; 12 bytes) ->
+// la de ARM (16 bytes, con el dato alineado a 8). Mismo apaño que en ARM64.
+fn ss_epoll_ctl(ep: int, op: int, fd: int, ev: int) -> int {
+    if ev == 0 {
+        return std::raw::svc(251, ep, op, fd, 0, 0, 0)
+    }
+    let s = ss_scratch()
+    std::raw::store(s, ss_get8(ev, 4))
+    std::raw::store(s + 8, ss_get8(ev + 4, 8))
+    std::raw::svc(251, ep, op, fd, s, 0, 0)
+}
+
+fn ss_epoll_wait(ep: int, evs: int, max: int, ms: int) -> int {
+    let mut buf = ss_scratch()
+    let mut own = 0
+    if max > 32 {
+        own = rt_alloc(16 * max)
+        buf = own
+    }
+    let r = std::raw::svc(346, ep, buf, max, ms, 0, 0)
+    let mut i = 0
+    while i < r {
+        ss_put8(evs + 12 * i, ss_u32(buf + 16 * i), 4)
+        ss_put8(evs + 12 * i + 4, std::raw::load(buf + 16 * i + 8), 8)
+        i += 1
+    }
+    if own != 0 {
+        rt_free_block(own)
+    }
+    r
+}
+
+// --- poll ----------------------------------------------------------------
+// poll(fds, n, ms) = ppoll_time64(fds, n, {ms/1000, resto en ns}, NULL, 0);
+// con ms < 0, sin límite de tiempo (puntero nulo). La `struct timespec` de 64
+// bits es igual que la de x86-64, así que no hay que convertir nada.
+fn ss_poll(fds: int, n: int, ms: int) -> int {
+    if ms < 0 {
+        return std::raw::svc(414, fds, n, 0, 0, 0, 0)
+    }
+    let ts = ss_scratch()
+    std::raw::store(ts, ms / 1000)
+    std::raw::store(ts + 8, (ms % 1000) * 1000000)
+    std::raw::svc(414, fds, n, ts, 0, 0, 0)
+}
+
+// --- nanosleep -----------------------------------------------------------
+// nanosleep(req, resto) = clock_nanosleep_time64(CLOCK_MONOTONIC, relativo,
+// req, resto). Las estructuras de 64 bits coinciden con las de x86-64.
+fn ss_nanosleep(req: int, rem: int) -> int {
+    std::raw::svc(407, 1, 0, req, rem, 0, 0)
+}
+
+// --- lseek ---------------------------------------------------------------
+// ARM 32 no tiene `lseek` de 64 bits: `_llseek` (140) recibe el desplazamiento
+// partido (alto en r1, bajo en r2), deja el resultado en la dirección de r3 y
+// devuelve 0 o el error.
+fn ss_lseek(fd: int, off: int, whence: int) -> int {
+    let res = ss_scratch() + 16
+    let r = std::raw::svc(140, fd, ss_hi(off), ss_lo(off), res, whence, 0)
+    if r < 0 {
+        return r
+    }
+    std::raw::load(res)
+}
+
+// --- ftruncate / pread / pwrite: el entero de 64 bits va en un par par/impar
+fn ss_ftruncate(fd: int, length: int) -> int {
+    std::raw::svc(194, fd, 0, ss_lo(length), ss_hi(length), 0, 0)
+}
+
+fn ss_pread(fd: int, buf: int, count: int, pos: int) -> int {
+    std::raw::svc(180, fd, buf, count, 0, ss_lo(pos), ss_hi(pos))
+}
+
+fn ss_pwrite(fd: int, buf: int, count: int, pos: int) -> int {
+    std::raw::svc(181, fd, buf, count, 0, ss_lo(pos), ss_hi(pos))
+}
+
+// --- gettimeofday --------------------------------------------------------
+// La `struct timeval` de ARM es de 32 bits (8 bytes) y la del runtime, de 64
+// (16): se rellena a mano desde clock_gettime64 (segundos y nanosegundos de
+// 64 bits, iguales en todas las arquitecturas).
+fn ss_gettimeofday(tv: int, tz: int) -> int {
+    let ts = ss_scratch()
+    let r = std::raw::svc(403, 0, ts, 0, 0, 0, 0)
+    if r < 0 {
+        return r
+    }
+    std::raw::store(tv, std::raw::load(ts))
+    std::raw::store(tv + 8, ss_u32(ts + 8) / 1000)
+    0
+}
+
+// --- números que solo cambian (mismos argumentos), x86-64 -> ARM 32 bits ---
+fn ss_same_args(n: int) -> int {
+    if n == 0 { return 3 }      // read
+    if n == 1 { return 4 }      // write
+    if n == 3 { return 6 }      // close
+    if n == 10 { return 125 }   // mprotect
+    if n == 11 { return 91 }    // munmap
+    if n == 14 { return 175 }   // rt_sigprocmask
+    if n == 16 { return 54 }    // ioctl
+    if n == 20 { return 146 }   // writev
+    if n == 28 { return 220 }   // madvise
+    if n == 32 { return 41 }    // dup
+    if n == 33 { return 63 }    // dup2
+    if n == 39 { return 20 }    // getpid
+    if n == 41 { return 281 }   // socket
+    if n == 42 { return 283 }   // connect
+    if n == 44 { return 290 }   // sendto
+    if n == 45 { return 292 }   // recvfrom
+    if n == 47 { return 297 }   // recvmsg
+    if n == 48 { return 293 }   // shutdown
+    if n == 49 { return 282 }   // bind
+    if n == 50 { return 284 }   // listen
+    if n == 51 { return 286 }   // getsockname
+    if n == 53 { return 288 }   // socketpair
+    if n == 54 { return 294 }   // setsockopt
+    if n == 55 { return 295 }   // getsockopt
+    if n == 57 { return 2 }     // fork
+    if n == 59 { return 11 }    // execve
+    if n == 60 { return 1 }     // exit
+    if n == 61 { return 114 }   // wait4
+    if n == 62 { return 37 }    // kill
+    if n == 63 { return 122 }   // uname
+    if n == 72 { return 221 }   // fcntl (ARM: fcntl64)
+    if n == 73 { return 143 }   // flock
+    if n == 74 { return 118 }   // fsync
+    if n == 79 { return 183 }   // getcwd
+    if n == 80 { return 12 }    // chdir
+    if n == 82 { return 38 }    // rename
+    if n == 83 { return 39 }    // mkdir
+    if n == 84 { return 40 }    // rmdir
+    if n == 87 { return 10 }    // unlink
+    if n == 89 { return 85 }    // readlink
+    if n == 91 { return 94 }    // fchmod
+    if n == 102 { return 24 }   // getuid
+    if n == 110 { return 64 }   // getppid
+    if n == 157 { return 172 }  // prctl
+    if n == 204 { return 242 }  // sched_getaffinity
+    if n == 217 { return 217 }  // getdents64 (mismo número y misma estructura)
+    if n == 231 { return 248 }  // exit_group
+    if n == 254 { return 317 }  // inotify_add_watch
+    if n == 271 { return 414 }  // ppoll (ARM: ppoll_time64; timespec de 64 bits)
+    if n == 288 { return 366 }  // accept4
+    if n == 289 { return 355 }  // signalfd4
+    if n == 291 { return 357 }  // epoll_create1
+    if n == 293 { return 359 }  // pipe2
+    if n == 294 { return 360 }  // inotify_init1
+    if n == 307 { return 374 }  // sendmmsg (la estructura no coincide: ver la tabla)
+    if n == 318 { return 384 }  // getrandom
+    if n == 322 { return 387 }  // execveat
+    if n == 436 { return 436 }  // close_range (los mismos argumentos)
+    -1
+}
+
+fn rt_sys_arm32(n: int, a: int, b: int, c: int, d: int, e: int, f: int) -> int {
+    let same = ss_same_args(n)
+    if same >= 0 {
+        return std::raw::svc(same, a, b, c, d, e, f)
+    }
+    if n == 2 {
+        return std::raw::svc(5, a, ss_open_flags(b), c, 0, 0, 0)
+    }
+    if n == 4 {
+        return ss_statx(-100, a, 0, b)
+    }
+    if n == 5 {
+        return ss_fstat(a, b)
+    }
+    if n == 6 {
+        return ss_statx(-100, a, 256, b)
+    }
+    if n == 262 {
+        // newfstatat(dirfd, ruta, búfer, banderas) -> statx(dirfd, ruta,
+        // banderas, máscara, búfer): las dos últimas van cambiadas de sitio.
+        return ss_statx(a, b, d, c)
+    }
+    if n == 7 {
+        return ss_poll(a, b, c)
+    }
+    if n == 8 {
+        return ss_lseek(a, b, c)
+    }
+    if n == 9 {
+        return ss_mmap(a, b, c, d, e, f)
+    }
+    if n == 17 {
+        return ss_pread(a, b, c, d)
+    }
+    if n == 18 {
+        return ss_pwrite(a, b, c, d)
+    }
+    if n == 35 {
+        return ss_nanosleep(a, b)
+    }
+    if n == 77 {
+        return ss_ftruncate(a, b)
+    }
+    if n == 96 {
+        return ss_gettimeofday(a, b)
+    }
+    if n == 137 {
+        let sm = ss_scratch() + 400
+        let r = std::raw::svc(266, a, sm, 0, 0, 0, 0)
+        return ss_statfs(b, sm, r)
+    }
+    if n == 228 {
+        return std::raw::svc(403, a, b, 0, 0, 0, 0)
+    }
+    if n == 232 {
+        return ss_epoll_wait(a, b, c, d)
+    }
+    if n == 233 {
+        return ss_epoll_ctl(a, b, c, d)
+    }
+    // -ENOSYS: señales (struct sigaction de otra forma y haría falta un
+    // `restorer`) y mensajes múltiples (struct msghdr de otra forma).
+    -38
+}

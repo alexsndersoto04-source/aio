@@ -1,0 +1,14 @@
+// std::process::run_inherit: el hijo usa los descriptores del propio proceso
+// (nada capturado, sin tope de salida y sin plazo) y devuelve su código.
+fn main() {
+    print(std::process::run_inherit(["true"]))
+    print(std::process::run_inherit(["false"]))
+    print(std::process::run_inherit(["sh", "-c", "echo heredado"]))
+    print(std::process::run_inherit(["sh", "-c", "exit 7"]))
+    print(std::try::catch(|| { std::process::run_inherit(["titan_no_existe"]) }))
+    print(std::try::catch(|| { std::process::run_inherit([]) }))
+    print(std::try::catch(|| { std::process::run_inherit(["echo", "a\0b"]) }))
+    // Un hijo terminado por una señal no tiene código: -1, como en las demás
+    // funciones de std::process.
+    print(std::process::run_inherit(["sh", "-c", "kill -TERM $$"]))
+}

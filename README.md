@@ -23,11 +23,35 @@ código fuente (.titan)
 - **WebAssembly:** `titan wasm` genera módulos con memoria lineal, strings, arrays, mapas, structs y enums, más un host JavaScript para DOM, eventos, `fetch`, WebSocket y Canvas.
 - **Herramientas:** CLI `titan`, REPL, proyectos con `Titan.toml`, servidor LSP, servidor DAP y depurador interactivo.
 - **Gestor de paquetes: Zett.** `zett add`, `zett fetch`, `zett update`, `zett pack`, `zett publish`: dependencias remotas verificadas con SHA-256 y firmas Ed25519. Ver [`docs/ZETT.md`](docs/ZETT.md).
-- **Biblioteca estándar:** 812 funciones en 73 espacios de nombres `std::*`, escritas en Titan (ver abajo).
+- **Biblioteca estándar:** 813 funciones en 73 espacios de nombres `std::*`, escritas en Titan (ver abajo).
 
 ## Descargas e instalación
 
-### Opción A: Paquetes precompilados (Linux x86-64 y ARM64)
+### Opción A: paquete `zett` con el gestor del sistema (Debian/Ubuntu y Termux)
+
+Cada release publica paquetes `.deb` con el nombre **`zett`** (dentro va el compilador `titan` y, con ese
+nombre, el gestor de paquetes de Titan) más un repositorio apt propio:
+
+```bash
+# Debian / Ubuntu (x86-64, ARM64 o ARM de 32 bits)
+wget https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett_amd64.deb
+sudo apt install ./zett_amd64.deb      # deja titan y zett en el PATH
+titan version && zett version
+
+# Termux (Android: x86_64, aarch64, arm) — usa pkg, que es apt con su prefijo
+pkg install ./zett_aarch64.termux.deb
+
+# Repositorio apt (rama zett-repo), para actualizar con apt en vez de a mano:
+#   deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/sistema ./
+#   deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/termux ./
+```
+
+Los paquetes los construye la CI (`selfhost/empaquetar_deb.sh`, `selfhost/repo_apt.sh`), que además prueba el
+de x86-64 en la propia CI y el de ARM64 en una máquina ARM64 real; el de ARM de 32 bits y los de Termux se
+comprueban con el emulador de ARM32 y extrayéndolos en un prefijo. Detalles y resultados en
+[`selfhost/ESTADO.md`](selfhost/ESTADO.md), «Paquetes oficiales `zett`».
+
+### Opción B: Paquetes precompilados (Linux x86-64 y ARM64)
 
 En [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) se publican paquetes precompilados para ambas arquitecturas de Linux, con el ejecutable `titan`, el gestor de paquetes `zett` y el runtime nativo (`native/`):
 
@@ -35,7 +59,7 @@ En [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/late
 - **Linux ARM64 (`aarch64` / Termux):** [`titan-linux-aarch64.tar.gz`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz)
 - **Sumas de verificación:** [`SHA256SUMS.txt`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/SHA256SUMS.txt)
 
-### Opción B: Construir desde las fuentes (Linux x86-64)
+### Opción C: Construir desde las fuentes (Linux x86-64)
 
 Titan se construye desde las fuentes en **Linux x86-64**, con `bash` y `gzip`. El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
 
@@ -54,9 +78,11 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 
 ### ARM64 y Termux
 
-> **ARM de 64 bits.** No existe versión para ARM de 32 bits. Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`) en un
-> teléfono con núcleo de 64 bits **sí puede usar este Titan** (el binario aarch64 corre; caso probado: Redmi 9C). El instalador
-> lo comprueba de verdad al final. Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
+> **ARM de 32 bits.** Desde el 2026-10-12 hay paquete `armhf`/`arm` (Debian/Termux) con el compilador
+> compilado para ARM de 32 bits, comprobado con el emulador de ARM32; en un aparato de 32 bits de verdad no se
+> ha probado todavía. Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`) en un teléfono con núcleo de
+> 64 bits **sí puede usar el paquete de 64 bits** (el binario aarch64 corre; caso probado: Redmi 9C).
+> Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
 
 El flujo `Linux ARM64 (Termux)` de GitHub Actions construye `titan-linux-aarch64.tar.gz` y lo verifica en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` requiere `clang` y `lld` instalados. Guía e instrucciones detalladas: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador automático: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 
@@ -93,7 +119,7 @@ Para crear un proyecto: `titan new mi_app && cd mi_app && titan run`.
 
 ## Biblioteca estándar
 
-812 funciones en 73 espacios de nombres, todas con cuerpo en Titan (se mide con `bash selfhost/native/cobertura.sh -v`). Las limitaciones de cada pieza están declaradas en [`selfhost/ESTADO.md`](selfhost/ESTADO.md). Referencia: [`docs/STDLIB.md`](docs/STDLIB.md).
+813 funciones en 73 espacios de nombres, todas con cuerpo en Titan (se mide con `bash selfhost/native/cobertura.sh -v`). Las limitaciones de cada pieza están declaradas en [`selfhost/ESTADO.md`](selfhost/ESTADO.md). Referencia: [`docs/STDLIB.md`](docs/STDLIB.md).
 
 | Área | Incluye |
 |---|---|
@@ -118,15 +144,15 @@ Limitaciones conocidas que conviene saber antes de usarla:
 ## Comandos de la CLI
 
 ```text
-titan new <directorio>               Crear un proyecto
+titan new <directorio> [--path DIR]  Crear un proyecto (con --path, en DIR/<nombre>)
 titan check [archivo|proyecto]       Comprobar sintaxis y tipos
 titan run [archivo|proyecto]         Compilar y ejecutar
-titan compile <archivo> [-o salida] [--target x86_64|aarch64]
+titan compile <archivo> [-o salida] [--target x86_64|aarch64|armv7]
 titan build / exec                   Escribir y ejecutar bytecode .tbc validado
 titan wasm [archivo|proyecto]        Generar WebAssembly
-titan test [proyecto]                Ejecutar tests/*.titan
+titan test [proyecto]                Ejecutar cada tests/*.titan (los auxiliares sin `main` se omiten)
 titan debug [ruta] -b archivo:línea  Depurador interactivo
-titan repl                           REPL
+titan repl                           REPL: cada línea es un programa independiente, no guarda estado
 titan add / fetch / update           Dependencias remotas (igual que `zett`, ver abajo)
 titan keygen / pack / publish        Paquetes .tpkg firmados con Ed25519 (igual que `zett`)
 titan lsp / dap                      Servidores para editores
@@ -152,11 +178,11 @@ Un proyecto tiene `Titan.toml`, `src/main.titan` y opcionalmente `tests/*.titan`
 
 ```text
 selfhost/          el compilador, el runtime y la biblioteca estándar, todo en Titan
-  native/            runtime y las 812 funciones std::* (más backends x86-64, LLVM y WebAssembly)
+  native/            runtime y las 813 funciones std::* (más backends x86-64, LLVM y WebAssembly)
   semilla/           compilador ya compilado para arrancar (bootstrap.sh)
-  tests/             pruebas del compilador, del runtime, del depurador y de ARM64
+  tests/             pruebas del compilador, del runtime, del depurador y de ARM64 y ARM de 32 bits
   ESTADO.md          estado verificado, pruebas y limitaciones
-docs/              documentación (docs/historico/ guarda informes de la etapa en Rust)
+docs/              documentación (el índice, ordenado por objetivo, es docs/README.md)
 examples/          programas de ejemplo
 stdlib/            módulos de la biblioteca estándar que viven en archivos .titan
 projects/moon/     Moon, una aplicación completa (API en Titan + interfaz web)
@@ -183,9 +209,18 @@ titan run examples/tokenizer.titan
 bash selfhost/verify_fixpoint.sh       # el compilador se compila a sí mismo: etapas 1, 2 y 3 idénticas
 bash selfhost/native/cobertura.sh -v   # funciones std:: con cuerpo en Titan
 bash selfhost/tests/arm64_diff.sh      # diferencial x86-64 / ARM64 (en CI de ARM64)
+bash selfhost/tests/arm32_diff.sh      # diferencial x86-64 / ARM de 32 bits (aquí, con el ejecutor)
+bash selfhost/tests/vm_diff.sh         # diferencial nativo / VM de bytecode del propio compilador (sin `zett`)
+bash selfhost/native/verify_native.sh  # corpus completo: nativo vs la VM del port (VM=zett para la de Rust)
+bash selfhost/native/verify_json.sh    # std::json::parse: nativo vs la VM del port en 97 casos
 ```
 
-Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementación original en Rust; ese oráculo ya no está en el repositorio. Para repetirlas hay que construir la versión con Rust (`git checkout ultimo-con-rust`) y leer [`selfhost/tests/LEEME.md`](selfhost/tests/LEEME.md).
+`--target armv7` produce un ELF32 estático para ARMv7 y `selfhost/native/arm32/correr.py` lo ejecuta con un
+procesador ARMv7 real (unicorn) y las llamadas al sistema de Linux servidas desde Python: se puede compilar y
+probar ARM de 32 bits desde x86-64 sin ningún dispositivo. Detalles, pruebas y límites en
+[`selfhost/ESTADO.md`](selfhost/ESTADO.md), «ARM de 32 bits».
+
+Las pruebas de `selfhost/tests/` se escribieron comparando contra la implementación original en Rust; ese oráculo ya no está en el repositorio. Varias de ellas ya comparan el port consigo mismo (el código nativo contra la VM de bytecode: `vm_diff.sh`, `verify_native.sh` en su modo por omisión y `verify_json.sh`); las que todavía necesitan el `zett` de Rust están en [`selfhost/tests/LEEME.md`](selfhost/tests/LEEME.md), que explica cómo reconstruirlo (`git checkout ultimo-con-rust`).
 
 ## Documentación
 

@@ -23,7 +23,7 @@ fijo).
 
 ```sh
 cd selfhost
-zett run build.titan build_llvm.titan build_llvm          # compilador LLVM, nativo
+./titanc3 build_llvm.titan build_llvm                     # compilador LLVM, nativo
 ./build_llvm PROGRAMA.titan prog.ll                       # un programa
 ./build_llvm --lote DIR a.titan b.titan ...               # varios (el runtime se revisa una vez)
 clang -O2 -nostdlib -static -fno-pie -no-pie -Wl,-e,_start prog.ll -o prog
@@ -35,7 +35,8 @@ Si no hay `clang`, `verificar.sh` prueba primero `python3 -m ziglang cc`
 una de esas cadenas de herramientas.
 
 Verificación: `bash selfhost/native/llvm/verificar.sh [archivos]` compila cada
-programa por LLVM y compara salida, errores y código de salida con `zett run`.
+programa por LLVM y compara salida, errores y código de salida con el backend
+nativo del port (`titan run` de la CLI; antes era `zett run`, la VM de Rust).
 Los casos que escriben archivos reciben bases temporales separadas para VM y
 LLVM. `image_webp_unsupported` decodifica el primer cuadro animado por ruta y
 por bytes, y compara su salida directamente con la VM; también mantiene las
@@ -124,6 +125,16 @@ Operaciones de bajo nivel (`std::raw::`):
   WebP y procesos) enlazaron como ejecutables estáticos AArch64 (`ET_EXEC`, sin
   intérprete dinámico). No se ejecutaron localmente. La CI usa
   `ubuntu-24.04-arm` para enlazar y ejecutar la batería.
+
+Sin el Rust (2026-10-12): `build_llvm` lo rehace `selfhost/titanc3` y los tres
+arneses que se pueden correr en una máquina x86-64 ya no piden `zett`.
+`punto_fijo.sh` da el mismo compilador y el mismo `build.ll` byte a byte
+(`0fe64fe0…`); `verificar.sh` sobre 6 programas (incluidos `archive_tar` y
+`std_process_timeout`): 6 idénticos, 0 distintos, 0 no admitidos;
+`arm64_objetos.sh` sobre 3 programas: 3 objetos, 0 rechazados;
+`arm64_referencias.sh` sobre 3: 3 referencias, 0 tiempos agotados.
+`arm64_comparar.sh` sigue necesitando una máquina ARM64 de verdad (aquí no hay
+qemu), como en la CI.
 
 ### Lo que Rust hace distinto en cada CPU
 

@@ -2,16 +2,18 @@
 # Arma el paquete descargable de Titan: titan-<versión>-linux-<arq>.tar.gz con la CLI `titan`, el runtime
 # (native/, que el compilador lee al compilar cada programa) y las instrucciones.
 #
-#   bash selfhost/empaquetar.sh <ejecutable titan> <x86_64|aarch64> [directorio de salida]
+#   bash selfhost/empaquetar.sh <ejecutable titan> <x86_64|aarch64|armv7> [directorio de salida]
 #
-# El ejecutable de aarch64 se obtiene con: titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+# Los ejecutables de ARM se obtienen con:
+#   titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+#   titan compile selfhost/titan.titan -o titan-armv7   --target armv7
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 exe="$(readlink -f "$1")"
 arch="$2"
 mkdir -p "${3:-.}"
 out="$(readlink -f "${3:-.}")"
-case "$arch" in x86_64|aarch64) ;; *) echo "arquitectura: x86_64 o aarch64" >&2; exit 2 ;; esac
+case "$arch" in x86_64|aarch64|armv7) ;; *) echo "arquitectura: x86_64, aarch64 o armv7" >&2; exit 2 ;; esac
 # La versión sale del propio ejecutable; si no puede ejecutarse (paquete
 # cruzado de otra arquitectura) se lee del código fuente — nunca un valor fijo
 # (antes el respaldo decía v1.2.0 y el paquete de aarch64 salía mal nombrado).
@@ -36,7 +38,7 @@ Titan $ver — Linux $arch
   ./zett                      (el gestor de paquetes: zett add, fetch, update, pack, publish)
 
 El ejecutable busca el runtime en la carpeta native/ que está junto a él: no los separes.
-$(if [ "$arch" = aarch64 ]; then echo "En ARM64 Titan compila con LLVM: hace falta clang con lld (Termux: pkg install clang; Debian/Ubuntu: apt install clang lld)."; else echo "En x86-64 no hace falta nada más."; fi)
+$(if [ "$arch" = x86_64 ]; then echo "En x86-64 no hace falta nada más."; else echo "En ARM (64 o 32 bits) Titan compila con LLVM: hace falta clang con lld (Termux: pkg install clang lld; Debian/Ubuntu: apt install clang lld)."; fi)
 Más información: https://github.com/alexsndersoto04-source/aio
 TXT
 tar -C "$tmp" -czf "$out/$name.tar.gz" "$name"

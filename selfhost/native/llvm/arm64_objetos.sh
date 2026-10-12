@@ -6,9 +6,10 @@
 #
 # Uso: bash selfhost/native/llvm/arm64_objetos.sh SALIDA [archivos...]
 set -u
-ZETT="${ZETT:-zett}"
 OPT="${OPT:--O2}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+# Sin Rust: `build_llvm` lo recompila el compilador nativo del port (titanc3).
+COMPILADOR="${COMPILADOR:-$ROOT/selfhost/titanc3}"
 out="$(realpath -m "$1")"; shift
 cd "$ROOT"
 if [ $# -gt 0 ]; then FILES=("$@"); else FILES=(selfhost/tests/native/*.titan); fi
@@ -18,7 +19,7 @@ for f in "${FILES[@]}"; do
   rm -f "$out/$base.ll" "$out/$base.err" "$out/$base.o" "$out/$base.cc.txt"
 done
 if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -name '*.titan' -newer selfhost/build_llvm | head -1)" ]; then
-  (cd selfhost && "$ZETT" run build.titan build_llvm.titan build_llvm) || exit 1
+  "$COMPILADOR" selfhost/build_llvm.titan selfhost/build_llvm || exit 1
 fi
 if command -v clang >/dev/null 2>&1; then CC=(clang); else CC=(python3 -m ziglang cc); fi
 echo "LLVM: $("${CC[@]}" --version | head -1) ($OPT, aarch64)"

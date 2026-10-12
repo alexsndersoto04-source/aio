@@ -217,6 +217,37 @@ fn m_invalid_assign_target() -> string {
     "assignment target must be a mutable local variable in the current function"
 }
 
+// Asignar a un campo no está permitido (los valores se actualizan con
+// std::array::set, std::map::insert… o devolviendo un struct nuevo). El caso
+// `self.campo` tiene su propio mensaje: en la firma se puede escribir `mut self`,
+// pero el receptor llega por valor, así que el cambio no se vería fuera del
+// método y por eso no es un destino válido. Sin este mensaje el programador
+// solo veía el texto genérico de arriba, que no menciona `self`.
+fn m_assign_target(target) -> string {
+    if target.kind == "field" {
+        if target.a != nil && target.a.kind == "ident" && target.a.text == "self" {
+            return m_self_field_assign(target.text)
+        }
+        return m_field_assign(target.text)
+    }
+    if target.kind == "index" {
+        return m_index_assign()
+    }
+    m_invalid_assign_target()
+}
+
+fn m_self_field_assign(field: string) -> string {
+    "cannot assign to self.{field}: methods receive 'self' by value, so the change would not be visible to the caller (writing 'mut self' does not make the receiver assignable); return an updated value instead"
+}
+
+fn m_field_assign(field: string) -> string {
+    "cannot assign to the field '{field}': fields are not assignable, build an updated value instead"
+}
+
+fn m_index_assign() -> string {
+    "cannot assign to an element: use std::array::set or std::map::insert, which return the updated value"
+}
+
 fn m_outside_function() -> string {
     "return used outside a function or closure"
 }
@@ -4796,7 +4827,7 @@ fn check_assignment(e0: Env, target, op: string, value) -> (Ty, Env) {
     if target.kind != "ident" {
         let (tt, e2) = check_expr(e, target)
         let (vt, e3) = check_expr(e2, value)
-        e = err(e3, m_invalid_assign_target())
+        e = err(e3, m_assign_target(target))
         if tt.k == "Never" || vt.k == "Never" {
             return (mkt("Never"), e)
         }

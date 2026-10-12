@@ -623,12 +623,12 @@ fn tm_envp() -> int {
 // getenv("PATH") de glibc (bytes tal cual); CS_PATH si no está.
 fn tm_path_env() -> any {
     let mut e = tm_envp()
-    while std::raw::load(e) != 0 {
-        let entry = std::raw::load(e)
+    while rt_pget(e) != 0 {
+        let entry = rt_pget(e)
         if std::raw::load8(entry) == 80 && std::raw::load8(entry + 1) == 65 && std::raw::load8(entry + 2) == 84 && std::raw::load8(entry + 3) == 72 && std::raw::load8(entry + 4) == 61 {
             return rt_from_cstr(entry + 5)
         }
-        e += 8
+        e += rt_psize()
     }
     "/bin:/usr/bin"
 }

@@ -3,7 +3,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
-TITAN="${1:-./selfhost/titan}"
+TITAN="${1:-${TITAN:-./selfhost/titan}}"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

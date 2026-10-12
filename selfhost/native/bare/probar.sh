@@ -5,9 +5,10 @@
 #   CORRER=unicorn (por defecto): native/bare/correr.py (motor de QEMU);
 #   CORRER=qemu: qemu-system-aarch64 -machine virt de verdad (en CI).
 # La salida del puerto serie (stdout y stderr van al mismo) se compara byte a
-# byte con la VM de Rust (`zett run`, stdout+stderr juntos). Con unicorn se
-# compara también el código de salida (PSCI SYSTEM_OFF lo deja en x1); QEMU
-# no lo da, así que ahí solo cuenta la salida.
+# byte con la misma referencia en el anfitrión (stdout+stderr juntos): antes la
+# VM de Rust (`zett run`), ahora el programa compilado con el port (`titan run`).
+# Con unicorn se compara también el código de salida (PSCI SYSTEM_OFF lo deja en
+# x1); QEMU no lo da, así que ahí solo cuenta la salida.
 #
 # Las pruebas de hardware (selfhost/tests/bare: tablas de páginas, vectores de
 # excepción, UART) no existen en la VM (tiene sistema operativo debajo): se
@@ -21,10 +22,15 @@
 # procesos, red, reloj, azar ni entrada (sin sistema operativo no existen y
 # el runtime responde -ENOSYS, de verdad).
 set -u
-ZETT="${ZETT:-zett}"
 CORRER="${CORRER:-unicorn}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
+# Sin Rust: el compilador de referencia es el port (la CLI `titan` para el lado
+# anfitrión y `titanc3` para rehacer `build_llvm`). Las dos rutas se pueden
+# cambiar con TITAN= y COMPILADOR=.
+TITAN="${TITAN:-$ROOT/selfhost/titan}"
+COMPILADOR="${COMPILADOR:-$ROOT/selfhost/titanc3}"
+VM_TIEMPO="${VM_TIEMPO:-300}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ $# -gt 0 ]; then
@@ -35,16 +41,22 @@ else
   # QR save needs a filesystem, Wi-Fi needs a process/Termux API, and masked
   # WebSocket frames need secure OS entropy. Their host behavior remains in the
   # ordinary native/LLVM/ARM64 differential suites.
+  # email_validation también es del anfitrión aunque su propio texto no nombre
+  # ninguna API del sistema: std::email::send_simple llama a std::random (límite
+  # MIME) ANTES de validar las direcciones, así que sin SO la primera falla es
+  # el ENOSYS de la entropía y el mensaje que compara la prueba ("email build
+  # error:…") no llega a aparecer. Ese ENOSYS lo prueba a propósito
+  # no_os_apis.titan.
   mapfile -t FILES < <(
     grep -L -E "std::(fs|process|net|env|os|path|http|tcp|udp|signal|term|dirs|time|thread|random|io|args|chan|sync|datetime|crypto|gui|window|image|audio|db|sql|compress|zip|tls|dns|mobile|password|uuid|freestanding_)|go |spawn" selfhost/tests/native/*.titan \
-      | grep -v -E '/(qrcode_save|wifi_errores|ws_masked)\.titan$'
+      | grep -v -E '/(qrcode_save|wifi_errores|ws_masked|email_validation)\.titan$'
   )
   FILES+=(selfhost/tests/bare/*.titan)
 fi
 
 if [ ! -x selfhost/build_llvm ] || [ -n "$(find selfhost -path selfhost/tests -prune -o -name '*.titan' -newer selfhost/build_llvm -print | head -1)" ]; then
   echo "compilando selfhost/build_llvm..."
-  (cd selfhost && "$ZETT" run build.titan build_llvm.titan build_llvm) || exit 1
+  "$COMPILADOR" selfhost/build_llvm.titan selfhost/build_llvm || exit 1
 fi
 
 if command -v clang >/dev/null 2>&1 && command -v ld.lld >/dev/null 2>&1; then
@@ -92,9 +104,10 @@ for f in "${FILES[@]}"; do
     vm=0
     if [ -f "${f%.titan}.codigo" ]; then vm="$(tr -d ' \n' < "${f%.titan}.codigo")"; fi
   else
-    # Sin GITHUB_ACTIONS: si no, la VM añade a su salida la anotación
-    # "::error title=RUNTIME ERROR::…" para GitHub, que no es del programa.
-    timeout 60 env -u GITHUB_ACTIONS "$ZETT" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
+    # Sin GITHUB_ACTIONS: si no, el error de ejecución añade a la salida la
+    # anotación "::error title=RUNTIME ERROR::…" para GitHub, que no es del
+    # programa. El límite incluye la compilación (titan run compila y ejecuta).
+    timeout "$VM_TIEMPO" env -u GITHUB_ACTIONS "$TITAN" run "$f" > "$tmp/vm.out" 2>&1; vm=$?
   fi
   LIMITE=300
   if [ -f "${f%.titan}.lento" ]; then LIMITE=1800; fi

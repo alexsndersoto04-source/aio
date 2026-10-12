@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Compara la edición de líneas de Titan y la VM dentro de una terminal real."""
+"""Compara la edición de líneas del nativo con la VM de bytecode del port
+dentro de una terminal real (antes comparaba con la VM de Rust, `zett run`;
+con la CLI del port el lado VM es `titan build` + `titan exec --tty`)."""
 
 from __future__ import annotations
 
@@ -8,7 +10,6 @@ import os
 import pty
 import re
 import select
-import shutil
 import signal
 import struct
 import subprocess
@@ -20,6 +21,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PROGRAM = ROOT / "selfhost/native/readline/prueba_readline.titan"
+
+# Sin Rust: el lado VM es la VM de bytecode del port y el nativo lo arma la CLI
+# (o COMPILER). `--tty` es imprescindible aquí: sin él el programa recibe
+# /dev/null y su salida se captura hasta el final, así que no ve las teclas ni
+# los prompts a tiempo (ver selfhost/ESTADO.md). Los plazos son largos (90/180 s)
+# porque el lado VM arma el ejecutable desde el artefacto en cada llamada
+# (`titan exec`) y esa compilación tarda unos segundos.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from vm_port import artefacto, titan_path  # noqa: E402
 
 
 def attach_controlling_terminal() -> None:
@@ -37,12 +47,12 @@ def read_available(master: int, timeout: float) -> bytes:
         return b""
 
 
-def run_pty(command: list[str], marker: bytes, keystrokes: bytes, timeout: int = 12) -> tuple[int, bytes]:
+def run_pty(command: list[str], marker: bytes, keystrokes: bytes, timeout: int = 90) -> tuple[int, bytes]:
     return run_pty_steps(command, [(marker, keystrokes)], timeout)
 
 
 def run_pty_steps(
-    command: list[str], interactions: list[tuple[bytes, bytes]], timeout: int = 12
+    command: list[str], interactions: list[tuple[bytes, bytes]], timeout: int = 90
 ) -> tuple[int, bytes]:
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -108,7 +118,8 @@ def result_line(output: bytes) -> str | None:
 
 def check_pair(
     label: str,
-    zett: str,
+    titan: str,
+    vm_artifact: str,
     executable: str,
     mode: str,
     path_vm: str,
@@ -117,7 +128,7 @@ def check_pair(
     keys: bytes,
     expected: str,
 ) -> tuple[bytes, bytes]:
-    vm_code, vm_output = run_pty([zett, "run", str(PROGRAM.relative_to(ROOT)), mode, path_vm], marker, keys)
+    vm_code, vm_output = run_pty([titan, "exec", "--tty", vm_artifact, mode, path_vm], marker, keys)
     native_code, native_output = run_pty([executable, mode, path_native], marker, keys)
     if vm_code != 0 or native_code != 0:
         raise AssertionError(
@@ -135,10 +146,10 @@ def check_pair(
     return vm_output, native_output
 
 
-def check_memory_history(zett: str, executable: str, path: str) -> None:
+def check_memory_history(titan: str, vm_artifact: str, executable: str, path: str) -> None:
     interactions = [(b"FIRST> ", b"saved-line\r"), (b"SECOND> ", b"\x1b[A\r")]
     commands = (
-        [zett, "run", str(PROGRAM.relative_to(ROOT)), "with-history-twice", path],
+        [titan, "exec", "--tty", vm_artifact, "with-history-twice", path],
         [executable, "with-history-twice", path],
     )
     results = [run_pty_steps(command, interactions) for command in commands]
@@ -151,7 +162,7 @@ def check_memory_history(zett: str, executable: str, path: str) -> None:
         )
 
 
-def check_noop_history_save(zett: str, executable: str, temporary: Path) -> None:
+def check_noop_history_save(titan: str, vm_artifact: str, executable: str, temporary: Path) -> None:
     cases = (("v2", b"#V2\nsame-entry\n"), ("legacy", b"same-entry\n"))
     for name, initial in cases:
         vm_path = temporary / f"noop-{name}-vm.txt"
@@ -162,7 +173,7 @@ def check_noop_history_save(zett: str, executable: str, temporary: Path) -> None
         os.utime(vm_path, ns=(untouched_ns, untouched_ns))
         os.utime(native_path, ns=(untouched_ns, untouched_ns))
         commands = (
-            [zett, "run", str(PROGRAM.relative_to(ROOT)), "persistent-check", str(vm_path)],
+            [titan, "exec", "--tty", vm_artifact, "persistent-check", str(vm_path)],
             [executable, "persistent-check", str(native_path)],
         )
         results = [run_pty(command, b"HISTORY> ", b"\x1b[A\r") for command in commands]
@@ -185,7 +196,7 @@ def check_noop_history_save(zett: str, executable: str, temporary: Path) -> None
             raise AssertionError(f"historial {name}: se reescribió el archivo sin una entrada nueva")
 
 
-def check_v2_history(zett: str, executable: str, temporary: Path) -> None:
+def check_v2_history(titan: str, vm_artifact: str, executable: str, temporary: Path) -> None:
     backslash = b"\\" * 2
     newline_escape = b"\\n"
     cases = (
@@ -211,7 +222,7 @@ def check_v2_history(zett: str, executable: str, temporary: Path) -> None:
         vm_path.write_bytes(initial)
         native_path.write_bytes(initial)
         commands = (
-            [zett, "run", str(PROGRAM.relative_to(ROOT)), mode, str(vm_path)],
+            [titan, "exec", "--tty", vm_artifact, mode, str(vm_path)],
             [executable, mode, str(native_path)],
         )
         results = [run_pty(command, b"HISTORY> ", b"\x1b[AX\r") for command in commands]
@@ -228,9 +239,17 @@ def check_v2_history(zett: str, executable: str, temporary: Path) -> None:
             )
 
 
-def check_error(label: str, zett: str, executable: str, mode: str, keys: bytes, expected: bytes) -> None:
+def check_error(
+    label: str,
+    titan: str,
+    vm_artifact: str,
+    executable: str,
+    mode: str,
+    keys: bytes,
+    expected: bytes,
+) -> None:
     unused = "/tmp/titan-readline-unused-history"
-    command_vm = [zett, "run", str(PROGRAM.relative_to(ROOT)), mode, unused]
+    command_vm = [titan, "exec", "--tty", vm_artifact, mode, unused]
     command_native = [executable, mode, unused]
     vm_code, vm_output = run_pty(command_vm, b"LINE> ", keys)
     native_code, native_output = run_pty(command_native, b"LINE> ", keys)
@@ -243,7 +262,7 @@ def check_error(label: str, zett: str, executable: str, mode: str, keys: bytes, 
 
 
 def run_pipe(command: list[str], input_data: bytes) -> str:
-    result = subprocess.run(command, cwd=ROOT, input=input_data, capture_output=True, timeout=10, check=False)
+    result = subprocess.run(command, cwd=ROOT, input=input_data, capture_output=True, timeout=180, check=False)
     line = result_line(result.stdout)
     if result.returncode != 0 or line is None:
         raise AssertionError(
@@ -253,9 +272,9 @@ def run_pipe(command: list[str], input_data: bytes) -> str:
     return line
 
 
-def check_secret_requires_terminal(zett: str, executable: str, history_path: str) -> None:
+def check_secret_requires_terminal(titan: str, vm_artifact: str, executable: str, history_path: str) -> None:
     commands = (
-        [zett, "run", str(PROGRAM.relative_to(ROOT)), "secret", history_path],
+        [titan, "exec", "--tty", vm_artifact, "secret", history_path],
         [executable, "secret", history_path],
     )
     for label, command in zip(("VM", "nativo"), commands):
@@ -264,7 +283,7 @@ def check_secret_requires_terminal(zett: str, executable: str, history_path: str
             cwd=ROOT,
             input=b"mysecret\n",
             capture_output=True,
-            timeout=10,
+            timeout=180,
             check=False,
         )
         output = result.stdout + result.stderr
@@ -276,9 +295,14 @@ def check_secret_requires_terminal(zett: str, executable: str, history_path: str
 
 
 def main() -> None:
-    zett = os.environ.get("ZETT") or shutil.which("zett") or str(Path.home() / ".local/bin/zett")
-    if not Path(zett).is_file() or not os.access(zett, os.X_OK):
-        raise SystemExit("No encuentro el binario precompilado `zett`; instálalo antes de ejecutar esta prueba.")
+    titan = titan_path()
+    if not Path(titan).is_file() or not os.access(titan, os.X_OK):
+        raise SystemExit(
+            f"No encuentro la CLI del port ({titan}); compílala con "
+            "`env -i PATH=/nonexistent ./selfhost/titanc3 selfhost/titan.titan selfhost/titan` "
+            "o pásala en TITAN=/ruta/a/titan."
+        )
+    vm_artifact = artefacto(str(PROGRAM))
 
     compiler = os.environ.get("COMPILER", "")
     if compiler and (not Path(compiler).is_file() or not os.access(compiler, os.X_OK)):
@@ -290,8 +314,8 @@ def main() -> None:
             build_command = [compiler, str(PROGRAM.relative_to(ROOT)), exe]
             print("Compilador de la prueba: ejecutable nativo Titan del bootstrap.")
         else:
-            build_command = [zett, "run", "selfhost/build.titan", str(PROGRAM.relative_to(ROOT)), exe]
-            print("Compilador de la prueba: selfhost/build.titan ejecutado por Zett precompilado.")
+            build_command = [titan, "compile", str(PROGRAM.relative_to(ROOT)), "-o", exe]
+            print("Compilador de la prueba: la CLI del port (`titan compile`).")
         built = subprocess.run(
             build_command,
             cwd=ROOT,
@@ -306,19 +330,19 @@ def main() -> None:
             raise SystemExit(1)
 
         dummy = str(Path(temporary) / "sin-historial")
-        check_pair("edición y retroceso", zett, exe, "plain", dummy, dummy, b"LINE> ", b"hellx\x7fo\r", "hello")
-        check_pair("movimiento del cursor", zett, exe, "plain", dummy, dummy, b"LINE> ", b"hellx\x1b[Do\r", "hellox")
-        check_pair("caracteres UTF-8", zett, exe, "plain", dummy, dummy, b"LINE> ", "caféx\x7f\r".encode("utf-8"), "café")
-        check_pair("historial de una llamada", zett, exe, "with-history", dummy, dummy, b"LINE> ", b"memory\r", "memory")
-        check_memory_history(zett, exe, dummy)
-        check_noop_history_save(zett, exe, Path(temporary))
-        check_v2_history(zett, exe, Path(temporary))
+        check_pair("edición y retroceso", titan, vm_artifact, exe, "plain", dummy, dummy, b"LINE> ", b"hellx\x7fo\r", "hello")
+        check_pair("movimiento del cursor", titan, vm_artifact, exe, "plain", dummy, dummy, b"LINE> ", b"hellx\x1b[Do\r", "hellox")
+        check_pair("caracteres UTF-8", titan, vm_artifact, exe, "plain", dummy, dummy, b"LINE> ", "caféx\x7f\r".encode("utf-8"), "café")
+        check_pair("historial de una llamada", titan, vm_artifact, exe, "with-history", dummy, dummy, b"LINE> ", b"memory\r", "memory")
+        check_memory_history(titan, vm_artifact, exe, dummy)
+        check_noop_history_save(titan, vm_artifact, exe, Path(temporary))
+        check_v2_history(titan, vm_artifact, exe, Path(temporary))
 
         history_vm = str(Path(temporary) / "history-vm.txt")
         history_native = str(Path(temporary) / "history-native.txt")
         Path(history_vm).write_text("first\nprevious\n", encoding="utf-8")
         Path(history_native).write_text("first\nprevious\n", encoding="utf-8")
-        check_pair("recorrido del historial", zett, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"\x1b[A\x1b[A\r", "first")
+        check_pair("recorrido del historial", titan, vm_artifact, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"\x1b[A\x1b[A\r", "first")
         if Path(history_vm).read_bytes() != Path(history_native).read_bytes():
             raise AssertionError(
                 "el archivo de historial no quedó igual tras elegir una línea: "
@@ -327,10 +351,10 @@ def main() -> None:
 
         Path(history_vm).write_text("previous\n", encoding="utf-8")
         Path(history_native).write_text("previous\n", encoding="utf-8")
-        check_pair("guardado de una línea nueva", zett, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"next\r", "next")
+        check_pair("guardado de una línea nueva", titan, vm_artifact, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"next\r", "next")
         if Path(history_vm).read_bytes() != Path(history_native).read_bytes():
             raise AssertionError("el archivo de historial no quedó igual después de guardar")
-        check_pair("recarga del historial guardado", zett, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"\x1b[A\r", "next")
+        check_pair("recarga del historial guardado", titan, vm_artifact, exe, "persistent", history_vm, history_native, b"HISTORY> ", b"\x1b[A\r", "next")
         if Path(history_vm).read_bytes() != Path(history_native).read_bytes():
             raise AssertionError("el historial guardado no se pudo recargar igual")
 
@@ -339,12 +363,13 @@ def main() -> None:
         history = "alpha\nchosen phrase\nomega\n"
         Path(search_vm).write_text(history, encoding="utf-8")
         Path(search_native).write_text(history, encoding="utf-8")
-        check_pair("búsqueda inversa", zett, exe, "reverse-search", search_vm, search_native, b"SEARCH> ", b"\x12chosen\r", "chosen phrase")
+        check_pair("búsqueda inversa", titan, vm_artifact, exe, "reverse-search", search_vm, search_native, b"SEARCH> ", b"\x12chosen\r", "chosen phrase")
 
-        secret_vm, secret_native = check_pair("entrada secreta", zett, exe, "secret", dummy, dummy, b"SECRET> ", b"mysecrex\x7ft\r", "mysecret")
+        secret_vm, secret_native = check_pair("entrada secreta", titan, vm_artifact, exe, "secret", dummy, dummy, b"SECRET> ", b"mysecrex\x7ft\r", "mysecret")
         secret_unicode_vm, secret_unicode_native = check_pair(
             "entrada secreta UTF-8",
-            zett,
+            titan,
+            vm_artifact,
             exe,
             "secret",
             dummy,
@@ -358,14 +383,14 @@ def main() -> None:
             if result_at < 0 or b"secret" in output[:result_at] or "claveñ".encode() in output[:result_at]:
                 raise AssertionError("la entrada secreta apareció en pantalla antes de devolverse")
 
-        check_error("Ctrl-C", zett, exe, "plain", b"\x03", b"interrupted (Ctrl-C)")
-        check_error("Ctrl-D", zett, exe, "plain", b"\x04", b"end of file (Ctrl-D)")
+        check_error("Ctrl-C", titan, vm_artifact, exe, "plain", b"\x03", b"interrupted (Ctrl-C)")
+        check_error("Ctrl-D", titan, vm_artifact, exe, "plain", b"\x04", b"end of file (Ctrl-D)")
 
-        vm_pipe = run_pipe([zett, "run", str(PROGRAM.relative_to(ROOT)), "plain", dummy], b"pipe-line\n")
+        vm_pipe = run_pipe([titan, "exec", "--tty", vm_artifact, "plain", dummy], b"pipe-line\n")
         native_pipe = run_pipe([exe, "plain", dummy], b"pipe-line\n")
         if vm_pipe != "pipe-line" or native_pipe != vm_pipe:
             raise AssertionError(f"entrada sin terminal distinta: VM={vm_pipe!r}; nativo={native_pipe!r}")
-        check_secret_requires_terminal(zett, exe, dummy)
+        check_secret_requires_terminal(titan, vm_artifact, exe, dummy)
 
         print("std::readline: edición real de terminal, VM y Titan nativo comparados.")
         print("Probado: cursor, retroceso, Unicode, historial, búsqueda inversa, clave secreta, Ctrl-C, Ctrl-D, tubería y rechazo seguro de claves sin terminal.")

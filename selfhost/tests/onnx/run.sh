@@ -2,9 +2,12 @@
 # Verifica std::onnx del runtime nativo contra dos oráculos independientes:
 #   - onnxruntime (referencia numérica de gen_models.py)
 #   - tract, a través del binario `zett` (la implementación de Rust)
+# Sin `zett` en el PATH (o con ZETT= vacío) se salta todo lo que necesita tract
+# —la comparación numérica con tract y la igualdad de mensajes de errors.titan—
+# y lo dice claro; el resto se comprueba igual.
 # Variables: TITAN (por defecto selfhost/titan) o COMPILER (un titanc nativo: `titanc fuente salida`), ZETT (por defecto `zett` del
 # PATH), OXPY (Python con numpy+onnx+onnxruntime; por defecto python3).
-# Salida 0 solo si todo coincide.
+# Salida 0 solo si todo lo que se pudo comparar coincide.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 TITAN=${TITAN:-$here/../../titan}
@@ -25,17 +28,37 @@ for t in api errors bad; do
     fi
 done
 
-echo "== modelos: nativo vs onnxruntime vs tract =="
+if [ -n "$ZETT" ]; then
+    echo "== modelos: nativo vs onnxruntime vs tract =="
+else
+    echo "== modelos: nativo vs onnxruntime (sin zett: sin tract) =="
+fi
 "$OXPY" "$here/compare.py" "$work/m" "$work/api" "$ZETT" || fail=1
 
-echo "== errores de la API: nativo vs tract (idénticos) =="
 mkdir -p "$work/empty"
 "$work/errors" "$work/m/mlp" "$work/empty" > "$work/e_nat.txt" 2>&1
-"$ZETT" run "$here/errors.titan" "$work/m/mlp" "$work/empty" > "$work/e_tr.txt" 2>&1
-if diff "$work/e_nat.txt" "$work/e_tr.txt" >/dev/null; then
-    echo "OK: $(wc -l < "$work/e_nat.txt") líneas idénticas"
+if [ -n "$ZETT" ]; then
+    echo "== errores de la API: nativo vs tract (idénticos) =="
+    "$ZETT" run "$here/errors.titan" "$work/m/mlp" "$work/empty" > "$work/e_tr.txt" 2>&1
+    if diff "$work/e_nat.txt" "$work/e_tr.txt" >/dev/null; then
+        echo "OK: $(wc -l < "$work/e_nat.txt") líneas idénticas"
+    else
+        diff "$work/e_nat.txt" "$work/e_tr.txt"; fail=1
+    fi
 else
-    diff "$work/e_nat.txt" "$work/e_tr.txt"; fail=1
+    # Sin tract no hay con qué comparar línea a línea. Se exige al menos la
+    # forma fija de errors.titan: 14 líneas, 11 errores con mensaje nativo y
+    # los 3 handles (handle 1, handle2 2, handles 3 4 5).
+    echo "== errores de la API: forma de la salida nativa (sin zett) =="
+    total=$(wc -l < "$work/e_nat.txt")
+    errs=$(grep -c ' => ERR native function ' "$work/e_nat.txt")
+    handles=$(grep -c '^handle' "$work/e_nat.txt")
+    if [ "$total" = 14 ] && [ "$errs" = 11 ] && [ "$handles" = 3 ]; then
+        echo "OK: 14 líneas, 11 errores con mensaje y 3 handles"
+    else
+        echo "forma inesperada: $total líneas, $errs errores, $handles handles"
+        cat "$work/e_nat.txt"; fail=1
+    fi
 fi
 
 echo "== archivos inválidos: siempre error =="
@@ -44,5 +67,9 @@ cat "$work/b.txt"
 grep -q "(mal)" "$work/b.txt" && fail=1
 [ "$(grep -c ' => ERR$' "$work/b.txt")" = 4 ] || fail=1
 
-[ $fail = 0 ] && echo "ONNX: TODO OK" || echo "ONNX: HAY FALLOS"
+if [ -n "$ZETT" ]; then
+    [ $fail = 0 ] && echo "ONNX: TODO OK" || echo "ONNX: HAY FALLOS"
+else
+    [ $fail = 0 ] && echo "ONNX: TODO OK (sin zett: solo se comparó con onnxruntime)" || echo "ONNX: HAY FALLOS"
+fi
 exit $fail

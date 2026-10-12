@@ -4,16 +4,19 @@
 # Genera marcos zstd (válidos con la libzstd 1.5.7 de python-zstandard, con
 # parámetros variados, varios marcos, marcos saltables, y versiones mutadas:
 # bits cambiados, bytes cambiados, cortes, basura añadida) y compara, línea a
-# línea, la salida de prueba.titan en la VM de Rust (zett run) con el modelo
+# línea, la salida de prueba.titan en la VM de bytecode del port (titan build + titan exec) con el modelo
 # zstd_ref.py y, si se dan, con los binarios nativos.
 import os, random, subprocess, sys
 import zstandard
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
 import zstd_ref  # noqa: E402
 
-ZETT = os.path.expanduser('~/.local/bin/zett')
+
 PREFIX = "native function 'std::compress::zstd_decode' failed: "
 
 
@@ -151,7 +154,24 @@ def main():
     with open(path, 'w') as f:
         for c in cases:
             f.write('s ' + c.hex() + '\n')
-    vm = run([ZETT, 'run', os.path.join(here, 'prueba.titan')], path)
+    # La VM no se puede tragar la salida entera de una vez: `titan exec` (como
+    # `titan run`) lanza el programa y recoge su salida con std::process::run_timeout,
+    # que corta a los 4 MiB ("captured process output bytes exceeds limit 4194304"),
+    # y estos casos imprimen unos 8 MiB. Se trocea la entrada y se juntan las
+    # salidas; el tamaño del lote se puede cambiar con TITAN_ZSTD_LOTE.
+    lote = int(os.environ.get('TITAN_ZSTD_LOTE', '25'))
+    env = {k: v for k, v in os.environ.items() if k != 'GITHUB_ACTIONS'}
+    vm = []
+    for i in range(0, len(cases), lote):
+        trozo = os.path.join(outdir, 'zstd_%d_lote_%d.txt' % (seed, i // lote))
+        with open(trozo, 'w') as f:
+            for c in cases[i:i + lote]:
+                f.write('s ' + c.hex() + '\n')
+        salida = vm_run(__file__, 'prueba.titan', trozo, capture_output=True,
+                        text=True, timeout=900, env=env).stdout.split('\n')
+        while salida and salida[-1] == '':
+            salida.pop()
+        vm.extend(salida)
     others = [(n, run([n], path)) for n in nats]
     bad = 0
     oks = 0

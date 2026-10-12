@@ -35,7 +35,7 @@ GRUPOS = [
         ("docs/CONCURRENCY.md", "concurrencia", "Tareas y canales", "spawn, join, canales, select y tiempos límite."),
     ]),
     ("Biblioteca estándar", [
-        ("docs/STDLIB.md", "stdlib", "Visión general", "Los 73 espacios de nombres y sus 812 funciones."),
+        ("docs/STDLIB.md", "stdlib", "Visión general", "Los 73 espacios de nombres y sus 813 funciones."),
         ("docs/EXTRAS.md", "extras", "Regex, uuid, hash y más", "Módulos de uso general."),
         ("docs/NETWORKING.md", "red", "Red y HTTP", "Sockets, servidor HTTP, enrutador y respuestas."),
         ("docs/HTTP_CLIENT.md", "cliente-http", "Cliente HTTP/HTTPS", "std::http::request."),
@@ -154,16 +154,16 @@ def filas_biblioteca():
         total += n
         out.append('<tr><td><code>%s</code></td><td class="num">%d</td><td>%s</td></tr>' % (
             html.escape(p[0].strip("`")), n, html.escape(p[2])))
-    assert total == 812 and len(out) == 73, (total, len(out))
+    assert total == 813 and len(out) == 73, (total, len(out))
     return "\n".join(out)
 
 
 pagina("index.html", "Titan — lenguaje de programación",
        "Titan es un lenguaje de programación compilado y con tipos comprobados. Genera ejecutables nativos para "
-       "Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 812 funciones.",
+       "Linux x86-64 y ARM64 (Termux) y WebAssembly, e incluye una biblioteca estándar de 813 funciones.",
        leer(os.path.join(AQUI, "plantillas", "inicio.html")), "inicio")
 pagina("biblioteca.html", "Biblioteca estándar — Titan",
-       "Las 812 funciones de la biblioteca estándar de Titan, agrupadas en 73 espacios de nombres.",
+       "Las 813 funciones de la biblioteca estándar de Titan, agrupadas en 73 espacios de nombres.",
        leer(os.path.join(AQUI, "plantillas", "biblioteca.html")).replace("{{FILAS}}", filas_biblioteca()), "biblioteca")
 
 # ---------------------------------------------------------------- documentación

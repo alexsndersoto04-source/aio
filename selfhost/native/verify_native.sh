@@ -1,27 +1,52 @@
 #!/bin/bash
 # Verificación diferencial del compilador nativo (fase 4b del self-hosting).
 #
-# Para cada programa: lo compila a ejecutable con `selfhost/build.titan`
-# (todo en Titan) y compara stdout, stderr y código de salida con `zett run`
-# (la VM de Rust). En las pruebas de imagen también compara los archivos
-# generados; sus casos productor/validador deben estar en el mismo shard.
-# Las compilaciones no admitidas y los timeouts se cuentan aparte; nunca como aciertos.
+# Para cada programa: lo compila a ejecutable y compara stdout, stderr y código
+# de salida con el otro motor del compilador. En las pruebas de imagen también
+# compara los archivos generados; sus casos productor/validador deben estar en
+# el mismo shard. Las compilaciones no admitidas y los timeouts se cuentan
+# aparte; nunca como aciertos.
+#
+# Lado VM (VM=port, por omisión): la VM de bytecode del propio port
+# (`titan build` + `titan exec`), que es la comparación que se puede hacer sin
+# Rust: el programa pasa por el artefacto .tbc y vuelve a bajar a nativo.
+# Lado VM (VM=zett): la VM de Rust (`zett run`), la comparación histórica del
+# self-hosting; se usa sola si hay un `zett` de Rust en el PATH.
+# Lado nativo: `titan compile` (o COMPILER=/ruta/a/titanc1 para reutilizar el
+# compilador del bootstrap y no recompilar build.titan en cada prueba).
 #
 # Uso: bash selfhost/native/verify_native.sh [archivos...]
 #      (sin archivos: selfhost/tests/native/*.titan)
-#      ZETT=/ruta/al/zett COMPILER=/ruta/a/titanc1 bash ...
+#      VM=port|zett TITAN=./selfhost/titan ZETT=/ruta/al/zett COMPILER=/ruta/a/titanc1 bash ...
 #      TEST_TIMEOUT=60 BUILD_TIMEOUT=300 ajustan los límites en segundos.
-# COMPILER permite reutilizar el compilador nativo ya creado en el bootstrap,
-# evitando volver a interpretar build.titan con Rust para cada prueba.
 set -u
 ZETT="${ZETT:-zett}"
 COMPILER="${COMPILER:-}"
+TITAN="${TITAN:-./selfhost/titan}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
-if ! command -v "$ZETT" >/dev/null 2>&1; then
-  echo "error: no se encuentra el Zett precompilado: $ZETT" >&2
+# El lado VM: `port` (por omisión) o `zett`, y con `zett` solo si de verdad hay
+# una VM de Rust. El `zett` del PATH puede ser el gestor de paquetes, que es
+# este mismo compilador con otro nombre: se reconoce por su salida.
+VM_MODE="${VM:-}"
+if [ -z "$VM_MODE" ]; then
+  VM_MODE=port
+  if command -v "$ZETT" >/dev/null 2>&1 \
+      && ! "$ZETT" version 2>/dev/null | grep -q "TITAN Language Compiler" \
+      && "$ZETT" run --help >/dev/null 2>&1; then
+    VM_MODE=zett
+  fi
+fi
+if [ "$VM_MODE" = "zett" ] && ! command -v "$ZETT" >/dev/null 2>&1; then
+  echo "error: VM=zett pide la VM de Rust y no se encuentra: $ZETT" >&2
   exit 2
 fi
+if [ "$VM_MODE" != "zett" ] && [ ! -x "$TITAN" ]; then
+  echo "error: no se encuentra la CLI del port: $TITAN" >&2
+  exit 2
+fi
+lado_nativo="${COMPILER:-$TITAN compile}"
+echo "lado VM: $VM_MODE   lado nativo: $lado_nativo"
 if [ -n "$COMPILER" ]; then
   compiler_path="$(command -v "$COMPILER")"
   if [ -z "$compiler_path" ] || [ ! -x "$compiler_path" ]; then
@@ -103,8 +128,11 @@ for f in "${FILES[@]}"; do
   if [ -n "$COMPILER" ]; then
     run_limited "$BUILD_TIMEOUT" "$tmp/build.done" "$COMPILER" "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
     build_status=$?
-  else
+  elif [ "$VM_MODE" = "zett" ]; then
     run_limited "$BUILD_TIMEOUT" "$tmp/build.done" "$ZETT" run selfhost/build.titan "$f" "$tmp/prog" > "$tmp/build.txt" 2>&1
+    build_status=$?
+  else
+    run_limited "$BUILD_TIMEOUT" "$tmp/build.done" "$TITAN" compile "$f" -o "$tmp/prog" > "$tmp/build.txt" 2>&1
     build_status=$?
   fi
   if [ ! -e "$tmp/build.done" ]; then
@@ -212,7 +240,25 @@ PY
     vm_args=("$vm_files/output")
     nat_args=("$nat_files/output")
   fi
-  run_limited "$TEST_TIMEOUT" "$tmp/vm.done" "${vm_env[@]}" "$ZETT" run "$f" "${vm_args[@]}" > "$tmp/vm.out" 2> "$tmp/vm.err"
+  if [ "$VM_MODE" != "zett" ]; then
+    rm -f "$tmp/vm.tbc"
+    run_limited "$BUILD_TIMEOUT" "$tmp/vm-build.done" "$TITAN" build "$f" -o "$tmp/vm.tbc" > "$tmp/vm-build.txt" 2>&1
+    vm_build_status=$?
+    if [ ! -e "$tmp/vm-build.done" ] || [ "$vm_build_status" -ne 0 ] || [ ! -f "$tmp/vm.tbc" ]; then
+      unsupported=$((unsupported + 1))
+      message="no admitido en bytecode: $f (build=$vm_build_status): $(head -c 200 "$tmp/vm-build.txt" | tr '\n' ' ')"
+      echo "$message"
+      printf '%s\n' "$message" >> "$details"
+      report_error_annotation "$f" "Bytecode build unsupported" "$message"
+      rm -f "$tmp/prog"
+      continue
+    fi
+  fi
+  if [ "$VM_MODE" = "zett" ]; then
+    run_limited "$TEST_TIMEOUT" "$tmp/vm.done" "${vm_env[@]}" "$ZETT" run "$f" "${vm_args[@]}" > "$tmp/vm.out" 2> "$tmp/vm.err"
+  else
+    run_limited "$TEST_TIMEOUT" "$tmp/vm.done" "${vm_env[@]}" "$TITAN" exec "$tmp/vm.tbc" "${vm_args[@]}" > "$tmp/vm.out" 2> "$tmp/vm.err"
+  fi
   vm=$?
   if [ "$base" = "kv_symlink_canonical" ]; then
     rm -f "$kv_symlink" "$kv_symlink_next"
@@ -245,9 +291,15 @@ PY
   fi
   interop_verify_status=0
   if [ "$base" = "kv_interop" ]; then
-    run_limited "$TEST_TIMEOUT" "$tmp/interop-vm.done" env \
-      "TITAN_KV_INTEROP_MODE=verify" "TITAN_KV_INTEROP_PATH=$interop_path" \
-      "$ZETT" run "$f" > "$tmp/interop-vm.out" 2> "$tmp/interop-vm.err"
+    if [ "$VM_MODE" = "zett" ]; then
+      run_limited "$TEST_TIMEOUT" "$tmp/interop-vm.done" env \
+        "TITAN_KV_INTEROP_MODE=verify" "TITAN_KV_INTEROP_PATH=$interop_path" \
+        "$ZETT" run "$f" > "$tmp/interop-vm.out" 2> "$tmp/interop-vm.err"
+    else
+      run_limited "$TEST_TIMEOUT" "$tmp/interop-vm.done" env \
+        "TITAN_KV_INTEROP_MODE=verify" "TITAN_KV_INTEROP_PATH=$interop_path" \
+        "$TITAN" exec "$tmp/vm.tbc" > "$tmp/interop-vm.out" 2> "$tmp/interop-vm.err"
+    fi
     interop_verify_status=$?
     if [ ! -e "$tmp/interop-vm.done" ]; then
       run_timeouts=$((run_timeouts + 1))
@@ -319,8 +371,10 @@ PY
         echo "La prueba positiva $base debe terminar con código 0 (VM=$vm, nativo=$nat)."
       fi
       if [ "$base" = "kv_interop" ] && [ "$interop_seed_snapshot" -eq 0 ]; then
-        echo "El Zett de VM no publicó .titan-kv-v1.json; la interoperabilidad Rust/Sled no queda validada con este artefacto."
-        echo "Origen del Zett: ${ZETT_SOURCE_COMMIT:-desconocido}"
+        echo "El lado VM ($VM_MODE) no publicó .titan-kv-v1.json; la interoperabilidad entre los dos lados no queda validada con este artefacto."
+        if [ "$VM_MODE" = "zett" ]; then
+          echo "Origen del Zett: ${ZETT_SOURCE_COMMIT:-desconocido}"
+        fi
       fi
       if [ "$base" = "kv_interop" ] && [ "$interop_verify_status" -ne 0 ]; then
         echo "La verificación final con Sled falló (código=$interop_verify_status):"

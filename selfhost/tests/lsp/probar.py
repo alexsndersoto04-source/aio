@@ -6,11 +6,23 @@ Uso: python3 probar.py [CLI]        (por defecto selfhost/titan)
 El LSP de Rust no se puede compilar aquí, así que no hay comparación diferencial: los casos son los
 siete tests unitarios de `crates/titan_lsp` (portados) más casos escritos leyendo su código. Los
 mensajes de diagnóstico se contrastan con `zett check` en `contraste_zett.py` (si hay `zett`)."""
-import json, os, sys
+import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cliente import sesion, frame
 
 CLI = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.abspath(os.path.join(os.path.dirname(__file__), "../../titan"))
+RAIZ = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+
+
+def leer_nativas():
+    """Los nombres de `selfhost/natives.titan`, que es la tabla de firmas.
+
+    El completado tiene que ofrecer exactamente esas; contar con un número escrito a mano
+    se quedó viejo una vez (decía 823 cuando la tabla ya tenía 812), así que la cuenta se
+    saca del fichero. Solo valen las líneas que empiezan con comilla (los comentarios
+    también llevan comillas) y de cada una se toma el nombre: lo primero antes del espacio."""
+    texto = open(os.path.join(RAIZ, "selfhost", "natives.titan"), encoding="utf-8").read()
+    return [firma.split()[0] for firma in re.findall(r'^\s*"([^"]+)"', texto, re.M)]
 ok = 0
 mal = 0
 
@@ -174,7 +186,12 @@ check("símbolo del documento", by["main"] == {"label": "main", "kind": 12, "det
 check("nativa con firma", by["std::text::length"] == {"label": "std::text::length", "kind": 3, "detail": "native [String] -> Int"}, by.get("std::text::length"))
 check("nativa sin parámetros", by["std::map::new"]["detail"] == "native [] -> Map", by.get("std::map::new"))
 check("nativa con varios parámetros", by["std::text::replace"]["detail"] == "native [String, String, String] -> String", by.get("std::text::replace"))
-check("cantidad: 20 palabras + nativas + 3 símbolos", len(items) == 20 + 3 + 823, len(items))
+NATIVAS = leer_nativas()
+assert len(NATIVAS) == len(set(NATIVAS)), "hay nombres repetidos en natives.titan"
+check("cantidad: 20 palabras + %d nativas de natives.titan + 3 símbolos" % len(NATIVAS),
+      len(items) == 20 + 3 + len(NATIVAS), len(items))
+faltan = [n for n in NATIVAS if n not in by]
+check("están las %d nativas de natives.titan, no solo la cuenta" % len(NATIVAS), not faltan, faltan[:8])
 
 # ---- 8. varios documentos: workspace/symbol, referencias y rename entre archivos
 A, B = "file:///a.titan", "file:///b.titan"

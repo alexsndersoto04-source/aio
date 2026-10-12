@@ -186,26 +186,35 @@ etapa mediante suites de pruebas automatizadas.</p>
 <h2 id="como-verificar">Cómo verificar</h2>
 <pre><code class="language-bash"># `scripts/sandbox-zett.sh` no existe en el repo: baja `zett-linux-x86_64` (+ .sha256) de la rama `binaries`
 # (git clone --depth 1 -b binaries ...), verifica el sha256 y ponlo en ~/.local/bin/zett. Necesita libasound.so.2.
-# Comprobación rápida de que el runtime nativo compila (~90 s en la VM): zett run selfhost/revisar_runtime.titan
+# Comprobación rápida de que el runtime nativo compila, ya sin la VM de Rust (~30 s con la caché
+# del runtime caliente): selfhost/titan run selfhost/revisar_runtime.titan [RUTA_DEL_RUNTIME]
+# Sin argumento busca native/runtime.titan subiendo desde la carpeta actual.
 export PATH=&quot;$HOME/.local/bin:$PATH&quot;
 bash selfhost/verify_lexer.sh            # lexer Titan vs lexer Rust, byte a byte
 bash selfhost/verify_parser.sh           # parser Titan vs parser Rust, byte a byte
 bash selfhost/verify_typechecker.sh      # typechecker Titan vs Rust, byte a byte
 bash selfhost/verify_codegen.sh          # cargador + codegen Titan vs Rust, byte a byte
-bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el ensamblador GNU
-bash selfhost/native/verify_native.sh    # nativo vs `zett run` (stdout, stderr, código y archivos de imagen)
+bash selfhost/native/verify_x64.sh       # codificador x86-64 en Titan vs el desensamblador de binutils (objdump)
+bash selfhost/native/verify_native.sh    # corpus: nativo vs la VM del port (VM=zett para la VM de Rust)
 bash selfhost/native/verify_native.sh selfhost/tests/native/redis.titan # arranca un Redis real si redis-server/redis-cli están instalados
-bash selfhost/native/verify_json.sh      # std::json::parse nativo vs VM en 97 casos (errores con línea/columna)
+bash selfhost/native/verify_native.sh VM=zett selfhost/tests/native/basico.titan # la comparación histórica contra `zett run`
+bash selfhost/native/verify_json.sh      # std::json::parse: nativo vs la VM del port en 97 casos (errores con línea/columna)
+# Comparación con glibc de verdad: sudo bash selfhost/native/net/comparar.sh /tmp/prueba_net
+# (necesita dns_falso.py en 127.0.0.53 y servidores.py; con ZETT=/ruta/a/zett usa la VM de Rust)
+bash selfhost/tests/vm_diff.sh           # corpus: nativo vs la VM del port (antes se comparaba contra la VM de Rust)
 bash selfhost/native/cobertura.sh [-v]   # definiciones Titan frente al inventario registrado
 python3 selfhost/native/auditar_pruebas.py # cruce de firmas con nombres citados en la suite (no mide ramas)
-ZETT=/ruta/al/zett COMPILER=/ruta/titanc1 python3 selfhost/native/readline/verificar.py # PTY real
-ZETT=/ruta/al/zett COMPILER=/ruta/titanc1 bash selfhost/native/term/verificar.sh # PTY real
-ZETT=/ruta/al/zett COMPILER=/ruta/titanc1 python3 selfhost/native/http_full/verificar.py # HTTP/TLS local
+python3 selfhost/native/http_full/verificar.py # HTTP local vs la VM del port y HTTPS con una CA de prueba (sin Rust)
+bash selfhost/native/term/verificar.sh   # pseudoterminal: 11 de 11 (usa `titan run --tty`)
+python3 selfhost/native/readline/verificar.py # PTY real: VM del port con `titan exec --tty` frente al nativo
+env -i PATH=/nonexistent ./selfhost/titanc3 selfhost/native/libm/h.titan /tmp/h &amp;&amp; python3 selfhost/native/libm/verify_libm.py SEMILLA CASOS /tmp/h # std::math vs libm.so.6
 # El compilador Titan convertido en ejecutable nativo, contra el de Rust:
 zett run selfhost/build.titan selfhost/bytecode.titan /tmp/bytecode_nativo
 SELF=/tmp/bytecode_nativo bash selfhost/verify_codegen.sh
 bash selfhost/verify_fixpoint.sh         # punto fijo: titanc1 == titanc2 == titanc3
-bash selfhost/native/llvm/verificar.sh   # backend LLVM: ejecutables por LLVM vs `zett run` (ver native/llvm/NOTAS.md)
+bash selfhost/native/llvm/verificar.sh   # backend LLVM: ejecutables por LLVM vs el backend nativo del port (ver native/llvm/NOTAS.md)
+bash selfhost/native/llvm/arm64_objetos.sh SALIDA [archivos]      # objetos AArch64 reales en una máquina x86-64
+bash selfhost/native/llvm/arm64_referencias.sh OBJETOS [archivos] # salidas de referencia x86-64 para el job ARM64
 bash selfhost/native/llvm/punto_fijo.sh  # el compilador hecho por LLVM da el mismo compilador, byte a byte
 # Perfil de un ejecutable nativo (herramienta de desarrollo):
 zett run selfhost/build.titan PROG.titan /tmp/prog /tmp/prog.map
@@ -683,7 +692,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::term (15: print_colored, print_styled, print_attr, clear_screen, clear_line, move_to, hide_cursor, show_cursor, size, flush, enter_alt_screen, leave_alt_screen, enable_raw, disable_raw, read_key)</td>
 <td><code>std_term.titan</code>, <code>std_term_keys.titan</code></td>
-<td>lo mismo que term_mod sobre crossterm 0.28.1 + rustix 0.38.44 + mio 1.2.2, traducido de su código original (notas en <code>native/term/NOTAS.md</code>): las mismas secuencias de escape (NO_COLOR memorizado, tabla SGR, MoveTo con desborde u16), el modo crudo con TCGETS2/TCSETS2 y su plan B, <code>size()</code> con TIOCGWINSZ y, si falla, <code>tput cols</code>/<code>tput lines</code> lanzados de verdad (búsqueda en PATH de glibc y el errno que el hijo deja en el padre), y <code>read_key</code> con epoll por flanco, SIGWINCH (bloqueada y leída por signalfd, porque el runtime no tiene punteros a funciones) y el analizador <code>parse.rs</code> completo (SS3, CSI, ratón, pegado, foco, protocolo de kitty, UTF-8 partido). Comparado: 9 pruebas sin terminal en la batería general y <code>native/term/verificar.sh</code> (11 de 11 iguales byte a byte): tamaño con 7 entornos y en una pseudoterminal, 40 teclas en modo crudo con la configuración de la terminal antes y después, plazos, cambio de tamaño de la ventana, modo normal y NO_COLOR. <strong>Defecto de Rust corregido:</strong> <code>print_colored("#a€bc", …)</code> hacía pánico (corte dentro de un carácter); corregido en <code>term_mod.rs</code> con <code>str::get</code>, el runtime en Titan da el error correcto. Diferencia honesta: sin TERM y sin terminal, el errno del error de <code>size()</code> depende de una carrera dentro del propio Rust (medido: Rust 19 de 20 veces "os error 11" y 1 "os error 2"; el nativo 18 y 2), por eso ese caso queda fuera de la batería</td>
+<td>lo mismo que term_mod sobre crossterm 0.28.1 + rustix 0.38.44 + mio 1.2.2, traducido de su código original (notas en <code>native/term/NOTAS.md</code>): las mismas secuencias de escape (NO_COLOR memorizado, tabla SGR, MoveTo con desborde u16), el modo crudo con TCGETS2/TCSETS2 y su plan B, <code>size()</code> con TIOCGWINSZ y, si falla, <code>tput cols</code>/<code>tput lines</code> lanzados de verdad (búsqueda en PATH de glibc y el errno que el hijo deja en el padre), y <code>read_key</code> con epoll por flanco, SIGWINCH (bloqueada y leída por signalfd, porque el runtime no tiene punteros a funciones) y el analizador <code>parse.rs</code> completo (SS3, CSI, ratón, pegado, foco, protocolo de kitty, UTF-8 partido). Comparado: 9 pruebas sin terminal en la batería general y <code>native/term/verificar.sh</code> (<strong>11 de 11 iguales byte a byte</strong>, corrido con <code>titan run --tty</code>): tamaño con 7 entornos y en una pseudoterminal, 40 teclas en modo crudo con la configuración de la terminal antes y después, plazos, cambio de tamaño de la ventana, modo normal y NO_COLOR. <strong>Defecto de Rust corregido:</strong> <code>print_colored("#a€bc", …)</code> hacía pánico (corte dentro de un carácter); corregido en <code>term_mod.rs</code> con <code>str::get</code>, el runtime en Titan da el error correcto. Diferencia honesta: sin TERM y sin terminal, el errno del error de <code>size()</code> depende de una carrera dentro del propio Rust (medido: Rust 19 de 20 veces "os error 11" y 1 "os error 2"; el nativo 18 y 2), por eso ese caso queda fuera de la batería</td>
 </tr>
 <tr>
 <td>std::email (3/3 cuerpos Titan; transporte real aún sin prueba diferencial)</td>
@@ -703,7 +712,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::onnx (9/14 cuerpos Titan; faltan las 5 <code>*_bert*</code>)</td>
 <td><code>std_onnx.titan</code>, <code>std_onnx_engine.titan</code></td>
-<td>motor propio de inferencia (subconjunto de 39 operadores, rechazo explícito del resto); comparado con onnxruntime y con tract; ver «std::onnx en Titan»</td>
+<td>motor propio de inferencia (subconjunto de 39 operadores, rechazo explícito del resto); comparado con onnxruntime y con tract; ver «std::onnx en Titan». <code>tests/onnx/run.sh</code> ya no necesita el Rust: sin <code>zett</code> compara solo con onnxruntime (35 modelos, 70 comprobaciones) y con <code>zett</code> añade tract</td>
 </tr>
 <tr>
 <td>std::termux (23/23 cuerpos Titan; paridad conductual aún parcial)</td>
@@ -718,7 +727,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::readline (4 de 4 funciones)</td>
 <td><code>std_readline.titan</code></td>
-<td>lectura real desde la terminal: edición y movimiento del cursor, borrado, historial en memoria y archivo compatible con el formato <code>#V2</code>, búsqueda inversa con Ctrl+R y entrada secreta sin mostrar las teclas; si no se puede activar el modo protegido, rechaza leer la clave. También acepta entrada por tubería y comunica Ctrl+C/Ctrl+D. La prueba <code>native/readline/verificar.py</code> incluye comparación VM/nativo en pseudoterminal, historial entre dos llamadas, escapes <code>#V2</code> de barras y saltos de línea, conservación del archivo cuando no hay una entrada nueva, clave UTF-8 y rechazo de claves sin terminal. En CI <code>37278754059</code>, el job dedicado con el binario precompilado, una pseudoterminal real y ALSA real pasó. No se aceptan resultados con ALSA simulada</td>
+<td>lectura real desde la terminal: edición y movimiento del cursor, borrado, historial en memoria y archivo compatible con el formato <code>#V2</code>, búsqueda inversa con Ctrl+R y entrada secreta sin mostrar las teclas; si no se puede activar el modo protegido, rechaza leer la clave. También acepta entrada por tubería y comunica Ctrl+C/Ctrl+D. La prueba <code>native/readline/verificar.py</code> incluye comparación VM/nativo en pseudoterminal, historial entre dos llamadas, escapes <code>#V2</code> de barras y saltos de línea, conservación del archivo cuando no hay una entrada nueva, clave UTF-8 y rechazo de claves sin terminal; sin el Rust, el lado VM es la VM de bytecode del port (<code>titan exec --tty</code> sobre el artefacto) y pasa entera. En CI <code>37278754059</code>, el job dedicado con el binario precompilado, una pseudoterminal real y ALSA real pasó. No se aceptan resultados con ALSA simulada</td>
 </tr>
 <tr>
 <td>std::redis (21/21 funciones)</td>
@@ -731,9 +740,9 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <td>Port de <code>server_mod.rs</code>: TCP real por syscalls (socket/bind/listen/accept4/poll/read/sendto), parseo estricto de request-line y cabeceras (límites de 64 KiB de cabecera, 128 cabeceras, nombres de 256 y valores de 8192 bytes), cuerpo fijo y chunked con trailers, <code>Expect</code>, respuestas validadas (reserva del 101, Content-Type y framing gestionados), <code>respond*</code>, upgrade WebSocket (SHA-1 + Base64 de <code>std_ws.titan</code>), decodificador de mensajes (fragmentación, UTF-8, máscara obligatoria, límites), cierre y eco de cierre. Handles, límites (8 servidores, 256 peticiones, 64 WebSockets vivos) y mensajes de error iguales a la VM. Pruebas: <code>server_std.titan</code> (curl) y <code>selfhost/tests/server_diff/</code> (<code>bash selfhost/tests/server_diff/run.sh</code>): servidor Titan + cliente Python de guion fijo contra VM y nativo; el cliente y lo que imprime el servidor coinciden línea a línea. Desviaciones: ver «Corrección de cifras».</td>
 </tr>
 <tr>
-<td>std::process (22: run, run_with_input, shell, pipe, run_timeout, spawn, spawn_wait, spawn_poll, spawn_kill, spawn_pid, env_get, env_set, env_unset, env_vars, working_dir, set_working_dir, self_pid, hostname, username, args, send_signal, exit)</td>
+<td>std::process (24: run, run_with_input, run_inherit, shell, pipe, run_timeout, spawn, spawn_wait, spawn_poll, spawn_kill, spawn_pid, env_get, env_set, env_unset, env_vars, working_dir, set_working_dir, self_pid, hostname, username, args, send_signal, exit, exec_once)</td>
 <td><code>std_process.titan</code> (+ <code>rt_environ</code>/<code>rt_getenv</code> en <code>runtime.titan</code>)</td>
-<td>lo mismo que process_mod.rs y <code>run_timeout</code> de process.rs (notas en <code>native/process/NOTAS.md</code>): los programas se lanzan como <code>posix_spawnp</code> de glibc (fork, redirecciones, máscara de señales vacía, SIGPIPE por defecto, la búsqueda en PATH de <code>__execvpex</code> con su regla del último errno, el errno del exec fallido pasado al padre); la salida y la entrada se leen/escriben a la vez con <code>poll</code> (cupo compartido de 4 MiB, EPIPE en vez de morir por SIGPIPE); los procesos en segundo plano tienen un proceso ayudante que lee sus tubos mientras corren (lo que en Rust hacen dos hilos; el runtime no tiene hilos) y al terminar el programa se matan y se esperan como en el <code>Drop</code> de Rust (pero no con <code>exit</code>, igual que Rust). <code>env_set</code>/<code>env_unset</code> cambian un entorno propio del runtime que ven <code>std::env</code>, <code>std::dirs</code>, el <code>tput</code> de <code>std::term</code> y los hijos. Comparado: 66 programas idénticos (6 normales y 58 de errores, más <code>ruta_palabra_clave</code> y <code>dirs_lineas_malas</code>, que ahora pone <code>XDG_CONFIG_HOME</code> con <code>env_set</code>) y variables no UTF-8 a mano. <strong>Defectos de Rust corregidos:</strong> 16 (<code>spawn</code> no se podía escribir), 17 (panic en <code>env_set</code>/<code>env_unset</code>) y 18 (panic en <code>env_vars</code>). Diferencia honesta: el ayudante aparece como un proceso más en <code>ps</code></td>
+<td>lo mismo que process_mod.rs y <code>run_timeout</code> de process.rs (notas en <code>native/process/NOTAS.md</code>): los programas se lanzan como <code>posix_spawnp</code> de glibc (fork, redirecciones, máscara de señales vacía, SIGPIPE por defecto, la búsqueda en PATH de <code>__execvpex</code> con su regla del último errno, el errno del exec fallido pasado al padre); la salida y la entrada se leen/escriben a la vez con <code>poll</code> (cupo compartido de 4 MiB, EPIPE en vez de morir por SIGPIPE); los procesos en segundo plano tienen un proceso ayudante que lee sus tubos mientras corren (lo que en Rust hacen dos hilos; el runtime no tiene hilos) y al terminar el programa se matan y se esperan como en el <code>Drop</code> de Rust (pero no con <code>exit</code>, igual que Rust). <code>env_set</code>/<code>env_unset</code> cambian un entorno propio del runtime que ven <code>std::env</code>, <code>std::dirs</code>, el <code>tput</code> de <code>std::term</code> y los hijos. Comparado: 66 programas idénticos (6 normales y 58 de errores, más <code>ruta_palabra_clave</code> y <code>dirs_lineas_malas</code>, que ahora pone <code>XDG_CONFIG_HOME</code> con <code>env_set</code>) y variables no UTF-8 a mano. <code>run_inherit</code> (la única sin tubos: el hijo usa los descriptores del proceso, como <code>Command::status()</code>) tiene su prueba <code>std_process_inherit.titan</code> (códigos 0/1/7, salida heredada, -1 si lo mata una señal y los tres errores de argv), verificada en el subconjunto 2026-10-12; el corpus completo lo corre la CI. <strong>Defectos de Rust corregidos:</strong> 16 (<code>spawn</code> no se podía escribir), 17 (panic en <code>env_set</code>/<code>env_unset</code>) y 18 (panic en <code>env_vars</code>). Diferencia honesta: el ayudante aparece como un proceso más en <code>ps</code></td>
 </tr>
 <tr>
 <td>std::url (10: is_valid, scheme, host, port, path, query, fragment, join, parse_query, build_query)</td>
@@ -793,7 +802,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::net (1 de 1: http_get)</td>
 <td><code>std_net.titan</code>, <code>std_net_gai.titan</code>, <code>std_net_dns.titan</code></td>
-<td>lo mismo que net.rs y TcpStream::connect de Rust (IPv4/IPv6 estrictos de Rust, cada dirección en orden, mensajes de io::Error) sobre getaddrinfo de glibc 2.39 (la del ubuntu-24.04 de CI) traducido de su código: nsswitch.conf (acciones <code>[!STATUS=accion]</code>, módulos files y dns), host.conf (multi, reorder, trim y sus avisos), /etc/hosts con los límites de búfer de glibc, resolv.conf (nameserver, search, domain, options: ndots, timeout, attempts, rotate, edns0, single-request, single-request-reopen, use-vc, trust-ad, no-aaaa, no-tld-query, no-reload; LOCALDOMAIN, RES_OPTIONS, HOSTALIASES; recarga cuando cambia el archivo), el cliente DNS real (consultas A y AAAA con sendmmsg por UDP, paso a TCP si viene truncada, reintentos y tiempos de espera, respuestas con otro ID o pregunta distinta, SERVFAIL/REFUSED/NXDOMAIN, CNAME, compresión), gai.conf (label, precedence, scopev4, reload) y el orden RFC 3484 con check_pf (netlink) y la prueba de conexión UDP. Comparado con glibc real: <code>native/net/comparar.sh</code> monta un servidor DNS falso con 30 casos raros (<code>dns_falso.py</code>) y servidores HTTP locales y compara VM y nativo en 27 configuraciones distintas del sistema: 0 diferencias. Prueba <code>net_http</code></td>
+<td>lo mismo que net.rs y TcpStream::connect de Rust (IPv4/IPv6 estrictos de Rust, cada dirección en orden, mensajes de io::Error) sobre getaddrinfo de glibc 2.39 (la del ubuntu-24.04 de CI) traducido de su código: nsswitch.conf (acciones <code>[!STATUS=accion]</code>, módulos files y dns), host.conf (multi, reorder, trim y sus avisos), /etc/hosts con los límites de búfer de glibc, resolv.conf (nameserver, search, domain, options: ndots, timeout, attempts, rotate, edns0, single-request, single-request-reopen, use-vc, trust-ad, no-aaaa, no-tld-query, no-reload; LOCALDOMAIN, RES_OPTIONS, HOSTALIASES; recarga cuando cambia el archivo), el cliente DNS real (consultas A y AAAA con sendmmsg por UDP, paso a TCP si viene truncada, reintentos y tiempos de espera, respuestas con otro ID o pregunta distinta, SERVFAIL/REFUSED/NXDOMAIN, CNAME, compresión), gai.conf (label, precedence, scopev4, reload) y el orden RFC 3484 con check_pf (netlink) y la prueba de conexión UDP. Comparado con glibc real: <code>native/net/comparar.sh</code> monta un servidor DNS falso con 30 casos raros (<code>dns_falso.py</code>) y servidores HTTP locales y compara el nativo con glibc de verdad en 27 configuraciones distintas del sistema: 0 diferencias. La referencia la hace <code>native/net/oraculo_glibc.py</code> (getaddrinfo por ctypes y sockets reales) porque aquí Rust no tenía nada propio: <code>std::net</code> llamaba a esas mismas funciones de glibc. Con <code>ZETT=/ruta/a/zett</code> el arnés usa la VM de Rust para la comparación histórica. Los errores del oráculo salen con el mismo prefijo que el nativo (<code>native function 'std::net::http_get' failed: …</code>) y el arnés descarta configuraciones en las que alguno de los dos no produjo ninguna línea, para que dos salidas vacías no cuenten como iguales. Prueba <code>net_http</code></td>
 </tr>
 <tr>
 <td>std::qrcode (5 de 5: to_ascii, to_unicode, to_svg, to_png, save_png)</td>
@@ -1046,7 +1055,7 @@ estado real frente a Titan. «Hecho» solo significa lo que está verificado arr
 <tr>
 <td><code>titan_wasm</code></td>
 <td style="text-align: right;">6 176</td>
-<td>Portado a Titan: <code>wasm.titan</code> (3 858 líneas) + <code>wasm_cli.titan</code>; salida idéntica byte a byte a <code>zett wasm</code> en el corpus de <code>tests/wasm_diff</code> (ver «Fase W»). Ya es el subcomando <code>titan wasm</code> de la CLI única (ver «CLI única»). Faltan las pruebas de los 58 tests unitarios de Rust.</td>
+<td>Portado a Titan: <code>wasm.titan</code> (4 715 líneas) + <code>wasm_cli.titan</code>; salida idéntica byte a byte a <code>zett wasm</code> en el corpus de <code>tests/wasm_diff</code> (ver «Fase W»), y ese corpus corre hoy sin <code>zett</code> comparando el <code>.wasm</code> contra la VM (ver «Cierres y orden superior en WebAssembly»). Ya es el subcomando <code>titan wasm</code> de la CLI única (ver «CLI única»). Faltan las pruebas de los 58 tests unitarios de Rust.</td>
 </tr>
 <tr>
 <td><code>titan_codegen</code></td>
@@ -1199,8 +1208,8 @@ lo que antes eran programas sueltos:</p>
 <td><code>zett build</code></td>
 </tr>
 <tr>
-<td><code>titan exec [artefacto.tbc]</code></td>
-<td>decodifica y valida el <code>.tbc</code>, lo compila a nativo (temporal) y lo ejecuta</td>
+<td><code>titan exec [artefacto.tbc] [args…]</code></td>
+<td>decodifica y valida el <code>.tbc</code>, lo compila a nativo (temporal) y lo ejecuta; los argumentos que siguen al artefacto van al programa (como en <code>titan run</code>)</td>
 <td><code>zett exec</code> (que usa la VM)</td>
 </tr>
 <tr>
@@ -1411,6 +1420,19 @@ dimensión &gt; 4 194 304, handle tras <code>close</code>, ids 1-5 sin reutiliza
 dan texto <strong>idéntico</strong> al de Rust (tract). Archivos truncados, vacíos, basura y con operador
 no soportado fallan siempre con error (nunca abortan ni devuelven handle). Una red
 tipo MNIST tarda 0,1 s en el nativo.</p>
+<p><strong>Sin el Rust (2026-10-12).</strong> El oráculo principal de este arnés (onnxruntime) no es
+Rust, así que <code>run.sh</code> ya no lo pide: <code>compare.py</code> acepta el <code>zett</code> como argumento
+opcional y, si no está, compara solo con onnxruntime y lo dice en cada línea
+(<code>sin zett: no se comparó con tract</code>); la sección de errores, que sí comparaba con
+tract línea a línea, comprueba entonces la forma de la salida nativa (14 líneas, 11
+errores con mensaje nativo y 3 handles). Corrido así en esta máquina: <strong>35 modelos,
+70 comprobaciones idénticas a onnxruntime, 0 fallas</strong>, <code>ONNX: TODO OK</code>. Y con el
+<code>zett</code> de la rama <code>binaries</code> (sha256 comprobado, <code>titan 1.0.0</code>; arrancado con una
+<code>libasound.so.2</code> de prueba porque aquí no hay ALSA y el sonido no se usa): <strong>70
+comprobaciones idénticas a onnxruntime y a tract</strong> (3 de ellas sin tract porque no
+las ejecuta: <code>embed_ids [load_shape]</code>, <code>op_erf_gelu</code> y su <code>load_shape</code>), <code>errors.titan</code>
+14 líneas idénticas, archivos inválidos con error, <code>ONNX: TODO OK</code>. <code>run_bert.sh</code>
+sigue pidiendo <code>zett</code> (y torch/transformers/onnxscript) para su parte de tract.</p>
 <p><strong>Diferencias con la versión de Rust, a propósito:</strong>
 - Archivo de modelo ≤ 64 MiB (Rust: 256 MiB): los tensores son arrays de Titan, 16
   bytes por elemento.
@@ -1804,7 +1826,7 @@ enlace <code>zett → titan</code>; <code>selfhost/titan.titan</code>, <code>cl_
 local de prueba, con la CLI <code>titan</code>); con el ejecutable <code>zett</code> empaquetado se comprobaron a mano <code>version</code>, <code>help</code>, <code>add</code>, <code>keygen</code>,
 <code>pack</code> (dos empaquetados idénticos byte a byte), los mensajes de uso con el nombre <code>zett</code> y que <code>titan run</code> funciona invocado solo por
 el <code>PATH</code>. El registro público es ahora estático (<code>registro/</code> del repositorio, servido por GitHub; <code>selfhost/registro_agregar.titan</code> añade versiones; prueba local <code>selfhost/tests/pkg/registro/estatico.sh</code>); antes la dirección por defecto (<code>registry.titan-lang.org</code>) no existía. Sin probar en ARM64 real. Guía: <code>docs/ZETT.md</code>.</p>
-<p><strong>ARM de 32 bits no soportado.</strong> Un Termux de 32 bits (<code>armv7l</code>/<code>armv8l</code>, ABIs <code>armeabi-v7a</code>) no puede usar los paquetes: solo hay generador de código para x86-64 y ARM64. El Zett anterior (Rust, paquete <code>.deb</code> <code>arm</code> de la rama <code>zett-repo</code>) sí era de 32 bits y ya no se reconstruye. Caso real: teléfono con <code>abilist</code> = <code>armeabi-v7a,armeabi</code>.</p>
+<p><strong>ARM de 32 bits: hay paquete propio (2026-10-12).</strong> El Zett anterior (Rust, <code>.deb</code> <code>arm</code> de la rama <code>zett-repo</code>) era de 32 bits y no se reconstruye; desde el 2026-10-11 sí existe el destino <code>armv7</code> del backend LLVM y desde el 2026-10-12 el <strong>compilador completo compilado para ARM de 32 bits</strong> (<code>titan compile selfhost/titan.titan -o titan-armv7 --target armv7</code>, 7,7 MB) dentro del paquete <code>zett_…_armhf.deb</code> (Debian/Ubuntu) y <code>zett_…_arm.termux.deb</code> (Termux). Verificado aquí ejecutando el binario del paquete bajo el emulador de ARM32 (<code>native/arm32/correr.py</code>): <code>titan version</code> y <code>zett version</code> responden. En un aparato de 32 bits de verdad <strong>no se ha probado</strong>; compilar <em>en</em> el aparato para armv7 usa clang y lld (el paquete los declara como dependencia). Caso real de referencia: teléfono con <code>abilist</code> = <code>armeabi-v7a,armeabi</code>.</p>
 <p><strong>Corrección (v1.2.0):</strong> <code>titan</code> calculaba la ruta de <code>native/</code> a partir de <code>argv[0]</code>; invocado solo por nombre (<code>titan run x.titan</code>
 con el ejecutable en el <code>PATH</code>) fallaba con <code>std::path::canonical … No such file or directory</code>. Desde v1.2.0 usa <code>/proc/self/exe</code>.
 <strong>La release v1.1.0 tiene ese fallo</strong>: con ella, <code>titan run</code> por el <code>PATH</code> no funciona (con la ruta completa sí).</p>
@@ -1849,14 +1871,16 @@ el compilador no importa el gestor, así que no cambia) y 26 programas del corpu
 <p><code>selfhost/lsp.titan</code> reemplaza el crate <code>titan_lsp</code> (916 líneas de Rust) y se usa con <code>titan lsp</code> (el CLI
 <code>titan.titan</code> lo importa). Habla LSP por stdin/stdout con cabeceras <code>Content-Length</code> (máximo 16 MiB).
 Para eso hay dos nativas nuevas, solo-Titan (sin equivalente en la VM de Rust): <code>std::io::read_stdin(n)</code> y
-<code>std::io::write_stdout(bytes)</code> (<code>native/std_fs_extra.titan</code>). La tabla pasó a <strong>823</strong> firmas, así que hubo que
-recompilar el compilador (<code>build.titan</code>) antes de usarlas.</p>
+<code>std::io::write_stdout(bytes)</code> (<code>native/std_fs_extra.titan</code>). Al añadirlas, la tabla de firmas
+(<code>selfhost/natives.titan</code>) creció y hubo que recompilar el compilador (<code>build.titan</code>) antes de usarlas.</p>
 <p>Cubre: <code>initialize</code> (capacidades), <code>didOpen/didChange/didClose</code> (cambios incrementales y totales, posiciones
 en UTF-16), diagnósticos (léxico, parseo, tipos, duplicados), símbolos de documento y de espacio de trabajo,
 definición, referencias, hover, <code>rename</code> (también entre documentos), tokens semánticos, <code>signatureHelp</code> y
-completado (20 palabras + símbolos + las 823 nativas).</p>
+completado (20 palabras + los símbolos del documento + <strong>todas</strong> las nativas de <code>selfhost/natives.titan</code>;
+la prueba las lee del fichero, no de un número escrito a mano — antes decía 823 y la tabla ya tenía 812).</p>
 <p>Pruebas (<code>selfhost/tests/lsp/</code>):
-- <code>probar.py</code>: <strong>109 comprobaciones, 0 fallos</strong> (~1 min por el documento de 40 000 funciones). Los esperados
+- <code>probar.py</code>: <strong>110 comprobaciones, 0 fallos</strong> (~2 min por el documento de 40 000 funciones). La del
+  completado cuenta las nativas reales de <code>natives.titan</code> (hoy 812) y comprueba una a una que están todas. Los esperados
   salen de los 7 tests de Rust portados y de leer <code>crates/titan_lsp</code>; no existe un oráculo ejecutable del LSP
   (el <code>zett</code> v1.0.0 no tiene <code>lsp</code>).
 - <code>contraste_zett.py</code>: compara los diagnósticos (mensaje y línea:columna) con <code>zett check</code> sobre <strong>466 archivos
@@ -2173,7 +2197,929 @@ como alternativa vía <code>TITAN_CC</code>).</p>
 - <code>titan debug</code>/DAP: su estado vivía en <code>globals+3600…3728</code>, que en ARM64 es zona de trabajo del runtime. Se movió a un bloque propio (<code>rtm_state()+80</code>, <code>dbg_g()</code> en <code>std_debug.titan</code>). En x86-64: <code>selfhost/tests/debug/probar.sh</code> 40/40 con salida idéntica a la versión anterior y <code>selfhost/tests/dap/probar.py</code> 20/20. <strong>Sigue sin probarse en ARM64.</strong>
 - <code>std_audio_engine</code>, <code>gui</code>/ventanas, <code>fswatch</code>, Redis/Postgres/MySQL, TLS y <code>ws_*</code> no están en el diferencial (necesitan servicios o
   dispositivos externos): se compilan por LLVM, pero su paridad en ARM64 no está medida.
-- macOS y Windows: sin paquete (el runtime usa llamadas al sistema de Linux).</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Ver este archivo en GitHub</a></p></article></div></main>
+- macOS y Windows: sin paquete (el runtime usa llamadas al sistema de Linux).</p>
+<h2 id="herramientas-ci-y-documentacion-sin-zett-2026-10-11">Herramientas, CI y documentación sin <code>zett</code> (2026-10-11)</h2>
+<p>Al borrar el Rust quedaron piezas que seguían apuntando al oráculo (<code>zett</code>) o a la VM, y una
+comprobación de la CI que no comprobaba nada. Se arreglaron y se verificaron con el compilador de
+este repositorio: punto fijo nuevo, <code>titanc1 == titanc2 == titanc3</code> byte a byte, SHA-256
+<code>5668ad2644ff9826519b7acfb091f8cba7dd984a63c368b14faad2b945f0965d</code>.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Pieza</th>
+<th>Qué pasaba</th>
+<th>Ahora</th>
+<th>Verificación</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>native/cobertura.sh</code></td>
+<td>exigía <code>zett</code> en el PATH; sin él terminaba con código 3 y no contaba nada</td>
+<td>usa la CLI nativa <code>selfhost/titan</code> (se puede elegir con <code>TITAN=</code>; <code>ZETT=</code> sigue aceptándose) y le pasa la ruta del runtime</td>
+<td><code>bash selfhost/native/cobertura.sh -v</code> → <code>TOTAL: 812 / 812</code></td>
+</tr>
+<tr>
+<td><code>ci.yml</code>, paso de cobertura</td>
+<td><code>cobertura.sh -v \| tail -3</code>: el código de salida del paso era el de <code>tail</code> (0), así que salía <strong>en verde aunque el guion terminara en 3</strong></td>
+<td>sin pipe, con <code>set -euo pipefail</code> y comparación explícita de la cifra</td>
+<td>los tres casos, ejecutados: 812/812 → 0; 811/812 → 1 y lista lo que falta; salida sin <code>TOTAL</code> → 1</td>
+</tr>
+<tr>
+<td><code>revisar_runtime.titan</code></td>
+<td>deducía la ruta del runtime de <code>ar_program()</code>, que en un ejecutable nativo es el binario temporal de <code>titan run</code>: buscaba <code>/tmp/native/runtime.titan</code> y salía con 1</td>
+<td>acepta la ruta como argumento y, sin argumento, busca <code>native/runtime.titan</code> subiendo desde la carpeta actual</td>
+<td><code>selfhost/titan run selfhost/revisar_runtime.titan</code> → <code>ok</code> (y es la puerta que usa <code>cobertura.sh</code>)</td>
+</tr>
+<tr>
+<td><code>Dockerfile</code> (Moon)</td>
+<td><code>CMD ["…/titan","run","src/main.titan"]</code> recompilaba en cada arranque: <strong>1 min 42 s en frío</strong> (la caché del runtime no viaja en la imagen) frente a un <code>HEALTHCHECK</code> con ~2 min de margen</td>
+<td>comprueba y compila en el build (<code>titan compile … -o /app/moon</code>) y el contenedor arranca el ejecutable</td>
+<td>los dos comandos del build, ejecutados: <code>CHECK OK: 17 files, 308 functions</code> y ELF de 14,7 MB que arranca solo, sin <code>native/</code> al lado</td>
+</tr>
+<tr>
+<td>typechecker</td>
+<td><code>self.x = …</code> daba el mensaje genérico de destinos de asignación, que no nombraba <code>self</code>. <code>mut self</code> se acepta en la firma pero no convierte al receptor en un destino, y nada lo explicaba</td>
+<td>tres diagnósticos propios: <code>self.campo</code> (explica el receptor por valor y <code>mut self</code>), campo e índice</td>
+<td><code>bash selfhost/tests/errores/probar.sh</code> (sección «destinos de asignación») y fixture <code>tests/errores/asignacion.titan</code></td>
+</tr>
+<tr>
+<td>loader</td>
+<td>un archivo de <code>tests/</code> solo podía importar de <code>src/</code>: se elegía una única raíz permitida y no había respaldo</td>
+<td><code>tests/</code> es raíz de imports cuando existe; al resolver se prueba la raíz más específica que contiene al archivo y después la de fuentes. Las dependencias siguen necesitando su alias y el límite de seguridad no se relaja</td>
+<td><code>bash selfhost/tests/test_runner/probar.sh</code> (imports desde las dos raíces) y <code>pkg/registro/estatico.sh</code> <strong>12/12</strong>, sin regresión en la resolución de dependencias</td>
+</tr>
+<tr>
+<td><code>titan test</code></td>
+<td>contaba como prueba fallida cualquier <code>.titan</code> bajo <code>tests/</code>, incluidos los módulos auxiliares sin <code>fn main</code></td>
+<td>los omite (<code>skipped (no entry point 'main'; auxiliary module)</code>), lo refleja en el resumen y solo sale con 1 si hay fallos reales</td>
+<td>ídem; documentado en <code>docs/PROJECTS.md</code></td>
+</tr>
+<tr>
+<td><code>native/verify_json.sh</code></td>
+<td>comparaba <code>std::json::parse</code> contra la VM de Rust: sin <code>zett</code> no corría</td>
+<td>compara las dos formas del port (sonda nativa y sonda en bytecode) sobre los 97 casos de <code>tests/native/json_casos</code>; la sonda lee la ruta de <code>TITAN_JSON_CASO</code> cuando no hay argumentos, porque la VM no se los pasa a un artefacto</td>
+<td><code>bash selfhost/native/verify_json.sh</code> → <code>casos JSON: 97  idénticos: 97  distintos: 0</code></td>
+</tr>
+<tr>
+<td>documentación</td>
+<td><code>SPEC.md</code> §3.2 negaba los genéricos de usuario y §3.3 los alias de tipo función (ambos existen desde 1.3.0), y §18 repetía lo segundo; <code>README.md</code> citaba <code>docs/historico/</code>, que no existe; 1 enlace roto; <code>DEBUGGER.md</code> no decía que <code>print</code> no admite argumentos ni que los locales salen por índice</td>
+<td>todo corregido contra el compilador, caso por caso (cada afirmación se ejecutó antes de escribirla)</td>
+<td>118 enlaces relativos, <strong>0 rotos</strong>; <code>site/</code> regenerado y idéntico byte a byte a <code>python3 site-src/generar.py claro</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Sin cambio de versión: <code>titan version</code> sigue diciendo <code>1.3.0</code>. Los cambios son de herramientas,
+diagnósticos y documentación; el lenguaje no cambia (ninguna construcción antes válida deja de
+compilar, y los 53 ejemplos y Moon siguen pasando <code>titan check</code>).</p>
+<h2 id="rangos-en-webassembly-2026-10-11">Rangos en WebAssembly (2026-10-11)</h2>
+<p><code>titan wasm</code> rechazaba los rangos: <code>for i in 0..n</code> —el bucle más común de cualquier programa— no
+compilaba a WebAssembly y el diagnóstico invitaba a escribir un <code>while</code> con contador. Ya se bajan
+con la misma semántica que el runtime nativo: un rango es una colección de enteros materializada
+(<code>rt_range</code>), así que se indexa y se recorre como un array.</p>
+<p>Cinco puntos de <code>selfhost/wasm.titan</code>:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Punto</th>
+<th>Qué hacía</th>
+<th>Ahora</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wa_validate</code></td>
+<td>rechazaba <code>Call</code> con <code>flag</code>, que es la operación del rango</td>
+<td>la acepta y exige los tres valores (inicio, fin, inclusivo)</td>
+</tr>
+<tr>
+<td><code>wa_apply_effect</code></td>
+<td>el resultado del rango quedaba como <code>Unknown</code></td>
+<td>es <code>ArrayOf(int)</code>, para poder indexarlo y recorrerlo</td>
+</tr>
+<tr>
+<td><code>wa_compile</code></td>
+<td>el alojador del módulo solo se emitía con <code>NewArray</code>/<code>NewTuple</code>/<code>NewStruct</code>/<code>NewEnum</code></td>
+<td>un rango también lo necesita: sin esto el módulo llamaría a un índice de función inexistente</td>
+</tr>
+<tr>
+<td><code>wa_emit_operation</code></td>
+<td><code>Call</code> con <code>flag</code> iba al rechazo</td>
+<td>rama propia que llama a <code>wa_emit_range</code></td>
+</tr>
+<tr>
+<td><code>wa_emit_range</code> (nueva)</td>
+<td>—</td>
+<td>calcula la longitud, aloja la colección y la rellena, replicando <code>rt_range</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Verificación, cada línea ejecutada y el <code>.wasm</code> corrido en Node con un host mínimo:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Caso</th>
+<th>Nativo</th>
+<th>WebAssembly</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rangos.titan</code> (<code>0..3</code>, <code>0..=3</code>, <code>2..0</code>, <code>5..5</code>, <code>-3..3</code>, índices y sumas)</td>
+<td><code>3 4 0 3 4 0 0 6 -3 -2 2 45 55</code></td>
+<td><strong>idéntico</strong></td>
+</tr>
+<tr>
+<td>un millón exacto (<code>0..1000000</code>, <code>0..=999999</code>, <code>a[999999]</code>)</td>
+<td><code>1000000 / 1000000 / 999999</code></td>
+<td><strong>idéntico</strong></td>
+</tr>
+<tr>
+<td><code>0..1000001</code></td>
+<td><code>RUNTIME ERROR: type error: range exceeds the one-million element safety limit</code></td>
+<td>trampa de WebAssembly (<code>RuntimeError: unreachable</code>), no un resultado falso</td>
+</tr>
+<tr>
+<td><code>0..=9223372036854775807</code></td>
+<td><code>RUNTIME ERROR: integer overflow</code></td>
+<td>trampa, igual que el caso anterior</td>
+</tr>
+<tr>
+<td>regresión: <code>examples/browser/main.titan</code>, structs, enums, mapas, <code>slice</code>, <code>text::equals</code></td>
+<td>—</td>
+<td>compila y coincide (un booleano impreso sale <code>1</code>/<code>0</code>: el canal <code>print</code> de WASM es un <code>i64</code> sin tipo)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Sin cambio en el punto fijo: la corrección vive en <code>wasm.titan</code>, que no entra en el compilador del
+punto fijo (<code>build.titan</code>), y la re-ejecución completa volvió a dar <code>titanc1 == titanc2 == titanc3</code>,
+SHA-256 <code>5668ad2644ff9826519b7acfb091f8cba7dd984a63c368b14faad2b945f0965d</code>.</p>
+<h2 id="cierres-y-orden-superior-en-webassembly-2026-10-11">Cierres y orden superior en WebAssembly (2026-10-11)</h2>
+<p><code>titan wasm</code> rechazaba las funciones como valor: <code>map(nums, |x| x * 2)</code> moría con
+<code>unsupported WebAssembly operation: MakeClosure { function: 1, captures: [0] }</code> y el ejemplo
+oficial <code>examples/qol_higher_order.titan</code> no compilaba. Ya funcionan los cierres, la llamada
+indirecta y las siete operaciones de colección, con la misma semántica que el runtime nativo.</p>
+<p>Cómo queda: cada función que alguien convierte en cierre recibe un hueco en una tabla <code>funcref</code> y
+un envoltorio con el tipo canónico <code>(aridad_max argumentos, objeto cierre) → i64</code>; el objeto cierre
+es <code>[hueco de tabla, aridad, capturas…]</code> en el montículo, y la llamada comprueba la aridad guardada
+antes de usar <code>call_indirect</code>. El cuerpo de un cierre recibe sus capturas delante de sus argumentos,
+que es el mismo reparto de ranuras que ya usaba el backend nativo (<code>native/llvm.titan</code>: primero
+capturas, después parámetros), así que las capturas son ranuras 0..c-1 y los parámetros siguen
+detrás.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Punto</th>
+<th>Qué hacía</th>
+<th>Ahora</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wa_validate</code></td>
+<td>rechazaba <code>MakeClosure</code>, <code>CallValue</code> y las siete operaciones</td>
+<td>las acepta; siguen rechazados <code>TryCall</code>, el despacho dinámico y <code>ToString</code></td>
+</tr>
+<tr>
+<td><code>wa_stack_effect</code> / <code>wa_apply_effect</code></td>
+<td>los cierres no tenían efecto en la pila</td>
+<td><code>MakeClosure</code> produce un valor; <code>CallValue</code> consume <code>n+1</code>; las operaciones consumen 2 (3 en <code>fold</code>)</td>
+</tr>
+<tr>
+<td>tipos de función</td>
+<td>una función con cierre declaraba solo sus parámetros</td>
+<td>declara también sus capturas: el envoltorio se las pasa delante</td>
+</tr>
+<tr>
+<td>tabla (sección 4) y segmento de elementos (9)</td>
+<td>no existían</td>
+<td>un hueco por función-que-es-cierre, con los envoltorios en el mismo orden</td>
+</tr>
+<tr>
+<td>tipo canónico</td>
+<td>no existía</td>
+<td><code>(i64 × aridad_max, cierre) → i64</code>, compartido por todos los envoltorios</td>
+</tr>
+<tr>
+<td><code>wa_emit_closure</code>, <code>wa_emit_call_value</code>, <code>wa_emit_hof_call</code> (nuevas)</td>
+<td>—</td>
+<td>crean el cierre, llaman por la tabla y enrutan las siete operaciones</td>
+</tr>
+<tr>
+<td><code>wa_compile_wrapper</code> (nueva)</td>
+<td>—</td>
+<td>saca las capturas del objeto cierre y llama a la función con ellas delante</td>
+</tr>
+<tr>
+<td><code>wa_compile_hof</code> (nueva)</td>
+<td>—</td>
+<td>una pasada por operación, con la aridad comprobada y el predicado obligado a devolver 0 o 1</td>
+</tr>
+<tr>
+<td><code>wa_compile_sort</code> (nueva)</td>
+<td>—</td>
+<td><code>sort_by</code> estable que saca el primer mínimo y trabaja sobre una copia, como <code>rt_sort_by</code>: el array original no se toca</td>
+</tr>
+</tbody>
+</table></div>
+<p>Verificación, todo ejecutado y comparado contra el motor nativo:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Caso</th>
+<th>Nativo</th>
+<th>WebAssembly</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>selfhost/tests/wasm_diff/orden_superior.titan</code> (las siete operaciones, forma de método y de función libre, capturas, función con nombre y llamada directa a un cierre)</td>
+<td><code>308124523</code></td>
+<td><strong>idéntico</strong></td>
+</tr>
+<tr>
+<td><code>sort_by</code> en las dos formas, con el array original intacto</td>
+<td><code>3119901</code></td>
+<td><strong>idéntico</strong></td>
+</tr>
+<tr>
+<td><code>map</code>, <code>filter</code>, <code>fold</code>, <code>find</code>, <code>any</code>, <code>all</code> en el mismo programa</td>
+<td><code>9758</code></td>
+<td><strong>idéntico</strong></td>
+</tr>
+<tr>
+<td><code>map</code> con captura y con el elemento recibido (antes daba 0)</td>
+<td><code>789</code>, <code>7</code></td>
+<td><strong>idénticos</strong></td>
+</tr>
+<tr>
+<td>batería de 16 programas (rangos, arrays, textos, mapas, cierres)</td>
+<td>—</td>
+<td>16 de 16 iguales</td>
+</tr>
+<tr>
+<td><code>selfhost/tests/wasm_diff/run.sh</code> completo</td>
+<td>—</td>
+<td><code>TODO BIEN</code> (10 programas iguales, 1 rechazo correcto, 2 módulos del navegador válidos y <code>host.js</code> real sobre el DOM de Node: 423 líneas de registro con el evento <code>click</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>selfhost/tests/wasm_diff/run.sh</code> ya no necesita <code>zett</code> (el compilador de Rust retirado): cuando no
+está, compara el resultado del <code>.wasm</code> del port en Node contra <code>titan run</code> en vez de comparar bytes.
+<code>err_range.titan</code> pasa a <code>ranges.titan</code> porque los rangos dejaron de ser un rechazo, y se añade
+<code>orden_superior.titan</code> como prueba de regresión de este cambio. El punto fijo del bootstrap
+(<code>titanc1 == titanc2 == titanc3</code>, SHA-256 <code>5668ad26…f0965d</code>) sigue igual: <code>wasm.titan</code> no forma
+parte de <code>build.titan</code>, que es lo que compila el punto fijo.</p>
+<h3 id="lo-que-este-destino-todavia-no-hace-medido-no-supuesto">Lo que este destino todavía no hace (medido, no supuesto)</h3>
+<ul>
+<li><strong>Nada convierte un número en texto.</strong> Cuatro cosas dependen de eso y las cuatro están sin
+  hacer: <code>print</code> de un valor que no sea texto (abajo), <code>ToString</code> (la interpolación de cadenas),
+  <code>print</code> con dos argumentos y el formateo de <code>println</code>. Es el bloqueo número uno de este destino:
+  de los 53 ejemplos de <code>examples/*.titan</code>, 5 fallan exactamente ahí
+  (<code>unsupported WebAssembly operation: ToString</code>) y 1 por <code>Print(2)</code>. La solución pasa por decidir
+  la ABI del import <code>titan.print</code> (por ejemplo, un import por tipo, o una etiqueta de tipo junto al
+  valor) o por emitir la conversión dentro del módulo; ninguna de las dos está tomada.</li>
+<li><strong><code>+</code> ambiguo.</strong> Cuando el análisis no puede decidir si una suma es de números o de cadenas
+  (el bytecode no lleva tipos), el backend rechaza el programa en vez de adivinar: 6 de los 53
+  ejemplos caen aquí (<code>function 'x' has an ambiguous '+' at instruction N</code>). Preferimos el rechazo
+  a un resultado falso.</li>
+<li><strong>Floats.</strong> <code>PushFloat</code> no existe en este backend, así que un literal <code>3.14</code> se rechaza
+  (<code>unsupported WebAssembly operation: PushFloat(3.14)</code>) y la aritmética de coma flotante es
+  inalcanzable en la práctica: 4 de los 53 ejemplos se quedan ahí. La sección 16.1 de
+  <code>docs/SPEC.md</code> decía «integer and float arithmetic»; se corrigió, porque prometía más de lo que
+  hace. Aquí todos los valores son <code>i64</code> sin tipo, así que los floats necesitan representación
+  propia antes de poder emitirlos.</li>
+<li><strong><code>TryCall</code> y despacho dinámico sobre receptores que no son struct</strong> siguen rechazados con
+  diagnóstico.</li>
+<li><strong>El destino es del navegador, no de escritorio.</strong> De los 53 ejemplos, 12 necesitan
+  <code>std::dirs::home</code>, 2 <code>std::gui</code>, 2 <code>std::encoding</code>, 1 <code>std::wifi</code>, 1 <code>std::time::sleep_ms</code> y
+  varios <code>std::runtime</code>: son APIs que un navegador no puede dar. Hoy <strong>0 de los 53</strong> compilan a
+  WebAssembly; el programa de referencia del destino, <code>examples/browser/main.titan</code>, sí compila,
+  valida y se ejecuta con el <code>host.js</code> real (Punto de la tabla anterior). Los ejemplos del lenguaje
+  son programas de escritorio o de servidor; para el navegador hay que usar <code>std::web</code>.</li>
+<li><strong><code>print</code> no imprime números.</strong> El backend manda el valor crudo al import <code>titan.print</code> y el host
+  del navegador (<code>examples/browser/host.js</code>, el host de referencia del repositorio) lo decodifica
+  <strong>siempre</strong> como texto: <code>println(42)</code> imprime una línea vacía y <code>println(0 - 7)</code> termina en
+  <code>RangeError: invalid TITAN string handle</code>. Comprobado con el <code>print</code> real de ese archivo, no con
+  una copia. <code>docs/WASM.md</code> ya decía que el host «puede interpretar el <code>i64</code> crudo como número o
+  decodificarlo como texto»; sin metadatos de tipo no puede decidir, y este host decidió siempre por
+  el texto. Arreglarlo es una decisión de ABI (por ejemplo, un import por tipo) y no se ha tomado.</li>
+<li><strong>Desborde silencioso en la aritmética.</strong> La VM y el backend nativo dan <code>integer overflow</code>; este
+  backend envuelve el resultado sin avisar (<code>9223372036854775807 + 1</code> imprime <code>1</code> en vez de fallar,
+  comprobado). Es anterior a este cambio y no se ha tocado.</li>
+</ul>
+<h2 id="numeros-del-json-y-el-diferencial-nativo-contra-la-vm-2026-10-11">Números del JSON y el diferencial nativo contra la VM (2026-10-11)</h2>
+<p>Al montar el diferencial completo (nativo contra la VM del port, ver abajo) salió un fallo grave del lector
+de números del JSON, ya corregido:</p>
+<ul>
+<li><strong><code>titan exec</code> rechazaba algunos artefactos de bytecode</strong> (<code>INVALID ARTIFACT: bytecode checksum
+  mismatch</code>) y, cuando no, la VM calculaba los números con un bit de menos que el código nativo. La causa:
+  <code>js_f64_from_parts</code> (<code>selfhost/native/std_json.titan</code>) construía el doble multiplicando o dividiendo por
+  una potencia de diez — dos redondeos — en vez de usar el analizador exacto que ya tenía el runtime para los
+  literales de las fuentes. Con <code>-2.416471603113579e-47</code> se ve entero: al ir y volver por el JSON se
+  convertía en <code>-2.4164716031135787e-47</code>, así que el CRC del módulo cambiaba y <code>titan exec</code> se negaba a
+  ejecutar el artefacto. Ahora los números del JSON pasan por <code>fl_parse</code> (el de <code>float.titan</code>: enteros
+  grandes y redondeo al par más cercano). Se comprobó con 2010 números difíciles generados con Python
+  (dobles aleatorios en forma corta y con 17 dígitos, subnormales, extremos, mantisas de 30-40 dígitos y
+  enteros enormes): los 2010 coinciden bit a bit con <code>float()</code> de Python. El arnés se llama <code>vm_diff.sh</code> y
+  dio un caso que fallaba antes del arreglo: <code>vec_std</code> (build+exec rechazado por el CRC).</li>
+</ul>
+<p><strong>El diferencial nativo contra la VM (<code>selfhost/tests/vm_diff.sh</code>).</strong> Antes, el corpus se comparaba contra
+la VM de Rust (<code>zett</code>); al borrarse el Rust esa regresión se quedó sin oráculo. El port ya tiene el suyo (la
+VM de bytecode de <code>titan build</code> + <code>titan exec</code>), así que el guion compara las dos formas de ejecutar un
+mismo programa:</p>
+<pre><code>bash selfhost/tests/vm_diff.sh                    # muestra corta (14 programas)
+TITAN_VM_MUESTRA=1 bash selfhost/tests/vm_diff.sh # muestra amplia (1 de cada 4)
+</code></pre>
+<p>Antes de comparar, cada programa se corre <strong>dos veces</strong> en nativo: si las dos salidas no coinciden, el
+programa no es determinista (fechas, azar, pid) y se cuenta aparte, nunca como acierto.</p>
+<ul>
+<li>Muestra corta (14 programas: números, texto, colecciones, ficheros, errores y tareas): <strong>14 idénticos, 0
+  distintos, 0 no admitidos, 0 lentos</strong>.</li>
+<li>Muestra amplia (<code>TITAN_VM_MUESTRA=1</code>, uno de cada cuatro ficheros de <code>tests/native</code>): <strong>55 idénticos, 0
+  distintos, 0 no deterministas, 0 no admitidos, 0 lentos</strong>.</li>
+<li>Aparte, dos casos por su cuenta: <code>json_ties</code> (redondeo al par del lector) y <code>jwt_std</code> (firma y
+  verificación), <strong>los dos idénticos</strong>.</li>
+</ul>
+<p>El mismo día se pasó al port el otro arnés que dependía de <code>zett</code>, <code>selfhost/native/verify_json.sh</code>: antes
+comparaba <code>std::json::parse</code> contra la VM de Rust y ahora lo comparan las dos formas del port (sonda nativa
+por un lado, sonda en bytecode por el otro) sobre los 97 casos de <code>tests/native/json_casos</code>, errores
+incluidos con su línea y su columna: <strong>97 casos, 97 idénticos, 0 distintos</strong>.</p>
+<p>Punto fijo del bootstrap con el arreglo del JSON y el guion nuevo: <code>PUNTO FIJO: etapa1 == etapa2 == etapa3
+(byte a byte)</code>, SHA-256 <code>0fe64fe0f590a8b8996c0ee50a0577cbb56c10586e73b67395c1214039d748db</code>. Es el vigente
+(la cadena de esta sesión fue <code>5668ad26…</code> → <code>3b405d4d…</code> → <code>fd5b0126…</code> → éste): cambia cada vez que se toca
+algo que entra en <code>build.titan</code>, y el runtime está entre esas cosas.</p>
+<h2 id="imagen-x86-64-y-programas-sin-sistema-operativo-sin-el-rust-2026-10-11">Imagen, x86-64 y programas sin sistema operativo, sin el Rust (2026-10-11)</h2>
+<p>Tres arneses más de <code>selfhost/native/</code> solo necesitaban el Rust para <strong>ejecutar</strong> el lado de referencia;
+sus oráculos eran el port o herramientas externas. Convertidos, con la comparación intacta:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Arnés</th>
+<th>Oráculo</th>
+<th>Estado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>native/image/verificar.sh</code></td>
+<td>el propio port (la salida del programa tiene que coincidir byte a byte, y en GIF/WebP los cuadros que escribe el validador)</td>
+<td>convertido: el lado «VM» es <code>titan build</code> + <code>titan exec</code> y los binarios nativos los arma <code>titan compile</code>; el compilador de pruebas se hace una vez por corrida</td>
+</tr>
+<tr>
+<td><code>native/verify_x64.sh</code></td>
+<td><code>objdump</code> (binutils)</td>
+<td>convertido: ejecuta <code>x64_test.titan</code> con la CLI del port; <strong>1.445 instrucciones, todas idénticas</strong> a lo que desensambla binutils</td>
+</tr>
+<tr>
+<td><code>native/bare/probar.sh</code></td>
+<td>el anfitrión (antes la VM de Rust; ahora <code>titan run</code>)</td>
+<td>convertido: <code>build_llvm</code> se rehace con <code>titanc3</code> (el compilador del bootstrap) y el lado anfitrión usa la CLI; el enlazador y el procesador ARM64 (zig + unicorn) ya estaban</td>
+</tr>
+</tbody>
+</table></div>
+<p>Resultados ejecutados:</p>
+<ul>
+<li>Imagen: 12 pruebas (base, píxeles, remuestreo, PNG, BMP, JPEG, GIF, WebP sin pérdida/con pérdida/con
+  entrada dañada/escritura e IO) — todas idénticas, con las comprobaciones cruzadas de GIF y WebP.</li>
+<li><code>build_llvm</code> reconstruido con <code>titanc3</code> (sin Rust) y usado por el arnés sin SO: los cuatro primeros casos
+  (2 del corpus del anfitrión + <code>uart</code> y <code>no_os_apis</code>, que se comparan con sus ficheros <code>.esperado</code>)
+  <strong>idénticos</strong>, y una muestra de 15 del corpus sin SO: <strong>14 idénticos, 1 distinto</strong> (abajo).</li>
+</ul>
+<p><strong>Hallazgo real de la muestra sin SO: <code>email_validation</code>.</strong> En el anfitrión da
+<code>email build error: invalid from email address</code> (bien), pero en ARM64 sin sistema operativo da
+<code>std::random failed: Function not implemented (os error 38)</code>. La causa no es el compilador: dentro de
+<code>std::email::send_simple</code> se genera primero el límite MIME con <code>std::random</code> y <strong>después</strong> se validan las
+direcciones, así que sin SO la primera falla es la de la entropía. El filtro del arnés (heurístico, mira el
+texto del propio programa de prueba) no lo detectaba porque la llamada está en la biblioteca, no en la
+prueba; <code>email_validation</code> queda excluida de la muestra automática con ese motivo escrito en el guion (su
+ENOSYS de entropía lo prueba a propósito <code>no_os_apis.titan</code>, que sí se compara con <code>.esperado</code>). Queda como
+mejora pendiente, sin tocar: validar la dirección <strong>antes</strong> de generar el límite MIME haría el mensaje de
+error igual en todas partes; se decidirá con el usuario, porque cambia el orden de los errores del módulo.</p>
+<h2 id="llvm-libm-terminal-y-httptls-sin-el-rust-2026-10-12">LLVM, libm, terminal y HTTP/TLS sin el Rust (2026-10-12)</h2>
+<p>Los arneses que quedaban de <code>selfhost/native/</code> solo pedían el <code>zett</code> de Rust para <strong>ejecutar</strong> el lado de
+referencia (o para construir una herramienta); sus oráculos eran el propio port, LLVM real, <code>libm.so.6</code> o
+una cadena TLS generada con <code>openssl</code>. Convertidos y ejecutados de verdad:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Arnés</th>
+<th>Oráculo</th>
+<th>Resultado ejecutado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>native/llvm/verificar.sh</code></td>
+<td>LLVM real (ziglang cc 22.1.8, -O2) frente al backend nativo del port</td>
+<td>6 programas (incluidos <code>archive_tar</code> y <code>std_process_timeout</code>): <strong>6 idénticos, 0 distintos, 0 no admitidos</strong></td>
+</tr>
+<tr>
+<td><code>native/llvm/punto_fijo.sh</code></td>
+<td>él mismo: <code>build.titan</code> compilado con <code>titanc3</code> frente al compilador hecho por LLVM</td>
+<td><strong>mismo compilador y mismo IR byte a byte</strong>: <code>titanc_ref</code> y <code>titanc_por_llvm</code> = <code>0fe64fe0f590a8b8996c0ee50a0577cbb56c10586e73b67395c1214039d748db</code>, los dos <code>build.ll</code> = <code>4b7039ec…</code></td>
+</tr>
+<tr>
+<td><code>native/llvm/arm64_objetos.sh</code></td>
+<td>LLVM real (objetos AArch64, <code>ziglang cc</code>)</td>
+<td>3 programas: <strong>3 objetos, 0 rechazados</strong></td>
+</tr>
+<tr>
+<td><code>native/llvm/arm64_referencias.sh</code></td>
+<td>el backend nativo del port (x86-64)</td>
+<td>3 programas: <strong>3 referencias, 0 tiempos agotados</strong></td>
+</tr>
+<tr>
+<td><code>native/libm/verify_libm.py</code></td>
+<td><code>libm.so.6</code> del sistema (ctypes)</td>
+<td><code>h.titan</code> compilado con <code>titanc3</code>: <strong>2000 casos, 0 distintos</strong></td>
+</tr>
+<tr>
+<td><code>native/term/verificar.sh</code></td>
+<td>la CLI del port dentro de una pseudoterminal</td>
+<td><strong>11 de 11 iguales</strong> con <code>titan run --tty</code> (sin <code>--tty</code> serían 9: hallazgo 1)</td>
+</tr>
+<tr>
+<td><code>native/http_full/verificar.py</code></td>
+<td>la VM de bytecode del port (<code>vm_port.py</code>) para HTTP; CA, certificado y servidor TLS locales de verdad para HTTPS</td>
+<td>HTTP: <strong>idénticos</strong> (JSON, gzip, POST JSON, formulario, autenticación, cabeceras, redirecciones, límite de redirecciones y 404); HTTPS: certificado confiable aceptado con redirección, chunked y gzip, <code>std::http</code> incluido; CA desconocida y nombre incorrecto <strong>rechazados</strong>, y el plazo se aplica</td>
+</tr>
+<tr>
+<td><code>native/readline/verificar.py</code></td>
+<td>la VM de bytecode del port dentro de una pseudoterminal</td>
+<td><strong>pasa completo</strong> con <code>titan exec --tty</code>: edición y cursor, Unicode, historial en memoria y en archivo (<code>#V2</code>), búsqueda inversa, clave secreta (y su rechazo sin terminal), Ctrl-C/Ctrl-D y tubería</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>native/llvm/arm64_comparar.sh</code> (enlazar y ejecutar en ARM64) sigue necesitando una máquina ARM64 real: aquí
+no hay qemu, así que esa mitad queda para la CI, igual que antes.</p>
+<p>La nativa nueva <code>std::process::run_inherit</code> (ver «Hallazgo 1») también pasa por el backend LLVM: un programa
+que la usa compilado por LLVM imprime la salida heredada del hijo y termina con 0, y el arnés sobre
+<code>tests/native/std_process_inherit.titan</code> da 1 idéntico, 0 distintos (la CI de LLVM correrá además la prueba
+en x86-64 y ARM64 con el corpus completo).</p>
+<p><strong>Hallazgo 1 — el lanzador no dejaba usar la terminal (resuelto con <code>--tty</code>).</strong> <code>titan run</code> y <code>titan exec</code>
+lanzan el programa con <code>/dev/null</code> como entrada y guardan su salida en un tubo para imprimirla al terminar
+(<code>std::process::run_timeout</code>, <code>native/std_process.titan:1475</code>; el <code>/dev/null</code> de la entrada está en la línea
+1508 y el tope de 4 MiB en la 1584). Con la VM de Rust el programa corría dentro de <code>zett</code>, así que heredaba
+la terminal; por eso las dos pruebas de teclas en pseudoterminal daban 11/11 y de golpe daban DIFERENCIA: el
+programa no veía las teclas y su «LISTO» solo llegaba al final, así que el guion de teclas se
+desincronizaba (medido también con <code>printf 'hola\n' | titan run hola.titan</code>: el programa veía EOF en vez de
+«hola»).</p>
+<p>La solución es <strong>optativa</strong>: <code>titan run --tty</code> y <code>titan exec --tty</code> lanzan el programa con el nuevo
+<code>std::process::run_inherit</code> (nativa 813), que no crea tubos: el hijo usa los descriptores 0, 1 y 2 del
+proceso, sin captura, sin tope de 4 MiB y sin plazo, como <code>Command::status()</code> de Rust. Sin <code>--tty</code> todo
+queda igual que antes (captura y <code>/dev/null</code>), así que ni <code>titan test</code> —que necesita capturar para informar
+el detalle de cada prueba— ni los programas que leen su entrada por tubería cambian de comportamiento. La
+decisión que queda para el usuario es solo si algún día el <strong>defecto</strong> de <code>run</code>/<code>exec</code> debe ser heredar en
+vez de capturar.</p>
+<p><strong>Hallazgo 2 — el cliente TLS confía en las anclas escritas al compilar.</strong> La parte de HTTPS del arnés de
+<code>http_full</code> daba por hecho que <code>SSL_CERT_FILE</code> añadía una CA de confianza (cierto con el rustls de la VM de
+Rust). El TLS nativo (<code>native/std_tls.titan</code>) valida contra las anclas de <code>native/std_roots.titan</code> (121
+raíces de Mozilla) y no lee variables de entorno, así que la prueba no podía pasar. Se arregló como en
+<code>tests/pkg/registro/estatico.sh</code>: copia del compilador con su <code>native/</code> y <code>std_roots.titan</code> regenerado por
+<code>native/gen_roots.py</code> con la CA de prueba, y el cliente de prueba sale de ahí. Además el certificado se
+generaba con <code>openssl req -x509</code> a secas, que con OpenSSL 3 sale <code>CA:TRUE</code> y usado como certificado de
+servidor es un error X.509 real (<code>CaUsedAsEndEntity</code>, que el validador del port detecta bien); ahora se
+genera una CA y un certificado de servidor firmado por ella.</p>
+<p><strong>Diferencia anotada — el texto del plazo.</strong> Cuando se agota <code>timeout_ms</code>, el port informa el errno
+(<code>Resource temporarily unavailable (os error 11)</code>), igual en HTTP simple que en HTTPS; la referencia de Rust
+decía <code>timed out</code>. El plazo se aplica (medido: 0,105 s con plazo de 100 ms contra un servidor que tarda
+0,5 s, y el servidor ve el corte), así que queda solo como diferencia de mensaje, sin tocar.</p>
+<h2 id="paquetes-oficiales-zett-para-los-tres-binarios-2026-10-12">Paquetes oficiales <code>zett</code> para los tres binarios (2026-10-12)</h2>
+<p>Hasta aquí, «oficial» era el tar.gz de la release (y, para Termux, <code>instalar-termux.sh</code>). Ahora cada binario
+tiene su <strong>paquete del gestor del sistema</strong>, con el nombre <code>zett</code> (dentro va el compilador <code>titan</code> y el enlace
+<code>zett</code>), y un <strong>repositorio apt</strong> propio, como el <code>zett-repo</code> del Zett de Rust pero hecho con el Titan actual:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Sistema</th>
+<th>Paquete</th>
+<th>Gestor</th>
+<th>Prueba real hecha aquí</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Debian/Ubuntu x86-64</td>
+<td><code>zett_1.3.0_amd64.deb</code></td>
+<td><code>apt</code>/<code>dpkg</code></td>
+<td><code>apt-get install zett</code> desde el repositorio local: <code>titan version</code>, <code>zett version</code>, <code>titan run</code> (respuesta 42), <code>zett keygen</code> y <code>zett pack</code> (<code>.tpkg</code> firmado)</td>
+</tr>
+<tr>
+<td>Debian/Ubuntu ARM64</td>
+<td><code>zett_1.3.0_arm64.deb</code></td>
+<td><code>apt</code>/<code>dpkg</code></td>
+<td>compilado cruzado (4,6 MB) y el paquete comprobado aquí (control, 228 entradas, binario idéntico al compilado); <strong>ejecutarlo toca a la CI en un ARM64 real</strong></td>
+</tr>
+<tr>
+<td>Debian/Ubuntu ARM 32 bits</td>
+<td><code>zett_1.3.0_armhf.deb</code></td>
+<td><code>apt</code>/<code>dpkg</code></td>
+<td>compilado cruzado (7,7 MB) y el binario del paquete ejecutado bajo el emulador de ARM32: <code>titan version</code> y <code>zett version</code></td>
+</tr>
+<tr>
+<td>Termux x86-64 / ARM64 / ARM</td>
+<td><code>zett_1.3.0_{x86_64,aarch64,arm}.termux.deb</code></td>
+<td><code>pkg</code>/<code>apt</code></td>
+<td>extraídos en un prefijo falso: el binario de x86_64 corre, el de ARM bajo el emulador, el de ARM64 queda para la CI</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Cómo se arma.</strong> Además de los <code>.deb</code>, la release publica el <code>titan-linux-armv7.tar.gz</code> del binario de ARM de 32 bits
+(<code>selfhost/empaquetar.sh</code> acepta ya <code>x86_64</code>, <code>aarch64</code> y <code>armv7</code>), y copias sin versión de los <code>.deb</code>
+(<code>zett_amd64.deb</code>, <code>zett_aarch64.termux.deb</code>, …) para que las direcciones del README y de la página sean
+estables.</p>
+<p><code>selfhost/empaquetar_deb.sh EJECUTABLE {amd64|arm64|armhf} SALIDA [--termux] [--version V]</code>
+escribe el <code>.deb</code> completo (control con <code>Provides: titan</code>, <code>Depends: clang, lld</code> en ARM, licencia, <code>LEEME.txt</code>,
+<code>/usr/bin/{titan,zett}</code> → <code>../lib/zett/titan</code>, runtime en <code>/usr/lib/zett/native/</code>); en Termux el prefijo es
+<code>/data/data/com.termux/files/usr</code>. Es determinista (<code>SOURCE_DATE_EPOCH</code> = fecha del último commit). El
+x86_64 es el único que no declara dependencias: no necesita nada externo. Aviso honesto: al construir el de
+Termux <code>x86_64</code> sobre Debian, su <code>dpkg-deb</code> avisa de que <code>x86_64</code> no es un nombre de arquitectura válido (el
+<code>dpkg</code> de Termux sí lo acepta); el paquete sale igual y su contenido es el correcto.</p>
+<p><code>selfhost/repo_apt.sh DIRECTORIO [--termux]</code> escribe <code>Packages</code>, <code>Packages.gz</code> y <code>Release</code> (con hashes y
+tamaños en el orden correcto: primero el hash), firma el <code>Release</code> si se le da <code>GPG_KEY</code> y <strong>comprueba con el
+apt de verdad</strong> que el repositorio se lee (<code>apt-get update</code> contra <code>deb [trusted=yes] file:…</code> y
+<code>apt-cache policy</code>). Los dos repositorios van separados porque los nombres de arquitectura son distintos:
+<code>repo/</code> (amd64, arm64, armhf) y <code>repo-termux/</code> (x86_64, aarch64, arm).</p>
+<p><code>selfhost/probar_paquetes.sh [SALIDA]</code> hace la prueba completa de una vez: arma los seis <code>.deb</code> (compilando
+cruzado lo que falte), comprueba que el binario de dentro es el compilado (sha256), escribe los dos
+repositorios, instala con <code>apt</code> desde el repositorio, usa el paquete instalado (compilar y ejecutar, <code>keygen</code>,
+<code>pack</code>), ejecuta los binarios de ARM bajo el emulador y comprueba los de Termux en un prefijo falso.
+<strong>Resultado de la corrida real en esta máquina</strong>: <code>pasan 24, fallan 0, no comprobados aquí 2</code> (los dos que
+necesitan un ARM64 de verdad; la corrida número 24 es el tar.gz de ARM de 32 bits, que también se arma y se
+comprueba). Para publicarlos, <code>.github/workflows/arm64.yml</code> construye los seis paquetes y
+los índices, prueba el de x86-64 en la CI, prueba el de ARM64 en la máquina ARM64 real y, al etiquetar una
+versión, sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).
+Después de tocar el emulador, <code>bash selfhost/tests/arm32_diff.sh</code> (muestra corta) sigue en <strong>20 idénticos,
+0 distintos</strong>: los arreglos no cambiaron ninguna salida. Esa misma muestra, pero con los programas de ARM
+compilados <strong>por el camino de la CI</strong> (<code>--target=armv7-linux-gnueabihf</code> con clang + lld, coma flotante por
+hardware, en vez del <code>arm-linux-none</code> del clang de zig), también da <strong>20 idénticos, 0 distintos</strong>; y la CI
+corre dos de esos programas (<code>decimales.titan</code> y <code>basico.titan</code>) en cada construcción, porque en ese camino
+un error de ABI en los ayudantes <code>__aeabi_*</code> no rompe el enlazado: solo da números mal (ver el changelog del
+2026-10-12 (f)).</p>
+<p><strong>Y con los ayudantes de la RTABI arreglados, el compilador de ARM 32 bits compila decimales.</strong> El binario
+<code>titan</code> de ARM 32 bits armado por el camino de la CI (clang + lld, coma flotante por hardware) compiló bajo el
+emulador, en <strong>39m27s</strong>, un programa con literales decimales (<code>1.5</code>, <code>2.25</code>, <code>0.1</code>) para x86-64. El
+ejecutable que dejó (ELF x86-64 de 1.144.608 bytes) imprime <code>1.5 2.25 0.1 3.475</code> y <code>25</code>: lo mismo que el
+compilador de x86-64, byte a byte. Es la prueba de que el arreglo del 2026-10-12 (f) llega al compilador
+mismo: con la ABI mal, esos literales entraban como números diminutos (los bits del entero sin convertir).</p>
+<p><strong>En el emulador de ARM32 (dos fallos de verdad corregidos).</strong> <code>native/arm32/correr.py</code> se tragaba cualquier
+argumento del programa que empezara por <code>--</code> (así <code>titan compile x --target armv7</code> corría sin <code>--target</code>), y
+contestaba <code>/proc/self/exe</code> con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
+<code>native/</code> al lado de Python. Ahora <code>/proc/self/exe</code> y <code>/proc/&lt;pid&gt;/exe</code> son el programa emulado (lo mismo que
+hace qemu-user) y solo <code>--codigo</code> y <code>--max-passos N</code> son del ejecutor. Con eso, el <strong>compilador del paquete
+armhf compila de verdad</strong> bajo el emulador: <code>python3 native/arm32/correr.py &lt;paquete&gt;/usr/lib/zett/titan
+compile hola.titan -o hola_por_arm --target x86_64</code> terminó en <strong>39m56s</strong> con
+<code>COMPILE: hola.titan -&gt; hola_por_arm</code>, dejó un ejecutable de 1,1 MB y ese ejecutable, ya fuera del emulador,
+imprime <code>respuesta 42</code> en esta máquina. (Lento, sí: es un ARMv7 emulado instrucción a instrucción con las
+llamadas al sistema en Python; para eso está.)</p>
+<h2 id="los-fuzzers-diferenciales-sin-el-rust-2026-10-11">Los fuzzers diferenciales sin el Rust (2026-10-11)</h2>
+<p>Los fuzzers de <code>selfhost/native/</code> (regex, url, router, QR, archive, compress, yaml) comparaban el ejecutable
+nativo contra la VM de Rust (<code>zett run</code>); sin el Rust no los podía correr nadie. Ahora comparan las dos
+formas de ejecutar un programa en el port con un ayudante común, <code>selfhost/native/vm_port.py</code>: compila el
+programa de prueba una vez a <code>.tbc</code> (caché por ruta y contenido, <code>TITAN_VM_DIR</code>) y lo ejecuta con
+<code>titan exec</code>, que ya acepta argumentos. La CLI se puede cambiar con <code>TITAN=</code>.</p>
+<p>Antes de poder correrlos salió un <strong>fallo real del compilador de pruebas</strong> (el que expone las funciones
+internas para estas comparaciones): <code>selfhost/prueba_interna.titan</code> tenía tres copias viejas de
+<code>frontend.titan</code> —<code>raw_signatures</code>, <code>diag_line</code> y <code>front</code>— y se habían quedado atrás: le faltaban siete
+operaciones <code>std::raw::</code> (sysreg, set_sysreg, fiber_switch, mmio_load32, mmio_store32, hvc, bare) y no
+llamaba al optimizador. Efecto: no podía compilar nada que cargara <code>native/sys_bare.titan</code>
+(<code>error: native runtime: sys_bare.titan:138:11: unknown variable or function 'std::raw::sysreg'</code>), es
+decir, ninguno de los programas de prueba. Arreglado usando el front-end de verdad (<code>import frontend</code> y
+fuera las copias), que además deja al compilador de pruebas con el mismo front-end que el de producción.
+Los siete binarios de prueba (regex ×4, QR, compress y ancho de texto) se compilan ya con el port, y
+<code>native/uwidth/verificar.sh</code> arma ese compilador con <code>titan compile</code> en vez de <code>zett run</code>.</p>
+<p>Resultados ejecutados (cada uno compara nativo contra la VM del port, y todos con semilla fija):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Fuzzer</th>
+<th>Casos</th>
+<th>Resultado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>router/fuzz.py</code></td>
+<td>300 casos, 4.528 líneas, 970 errores de inserción</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>url/fuzz.py</code></td>
+<td>400 casos</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>url/todos.py</code></td>
+<td>0x0–0x400 (2.044 líneas)</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>archive/fuzz.py</code></td>
+<td>250 casos (tar y zip, válidos, mutados y cortados)</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>regex/fuzz_parse.py</code> (analizador, <code>nat_parse</code>)</td>
+<td>250 casos, 130 con error del analizador</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>regex/fuzz_parse.py</code> (traducción, <code>nat_hir</code>, modo <code>todo</code>)</td>
+<td>250 casos, 140 con error</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>regex/busca.py</code></td>
+<td>250 casos, 27 con error</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>qrcode/fuzz.py</code></td>
+<td>25 casos</td>
+<td>0 distintos</td>
+</tr>
+<tr>
+<td><code>compress/fuzz.py</code> (descompresión)</td>
+<td>400 casos</td>
+<td>0 fuera del modelo y 0 diferencias entre los dos motores</td>
+</tr>
+<tr>
+<td><code>compress/fuzz_enc.py</code> (compresión)</td>
+<td>300 casos, 6,6 MB</td>
+<td>0 fallos contra el modelo de miniz_oxide 0.8.9</td>
+</tr>
+<tr>
+<td><code>compress/fuzz_zstd.py</code></td>
+<td>200 casos (85 válidos)</td>
+<td>0 diferencias contra el modelo de libzstd 1.5.7</td>
+</tr>
+<tr>
+<td><code>yaml/fuzz.py</code></td>
+<td>400 casos (parse y parse_multi)</td>
+<td>0 diferencias</td>
+</tr>
+<tr>
+<td><code>regex/umbral.py</code></td>
+<td>46 bases, 138 comprobaciones pegadas al límite de 10 MiB</td>
+<td>0 diferencias</td>
+</tr>
+</tbody>
+</table></div>
+<p>(<code>regex/umbral.py</code> es el más pesado de todos: la VM tarda ~9 minutos en calcular los umbrales de las 46
+bases y el nativo otro tanto largo en comprobar los 138 patrones que quedan pegados al límite de 10 MiB.
+Ojo con qué binario se le pasa: el lado nativo es <code>nat_hir</code> (analizador + traducción, que informa del
+error de tamaño), no <code>umbral.titan</code> (ese es el que <strong>calcula</strong> los umbrales dentro de la VM).)</p>
+<p>Dos cosas que necesitan material de fuera y quedaron documentadas en el propio guion:</p>
+<ul>
+<li><code>fuzz_enc.py</code> necesita el <code>core.rs</code> de miniz_oxide 0.8.9 (de ahí saca las tablas; antes lo bajaba un
+  workflow de crates.io). Se consiguió de GitHub y se comprobó que la copia de la etiqueta
+  <code>Frommi/miniz_oxide</code> <code>0.8.9</code> y la vendida por <code>ClickHouse/rust_vendor</code> (<code>miniz_oxide-0.8.9</code>) son
+  idénticas byte a byte (91.324 bytes); se pasa con <code>CORE_RS=/ruta/core.rs</code>.</li>
+<li><code>fuzz_zstd.py</code> necesita el módulo de Python <code>zstandard</code> (<code>pip install zstandard</code>) para generar los
+  marcos de verdad.</li>
+</ul>
+<p><code>native/verify_x64.sh</code> también se pasó al port ese día. Su oráculo no era el Rust sino <code>objdump</code>
+(externo e independiente: compara 1.445 formas de instrucción byte a byte), y de <code>zett</code> solo usaba el
+motor para <strong>ejecutar</strong> <code>x64_test.titan</code>. Ahora lo ejecuta la CLI del port; resultado: <code>x64: 1445
+instrucciones, todas idénticas a objdump</code>. De paso hubo que hacer robusto al programa de prueba: leía las
+rutas de salida en <code>args[3]</code> y <code>args[4]</code> (posiciones fijas del argv crudo que daba la VM de Rust:
+<code>zett</code>, <code>run</code>, programa, …) y con el port <code>args[0]</code> es el propio ejecutable, así que ahora mira los dos
+últimos argumentos. Es una <strong>diferencia real de comportamiento</strong> entre la VM de Rust y el port en
+<code>std::env::args()</code>: la VM daba el argv del proceso <code>zett</code> (incluido el nombre del subcomando) y el port da
+el del programa, como cualquier ejecutable (el corpus no la notaba porque ninguno de sus programas usa
+posiciones fijas: todos miran <code>args[len(args) - 1]</code>).</p>
+<p><strong>Limitación encontrada (no corregida):</strong> <code>titan run</code> y <code>titan exec</code> lanzan el programa compilado y
+recogen su salida con <code>std::process::run_timeout</code>, que corta a los 4 MiB («captured process output bytes
+exceeds limit 4194304»). Un programa que imprima más de 4 MiB funciona ejecutado a mano pero falla por el
+lanzador. La VM de Rust no tenía ese problema porque ejecutaba el programa dentro del mismo proceso. Lo
+destapó <code>fuzz_zstd.py</code> (sus casos suman ~8 MiB de salida); para poder correrlo, la VM va por lotes de 25
+casos (<code>TITAN_ZSTD_LOTE</code>). Arreglarlo de verdad significa que el lanzador deje de capturar y herede la
+salida estándar, que cambia cómo se ordenan <code>stdout</code> y <code>stderr</code> de <code>titan run</code>: queda pendiente de
+decisión, no se ha tocado.</p>
+<h2 id="el-corpus-entero-sin-el-rust-titan-exec-con-argumentos-y-verify_nativesh-2026-10-11">El corpus entero sin el Rust: <code>titan exec</code> con argumentos y <code>verify_native.sh</code> (2026-10-11)</h2>
+<p><code>selfhost/native/verify_native.sh</code> es el diferencial grande (todo <code>tests/native</code>: imagen, audio, X11, KV,
+paquetes, red local), pero exigía la VM de Rust: sin <code>zett</code> salía con código 2 y no lo ejecutaba nadie (el
+CI no lo llamaba). Para poder hacerlo con la VM del port faltaba una pieza: <code>titan exec</code> no le pasaba
+argumentos al programa, y varios casos del corpus los necesitan (el directorio de salida de las pruebas de
+imagen, por ejemplo).</p>
+<ul>
+<li><strong><code>titan exec ARTEFACTO.tbc [args…]</code></strong>, igual que <code>titan run</code>: lo que sigue al artefacto va al programa.
+  Comprobado con un programa que imprime <code>std::env::args()</code> (antes salía sin argumentos), y <code>--sandbox</code> y un
+  artefacto inexistente siguen fallando igual que antes.</li>
+<li><strong><code>verify_native.sh</code> con dos modos de VM:</strong> <code>VM=port</code> (por omisión) compara el nativo contra el port
+  (<code>titan build</code> + <code>titan exec</code>); <code>VM=zett</code> usa la VM de Rust, y se elige solo si hay un <code>zett</code> de verdad en
+  el PATH (el <code>zett</code> del PATH puede ser el gestor de paquetes, que es este mismo compilador con otro nombre:
+  se distingue por lo que responde <code>zett version</code>). El lado nativo pasa a <code>titan compile</code> cuando no hay
+  <code>zett</code> ni <code>COMPILER</code>; con <code>COMPILER=selfhost/titanc3</code> sigue reutilizando el compilador del bootstrap.</li>
+</ul>
+<p>Resultados ejecutados:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Prueba</th>
+<th>Resultado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>corpus completo</strong>: los 221 programas de <code>tests/native/</code> que no necesitan servicios externos, red, pantalla ni audio (los 55 de la muestra y 166 más en dos tandas de 83)</td>
+<td><strong>221 idénticos, 0 distintos, 0 no admitidos, 0 timeouts</strong></td>
+</tr>
+<tr>
+<td>casos con argumentos, archivos y variables de entorno: <code>image_io</code>, <code>image_gif</code>, <code>image_gif_validate</code> (directorios de salida) y <code>kv_symlink_canonical</code> (enlaces simbólicos)</td>
+<td><strong>4 idénticos</strong></td>
+</tr>
+<tr>
+<td>lista corta para el CI (13 programas: números, texto, cierres, colecciones, JSON, ficheros, imagen y KV)</td>
+<td><strong>13 idénticos</strong>, y el CI la ejecuta en cada push (paso nuevo)</td>
+</tr>
+<tr>
+<td><code>verify_json.sh</code> con la sonda recibiendo la ruta por argumento (ya no hace falta <code>TITAN_JSON_CASO</code>)</td>
+<td><strong>97 casos, 97 idénticos</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="cargador-y-cli-lo-que-destaparon-las-pruebas-del-lsp-y-el-dap-2026-10-11">Cargador y CLI: lo que destaparon las pruebas del LSP y el DAP (2026-10-11)</h2>
+<p>El CI no ejecuta las suites del LSP ni del DAP (hablan por tuberías con el servidor y son lentas). Al
+pasarlas a mano salieron tres fallos reales, ya corregidos:</p>
+<ul>
+<li><strong><code>titan check</code>/<code>run</code>/<code>test</code>/<code>dap</code> morían con un proyecto recién creado.</strong> <code>ld_load_project</code>
+  (<code>selfhost/loader.titan</code>) canonicalizaba <code>&lt;raíz&gt;/tests</code> sin comprobar antes que existiera, y <code>titan new</code>
+  no crea <code>tests/</code>. <code>std::path::canonical</code> de una ruta que no está no devuelve error: mata el proceso
+  (<code>RUNTIME ERROR: native function 'std::path::canonical' failed: No such file or directory (os error 2)</code>).
+  Ahora se comprueba con <code>std::fs::is_dir</code> y solo entonces se canonicaliza, como hacen los demás sitios del
+  mismo fichero. Lo delataba la prueba del DAP; además, el caso está en
+  <code>selfhost/tests/test_runner/probar.sh</code> (que sí corre en el CI) para que no vuelva.</li>
+<li><strong><code>titan new &lt;nombre&gt; --path DIR</code> ignoraba <code>--path</code>.</strong> La opción no estaba en <code>cl_parse</code>, así que ella y
+  su valor caían en los argumentos posicionales y el proyecto se creaba en el directorio actual, sin avisar
+  — la prueba del DAP lo tapaba con un reintento sin <code>--path</code>. Ahora se parsea en <code>cl_new</code>: el proyecto
+  queda en <code>DIR/&lt;nombre&gt;</code> y <code>--path</code> sin valor da error. Documentado en la cabecera del CLI y en el README.</li>
+<li><strong>La prueba del LSP llevaba un número viejo.</strong> <code>selfhost/tests/lsp/probar.py</code> esperaba 823 nativas en el
+  completado y la tabla (<code>selfhost/natives.titan</code>) tiene 812; el completado ofrece exactamente las de la
+  tabla. Ahora la prueba lee <code>natives.titan</code> y comprueba una a una que están todas (no solo la cuenta):
+  <strong>110 comprobaciones, 0 fallos</strong>. La sección «LSP en Titan» de arriba, que citaba 823 y 109, queda
+  corregida.</li>
+</ul>
+<p>Punto fijo del bootstrap repetido con los tres cambios: <code>PUNTO FIJO: etapa1 == etapa2 == etapa3 (byte a
+byte)</code>. El DAP queda en <strong>20 casos, 0 fallan</strong> y el LSP en <strong>110 comprobaciones, 0 fallan</strong>.</p>
+<h2 id="arm-de-32-bits-2026-10-11">ARM de 32 bits (2026-10-11)</h2>
+<p><strong>Qué hay.</strong> Tres piezas nuevas, y ninguna es una copia de la VM:</p>
+<ol>
+<li><strong>Destino <code>armv7</code>.</strong> <code>titan compile PROGRAMA.titan -o salida --target armv7</code> produce un ELF32 estático
+   para ARMv7 (<code>arm-linux-none</code> con el clang de zig, o <code>armv7-linux-gnueabihf</code> con clang + lld), sin libc:
+   habla con el núcleo por <code>svc</code>. Lo genera el backend LLVM, que ya sabía hacer x86-64 y ARM64; para ARM
+   de 32 bits añade tres cosas: las tablas estáticas con direcciones se rellenan al arrancar (<code>lv_parches</code>;
+   un <code>i64</code> no puede llevar la dirección de un puntero de 32 bits en un inicializador), los ayudantes que en
+   32 bits no son instrucciones (<code>__udivsi3</code>, <code>__divsi3</code>, <code>__umodsi3</code>, <code>__modsi3</code>, <code>__floatdidf</code>,
+   <code>__fixdfdi</code>, <code>__aeabi_l2d</code>, <code>__aeabi_ul2d</code>, <code>__aeabi_d2lz</code>, <code>__aeabi_d2ulz</code>, <code>__aeabi_uldivmod</code>,
+   <code>__aeabi_ldivmod</code>, <code>__aeabi_uidiv</code>, <code>__aeabi_idiv</code>, <code>memset</code>, <code>memcpy</code>, <code>memmove</code>, <code>memcmp</code>, <code>bcmp</code>,
+   <code>__aeabi_memcpy</code>, <code>__aeabi_memmove</code>, <code>__aeabi_memset</code>, <code>__aeabi_memclr</code>, …) los escribe el propio backend
+   en el <code>.ll</code> (no hay libgcc ni compiler-rt) —los que llevan <code>double</code> con <code>arm_aapcscc</code>, la ABI base de ARM,
+   que es la que clang les da cuando los llama; los de memoria porque LLVM cambia bucles por llamadas a
+   <code>memset</code>/<code>memcpy</code> al optimizar; ver el changelog del 2026-10-12 (f)—, y <code>fma</code> se
+   sustituye por multiplicación + suma (dos redondeos) porque ARMv7 sin VFPv4 no tiene esa instrucción.</li>
+<li><strong><code>sys_arm32.titan</code></strong> (runtime): traduce las llamadas al sistema de Linux x86-64 —las que usa todo el
+   runtime— a las de ARM de 32 bits (EABI: número en <code>r7</code>, argumentos en <code>r0</code>-<code>r5</code>), incluidas las que
+   cambian de forma: <code>open</code> (5), <code>statx</code> (397) con <code>struct statx</code> de 256 bytes, <code>statfs64</code> (266), <code>_llseek</code>
+   (140), <code>pread64</code>/<code>pwrite64</code> (180/181) y <code>ftruncate64</code> (194) con el entero de 64 bits en un par par/impar,
+   <code>mmap2</code> (192) con el desplazamiento en páginas, <code>clock_gettime64</code> (403), <code>clock_nanosleep_time64</code> (407),
+   <code>ppoll_time64</code> (414), y los indicadores de <code>open</code>, que <strong>no son los mismos</strong>: en ARM <code>O_DIRECTORY</code> es
+   040000, <code>O_NOFOLLOW</code> 0100000, <code>O_DIRECT</code> 0200000 y <code>O_LARGEFILE</code> 0400000 (en x86-64 esos números son
+   <code>O_DIRECT</code>, <code>O_DIRECTORY</code>, <code>O_NOFOLLOW</code> y nada). Los punteros ocupan 4 bytes, así que la pila inicial
+   (argc/argv/entorno/auxv) y las listas que se le pasan a <code>execve</code> se leen y escriben con <code>rt_psize</code>,
+   <code>rt_pget</code>, <code>rt_pset</code> y <code>rt_pslot</code> (runtime), no con <code>load</code>/<code>store</code> de 8 bytes.</li>
+<li><strong><code>selfhost/native/arm32/correr.py</code></strong>, el ejecutor: carga el ELF32 y lo ejecuta en un <strong>procesador ARMv7
+   de verdad</strong> (el motor de QEMU que va dentro de unicorn), con las llamadas al sistema de Linux servidas
+   desde Python. No es una VM del runtime: es el mismo binario que correría en una Raspberry o en un Android
+   de 32 bits. Enciende la coma flotante como el núcleo (<code>FPEXC.EN</code>) antes de pasar a modo usuario, pone la
+   pila de arranque, pasa el entorno del proceso, y lo que no está implementado devuelve <code>-ENOSYS</code> <strong>y lo dice
+   por stderr</strong> (como el «unsupported syscall» de qemu-arm): nunca inventa un resultado.</li>
+</ol>
+<p><strong>Para qué sirve.</strong> Para compilar y <strong>probar</strong> programas de ARM de 32 bits desde x86-64, que es donde vive
+este repositorio. <code>titan compile … --target armv7</code> no necesita ningún dispositivo: el ejecutor hace de
+procesador y de núcleo. Guion de pruebas: <code>bash selfhost/tests/arm32_diff.sh</code> (compila cada programa para
+las dos arquitecturas, lo ejecuta y compara stdout, stderr y código de salida).</p>
+<p><strong>Qué se verificó (todo ejecutado).</strong>
+- <code>bash selfhost/tests/arm32_diff.sh</code> (muestra corta, 20 programas: números y coma flotante, cadenas,
+  colecciones, ficheros y directorios, fechas, <code>/proc</code> y sistema de ficheros, tareas): <strong>20 idénticos, 0
+  distintos, 0 no admitidos, 0 lentos</strong>. Incluye <code>decimales</code> (855 líneas), <code>random_std</code> (373), <code>dt_std</code> (408),
+  <code>procfs_std</code> y <code>texto_sistema</code>.
+- <code>TITAN_ARM32_MUESTRA=1 bash selfhost/tests/arm32_diff.sh</code> (muestra amplia, 65 programas, uno de cada cuatro
+  de <code>tests/native</code> sin los que necesitan red/pantalla/audio/servidores/procesos/terminal): <strong>65 idénticos, 0
+  distintos, 0 no admitidos, 0 lentos, 0 sin compilar</strong>. <code>archive_zip64</code> entra en ese 65: tarda 1069 s (17 m
+  49 s) porque el que va lento es el emulador (~12 M de instrucciones por segundo), no el programa, y su
+  fichero <code>.lento</code> de al lado le da 1800 s de tope (con los 900 s por defecto contaba como LENTO).
+- El camino de verdad del usuario, no solo el arnés: <code>./selfhost/titan compile selfhost/tests/native/basico.titan
+  -o /tmp/basico.arm --target armv7</code> (12 s) y <code>python3 selfhost/native/arm32/correr.py /tmp/basico.arm</code> dan
+  exactamente la misma salida que <code>titan run</code> en x86-64, con el mismo código de salida.
+- La tabla de traducción se comprueba contra el núcleo, no contra mi memoria:
+  <code>python3 selfhost/native/arm32/verificar_tabla.py /tmp/arm.tbl /tmp/x86_64.tbl /tmp/arm_fcntl.h
+  /tmp/asm_generic_fcntl.h</code> → <code>pares traducidos: 58</code>, <code>números de svc usados directamente: 13, todos
+  conocidos: sí</code>, <code>llamadas usadas por el runtime: 75, traducidas: 74, sin traducir a propósito: 13</code>,
+  <code>indicadores del ejecutor comprobados contra el núcleo: 13</code>, <code>TODO BIEN</code> (las cuatro tablas se descargan
+  con los <code>curl</code> que documenta el propio guion). Esa última línea lee las fuentes del runtime y avisa si
+  alguien usa una llamada nueva sin traducirla: es lo que faltaba con <code>rmdir</code> y lo que evita repetirlo
+  (probado al revés: quitando el par y añadiendo una llamada falsa, el guion la nombra y sale con 1).
+- Punto fijo del bootstrap repetido con estos cambios: <code>bash selfhost/verify_fixpoint.sh</code> →
+  <code>PUNTO FIJO: etapa1 == etapa2 == etapa3 (byte a byte)</code>, SHA-256
+  <code>3b405d4dda04d9929062c8e4c759794250a7bca9c3ae61d5272954d87caf0360</code>. Antes de ARM era
+  <code>5668ad26…f0965d</code>, que es lo que citan las secciones anteriores del documento: es normal que cambie,
+  porque el backend LLVM (<code>llvm.titan</code>), el cargador (<code>loader.titan</code>) y <code>native/runtime.titan</code> sí entran en
+  <code>build.titan</code>, que es lo que compila el punto fijo. Después lo cambiaron el arreglo del cargador de más
+  abajo y el del lector de números del JSON: el hash vigente está al final del apartado «Números del JSON y
+  el diferencial nativo contra la VM».</p>
+<p><strong>Fallos reales encontrados y corregidos</strong> (cada uno, con el síntoma que lo delataba):
+- <code>close_range</code> (x86-64 436) estaba traducido a <code>openat2</code> (437) y <code>nanosleep</code> a <code>clock_getres_time64</code> (406)
+  en vez de <code>clock_nanosleep_time64</code> (407): el primero habría intentado abrir un fichero para cerrar
+  descriptores, y el segundo hacía que <code>std::time::sleep_ms</code> no durmiera nunca.
+- <code>open</code> (svc 5) no estaba en el ejecutor: todo <code>std::fs::write_text</code>/<code>create</code> terminaba en <code>-ENOSYS</code>;
+  era el motivo de que <code>archivos_bytes</code> y <code>procfs_std</code> fallaran.
+- <code>statx</code>: <code>mtime</code> se copiaba desde el hueco de <code>btime</code> (offset 80 en vez de 112) y <code>ss_fstat</code> dejaba el
+  búfer de la ruta con lo que hubiera antes.
+- Indicadores de <code>open</code>: <code>O_DIRECT</code> de x86-64 (040000) se colaba como <code>O_DIRECTORY</code> de ARM. Ahora los tres
+  que cambian de sitio se traducen y el guion los comprueba contra <code>arch/arm/include/uapi/asm/fcntl.h</code>
+  (que dice, para ARM: <code>O_DIRECTORY</code> 040000, <code>O_NOFOLLOW</code> 0100000, <code>O_DIRECT</code> 0200000, <code>O_LARGEFILE</code>
+  0400000; los mismos nombres en x86-64 valen 0200000, 0400000, 040000 y 0).
+- El ejecutor mataba el proceso al leer una cadena C que terminaba justo en el borde de la zona de datos
+  (<code>cadena</code> leía 4096 bytes de golpe): <code>dirs_std</code> y <code>archivos_bytes</code> morían con <code>UC_ERR_READ_UNMAPPED</code>.
+- El ejecutor era ~250 veces más lento de lo necesario: contaba las instrucciones con una llamada a Python
+  por instrucción. Ahora la ventana de instrucciones es opcional (<code>TITAN_ARM32_VENTANA=1</code>) y el tope de
+  pasos lo lleva la propia máquina: los cuatro programas de la comprobación corta pasaron de más de 15
+  minutos a 5 segundos.
+- El ejecutor devolvía una hora inventada (1700000000) y un <code>uname</code> de mentira (host: <code>titan</code>, versión
+  <code>6.1.0-titan</code>): <code>dt_std</code> y <code>procfs_std</code> no coincidían con x86-64. Ahora el reloj es el del sistema, <code>uname</code>
+  devuelve los datos reales con <code>armv7l</code> como arquitectura, y el entorno, el uid/gid y el pid son los del
+  proceso (para que el programa vea la misma máquina que en x86-64).
+- <code>madvise</code>: el runtime suelta memoria del montón con <code>MADV_DONTNEED</code> (x86-64 28 → ARM 220); el ejecutor
+  devolvía <code>-ENOSYS</code>. Ahora pone esa memoria a cero y contesta 0, que es lo único que el programa puede notar.
+- <code>__udivsi3</code> no existía en el bloque de ayudantes de 32 bits del backend LLVM: cualquier programa con una
+  división de 64 bits no enlazaba (<code>ld.lld: undefined symbol: __udivsi3</code>).
+- <code>lv_effect</code> (backend LLVM) no contaba las operaciones de <code>std::runtime::*</code>, así que un programa que las
+  usara se rechazaba con un <code>stack underflow at instruction 1 of main</code> <strong>falso</strong>. Ahora el error dice lo que
+  pasa de verdad: <code>instruction RuntimeOptimizeLevel is not supported by the native backend yet</code>.
+- <code>std::raw::fiber_switch</code> (el cambio de pila entre tareas) pasaba la pila nueva en un registro equivocado
+  en ARM de 32 bits: los dos argumentos son <code>i64</code> y la ABI los reparte en <code>r0:r1</code> y <code>r2:r3</code> (no en <code>r0</code> y
+  <code>r1</code>, como en x86-64), así que <code>r1</code> era la mitad alta del primer argumento (siempre 0) y <code>mov sp, r1</code>
+  dejaba la pila en la dirección 0: la primera tarea imprimía y el programa moría con
+  <code>Invalid memory read</code> en <code>lv_fiber_switch</code>. Ahora la pila nueva se lee de <code>r2</code> y el mismo trozo guarda y
+  restaura <code>d8-d15</code> (la ABI de coma flotante dura los usa). Con eso <code>tareas_basico</code>, <code>canales</code>, <code>estres</code>,
+  <code>select</code> y los cuatro <code>error_tarea_*</code> coinciden con x86-64.
+- <code>newfstatat</code> (x86-64 262) se traducía a <code>ss_statx(a, b, c, d)</code>, pero el cuarto argumento de x86-64 son las
+  <em>banderas</em> y el tercero el <em>búfer</em>: las banderas recibían el puntero del búfer (basura) y el búfer
+  recibía 0, así que <code>ss_stat</code> escribía en la dirección 0x10 y el programa moría (<code>std::fs::exists</code> y
+  <code>std::fs::is_file</code>). Ahora es <code>ss_statx(a, b, d, c)</code>. Lo delataron esos dos y, con ellos, los errores de
+  <code>std::tokenize::load</code>, que decían «No such file or directory» donde x86-64 dice «Is a directory» y «not
+  UTF-8» (el fichero de prueba no llegaba a crearse).
+- El ejecutor repartía las reservas de <code>mmap2</code> solo por los primeros 2 GiB y, cuando se acababan, devolvía
+  <code>-ENOMEM</code> aunque el programa hubiera soltado memoria antes: <code>compress_zstd_enc</code> (el nivel 22 pide un búfer
+  de 1 GiB) imprimía «out of memory». Ahora el espacio de direcciones es el de un ARM de 32 bits de verdad
+  (3 GiB, hasta 0xC0000000) y una reserva se coloca en el primer hueco libre; el programa coincide línea a
+  línea con x86-64.
+- El ejecutor terminaba con código 0 cuando el procesador se paraba <em>sin</em> que el programa hubiera acabado
+  (un salto a una dirección sin código): parecía un final correcto. Ahora lo avisa por stderr y devuelve 139.
+- La pista que se imprime al morir el programa contaba solo <code>r0</code>-<code>r3</code>, <code>sp</code> y <code>lr</code>; ahora salen los trece
+  registros, la instrucción desensamblada y la dirección calculada. Es lo que permitió ver que la pila
+  estaba en 0.</p>
+<ul>
+<li><code>rmdir</code> (x86-64 84) no estaba en la traducción a ARM 32 bits (donde es 40), así que <code>std::fs::remove_dir</code>
+  devolvía <code>-ENOSYS</code> y <code>tokenize_std</code> moría con «native function 'std::fs::remove_dir' failed: Function not
+  implemented (os error 38)» donde x86-64 seguía (es el único programa de la muestra que borra directorios).
+  Añadido el par 84 → 40. Auditado el resto: de los 75 números de llamada que usa el runtime, solo quedaban sin
+  traducir ese y <code>rt_sigaction</code> (13), que es un <code>-ENOSYS</code> a propósito.</li>
+</ul>
+<p><strong>Límites conocidos (comprobados, no supuestos).</strong>
+- <strong>El compilador sigue sin existir para ARM de 32 bits.</strong> Lo que funciona es <em>compilar para</em> armv7 desde
+  x86-64 o ARM64 (<code>--target armv7</code>, o el ejecutor). Un Termux de 32 bits no puede usar los paquetes: <code>titan</code>
+  no se construye ahí (el backend propio solo tiene x86-64 y ARM64). El límite que decía «ARM de 32 bits no
+  soportado» (más abajo, en el gestor de paquetes) sigue siendo cierto para el <em>host</em>.
+- <strong>No se ha probado en un teléfono real de 32 bits.</strong> La referencia aquí es el procesador ARMv7 de QEMU
+  (unicorn) con el núcleo puesto desde Python; es el mismo ejecutable que correría en hardware, pero eso no
+  es lo mismo que haberlo probado en hardware. Falta un Termux <code>armv7l</code> que ejecute un binario compilado así.
+- <strong>El ejecutor no es un Linux.</strong> No hay red (la familia <code>socket</code>/<code>accept4</code>), ni señales (<code>rt_sigaction</code>,
+  <code>signalfd4</code>), ni procesos (<code>fork</code>/<code>execve</code>), ni terminales: esas llamadas devuelven <code>-ENOSYS</code> con un aviso
+  por stderr y los programas que las necesitan quedan fuera del diferencial. Lo mismo que hace qemu-arm con
+  lo que no soporta.
+- <strong>El backend LLVM no admite las diez operaciones <code>std::runtime::*</code></strong> (memoria reservada, recolector,
+  tareas activas, optimización, «benchmark»...): un programa que las use se rechaza con el mensaje que dice
+  cuál es (<code>instruction RuntimeOptimizeLevel is not supported by the native backend yet</code>), nunca con un
+  «stack underflow» falso. Las tareas y los canales <strong>sí</strong> funcionan en ARM de 32 bits desde que se corrigió
+  <code>fiber_switch</code>: <code>tareas_basico</code>, <code>canales</code>, <code>estres</code>, <code>select</code> y los cuatro <code>error_tarea_*</code> coinciden con
+  x86-64 en la muestra amplia.
+- <strong>En 32 bits no caben 256 tareas a la vez.</strong> Cada tarea reserva 32 MB de pila (<code>TK_STACK</code>) y un proceso de
+  32 bits solo ve 3 GiB: caben unas 84 (medido en el ejecutor: 2 reservas iniciales de 64 MB más 84 pilas de
+  32 MB llenan sus 2816 MB y la pila 85 recibe <code>ENOMEM</code>, así que el runtime imprime «out of memory»). La
+  prueba <code>tareas_estres</code> levanta 256 tareas a la vez, o sea 8 GB: no cabe en <strong>ningún</strong> ARM de 32 bits —ni
+  emulado ni de verdad—, así que queda fuera de la muestra amplia por eso y no por el port (en x86-64 pasa).
+  Las demás pruebas de tareas (<code>tareas_basico</code>, <code>canales</code>, <code>select</code>, <code>error_tarea_*</code>) sí están en la muestra.
+- <strong><code>archive_zip64</code> es lento, pero termina.</strong> El repositorio ya lo marca como lento
+  (<code>selfhost/tests/native/archive_zip64.lento</code>: ~13 minutos en un ARM de verdad, sin emulación) y con razón: en
+  el ejecutor tarda 1069 s (17 m 49 s) —va a ~12 millones de instrucciones por segundo (medido: 10 762
+  millones en 901 s)— pero la salida sale entera y <strong>idéntica</strong> a x86-64 (<code>Ok(len=5876478 crc=2661654626)</code>,
+  <code>65540 f65539</code>, <code>65540</code>). Con el tope por defecto del guion (900 s) se quedaba fuera por poco y contaba como
+  LENTO; el fichero <code>.lento</code> de al lado le da 1800 s y así cuenta como una coincidencia más. Sus 65 543
+  llamadas <code>madvise</code> no son el cuello de botella: poner a cero sus 68 GiB cuesta 18 s de esos 1069 (medido
+  con el motor de unicorn a mano: 0,28 ms por cada 2 MiB).</p><p class="editar"><a href="https://github.com/alexsndersoto04-source/aio/blob/main/selfhost/ESTADO.md">Ver este archivo en GitHub</a></p></article></div></main>
 <footer><div class="wrap">
   <div class="foot-cols">
     <div>

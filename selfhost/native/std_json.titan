@@ -100,29 +100,8 @@ fn js_is_digit(c: int) -> bool {
 
 // ---------------------------------------------------------------- números
 
-// 10^i (0 <= i <= 308) como bits de f64 correctamente redondeados (igual que
-// los literales de la tabla POW10 de serde_json); se guardan al usarse.
-fn js_pow10(i: int) -> int {
-    let g = std::raw::globals() + 2400
-    let mut table = std::raw::load(g)
-    if table == 0 {
-        table = rt_alloc(8 * 309)
-        let mut k = 0
-        while k < 309 {
-            std::raw::store(table + 8 * k, 0)
-            k += 1
-        }
-        std::raw::store(g, table)
-    }
-    let mut v = std::raw::load(table + 8 * i)
-    if v == 0 {
-        v = fl_from_decimal(false, [1], i)
-        std::raw::store(table + 8 * i, v)
-    }
-    v
-}
-
-// u64 → f64 con redondeo al par más cercano.
+// u64 → f64 con redondeo al par más cercano (los enteros que no caben en i64
+// del JSON se convierten así, como en serde_json).
 fn js_u64_to_f(u: int) -> int {
     if u >= 0 {
         return std::raw::ffromint(u)
@@ -146,43 +125,23 @@ fn js_sat32(x: int) -> int {
     x
 }
 
-fn js_f64_from_parts(st: int, positive: bool, sig: int, exp0: int) -> any {
-    let mut f = js_u64_to_f(sig)
-    let mut exponent = exp0
-    while true {
-        let mut a = exponent
-        if a < 0 {
-            a = 0 - a
-        }
-        if exponent == -2147483648 {
-            // wrapping_abs(i32::MIN) sigue siendo negativo: fuera de tabla.
-            a = 1000
-        }
-        if a <= 308 {
-            let pow = js_pow10(a)
-            if exponent >= 0 {
-                f = std::raw::fmul(f, pow)
-                if (f & 9223372036854775807) == js_inf_bits() {
-                    js_error(st, "number out of range")
-                }
-            } else {
-                f = std::raw::fdiv(f, pow)
-            }
-            break
-        }
-        if f == 0 {
-            break
-        }
-        if exponent >= 0 {
-            js_error(st, "number out of range")
-        }
-        f = std::raw::fdiv(f, js_pow10(308))
-        exponent += 308
-    }
-    if !positive {
-        f = f ^ js_sign_bit()
-    }
-    rt_float(f)
+// Bits del f64 del número que va de `ini` a la posición actual, con el mismo
+// analizador exacto que usan los literales de las fuentes (`fl_parse`:
+// entero grande + redondeo al par más cercano, ver float.titan).
+//
+// Antes esta parte multiplicaba o dividía por potencias de diez: dos redondeos,
+// y algunos números salían con un bit de diferencia. Los delato el artefacto de
+// bytecode: `titan build` calcula un CRC-32 del JSON del módulo y `titan exec`
+// lo vuelve a calcular del JSON releído, así que un número que al ir y volver
+// cambia de texto (p. ej. -2.416471603113579e-47, que volvía como
+// -2.4164716031135787e-47) rompía el CRC y el programa se rechazaba con
+// «bytecode checksum mismatch». De paso, la VM calculaba esos números con un bit
+// de menos que el código nativo.
+fn js_bits_exactos(st: int, ini: int) -> int {
+    let n = std::raw::load(st + 16)
+    let b = sb_new(n - ini)
+    sb_raw(b, std::raw::load(st) + ini, n - ini)
+    fl_parse(sb_finish(b))
 }
 
 // ¿sig * 10 + d desborda u64? (sig es u64 guardado con signo)
@@ -194,7 +153,7 @@ fn js_u64_overflow(sig: int, d: int) -> bool {
     sig == limit && d > 5
 }
 
-fn js_parse_exponent(st: int, positive: bool, sig: int, starting: int) -> any {
+fn js_parse_exponent(st: int, positive: bool, sig: int, starting: int, ini: int) -> any {
     js_eat(st)
     let mut positive_exp = true
     let c = js_peek(st)
@@ -236,10 +195,10 @@ fn js_parse_exponent(st: int, positive: bool, sig: int, starting: int) -> any {
     } else {
         final_exp = js_sat32(starting - exp)
     }
-    js_f64_from_parts(st, positive, sig, final_exp)
+    rt_float(js_bits_exactos(st, ini))
 }
 
-fn js_parse_decimal(st: int, positive: bool, sig0: int, before: int) -> any {
+fn js_parse_decimal(st: int, positive: bool, sig0: int, before: int, ini: int) -> any {
     js_eat(st)
     let mut sig = sig0
     let mut after = 0
@@ -252,9 +211,9 @@ fn js_parse_decimal(st: int, positive: bool, sig0: int, before: int) -> any {
             }
             let c = js_peek(st)
             if c == 101 || c == 69 {
-                return js_parse_exponent(st, positive, sig, before + after)
+                return js_parse_exponent(st, positive, sig, before + after, ini)
             }
-            return js_f64_from_parts(st, positive, sig, before + after)
+            return rt_float(js_bits_exactos(st, ini))
         }
         js_eat(st)
         sig = std::raw::wadd(std::raw::wmul(sig, 10), d)
@@ -268,18 +227,18 @@ fn js_parse_decimal(st: int, positive: bool, sig0: int, before: int) -> any {
     }
     let c = js_peek(st)
     if c == 101 || c == 69 {
-        return js_parse_exponent(st, positive, sig, before + after)
+        return js_parse_exponent(st, positive, sig, before + after, ini)
     }
-    js_f64_from_parts(st, positive, sig, before + after)
+    rt_float(js_bits_exactos(st, ini))
 }
 
-fn js_parse_number(st: int, positive: bool, sig: int) -> any {
+fn js_parse_number(st: int, positive: bool, sig: int, ini: int) -> any {
     let c = js_peek(st)
     if c == 46 {
-        return js_parse_decimal(st, positive, sig, 0)
+        return js_parse_decimal(st, positive, sig, 0, ini)
     }
     if c == 101 || c == 69 {
-        return js_parse_exponent(st, positive, sig, 0)
+        return js_parse_exponent(st, positive, sig, 0, ini)
     }
     if positive {
         // U64: entero si cabe en i64; si no, as_f64.
@@ -295,7 +254,7 @@ fn js_parse_number(st: int, positive: bool, sig: int) -> any {
     neg
 }
 
-fn js_parse_long_integer(st: int, positive: bool, sig: int) -> any {
+fn js_parse_long_integer(st: int, positive: bool, sig: int, ini: int) -> any {
     let mut exponent = 0
     while true {
         let c = js_peek(st)
@@ -303,17 +262,17 @@ fn js_parse_long_integer(st: int, positive: bool, sig: int) -> any {
             js_eat(st)
             exponent += 1
         } else if c == 46 {
-            return js_parse_decimal(st, positive, sig, exponent)
+            return js_parse_decimal(st, positive, sig, exponent, ini)
         } else if c == 101 || c == 69 {
-            return js_parse_exponent(st, positive, sig, exponent)
+            return js_parse_exponent(st, positive, sig, exponent, ini)
         } else {
-            return js_f64_from_parts(st, positive, sig, exponent)
+            return rt_float(js_bits_exactos(st, ini))
         }
     }
     nil
 }
 
-fn js_parse_integer(st: int, positive: bool) -> any {
+fn js_parse_integer(st: int, positive: bool, ini: int) -> any {
     let next = js_next(st)
     if next < 0 {
         js_error(st, "EOF while parsing a value")
@@ -322,7 +281,7 @@ fn js_parse_integer(st: int, positive: bool) -> any {
         if js_is_digit(js_peek(st)) {
             js_peek_error(st, "invalid number")
         }
-        return js_parse_number(st, positive, 0)
+        return js_parse_number(st, positive, 0, ini)
     }
     if next < 49 || next > 57 {
         js_error(st, "invalid number")
@@ -331,11 +290,11 @@ fn js_parse_integer(st: int, positive: bool) -> any {
     while true {
         let c = js_peek(st)
         if !js_is_digit(c) {
-            return js_parse_number(st, positive, sig)
+            return js_parse_number(st, positive, sig, ini)
         }
         let d = c - 48
         if js_u64_overflow(sig, d) {
-            return js_parse_long_integer(st, positive, sig)
+            return js_parse_long_integer(st, positive, sig, ini)
         }
         js_eat(st)
         sig = std::raw::wadd(std::raw::wmul(sig, 10), d)
@@ -612,11 +571,12 @@ fn js_parse_value(st: int) -> any {
         return false
     }
     if c == 45 {
+        let ini = std::raw::load(st + 16)
         js_eat(st)
-        return js_parse_integer(st, false)
+        return js_parse_integer(st, false, ini)
     }
     if js_is_digit(c) {
-        return js_parse_integer(st, true)
+        return js_parse_integer(st, true, std::raw::load(st + 16))
     }
     if c == 34 {
         js_eat(st)

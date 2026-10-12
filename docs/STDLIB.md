@@ -2,7 +2,7 @@
 
 Las funciones `std::*` están escritas en Titan (cuerpos en `selfhost/native/`) y se compilan junto con el programa; no hay
 código de otro lenguaje ni bibliotecas externas. La tabla de firmas es `selfhost/natives.titan` (la consulta el typechecker).
-Hoy son **812 funciones en 73 espacios de nombres**. Cuántas tienen cuerpo en Titan se mide con
+Hoy son **813 funciones en 73 espacios de nombres**. Cuántas tienen cuerpo en Titan se mide con
 `bash selfhost/native/cobertura.sh -v`.
 
 Además de estas, `std::sqlite`, `std::postgres`, `std::mysql`, `std::db`, `std::tls`, `std::runtime` y parte de `std::ws`, `std::net`,
@@ -54,7 +54,7 @@ Además de estas, `std::sqlite`, `std::postgres`, `std::mysql`, `std::db`, `std:
 | `std::path` | 8 | rutas |
 | `std::pdf` | 9 | generar PDF |
 | `std::plot` | 5 | gráficos SVG |
-| `std::process` | 23 | procesos hijos, pipes, tiempo límite |
+| `std::process` | 24 | procesos hijos, pipes, tiempo límite (`run_inherit` deja al hijo la terminal) |
 | `std::procfs` | 18 | información del sistema (/proc) |
 | `std::progress` | 7 | barras de progreso |
 | `std::qrcode` | 5 | códigos QR |

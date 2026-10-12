@@ -1,0 +1,22 @@
+// Destinos de asignación que no existen en Titan, cada uno con su propio diagnóstico.
+// Los campos no se asignan (se construye un valor actualizado), y `mut self` no convierte
+// al receptor en un destino: los métodos lo reciben por valor, así que el cambio no se
+// vería fuera. Antes los tres casos daban el mismo mensaje genérico («assignment target
+// must be a mutable local variable…»), que no nombraba ni `self` ni el campo.
+// Lo comprueba selfhost/tests/errores/probar.sh.
+
+struct Punto { x: int, y: int }
+
+impl Punto {
+    fn mover(mut self) {
+        self.x = self.x + 1
+    }
+}
+
+fn main() {
+    let mut p = Punto { x: 1, y: 2 }
+    p.x = 5
+    let mut xs = [1, 2, 3]
+    xs[0] = 9
+    print("{p} {xs}")
+}

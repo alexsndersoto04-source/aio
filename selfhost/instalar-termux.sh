@@ -39,8 +39,9 @@ ln -sf "$PREFIX/opt/titan/titan" "$PREFIX/bin/titan"
 if [ -e "$PREFIX/opt/titan/zett" ]; then ln -sf "$PREFIX/opt/titan/zett" "$PREFIX/bin/zett"; fi
 if ! titan version; then
   echo "el binario aarch64 no arranca en esta máquina (¿«Exec format error»?): el núcleo no ejecuta binarios de 64 bits." >&2
-  echo "Si tu teléfono admite 64 bits, instala el Termux de 64 bits (APK arm64-v8a). Si no, no hay versión posible:" >&2
-  echo "Titan no tiene generador de código para ARM de 32 bits." >&2
+  echo "Si tu teléfono admite 64 bits, instala el Termux de 64 bits (APK arm64-v8a)." >&2
+  echo "Si es un teléfono de 32 bits: usa el paquete de ARM de 32 bits, zett_<versión>_arm.termux.deb" >&2
+  echo "(misma página de releases; se instala con: pkg install ./zett_..._arm.termux.deb)." >&2
   exit 2
 fi
 if command -v zett > /dev/null 2>&1; then zett version; fi

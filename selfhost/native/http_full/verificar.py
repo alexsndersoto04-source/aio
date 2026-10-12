@@ -20,6 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PROGRAM = ROOT / "selfhost/native/http_full/prueba_http_full.titan"
 
+# Sin Rust: el lado de comparación es la VM de bytecode del port (`titan build`
+# + `titan exec`, ver selfhost/native/vm_port.py) y el nativo lo arma la CLI.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from vm_port import titan_path, vm_run  # noqa: E402
+
 
 def json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -204,9 +209,53 @@ def fail(label: str, result: subprocess.CompletedProcess[bytes]) -> None:
     raise SystemExit(1)
 
 
+def build_with_test_roots(authority: Path, temp_dir: str, executable: str) -> None:
+    """Compila el programa con un compilador cuya copia de native/ tiene un
+    std_roots.titan con solo `authority` como ancla (gen_roots.py).
+
+    Es el mismo procedimiento de `tests/pkg/registro/estatico.sh`: el cliente
+    TLS confía en las anclas escritas al compilar, no en SSL_CERT_FILE.
+    """
+    compiler = Path(os.environ.get("COMPILER") or (ROOT / "selfhost" / "titanc3"))
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise SystemExit(f"No encuentro el compilador nativo para la prueba TLS: {compiler}")
+    tree = Path(temp_dir) / "tc"
+    (tree / "native").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(compiler, tree / "titanc")
+    shutil.copytree(ROOT / "selfhost" / "native", tree / "native", dirs_exist_ok=True)
+    roots = subprocess.run(
+        ["python3", str(ROOT / "selfhost" / "native" / "gen_roots.py"), str(authority)],
+        cwd=ROOT,
+        capture_output=True,
+        timeout=120,
+    )
+    if roots.returncode != 0 or not roots.stdout:
+        print(roots.stderr.decode(errors="replace"), file=sys.stderr)
+        raise SystemExit("gen_roots.py no pudo generar std_roots.titan para la CA de prueba")
+    (tree / "native" / "std_roots.titan").write_bytes(roots.stdout)
+    built = run([str(tree / "titanc"), str(PROGRAM.relative_to(ROOT)), executable], timeout=900)
+    if built.returncode != 0 or not Path(executable).is_file():
+        fail("compilación del cliente TLS con la CA de prueba en std_roots.titan", built)
+
+
 def verify_real_tls(executable: str, temp_dir: str) -> None:
+    # Cadena de verdad: una autoridad (CA:TRUE, keyCertSign) y un certificado
+    # de servidor firmado por ella (CA:FALSE, SAN localhost, serverAuth). Con
+    # `openssl req -x509` a secas el certificado sale CA:TRUE y, usado como
+    # certificado de servidor, es un error X.509 real (webpki: CaUsedAsEndEntity)
+    # con el que no se puede probar nada.
     certificate = Path(temp_dir) / "tls-local-cert.pem"
     private_key = Path(temp_dir) / "tls-local-key.pem"
+    authority = Path(temp_dir) / "tls-local-ca.pem"
+    authority_key = Path(temp_dir) / "tls-local-ca-key.pem"
+    request = Path(temp_dir) / "tls-local.csr"
+    extensions = Path(temp_dir) / "tls-local-ext.cnf"
+    extensions.write_text(
+        "subjectAltName=DNS:localhost\n"
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+    )
     generated = run(
         [
             "openssl",
@@ -216,20 +265,69 @@ def verify_real_tls(executable: str, temp_dir: str) -> None:
             "rsa:2048",
             "-nodes",
             "-keyout",
-            str(private_key),
+            str(authority_key),
             "-out",
-            str(certificate),
+            str(authority),
             "-days",
             "1",
             "-subj",
-            "/CN=localhost",
+            "/CN=titan local test CA",
             "-addext",
-            "subjectAltName=DNS:localhost",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
         ],
         timeout=30,
     )
+    if generated.returncode == 0:
+        generated = run(
+            [
+                "openssl",
+                "req",
+                "-new",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(private_key),
+                "-out",
+                str(request),
+                "-subj",
+                "/CN=localhost",
+            ],
+            timeout=30,
+        )
+    if generated.returncode == 0:
+        generated = run(
+            [
+                "openssl",
+                "x509",
+                "-req",
+                "-in",
+                str(request),
+                "-CA",
+                str(authority),
+                "-CAkey",
+                str(authority_key),
+                "-CAcreateserial",
+                "-out",
+                str(certificate),
+                "-days",
+                "1",
+                "-extfile",
+                str(extensions),
+            ],
+            timeout=30,
+        )
     if generated.returncode != 0:
-        fail("creación de certificado local para probar TLS", generated)
+        fail("creación de la cadena local (CA y certificado de servidor) para probar TLS", generated)
+
+    # El cliente confía en las anclas de std_roots.titan, escritas al compilar
+    # (no lee SSL_CERT_FILE). Para probar el camino bueno hay que armar un
+    # cliente cuyo std_roots.titan solo tenga esta CA: el mismo truco de
+    # tests/pkg/registro/estatico.sh (copia del compilador + gen_roots.py).
+    trusted_executable = str(Path(temp_dir) / "http_full_test_tls")
+    build_with_test_roots(authority, temp_dir, trusted_executable)
 
     TLSHandler.requests = 0
     server = VerifiedTLSServer(("127.0.0.1", 0), certificate, private_key)
@@ -237,13 +335,16 @@ def verify_real_tls(executable: str, temp_dir: str) -> None:
     thread.start()
     port = server.server_address[1]
     url = f"https://localhost:{port}/redirect"
-    trusted_env = os.environ.copy()
-    trusted_env["SSL_CERT_FILE"] = str(certificate)
-    trusted_env["SSL_CERT_DIR"] = str(Path(temp_dir) / "no-system-ca-directory")
     expected = json_bytes({"ok": True, "via": "verified TLS"}) + b"\n"
 
     try:
-        good = run([executable, url, "--tls"], timeout=30, env=trusted_env)
+        # El cliente normal (raíces públicas de Mozilla) no confía en esta CA:
+        # tiene que rechazarla sin llegar a mandar nada por un canal sin validar.
+        untrusted = run([executable, url, "--tls"], timeout=30)
+        if untrusted.returncode == 0 or TLSHandler.requests != 0:
+            raise AssertionError("el cliente aceptó una CA desconocida o envió HTTP sin validarla")
+
+        good = run([trusted_executable, url, "--tls"], timeout=30)
         if good.returncode != 0:
             fail("HTTPS nativo con certificado confiable", good)
         if good.stdout != expected:
@@ -254,7 +355,7 @@ def verify_real_tls(executable: str, temp_dir: str) -> None:
             raise AssertionError(f"la redirección TLS generó {TLSHandler.requests} solicitudes; se esperaban 2")
 
         std_http_url = f"https://localhost:{port}/plain-redirect"
-        std_http = run([executable, std_http_url, "--tls-std"], timeout=30, env=trusted_env)
+        std_http = run([trusted_executable, std_http_url, "--tls-std"], timeout=30)
         std_http_expected = f"200\nhttps://localhost:{port}/plain-chunked\nstd-http-tls-ok\n".encode()
         if std_http.returncode != 0 or std_http.stdout != std_http_expected:
             fail("HTTPS nativo de std::http con redirección y respuesta chunked", std_http)
@@ -262,29 +363,33 @@ def verify_real_tls(executable: str, temp_dir: str) -> None:
             raise AssertionError(f"la prueba de std::http generó {TLSHandler.requests} solicitudes; se esperaban 4")
         print("std::http también pasó HTTPS con redirección y respuesta chunked.")
 
-        empty_ca = Path(temp_dir) / "empty-ca.pem"
-        empty_ca.write_bytes(b"")
-        untrusted_env = trusted_env.copy()
-        untrusted_env["SSL_CERT_FILE"] = str(empty_ca)
         before = TLSHandler.requests
-        untrusted = run([executable, url, "--tls"], timeout=30, env=untrusted_env)
-        if untrusted.returncode == 0 or TLSHandler.requests != before:
-            raise AssertionError("el cliente aceptó una CA desconocida o envió HTTP sin validarla")
-
         ip_url = f"https://127.0.0.1:{port}/gzip"
-        wrong_name = run([executable, ip_url, "--tls"], timeout=30, env=trusted_env)
+        wrong_name = run([trusted_executable, ip_url, "--tls"], timeout=30)
         if wrong_name.returncode == 0 or TLSHandler.requests != before:
             raise AssertionError("el cliente aceptó un certificado para otro nombre de servidor")
 
         slow_url = f"https://localhost:{port}/slow"
         started = time.monotonic()
-        slow = run([executable, slow_url, "--tls-timeout"], timeout=5, env=trusted_env)
+        slow = run([trusted_executable, slow_url, "--tls-timeout"], timeout=5)
         elapsed = time.monotonic() - started
-        if slow.returncode == 0 or b"timed out" not in slow.stderr or elapsed >= 3:
+        detail = slow.stderr.decode(errors="replace")
+        # El servidor tarda 0.5 s y el plazo del cliente es de 100 ms: tiene que
+        # cortar antes, no esperar la respuesta. El texto del error es lo único
+        # que cambia respecto de la referencia de Rust (que decía "timed out"):
+        # el port informa el errno, igual que el camino HTTP simple
+        # (`Resource temporarily unavailable (os error 11)`), consistente con el
+        # resto de sus errores de E/S. Diferencia anotada en ESTADO.md.
+        if slow.returncode == 0 or elapsed >= 0.45:
             raise AssertionError(
-                f"el plazo TLS no se aplicó correctamente (código {slow.returncode}, {elapsed:.2f} s): "
-                f"{slow.stderr.decode(errors='replace')}"
+                f"el plazo TLS no se aplicó (código {slow.returncode}, {elapsed:.2f} s): {detail}"
             )
+        if "timed out" in detail:
+            print("El plazo TLS cortó con el mensaje de la referencia ('timed out').")
+        elif "Resource temporarily unavailable (os error 11)" in detail:
+            print("El plazo TLS cortó a tiempo; el port lo informa como errno EAGAIN, no como 'timed out' (diferencia anotada).")
+        else:
+            raise AssertionError(f"el plazo TLS falló por otro motivo: {detail}")
 
         print("HTTPS nativo: certificado y nombre verificados; también pasaron redirección HTTPS y cuerpo gzip.")
         print("Seguridad comprobada: rechazó una CA desconocida y un nombre incorrecto; el plazo también se respeta.")
@@ -295,9 +400,13 @@ def verify_real_tls(executable: str, temp_dir: str) -> None:
 
 
 def main() -> None:
-    zett = os.environ.get("ZETT") or shutil.which("zett") or str(Path.home() / ".local/bin/zett")
-    if not Path(zett).is_file() or not os.access(zett, os.X_OK):
-        raise SystemExit("No encuentro el binario precompilado `zett`; instálalo antes de ejecutar esta prueba.")
+    titan = titan_path()
+    if not Path(titan).is_file() or not os.access(titan, os.X_OK):
+        raise SystemExit(
+            f"No encuentro la CLI del port ({titan}); compílala con "
+            "`env -i PATH=/nonexistent ./selfhost/titanc3 selfhost/titan.titan selfhost/titan` "
+            "o pásala en TITAN=/ruta/a/titan."
+        )
 
     compiler = os.environ.get("COMPILER", "")
     if compiler and (not Path(compiler).is_file() or not os.access(compiler, os.X_OK)):
@@ -315,13 +424,21 @@ def main() -> None:
                 print("Compilador de la prueba: ejecutable nativo Titan del bootstrap.")
                 build_command = [compiler, str(PROGRAM.relative_to(ROOT)), executable]
             else:
-                print("Compilador de la prueba: selfhost/build.titan ejecutado por Zett precompilado.")
-                build_command = [zett, "run", "selfhost/build.titan", str(PROGRAM.relative_to(ROOT)), executable]
+                print("Compilador de la prueba: la CLI del port (`titan compile`).")
+                build_command = [titan, "compile", str(PROGRAM.relative_to(ROOT)), "-o", executable]
             built = run(build_command)
             if built.returncode != 0 or not Path(executable).is_file():
                 fail("compilación con el compilador Titan", built)
 
-            vm = run([zett, "run", str(PROGRAM.relative_to(ROOT)), base])
+            vm = vm_run(
+                __file__,
+                "prueba_http_full.titan",
+                base,
+                cwd=str(ROOT),
+                capture_output=True,
+                timeout=600,
+                check=False,
+            )
             if vm.returncode != 0:
                 fail("cliente de la VM", vm)
             native = run([executable, base])

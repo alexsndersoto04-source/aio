@@ -36,12 +36,79 @@ jobs:
         run: bash selfhost/bootstrap.sh
       - name: Compilar titan para ARM64 (LLVM, cruzado)
         run: selfhost/titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+      - name: Compilar titan para ARM de 32 bits (LLVM, cruzado)
+        run: |
+          # Si falla, el error del compilador (que trae el del clang/lld de turno) se publica como
+          # anotación: los registros de Actions no se pueden descargar desde fuera.
+          set +e
+          salida="$(selfhost/titan compile selfhost/titan.titan -o titan-armv7 --target armv7 2>&1)"
+          rc=$?
+          printf '%s\n' "$salida"
+          if [ $rc -ne 0 ]; then
+            msg=$(printf '%s' "$salida" | tail -c 3000 | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=compilacion ARM32 (armv7)::$msg"
+          fi
+          exit $rc
       - name: Salidas del compilador x86-64 (referencia)
         run: bash selfhost/tests/arm64_diff.sh generar selfhost/titan x86out
       - name: Paquetes
         run: |
           bash selfhost/empaquetar.sh selfhost/titan x86_64 paquetes
           bash selfhost/empaquetar.sh titan-aarch64 aarch64 paquetes
+          bash selfhost/empaquetar.sh titan-armv7 armv7 paquetes
+      - name: Paquetes .deb (sistema y Termux) y repositorio apt
+        run: |
+          VER="$(grep -o 'v[0-9][0-9.]*' <(selfhost/titan version) | head -1 | sed 's/^v//')"
+          mkdir -p paquetes/repo paquetes/repo-termux
+          # Sistema (Debian/Ubuntu): amd64, arm64 y armhf (ARM de 32 bits).
+          bash selfhost/empaquetar_deb.sh selfhost/titan amd64 paquetes/repo --version "$VER"
+          bash selfhost/empaquetar_deb.sh titan-aarch64 arm64 paquetes/repo --version "$VER"
+          bash selfhost/empaquetar_deb.sh titan-armv7 armhf paquetes/repo --version "$VER"
+          # Termux: x86_64, aarch64 y arm (los mismos binarios, con su prefijo).
+          bash selfhost/empaquetar_deb.sh selfhost/titan amd64 paquetes/repo-termux --termux --version "$VER"
+          bash selfhost/empaquetar_deb.sh titan-aarch64 arm64 paquetes/repo-termux --termux --version "$VER"
+          bash selfhost/empaquetar_deb.sh titan-armv7 armhf paquetes/repo-termux --termux --version "$VER"
+          # Índices del repositorio (Packages, Packages.gz y Release) y la comprobación de que apt los lee.
+          bash selfhost/repo_apt.sh paquetes/repo
+          bash selfhost/repo_apt.sh paquetes/repo-termux --termux
+          ls -la paquetes/repo paquetes/repo-termux
+      - name: El paquete de ARM de 32 bits funciona (emulador de ARM32)
+        run: |
+          python3 -m pip install --quiet unicorn capstone
+          VER="$(grep -o 'v[0-9][0-9.]*' <(selfhost/titan version) | head -1 | sed 's/^v//')"
+          T="$(mktemp -d)"
+          dpkg-deb -x "paquetes/repo/zett_${VER}_armhf.deb" "$T"
+          python3 selfhost/native/arm32/correr.py "$T/usr/lib/zett/titan" version
+          python3 selfhost/native/arm32/correr.py "$T/usr/lib/zett/zett" version
+      - name: El paquete .deb de x86-64 se instala y funciona
+        run: |
+          L=/tmp/paquetes.list
+          echo "deb [trusted=yes] file:$PWD/paquetes/repo ./" > "$L"
+          sudo apt-get -o Dir::Etc::sourcelist="$L" -o Dir::Etc::sourceparts=/dev/null -o APT::Get::List-Cleanup=0 update
+          sudo apt-get -o Dir::Etc::sourcelist="$L" -o Dir::Etc::sourceparts=/dev/null -o APT::Get::List-Cleanup=0 install -y zett
+          dpkg -l zett | tail -1
+          titan version
+          zett version
+          printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
+          test "$(titan run /tmp/hola.titan)" = "respuesta 42"
+          # El gestor de paquetes del paquete instalado: clave nueva y paquete firmado.
+          mkdir -p /tmp/proy/src && cp /tmp/hola.titan /tmp/proy/src/main.titan
+          printf '[package]\nname = "prueba_ci"\nversion = "0.1.0"\nedition = "2026"\ndescription = "prueba"\nlicense = "MIT"\n' > /tmp/proy/Titan.toml
+          zett keygen /tmp/k.key
+          (cd /tmp/proy && zett pack --key /tmp/k.key --output /tmp/p.tpkg)
+          test -s /tmp/p.tpkg
+      - name: Los programas de ARM de 32 bits dan lo mismo que en x86-64 (emulador de ARM32)
+        run: |
+          # El binario de ARM 32 bits lo enlaza clang/lld de verdad, con coma
+          # flotante por hardware: aquí se comprueban programas reales de
+          # números. Los ayudantes de la RTABI (__aeabi_l2d, __aeabi_d2lz,
+          # __aeabi_uldivmod...) los escribe el backend en el .ll, y si su ABI
+          # no es la que clang espera el enlazado no se queja: solo salen
+          # números mal. Esta prueba es la que lo ve.
+          python3 -m pip install --quiet unicorn capstone
+          bash selfhost/tests/arm32_diff.sh \
+            selfhost/tests/native/decimales.titan \
+            selfhost/tests/native/basico.titan
       - uses: actions/upload-artifact@v4
         with:
           name: arm64-entrada
@@ -76,6 +143,29 @@ jobs:
           cp titan-aarch64 selfhost/titan-arm
           chmod +x selfhost/titan-arm
           selfhost/titan-arm version
+      - name: El paquete .deb de ARM64 se instala y funciona (aquí, en ARM64 de verdad)
+        run: |
+          VER="$(grep -o 'v[0-9][0-9.]*' <(selfhost/titan-arm version) | head -1 | sed 's/^v//')"
+          mkdir -p paquetes/repo paquetes/repo-termux
+          bash selfhost/empaquetar_deb.sh titan-aarch64 arm64 paquetes/repo --version "$VER"
+          bash selfhost/empaquetar_deb.sh titan-aarch64 arm64 paquetes/repo-termux --termux --version "$VER"
+          bash selfhost/repo_apt.sh paquetes/repo
+          bash selfhost/repo_apt.sh paquetes/repo-termux --termux
+          L=/tmp/paquetes.list
+          echo "deb [trusted=yes] file:$PWD/paquetes/repo ./" > "$L"
+          sudo apt-get -o Dir::Etc::sourcelist="$L" -o Dir::Etc::sourceparts=/dev/null -o APT::Get::List-Cleanup=0 update
+          sudo apt-get -o Dir::Etc::sourcelist="$L" -o Dir::Etc::sourceparts=/dev/null -o APT::Get::List-Cleanup=0 install -y zett
+          dpkg -l zett | tail -1
+          uname -m
+          titan version
+          zett version
+          printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
+          test "$(titan run /tmp/hola.titan)" = "respuesta 42"
+          mkdir -p /tmp/proy/src && cp /tmp/hola.titan /tmp/proy/src/main.titan
+          printf '[package]\nname = "prueba_ci_arm"\nversion = "0.1.0"\nedition = "2026"\ndescription = "prueba"\nlicense = "MIT"\n' > /tmp/proy/Titan.toml
+          zett keygen /tmp/k.key
+          (cd /tmp/proy && zett pack --key /tmp/k.key --output /tmp/p.tpkg)
+          test -s /tmp/p.tpkg
       - name: Un programa compilado y ejecutado en ARM64
         run: |
           printf 'fn main() {\n    let n = 6 * 7\n    println("respuesta {n}")\n}\n' > /tmp/hola.titan
@@ -142,7 +232,40 @@ jobs:
           # Nombres fijos para que instalar-termux.sh encuentre siempre «latest/download/…».
           cp titan-*-linux-aarch64.tar.gz titan-linux-aarch64.tar.gz
           cp titan-*-linux-x86_64.tar.gz titan-linux-x86_64.tar.gz
-          sha256sum titan-linux-*.tar.gz > SHA256SUMS.txt
+          cp titan-*-linux-armv7.tar.gz titan-linux-armv7.tar.gz
+          cp repo/*.deb repo-termux/*.deb . 2> /dev/null || true
+          # Copias sin versión: las páginas y el README enlazan siempre «latest/download/zett_amd64.deb».
+          cp "zett_${GITHUB_REF_NAME#v}_amd64.deb" zett_amd64.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_arm64.deb" zett_arm64.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_armhf.deb" zett_armhf.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_x86_64.termux.deb" zett_x86_64.termux.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_aarch64.termux.deb" zett_aarch64.termux.deb 2> /dev/null || true
+          cp "zett_${GITHUB_REF_NAME#v}_arm.termux.deb" zett_arm.termux.deb 2> /dev/null || true
+          sha256sum titan-linux-*.tar.gz zett_*.deb > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
-            --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes para Linux x86-64 y ARM64/Termux; el de ARM64 se probó en un servidor ARM64 real, no en un teléfono. v1.2.1: corrige la detección de arquitectura en Termux de 32 bits (uname -m dice armv8l, p. ej. Redmi 9C) y los errores de tipos de un if en cola de un bucle y de una asignación al final de una rama de if. Descomprime y ejecuta ./titan (la carpeta native/ debe quedar junto al ejecutable). Ver LEEME.txt dentro del paquete. SHA256SUMS.txt trae las sumas de verificación." \
-            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz
+            --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes .deb para Debian/Ubuntu (amd64, arm64, armhf) y para Termux (x86_64, aarch64, arm): se instalan con apt, que deja titan y zett en el PATH; el repositorio apt se publica en la rama zett-repo (sistema/ y termux/). El paquete de ARM64 se probó en un servidor ARM64 real (no en un teléfono) y el de ARM de 32 bits bajo el emulador; el de x86-64 en la propia CI. También están los tar.gz de siempre, que no necesitan instalación. SHA256SUMS.txt trae las sumas de verificación." \
+            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-linux-armv7.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz titan-*-linux-armv7.tar.gz zett_*.deb
+      - name: Publicar el repositorio apt en la rama zett-repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf repo-branch
+          if git ls-remote --exit-code --heads "$URL" zett-repo > /dev/null 2>&1; then
+            git clone --depth 1 --branch zett-repo "$URL" repo-branch
+          else
+            git clone --depth 1 "$URL" repo-branch
+            ( cd repo-branch && git checkout --orphan zett-repo && git rm -rf . > /dev/null 2>&1 || true )
+          fi
+          # El repositorio del sistema y el de Termux van en carpetas distintas: cada uno tiene sus
+          # propios nombres de arquitectura y su propio índice (Packages y Release).
+          mkdir -p repo-branch/sistema repo-branch/termux
+          cp paquetes/repo/* repo-branch/sistema/
+          cp paquetes/repo-termux/* repo-branch/termux/
+          cd repo-branch
+          git add -A
+          git commit -m "Paquetes zett ${GITHUB_REF_NAME:-$GITHUB_SHA}" || echo "el repositorio no cambió"
+          git push origin HEAD:zett-repo

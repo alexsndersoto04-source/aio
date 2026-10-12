@@ -576,7 +576,10 @@ fn wa_apply_effect(op: Op, state: WaTs, g: G, f: Func, instruction: int) -> WaTs
     } else if k == "Call" {
         stack = wa_drop_n(stack, op.m)
         let mut rk = wa_vk("Unknown")
-        if !op.flag && op.n < len(g.funcs) {
+        if op.flag {
+            // Un rango es una colección de enteros: se indexa y se recorre como un array.
+            rk = wa_vk_with("Array", wa_vk("Numeric"))
+        } else if op.n < len(g.funcs) {
             rk = wa_metadata_kind(g, wa_type_of(g.funcs[op.n].ret))
         }
         stack = std::array::push(stack, rk)
@@ -622,6 +625,38 @@ fn wa_apply_effect(op: Op, state: WaTs, g: G, f: Func, instruction: int) -> WaTs
         }
         stack = wa_drop_n(stack, argc)
         stack = std::array::push(stack, rk)
+    } else if k == "MakeClosure" {
+        // El cierre vive en el montículo; captura por valor los locales que lista.
+        stack = std::array::push(stack, wa_vk("Closure"))
+    } else if k == "CallValue" {
+        stack = wa_drop_n(stack, op.n + 1)
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    } else if k == "CallMethod" {
+        stack = wa_drop_n(stack, op.n + 1)
+        let mut rk = wa_vk("Unknown")
+        if op.s == "len" && op.n == 0 {
+            rk = wa_vk("Numeric")
+        } else if op.s == "map" || op.s == "filter" {
+            rk = wa_vk("Array")
+        } else if op.s == "any" || op.s == "all" {
+            rk = wa_vk("Numeric")
+        }
+        stack = std::array::push(stack, rk)
+    } else if k == "ArrayMap" || k == "ArrayFilter" {
+        stack = wa_drop_n(stack, 2)
+        stack = std::array::push(stack, wa_vk("Array"))
+    } else if k == "ArraySortBy" {
+        stack = wa_drop_n(stack, 2)
+        stack = std::array::push(stack, wa_vk("Array"))
+    } else if k == "ArrayFind" {
+        stack = wa_drop_n(stack, 2)
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    } else if k == "ArrayFold" {
+        stack = wa_drop_n(stack, 3)
+        stack = std::array::push(stack, wa_vk("Unknown"))
+    } else if k == "ArrayAny" || k == "ArrayAll" {
+        stack = wa_drop_n(stack, 2)
+        stack = std::array::push(stack, wa_vk("Numeric"))
     } else if k == "Print" {
         stack = wa_drop_n(stack, op.n)
         stack = std::array::push(stack, wa_vk("Unknown"))
@@ -1137,6 +1172,27 @@ struct WaEc {
     scratch1: int,
     scratch2: int,
     pc: int,
+    clos: WaClos,
+}
+
+// Contexto de cierres y operaciones de colección del módulo (lo fija wa_compile).
+//   table:     índice de función -> índice en la tabla de funciones del módulo
+//   canonical: tipo de la llamada indirecta (i64 x aridad máxima -> i64)
+//   arity_max: parámetros de ese tipo
+//   hofs:      "map"/"filter"/"fold"/"find"/"any"/"all" -> índice de la función del módulo
+struct WaClos {
+    table: map,
+    canonical: int,
+    arity_max: int,
+    hofs: map,
+}
+
+// Parámetros de una operación de colección con cierre dentro del módulo.
+struct WaHof {
+    canonical: int,
+    arity_max: int,
+    alloc: int,
+    argc: int,
 }
 
 fn wa_map_arity(name: string) -> int {
@@ -1247,7 +1303,13 @@ fn wa_validate(g: G, f: Func, op: Op, web: map) -> Result {
     }
     if k == "Call" {
         if op.flag {
-            return wa_unsupported(f, "range expressions (start..end / start..=end) are not yet supported when compiling to WebAssembly")
+            // start..end / start..=end. El rango siempre se compila con tres valores
+            // (inicio, fin, inclusivo) y produce una colección de enteros, igual que
+            // `rt_range` en el runtime nativo.
+            if op.m != 3 {
+                return Result::Err("function '" + f.name + "' builds a range from " + wa_i(op.m) + " values, but a range needs exactly three (start, end, inclusive)")
+            }
+            return Result::Ok(nil)
         }
         if op.n >= len(g.funcs) {
             return Result::Err("function '" + f.name + "' calls invalid function " + wa_i(op.n) + "")
@@ -1259,6 +1321,37 @@ fn wa_validate(g: G, f: Func, op: Op, web: map) -> Result {
         return Result::Ok(nil)
     }
     if k == "PushInt" || k == "PushBool" || k == "PushChar" || k == "PushNil" || k == "PushStr" || k == "PushLocal" || k == "StoreLocal" || k == "Pop" || k == "Dup" || k == "Add" || k == "Sub" || k == "Mul" || k == "Div" || k == "Mod" || k == "Neg" || k == "Not" || k == "BitNot" || k == "Eq" || k == "Neq" || k == "Lt" || k == "Gt" || k == "Lte" || k == "Gte" || k == "BitAnd" || k == "BitOr" || k == "BitXor" || k == "Jump" || k == "JumpIfFalse" || k == "Ret" || k == "Print" || k == "Len" || k == "NewArray" || k == "NewTuple" || k == "Index" || k == "NewStruct" || k == "GetField" || k == "NewEnum" || k == "EnumIs" || k == "EnumPayload" || k == "Nop" || k == "Halt" {
+        return Result::Ok(nil)
+    }
+    if k == "MakeClosure" {
+        if op.n >= len(g.funcs) {
+            return Result::Err("function '" + f.name + "' builds a closure over invalid function " + wa_i(op.n) + "")
+        }
+        return Result::Ok(nil)
+    }
+    if k == "CallValue" {
+        return Result::Ok(nil)
+    }
+    if k == "CallMethod" {
+        if op.s == "len" && op.n == 0 {
+            return Result::Ok(nil)
+        }
+        if op.n == 1 && (op.s == "map" || op.s == "filter" || op.s == "find" || op.s == "any" || op.s == "all") {
+            return Result::Ok(nil)
+        }
+        if op.n == 2 && op.s == "fold" {
+            return Result::Ok(nil)
+        }
+        if op.s == "sort_by" && op.n == 1 {
+            return Result::Ok(nil)
+        }
+        return wa_unsupported(f, cg_op_text(op))
+    }
+    // Operaciones de colección con cierre, en su forma de función libre.
+    if k == "ArrayMap" || k == "ArrayFilter" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" || k == "ArraySortBy" {
+        return Result::Ok(nil)
+    }
+    if k == "ArrayFold" {
         return Result::Ok(nil)
     }
     wa_unsupported(f, cg_op_text(op))
@@ -1305,6 +1398,18 @@ fn wa_stack_effect(op: Op) -> (int, int) {
     }
     if k == "Call" {
         return (op.m, 1)
+    }
+    if k == "MakeClosure" {
+        return (0, 1)
+    }
+    if k == "CallValue" || k == "CallMethod" {
+        return (op.n + 1, 1)
+    }
+    if k == "ArrayMap" || k == "ArrayFilter" || k == "ArraySortBy" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" {
+        return (2, 1)
+    }
+    if k == "ArrayFold" {
+        return (3, 1)
     }
     if k == "CallNative" || k == "Print" {
         return (op.n, 1)
@@ -1689,14 +1794,28 @@ fn wa_emit_operation(c: WaEc, instruction: int, height: int, dispatch: int, b: a
         b2 = wa_i64_xor(b2)
         b2 = wa_local_set(b2, slot)
     } else if k == "Call" {
-        let first = height - op.m
-        let mut argument = first
-        while argument < height {
-            b2 = wa_local_get(b2, sb + argument)
-            argument += 1
+        if op.flag {
+            b2 = wa_emit_range(c, height, b2)
+        } else {
+            let first = height - op.m
+            let mut argument = first
+            while argument < height {
+                b2 = wa_local_get(b2, sb + argument)
+                argument += 1
+            }
+            b2 = wa_call(b2, op.n + bias)
+            b2 = wa_local_set(b2, sb + first)
         }
-        b2 = wa_call(b2, op.n + bias)
-        b2 = wa_local_set(b2, sb + first)
+    } else if k == "MakeClosure" {
+        b2 = wa_emit_closure(c, op, height, b2)
+    } else if k == "CallValue" {
+        b2 = wa_emit_call_value(c, op, height, b2)
+    } else if k == "CallMethod" {
+        b2 = wa_emit_call_method(c, op, height, b2)
+    } else if k == "ArrayMap" || k == "ArrayFilter" || k == "ArrayFind" || k == "ArrayAny" || k == "ArrayAll" || k == "ArraySortBy" {
+        b2 = wa_emit_hof_call(c, wa_hof_name(op.k), 2, height, b2)
+    } else if k == "ArrayFold" {
+        b2 = wa_emit_hof_call(c, "fold", 3, height, b2)
     } else if k == "CallNative" && op.s == "std::map::new" {
         let output = sb + height
         b2 = wa_i32_const(b2, 0)
@@ -1973,11 +2092,11 @@ fn wa_direct_region(c: WaEc, start: int, end: int, has: bool, ct: int, bt: int, 
 }
 
 // Cuerpo de la función (locales + instrucciones + end). Los marcadores son -1.
-fn wa_compile_function(g: G, f: Func, lay: WaLay, st: WaStr, hi: WaHi, concat: int, alloc: int, seq: int, shash: int) -> Result {
-    if f.locals < f.arity {
+fn wa_compile_function(g: G, f: Func, lay: WaLay, st: WaStr, hi: WaHi, concat: int, alloc: int, seq: int, shash: int, clos: WaClos, nparams: int) -> Result {
+    if f.locals < nparams {
         return Result::Err("local count underflow in function '" + f.name + "'")
     }
-    let extra = f.locals - f.arity
+    let extra = f.locals - nparams
     let linear = wa_is_linear(f, lay)
     let direct_control = wa_has_reducible(f, lay)
     let direct = linear || direct_control
@@ -1990,7 +2109,7 @@ fn wa_compile_function(g: G, f: Func, lay: WaLay, st: WaStr, hi: WaHi, concat: i
         groups = std::array::push(groups, [1, 127])
     }
     let mut b = wa_vec(groups)
-    let c = WaEc { g: g, f: f, lay: lay, st: st, hi: hi, concat: concat, alloc: alloc, seq: seq, shash: shash, scratch1: lay.pc_local, scratch2: lay.pc_local + 1, pc: lay.pc_local + 2 }
+    let c = WaEc { g: g, f: f, lay: lay, st: st, hi: hi, concat: concat, alloc: alloc, seq: seq, shash: shash, scratch1: lay.pc_local, scratch2: lay.pc_local + 1, pc: lay.pc_local + 2, clos: clos }
     let mut reachable = []
     let mut ri = 0
     for h in lay.heights {
@@ -2642,6 +2761,312 @@ fn wa_emit_array_set(c: WaEc, height: int, b0: array) -> array {
     b
 }
 
+// ------------------------------------------------------------ cierres y orden superior
+
+// call_indirect por la tabla 0 (forma MVP: solo el índice de tipo). La pila debe
+// traer los argumentos y, encima, el índice de la tabla.
+fn wa_call_indirect(b: array, t: int) -> array {
+    let mut out = std::array::push(b, 17)
+    out = std::array::concat(out, wa_uleb(t))
+    // El índice de tabla va después del tipo: 0x11 <tipo> <tabla>.
+    out = std::array::push(out, 0)
+    out
+}
+
+// La aridad guardada en el cierre tiene que ser la del sitio de llamada.
+fn wa_arity_guard(b0: array, local: int, n: int) -> array {
+    let mut b = b0
+    b = wa_local_get(b, local)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i64_load(b, 3, 8)
+    b = wa_i64_const(b, n)
+    b = wa_i64_ne(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b
+}
+
+// Llama al cierre en `f_local` con los `argc` argumentos que ya están en la pila,
+// rellenando con ceros hasta la aridad del tipo canónico y empujando su índice de
+// tabla. Devuelve el resultado del cierre.
+fn wa_hof_invoke(b0: array, hof: WaHof, f_local: int, argc: int) -> array {
+    let mut b = b0
+    let mut k = argc
+    while k < hof.arity_max {
+        b = wa_i64_const(b, 0)
+        k += 1
+    }
+    // El objeto cierre es el último argumento del tipo canónico.
+    b = wa_local_get(b, f_local)
+    // Y su índice de tabla va encima, ya como i32.
+    b = wa_local_get(b, f_local)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i64_load(b, 3, 0)
+    b = wa_i32_wrap_i64(b)
+    wa_call_indirect(b, hof.canonical)
+}
+
+// El cierre usado como condición tiene que devolver un booleano (cero o uno), como
+// rt_m_is_true en el runtime nativo.
+fn wa_hof_check_bool(b0: array, local: int) -> array {
+    let mut b = b0
+    b = wa_local_get(b, local)
+    b = wa_i64_const(b, 0)
+    b = wa_i64_lt_s(b)
+    b = wa_local_get(b, local)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_gt_s(b)
+    b = wa_i32_or(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    b
+}
+
+// dirección de la colección `base_local` en la posición `index_local` (8 bytes por
+// elemento), lista para cargar o almacenar.
+fn wa_hof_slot(b0: array, base_local: int, index_local: int) -> array {
+    let mut b = b0
+    b = wa_local_get(b, base_local)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, index_local)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b
+}
+
+// elemento `index_local` de la colección `values_local`.
+fn wa_hof_load(b0: array, values_local: int, index_local: int) -> array {
+    let mut b = wa_hof_slot(b0, values_local, index_local)
+    b = wa_i64_load(b, 3, 0)
+    b
+}
+
+// i = i + 1
+fn wa_hof_next(b0: array, i_local: int) -> array {
+    let mut b = b0
+    b = wa_local_get(b, i_local)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_local_set(b, i_local)
+    b
+}
+
+// Objeto cierre: [índice de tabla, aridad, capturas...]. El índice de tabla lo fija
+// wa_compile: una entrada por cada función que alguien convierte en cierre.
+fn wa_emit_closure(c: WaEc, op: Op, height: int, b0: array) -> array {
+    let mut b = b0
+    let count = 2 + len(op.list)
+    b = wa_i32_const(b, count * 8)
+    b = wa_i32_const(b, count)
+    b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+    // índice en la tabla de funciones
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i64_const(b, std::map::get(c.clos.table, "{op.n}"))
+    b = wa_i64_store(b, 3, 0)
+    // aridad
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 8)
+    b = wa_i32_add(b)
+    b = wa_i64_const(b, c.g.funcs[op.n].arity)
+    b = wa_i64_store(b, 3, 0)
+    // capturas: se copian tal cual desde el local capturado
+    let mut i = 0
+    for slot in op.list {
+        b = wa_local_get(b, c.scratch1)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i32_const(b, 16 + 8 * i)
+        b = wa_i32_add(b)
+        b = wa_local_get(b, slot)
+        b = wa_i64_store(b, 3, 0)
+        i += 1
+    }
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, c.lay.stack_base + height)
+    b
+}
+
+// Llamada a un valor (cierre): comprueba la aridad y llama por la tabla.
+fn wa_emit_call_value(c: WaEc, op: Op, height: int, b0: array) -> array {
+    let mut b = b0
+    let sb = c.lay.stack_base
+    let first = sb + height - 1 - op.n
+    b = wa_arity_guard(b, first, op.n)
+    let mut k = 0
+    while k < op.n {
+        b = wa_local_get(b, sb + height - op.n + k)
+        k += 1
+    }
+    b = wa_hof_invoke(b, WaHof { canonical: c.clos.canonical, arity_max: c.clos.arity_max, alloc: c.alloc, argc: op.n }, first, op.n)
+    b = wa_local_set(b, first)
+    b
+}
+
+// Método de colección. `len` sale del contador de la colección; el resto llama a la
+// función del módulo que implementa la operación (wa_compile_hof), que recorre la
+// colección llamando al cierre.
+fn wa_emit_call_method(c: WaEc, op: Op, height: int, b0: array) -> array {
+    let mut b = b0
+    let sb = c.lay.stack_base
+    if op.s == "len" && op.n == 0 {
+        let output = sb + height - 1
+        b = wa_collection_count(b, output)
+        b = wa_i64_extend_i32_u(b)
+        b = wa_local_set(b, output)
+        return b
+    }
+    if std::map::contains(c.clos.hofs, op.s) {
+        return wa_emit_hof_call(c, op.s, op.n + 1, height, b)
+    }
+    b
+}
+
+// Nombre de la operación de colección de un opcode de función libre.
+fn wa_hof_name(k: string) -> string {
+    if k == "ArraySortBy" {
+        return "sort_by"
+    }
+    if k == "ArrayFilter" {
+        return "filter"
+    }
+    if k == "ArrayFind" {
+        return "find"
+    }
+    if k == "ArrayAny" {
+        return "any"
+    }
+    if k == "ArrayAll" {
+        return "all"
+    }
+    "map"
+}
+
+// (colección, [inicial,] cierre) -> resultado: llama a la función del módulo que
+// implementa la operación, que recorre la colección llamando al cierre. Los `argc`
+// operandos ya están en la pila, el resultado queda en el primero.
+fn wa_emit_hof_call(c: WaEc, name: string, argc: int, height: int, b0: array) -> array {
+    let mut b = b0
+    let output = c.lay.stack_base + height - argc
+    let mut k = 0
+    while k < argc {
+        b = wa_local_get(b, output + k)
+        k += 1
+    }
+    b = wa_call(b, std::map::get(c.clos.hofs, name))
+    b = wa_local_set(b, output)
+    b
+}
+
+
+// Materializa `start..end` / `start..=end` como una colección de enteros, con la
+// misma semántica que `rt_range` del runtime nativo: el fin es exclusivo salvo en
+// `..=`, un rango descendente o vacío tiene longitud 0, se indexa y se recorre como
+// un array, y pasar de un millón de elementos es un error irrecuperable.
+// La pila trae (inicio, fin, inclusivo) en las tres últimas posiciones; el handle de
+// la colección queda en la posición del inicio.
+fn wa_emit_range(c: WaEc, height: int, b0: array) -> array {
+    let mut b = b0
+    let sb = c.lay.stack_base
+    let start = sb + height - 3
+    let stop = sb + height - 2
+    let length = sb + height - 1
+    // El runtime nativo suma con comprobación de desborde: un fin máximo con `..=`
+    // es un error, no un rango vacío.
+    b = wa_local_get(b, stop)
+    b = wa_i64_const(b, 9223372036854775807)
+    b = wa_i64_eq(b)
+    b = wa_local_get(b, length)
+    b = wa_i64_eqz(b)
+    b = wa_i32_eqz(b)
+    b = wa_i32_and(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    // fin = fin + 1 cuando es inclusivo
+    b = wa_local_get(b, stop)
+    b = wa_local_get(b, length)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_and(b)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, stop)
+    // longitud: solo los rangos ascendentes tienen elementos
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, length)
+    b = wa_local_get(b, stop)
+    b = wa_local_get(b, start)
+    b = wa_i64_gt_s(b)
+    b = wa_if(b)
+    b = wa_local_get(b, stop)
+    b = wa_local_get(b, start)
+    b = wa_i64_sub(b)
+    b = wa_local_set(b, length)
+    // Con inicio negativo la resta puede pasarse de i64; el runtime nativo satura esa
+    // diferencia al máximo y la rechaza después por el límite del millón.
+    b = wa_local_get(b, start)
+    b = wa_i64_const(b, 0)
+    b = wa_i64_lt_s(b)
+    b = wa_local_get(b, length)
+    b = wa_i64_const(b, 0)
+    b = wa_i64_lt_s(b)
+    b = wa_i32_and(b)
+    b = wa_if(b)
+    b = wa_i64_const(b, 9223372036854775807)
+    b = wa_local_set(b, length)
+    b = wa_end(b)
+    b = wa_end(b)
+    // límite de seguridad del runtime nativo: un millón de elementos
+    b = wa_local_get(b, length)
+    b = wa_i64_const(b, 1000000)
+    b = wa_i64_gt_s(b)
+    b = wa_if(b)
+    b = wa_unreachable(b)
+    b = wa_end(b)
+    // alojar la colección
+    b = wa_local_get(b, length)
+    b = wa_i64_const(b, 8)
+    b = wa_i64_mul(b)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, length)
+    b = wa_i32_wrap_i64(b)
+    b = wa_call(b, c.alloc)
+    b = wa_local_set(b, c.scratch1)
+    // rellenar: dato[i] = inicio + i
+    b = wa_i64_const(b, 0)
+    b = wa_local_set(b, c.scratch2)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_local_get(b, length)
+    b = wa_i64_ge_u(b)
+    b = wa_br_if(b, 1)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_i32_wrap_i64(b)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_i32_wrap_i64(b)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_i32_add(b)
+    b = wa_local_get(b, start)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_i64_add(b)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_local_get(b, c.scratch2)
+    b = wa_i64_const(b, 1)
+    b = wa_i64_add(b)
+    b = wa_local_set(b, c.scratch2)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, c.scratch1)
+    b = wa_local_set(b, start)
+    b
+}
+
 fn wa_emit_array_push(c: WaEc, height: int, b0: array) -> array {
     let mut b = b0
     let output = c.lay.stack_base + (height - 2) 
@@ -2836,6 +3261,261 @@ fn wa_emit_array_concat(c: WaEc, height: int, b0: array) -> array {
     b = wa_local_get(b, c.scratch1)
     b = wa_local_set(b, left)
     b
+}
+
+// Envoltorio de una función que puede convertirse en cierre: recibe la aridad máxima
+// del tipo canónico y reenvía solo sus primeros `arity` argumentos. Así todas las
+// funciones que caben en la tabla comparten una única firma, que es lo que exige
+// call_indirect.
+// Envoltorio de un cierre. Su tipo es el canónico: `arity_max` argumentos y el
+// objeto cierre al final. Del objeto cierre saca las capturas y las pone delante de
+// los argumentos, que es el orden que espera el cuerpo de la función (mismo reparto
+// de ranuras que hace el backend nativo: primero capturas, después parámetros).
+fn wa_compile_wrapper(target: int, arity: int, captures: int, arity_max: int) -> array {
+    let mut b = wa_vec([])
+    let mut k = 0
+    while k < captures {
+        b = wa_local_get(b, arity_max)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i64_load(b, 3, 16 + 8 * k)
+        k += 1
+    }
+    k = 0
+    while k < arity {
+        b = wa_local_get(b, k)
+        k += 1
+    }
+    b = wa_call(b, target)
+    wa_end(b)
+}
+
+// Cuerpo de una operación de colección con cierre (map, filter, fold, find, any, all).
+// Replica rt_m_* del runtime nativo: una sola pasada, el cierre por elemento, y el
+// cierre usado como condición tiene que devolver un booleano.
+//   parámetros: (colección, [inicial,] cierre)
+//   locales:    out, i, n, tmp, kept, done
+// `sort_by`: mismas reglas que `rt_sort_by` del runtime nativo (orden estable que en
+// cada paso saca el primer mínimo; el comparador recibe (candidato, mínimo actual) y
+// «menor» es un número menor que cero). El runtime nativo trabaja sobre una copia y
+// devuelve un array nuevo, así que aquí también se copia antes de ordenar.
+//   parámetros: (colección, cierre)
+//   locales:    out, i, j, n, min, tmp, c
+fn wa_compile_sort(hof: WaHof) -> array {
+    let out = 2
+    let i = 3
+    let j = 4
+    let n = 5
+    let min = 6
+    let tmp = 7
+    let c = 8
+    let mut b = wa_vec([[1, 126], [1, 127], [1, 127], [1, 127], [1, 127], [1, 126], [1, 126]])
+    // El comparador recibe dos argumentos, como en el runtime nativo.
+    b = wa_arity_guard(b, 1, 2)
+    b = wa_collection_count(b, 0)
+    b = wa_local_set(b, n)
+    // copia de la colección
+    b = wa_local_get(b, n)
+    b = wa_i32_const(b, 3)
+    b = wa_i32_shl(b)
+    b = wa_local_get(b, n)
+    b = wa_call(b, hof.alloc)
+    b = wa_local_set(b, out)
+    b = wa_i32_const(b, 0)
+    b = wa_local_set(b, i)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, i)
+    b = wa_local_get(b, n)
+    b = wa_i32_ge_u(b)
+    b = wa_br_if(b, 1)
+    b = wa_hof_slot(b, out, i)
+    b = wa_hof_load(b, 0, i)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_hof_next(b, i)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    // orden: en cada vuelta se busca el primer mínimo
+    b = wa_i32_const(b, 0)
+    b = wa_local_set(b, i)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, i)
+    b = wa_local_get(b, n)
+    b = wa_i32_ge_u(b)
+    b = wa_br_if(b, 1)
+    b = wa_local_get(b, i)
+    b = wa_local_set(b, min)
+    b = wa_local_get(b, i)
+    b = wa_i32_const(b, 1)
+    b = wa_i32_add(b)
+    b = wa_local_set(b, j)
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, j)
+    b = wa_local_get(b, n)
+    b = wa_i32_ge_u(b)
+    b = wa_br_if(b, 1)
+    // c = comparador(candidato, mínimo actual)
+    b = wa_hof_load(b, out, j)
+    b = wa_hof_load(b, out, min)
+    b = wa_hof_invoke(b, hof, 1, 2)
+    b = wa_local_set(b, c)
+    b = wa_local_get(b, c)
+    b = wa_i64_const(b, 0)
+    b = wa_i64_lt_s(b)
+    b = wa_if(b)
+    b = wa_local_get(b, j)
+    b = wa_local_set(b, min)
+    b = wa_end(b)
+    b = wa_hof_next(b, j)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    // intercambio, si el mínimo no es el de esta vuelta
+    b = wa_local_get(b, i)
+    b = wa_local_get(b, min)
+    b = wa_i32_eq(b)
+    b = wa_i32_eqz(b)
+    b = wa_if(b)
+    b = wa_hof_load(b, out, i)
+    b = wa_local_set(b, tmp)
+    b = wa_hof_slot(b, out, i)
+    b = wa_hof_load(b, out, min)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_hof_slot(b, out, min)
+    b = wa_local_get(b, tmp)
+    b = wa_i64_store(b, 3, 0)
+    b = wa_end(b)
+    b = wa_hof_next(b, i)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    b = wa_local_get(b, out)
+    wa_end(b)
+}
+
+fn wa_compile_hof(name: string, hof: WaHof) -> array {
+    if name == "sort_by" {
+        return wa_compile_sort(hof)
+    }
+    let argc = hof.argc
+    let f = argc - 1
+    let out = argc
+    let i = argc + 1
+    let n = argc + 2
+    let tmp = argc + 3
+    let kept = argc + 4
+    let done = argc + 5
+    let mut b = wa_vec([[1, 126], [1, 127], [1, 127], [1, 126], [1, 127], [1, 127]])
+    // n = número de elementos
+    b = wa_collection_count(b, 0)
+    b = wa_local_set(b, n)
+    b = wa_i32_const(b, 0)
+    b = wa_local_set(b, i)
+    // estado inicial del resultado
+    if name == "fold" {
+        b = wa_local_get(b, 1)
+        b = wa_local_set(b, out)
+    } else if name == "map" || name == "filter" {
+        b = wa_local_get(b, n)
+        b = wa_i32_const(b, 3)
+        b = wa_i32_shl(b)
+        b = wa_local_get(b, n)
+        b = wa_call(b, hof.alloc)
+        b = wa_local_set(b, out)
+    } else if name == "all" {
+        b = wa_i64_const(b, 1)
+        b = wa_local_set(b, out)
+    } else {
+        b = wa_i64_const(b, 0)
+        b = wa_local_set(b, out)
+    }
+    b = wa_i32_const(b, 0)
+    b = wa_local_set(b, kept)
+    b = wa_i32_const(b, 0)
+    b = wa_local_set(b, done)
+    // El cierre tiene que aceptar los argumentos que le pasa la operación: la misma
+    // comprobación que hace el motor nativo al llamarlo.
+    b = wa_arity_guard(b, f, argc - 1)
+    // recorrido
+    b = wa_block(b)
+    b = wa_loop(b)
+    b = wa_local_get(b, i)
+    b = wa_local_get(b, n)
+    b = wa_i32_ge_u(b)
+    b = wa_local_get(b, done)
+    b = wa_i32_const(b, 0)
+    b = wa_i32_ne(b)
+    b = wa_i32_or(b)
+    b = wa_br_if(b, 1)
+    // tmp = cierre(...)
+    if name == "fold" {
+        b = wa_local_get(b, out)
+        b = wa_hof_load(b, 0, i)
+        b = wa_hof_invoke(b, hof, f, 2)
+    } else {
+        b = wa_hof_load(b, 0, i)
+        b = wa_hof_invoke(b, hof, f, 1)
+    }
+    b = wa_local_set(b, tmp)
+    if name == "map" {
+        b = wa_hof_slot(b, out, i)
+        b = wa_local_get(b, tmp)
+        b = wa_i64_store(b, 3, 0)
+    } else if name == "filter" {
+        b = wa_hof_check_bool(b, tmp)
+        b = wa_local_get(b, tmp)
+        b = wa_i64_const(b, 0)
+        b = wa_i64_ne(b)
+        b = wa_if(b)
+        b = wa_hof_slot(b, out, kept)
+        b = wa_hof_load(b, 0, i)
+        b = wa_i64_store(b, 3, 0)
+        b = wa_hof_next(b, kept)
+        b = wa_end(b)
+    } else if name == "fold" {
+        b = wa_local_get(b, tmp)
+        b = wa_local_set(b, out)
+    } else {
+        b = wa_hof_check_bool(b, tmp)
+        if name == "find" || name == "any" {
+            b = wa_local_get(b, tmp)
+            b = wa_i64_const(b, 0)
+            b = wa_i64_ne(b)
+        } else {
+            b = wa_local_get(b, tmp)
+            b = wa_i64_const(b, 0)
+            b = wa_i64_eq(b)
+        }
+        b = wa_if(b)
+        if name == "find" {
+            b = wa_hof_load(b, 0, i)
+        } else if name == "any" {
+            b = wa_i64_const(b, 1)
+        } else {
+            b = wa_i64_const(b, 0)
+        }
+        b = wa_local_set(b, out)
+        b = wa_i32_const(b, 1)
+        b = wa_local_set(b, done)
+        b = wa_end(b)
+    }
+    b = wa_hof_next(b, i)
+    b = wa_br(b, 0)
+    b = wa_end(b)
+    b = wa_end(b)
+    // filter: el contador real es el de elementos conservados
+    if name == "filter" {
+        b = wa_local_get(b, out)
+        b = wa_i32_wrap_i64(b)
+        b = wa_i32_const(b, 4)
+        b = wa_i32_sub(b)
+        b = wa_local_get(b, kept)
+        b = wa_i32_store(b, 2, 0)
+    }
+    b = wa_local_get(b, out)
+    wa_end(b)
 }
 
 fn wa_compile_string_hash() -> array {
@@ -3610,6 +4290,14 @@ fn wa_compile(g0: G, root: string) -> Result {
     let mut used = std::map::new()
     let mut needs_print = false
     let mut needs_collections = false
+    // Cierres: qué funciones se convierten en cierre (cada una necesita un envoltorio
+    // en la tabla), cuál es la aridad máxima que hay que soportar y qué operaciones de
+    // colección se usan.
+    let mut targets = []
+    let mut target_set = std::map::new()
+    let mut arity_max = 0
+    let mut hof_used = std::map::new()
+    let mut calls_value = false
     for f in g.funcs {
         for op in f.code {
             if op.k == "Print" {
@@ -3618,8 +4306,63 @@ fn wa_compile(g0: G, root: string) -> Result {
             if op.k == "NewArray" || op.k == "NewTuple" || op.k == "NewStruct" || op.k == "NewEnum" {
                 needs_collections = true
             }
+            // Un rango se materializa como colección: necesita el alojador del módulo.
+            if op.k == "Call" && op.flag {
+                needs_collections = true
+            }
             if op.k == "CallNative" {
                 used = std::map::insert(used, op.s, true)
+            }
+            if op.k == "MakeClosure" && !std::map::contains(target_set, "{op.n}") {
+                target_set = std::map::insert(target_set, "{op.n}", true)
+                targets = std::array::push(targets, op.n)
+                if op.n < len(g.funcs) && g.funcs[op.n].arity > arity_max {
+                    arity_max = g.funcs[op.n].arity
+                }
+            }
+            if op.k == "CallValue" {
+                calls_value = true
+                if op.n > arity_max {
+                    arity_max = op.n
+                }
+            }
+            if op.k == "CallMethod" {
+                if op.n == 1 && (op.s == "map" || op.s == "filter" || op.s == "find" || op.s == "any" || op.s == "all") {
+                    hof_used = std::map::insert(hof_used, op.s, true)
+                    if arity_max < 1 {
+                        arity_max = 1
+                    }
+                }
+                if op.n == 2 && op.s == "fold" {
+                    hof_used = std::map::insert(hof_used, op.s, true)
+                    if arity_max < 2 {
+                        arity_max = 2
+                    }
+                }
+                if op.n == 1 && op.s == "sort_by" {
+                    hof_used = std::map::insert(hof_used, op.s, true)
+                    if arity_max < 2 {
+                        arity_max = 2
+                    }
+                }
+            }
+            if op.k == "ArraySortBy" {
+                hof_used = std::map::insert(hof_used, "sort_by", true)
+                if arity_max < 2 {
+                    arity_max = 2
+                }
+            }
+            if op.k == "ArrayMap" || op.k == "ArrayFilter" || op.k == "ArrayFind" || op.k == "ArrayAny" || op.k == "ArrayAll" {
+                hof_used = std::map::insert(hof_used, wa_hof_name(op.k), true)
+                if arity_max < 1 {
+                    arity_max = 1
+                }
+            }
+            if op.k == "ArrayFold" {
+                hof_used = std::map::insert(hof_used, "fold", true)
+                if arity_max < 2 {
+                    arity_max = 2
+                }
             }
         }
     }
@@ -3669,7 +4412,11 @@ fn wa_compile(g0: G, root: string) -> Result {
         }
     }
     let needs_scopes = wa_uses_native(used, ["std::wasm::heap_scope_begin", "std::wasm::heap_scope_end"])
-    let needs_allocator = needs_host_strings || needs_arrays || needs_maps || needs_scopes
+    // Los cierres y las operaciones de colección también alojan en el montículo.
+    // Con `CallValue` hace falta la tabla aunque hoy no se vea de dónde sale el
+    // cierre: si no existe, el módulo no valida.
+    let needs_closures = len(targets) > 0 || calls_value
+    let needs_allocator = needs_host_strings || needs_arrays || needs_maps || needs_scopes || needs_closures || len(hof_used) > 0
     let needs_heap = needs_concat || needs_allocator || needs_heap_api
     let bias = len(defs)
     let count = len(g.funcs)
@@ -3694,10 +4441,48 @@ fn wa_compile(g0: G, root: string) -> Result {
         hash_fn = next_fn
         next_fn += 1
     }
+    // Operaciones de colección (índice fijo por nombre) y envoltorios de cierre.
+    let mut hofs = []
+    for name in ["map", "filter", "fold", "find", "any", "all", "sort_by"] {
+        if std::map::contains(hof_used, name) {
+            hofs = std::array::push(hofs, name)
+        }
+    }
+    let mut hof_base = -1
+    if len(hofs) > 0 {
+        hof_base = next_fn
+        next_fn += len(hofs)
+    }
+    let mut wrapper_base = -1
+    if needs_closures {
+        wrapper_base = next_fn
+        next_fn += len(targets)
+    }
+    // Índices de tabla de cada función que puede ser cierre.
+    let mut closure_table = std::map::new()
+    let mut ti2 = 0
+    while ti2 < len(targets) {
+        closure_table = std::map::insert(closure_table, "{targets[ti2]}", ti2)
+        ti2 += 1
+    }
+    let mut hof_index = std::map::new()
+    let mut hi2 = 0
+    while hi2 < len(hofs) {
+        hof_index = std::map::insert(hof_index, hofs[hi2], hof_base + hi2)
+        hi2 += 1
+    }
     // tipos
     let mut types = []
+    let mut ti = 0
     for f in g.funcs {
-        types = std::array::push(types, wa_func_type(wa_val_types(f.arity, 126), [126]))
+        // Una función que alguien convierte en cierre recibe las capturas como
+        // argumentos delante de los suyos: el envoltorio las saca del objeto cierre.
+        let mut params = f.arity
+        if std::map::contains(target_set, "{ti}") {
+            params = f.arity + f.captures
+        }
+        types = std::array::push(types, wa_func_type(wa_val_types(params, 126), [126]))
+        ti += 1
     }
     let first_import_type = len(types)
     for d in defs {
@@ -3722,6 +4507,27 @@ fn wa_compile(g0: G, root: string) -> Result {
     let hash_type = len(types)
     if needs_hash {
         types = std::array::push(types, wa_func_type([126], [126]))
+    }
+    // Tipo canónico de la llamada indirecta: (i64 x aridad máxima, objeto cierre) -> i64.
+    // El cierre va el último; el sitio de llamada rellena con ceros hasta la aridad
+    // máxima. Todos los envoltorios de la tabla comparten este tipo.
+    let canonical_type = len(types)
+    if needs_closures {
+        types = std::array::push(types, wa_func_type(wa_val_types(arity_max + 1, 126), [126]))
+    }
+    let mut needs_hof1 = false
+    for name in ["map", "filter", "find", "any", "all", "sort_by"] {
+        if std::map::contains(hof_used, name) {
+            needs_hof1 = true
+        }
+    }
+    let hof1_type = len(types)
+    if needs_hof1 {
+        types = std::array::push(types, wa_func_type([126, 126], [126]))
+    }
+    let hof2_type = len(types)
+    if std::map::contains(hof_used, "fold") {
+        types = std::array::push(types, wa_func_type([126, 126, 126], [126]))
     }
     let mut module = [0, 97, 115, 109, 1, 0, 0, 0]
     module = std::array::concat(module, wa_section(1, wa_vec(types)))
@@ -3752,7 +4558,26 @@ fn wa_compile(g0: G, root: string) -> Result {
     if needs_hash {
         fsec = std::array::push(fsec, wa_uleb(hash_type))
     }
+    for name in hofs {
+        if name == "fold" {
+            fsec = std::array::push(fsec, wa_uleb(hof2_type))
+        } else {
+            fsec = std::array::push(fsec, wa_uleb(hof1_type))
+        }
+    }
+    let mut fi2 = 0
+    while fi2 < len(targets) {
+        fsec = std::array::push(fsec, wa_uleb(canonical_type))
+        fi2 += 1
+    }
     module = std::array::concat(module, wa_section(3, wa_vec(fsec)))
+    // Tabla de funciones (funcref): una entrada por cada función que puede ser cierre.
+    if needs_closures {
+        let mut table = [112, 1]
+        table = std::array::concat(table, wa_uleb(len(targets)))
+        table = std::array::concat(table, wa_uleb(len(targets)))
+        module = std::array::concat(module, wa_section(4, wa_vec([table])))
+    }
     module = std::array::concat(module, wa_section(5, wa_vec([std::array::concat([0], wa_uleb(st.pages))])))
     if needs_heap {
         let mut globals = []
@@ -3783,11 +4608,31 @@ fn wa_compile(g0: G, root: string) -> Result {
         index += 1
     }
     module = std::array::concat(module, wa_section(7, wa_vec(exports)))
+    // Segmento de elementos: la tabla 0 se llena con los envoltorios, en el mismo
+    // orden en que wa_emit_closure guarda su índice.
+    if needs_closures {
+        let mut idxs = wa_uleb(len(targets))
+        let mut ei2 = 0
+        while ei2 < len(targets) {
+            idxs = std::array::concat(idxs, wa_uleb(wrapper_base + ei2))
+            ei2 += 1
+        }
+        let mut elem = [0, 65]
+        elem = std::array::concat(elem, wa_sleb(0))
+        elem = std::array::concat(elem, [11])
+        elem = std::array::concat(elem, idxs)
+        module = std::array::concat(module, wa_section(9, wa_vec([elem])))
+    }
     // código
     let mut bodies = []
+    let clos = WaClos { table: closure_table, canonical: canonical_type, arity_max: arity_max, hofs: hof_index }
     index = 0
     for f in g.funcs {
-        let body = wa_compile_function(g, f, layouts[index], st, hi, concat_fn, alloc_fn, equals_fn, hash_fn)?
+        let mut nparams = f.arity
+        if std::map::contains(target_set, "{index}") {
+            nparams = f.arity + f.captures
+        }
+        let body = wa_compile_function(g, f, layouts[index], st, hi, concat_fn, alloc_fn, equals_fn, hash_fn, clos, nparams)?
         bodies = std::array::push(bodies, body)
         index += 1
     }
@@ -3802,6 +4647,18 @@ fn wa_compile(g0: G, root: string) -> Result {
     }
     if needs_hash {
         bodies = std::array::push(bodies, wa_compile_string_hash())
+    }
+    for name in hofs {
+        let mut argc = 2
+        if name == "fold" {
+            argc = 3
+        }
+        bodies = std::array::push(bodies, wa_compile_hof(name, WaHof { canonical: canonical_type, arity_max: arity_max, alloc: alloc_fn, argc: argc }))
+    }
+    let mut bi2 = 0
+    while bi2 < len(targets) {
+        bodies = std::array::push(bodies, wa_compile_wrapper(targets[bi2] + bias, g.funcs[targets[bi2]].arity, g.funcs[targets[bi2]].captures, arity_max))
+        bi2 += 1
     }
     let mut entries = []
     let mut marks_per_fn = []

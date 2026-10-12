@@ -6,11 +6,15 @@
 #      idéntico, byte a byte, al del compilador normal (titanc1 del punto fijo).
 #   3. El backend LLVM hecho por LLVM traduce build.titan: el IR debe ser
 #      idéntico al que escribe el build_llvm normal.
+# Sin Rust: la referencia (`titanc_ref`) y la recompilación de `build_llvm` las
+# hace el compilador nativo del port (titanc3 por omisión; se cambia con
+# COMPILADOR=).
 # Uso: bash selfhost/native/llvm/punto_fijo.sh   (desde cualquier sitio)
 set -eu
-ZETT="${ZETT:-zett}"
 OPT="${OPT:--O2}"
-cd "$(dirname "$0")/../.."          # selfhost/
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"   # selfhost/
+COMPILADOR="${COMPILADOR:-$ROOT/titanc3}"
+cd "$ROOT"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"; rm -f titanc_llvm build_llvm_llvm' EXIT
 if command -v clang >/dev/null 2>&1; then CC=(clang); else CC=(python3 -m ziglang cc -target x86_64-linux-none); fi
@@ -18,10 +22,10 @@ echo "LLVM: $("${CC[@]}" --version | head -1) ($OPT)"
 # Se recompila si falta o si alguna fuente es más nueva (si no, se compararía
 # con un build_llvm viejo).
 if [ ! -x build_llvm ] || [ -n "$(find . -name '*.titan' -newer build_llvm | head -1)" ]; then
-  "$ZETT" run build.titan build_llvm.titan build_llvm || exit 1
+  "$COMPILADOR" build_llvm.titan build_llvm || exit 1
 fi
-echo "referencia: VM de Rust + build.titan -> titanc_ref"
-"$ZETT" run build.titan build.titan "$tmp/titanc_ref"
+echo "referencia: compilador nativo del port (build.titan) + build.titan -> titanc_ref"
+"$COMPILADOR" build.titan "$tmp/titanc_ref"
 echo "1. build.titan y build_llvm.titan -> LLVM IR -> ejecutables"
 ./build_llvm --lote "$tmp" build.titan build_llvm.titan
 for p in build build_llvm; do [ -f "$tmp/$p.ll" ] || { cat "$tmp/$p.err"; exit 1; }; done

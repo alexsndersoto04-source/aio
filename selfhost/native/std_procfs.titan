@@ -519,17 +519,18 @@ fn pf_uname() -> int {
 // Valor del vector auxiliar (está en la pila inicial, tras el entorno).
 fn pf_auxv(kind: int) -> int {
     let sp = std::raw::load(std::raw::globals() + 32)
-    let argc = std::raw::load(sp)
-    let mut e = sp + 16 + 8 * argc
-    while std::raw::load(e) != 0 {
-        e += 8
+    // El entorno empieza tras argc, sus punteros y el NULL que los cierra.
+    let mut e = rt_pslot(sp, 2 + rt_pget(sp))
+    while rt_pget(e) != 0 {
+        e += rt_psize()
     }
-    e += 8
-    while std::raw::load(e) != 0 {
-        if std::raw::load(e) == kind {
-            return std::raw::load(e + 8)
+    // El vector auxiliar son parejas (tipo, valor) del tamaño de un puntero.
+    e += rt_psize()
+    while rt_pget(e) != 0 {
+        if rt_pget(e) == kind {
+            return rt_pget(e + rt_psize())
         }
-        e += 16
+        e += 2 * rt_psize()
     }
     0
 }

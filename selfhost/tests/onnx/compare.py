@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Compara, para cada modelo de <dir>, la salida de std::onnx del ejecutable
-nativo (motor propio) con la de onnxruntime (referencia de gen_models.py) y con
-la de tract (api.titan bajo `zett`). Uso: compare.py <dir> <api_nativo> <zett>"""
+nativo (motor propio) con la de onnxruntime (referencia de gen_models.py) y,
+si hay `zett`, con la de tract (api.titan bajo el `zett` de Rust).
+Uso: compare.py <dir> <api_nativo> [zett]"""
 import json
 import os
 import subprocess
 import sys
 
-d, native, zett = sys.argv[1:4]
+d, native, zett = (sys.argv[1:4] + ["", "", ""])[:3]
+zett = zett or None
 here = os.path.dirname(os.path.abspath(__file__))
 TOL = 1e-5
 bad = 0
@@ -36,11 +38,12 @@ for name in sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json")):
             print(f"{tag}: nativo FALLA: {e}")
             bad += 1
             continue
-        try:
-            tr = run([zett, "run", f"{here}/api.titan", *extra, f"{d}/{name}"])
-        except RuntimeError as e:
-            tr = None  # tract no soporta ese modelo (p. ej. opset antiguo)
-            tract_err = str(e).strip().splitlines()[-1][:80]
+        tr = None
+        if zett is not None:
+            try:
+                tr = run([zett, "run", f"{here}/api.titan", *extra, f"{d}/{name}"])
+            except RuntimeError as e:
+                tract_err = str(e).strip().splitlines()[-1][:80]
         problems = []
         if nat["shape"] != ref["shape"]:
             problems.append(f"forma {nat['shape']} != ort {ref['shape']}")
@@ -57,12 +60,16 @@ for name in sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json")):
             if e2 > TOL:
                 problems.append(f"error vs tract {e2:.2e}")
             info = f" vs tract {e2:.1e}"
-        else:
+        elif zett is not None:
             info = f" (tract no lo ejecuta: {tract_err})"
+        else:
+            info = " (sin zett: no se comparó con tract)"
         e1 = rel(nat["values"], ref["values"]) if nat["shape"] == ref["shape"] else float("nan")
         if problems:
             bad += 1
             print(f"{tag}: FALLA " + "; ".join(problems))
         else:
             print(f"{tag}: OK vs onnxruntime {e1:.1e}{info}")
+if zett is None:
+    print("nota: no hay zett en PATH; solo se comparó contra onnxruntime")
 sys.exit(1 if bad else 0)

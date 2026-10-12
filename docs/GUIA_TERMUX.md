@@ -10,7 +10,11 @@ Titan funciona en Linux ARM64. Termux usa el mismo núcleo Linux, así que el ej
 
 ## Antes de instalar: ¿tu Termux corre el binario de 64 bits?
 
-Titan solo tiene versión para **ARM de 64 bits** (`aarch64`); no existe versión para ARM de 32 bits. Pero cuidado:
+El **compilador** tiene versión para **ARM de 64 bits** (`aarch64`) y, desde el 2026-10-12, también para **ARM de
+32 bits** (`armv7`, paquete `zett_…_armhf.deb` o `zett_…_arm.termux.deb`), que en un teléfono de 32 bits de
+verdad todavía no se ha probado: lo comprobado es que el binario del paquete arranca bajo el emulador de ARM32
+(ver «Paquetes oficiales `zett`» en [`../selfhost/ESTADO.md`](../selfhost/ESTADO.md)).
+Lo que sí existe es el destino `armv7` (ver abajo). Pero cuidado:
 **un Termux de 32 bits puede estar en un teléfono con núcleo de 64 bits**, y ahí el binario aarch64 corre igual.
 La prueba de verdad es intentarlo (el instalador lo hace al final):
 
@@ -24,11 +28,33 @@ getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
   tu teléfono ejecuta los binarios de 64 bits y **todo funciona** (caso del Redmi 9C, aunque `abilist` solo
   traiga `armeabi-v7a` y `armeabi`). Si ves «Exec format error», tu teléfono es de 32 bits de verdad: instala
   el Termux de 64 bits (APK `arm64-v8a`, de F-Droid o del GitHub oficial de Termux) **si tu teléfono lo admite**;
-  si no lo admite, no hay versión posible (hace falta un generador de código para ARM de 32 bits, que no existe).
+  si no lo admite, usa el paquete de ARM de 32 bits (`zett_…_arm.termux.deb`, del 2026-10-12). También hay el
+  **destino** `armv7` desde el 2026-10-11: compilando en otra máquina (x86-64 o ARM64) con
+  `titan compile PROGRAMA.titan -o salida --target
+  armv7` se obtiene un ELF32 estático que ese teléfono ejecuta directamente. Detalles y límites, en
+  [`selfhost/ESTADO.md`](../selfhost/ESTADO.md), «ARM de 32 bits».
 - Alternativa recomendada si puedes: instalar el Termux de 64 bits desde el principio. Desinstalar el Termux
   actual borra sus datos: guarda antes lo que quieras conservar.
 
 ## 1. Instalar
+
+### Opción recomendada: el paquete `zett` (se instala con `pkg`)
+
+El paquete del gestor de paquetes de Termux (`pkg`, que por dentro es `apt`) deja `titan` y `zett` en el
+`PATH` en un solo paso:
+
+```sh
+pkg install ./zett_aarch64.termux.deb    # Android ARM64 (lo normal hoy)
+pkg install ./zett_arm.termux.deb        # Android ARM de 32 bits (menos común)
+titan version && zett version
+```
+
+Se descarga de [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) (el `.deb`
+del flujo `Linux ARM64 (Termux)`); el paquete de ARM64 se prueba en una máquina ARM64 real y el de ARM de 32
+bits con el emulador, y no se ha probado en un teléfono de 32 bits de verdad. También hay un repositorio apt
+propio (rama `zett-repo`, carpeta `termux/`) para actualizar con `pkg upgrade`.
+
+### O con el tar.gz y el instalador automático
 
 Necesitas el paquete `titan-linux-aarch64.tar.gz` de la última versión publicada en [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) (generado y verificado por el flujo `Linux ARM64 (Termux)` de GitHub Actions).
 

@@ -92,13 +92,14 @@ fn std__process__exec_once(path: any, argv: any) -> any {
     }
     std::raw::syscall(87, c, 0, 0, 0, 0, 0)
     rt_free_block(c)
-    let cargv = rt_alloc(8 * (n + 1))
+    // argv para execve: punteros del tamaño de la arquitectura (ver rt_psize).
+    let cargv = rt_alloc(rt_psize() * (n + 1))
     i = 0
     while i < n {
-        std::raw::store(cargv + 8 * i, rt_cstr(rt_seq_get(argv, i)))
+        rt_pset(cargv + rt_psize() * i, rt_cstr(rt_seq_get(argv, i)))
         i += 1
     }
-    std::raw::store(cargv + 8 * n, 0)
+    rt_pset(cargv + rt_psize() * n, 0)
     let empty = rt_cstr("")
     // execveat(fd, "", argv, envp, AT_EMPTY_PATH)
     let r = std::raw::syscall(322, fd, empty, cargv, rt_environ(), 4096, 0)

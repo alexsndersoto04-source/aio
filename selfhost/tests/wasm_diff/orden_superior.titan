@@ -1,0 +1,54 @@
+// Cierres y operaciones de orden superior en WebAssembly: `map`, `filter`, `fold`,
+// `sort_by`, `find`, `any` y `all`, en la forma de método y en la de función libre,
+// con capturas de variables de fuera y con una llamada directa a un cierre.
+
+fn doblar(x: int) -> int {
+    x * 2
+}
+
+fn main() -> int {
+    let xs = [4, 1, 3, 2]
+    let base = 100
+
+    // captura por valor: `base` entra en el cierre
+    let con_base = xs.map(|x| x + base)
+
+    // función con nombre usada como valor (otra clase de cierre)
+    let dobles = map(xs, doblar)
+
+    // llamada directa a un cierre guardado en una variable
+    let f = |x| x * x
+    let cuadrado = f(5)
+
+    let grandes = xs.filter(|x| x > 2)
+    let total = xs.fold(0, |a, b| a + b)
+    let primero = xs.find(|x| x > 2)
+    let hay_cuatro = xs.any(|x| x == 4)
+    let todos_positivos = xs.all(|x| x > 0)
+
+    // orden estable que no toca el array original
+    let creciente = sort_by(xs, |a, b| a - b)
+    let decreciente = xs.sort_by(|a, b| b - a)
+
+    // el original sigue igual: 4 * 1 000 000 + 1 * 100 000
+    let no_se_toca = xs[0] * 1000000 + xs[1] * 100000
+
+    let mut extra = 0
+    if hay_cuatro {
+        extra += 7
+    }
+    if todos_positivos {
+        extra += 11
+    }
+
+    no_se_toca
+        + creciente[0] * 10000
+        + decreciente[0] * 1000
+        + con_base[0] * 100
+        + dobles[0] * 10
+        + cuadrado
+        + len(grandes) * 100000000
+        + total * 10000000
+        + primero * 1000000
+        + extra
+}

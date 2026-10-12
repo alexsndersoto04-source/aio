@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Compara el analizador de regex en Titan (nat_parse, compilado con
-# prueba_interna.titan) con la VM de Rust (vm_parse.titan) sobre patrones
+# prueba_interna.titan) con la VM de bytecode del port (vm_parse.titan) sobre patrones
 # aleatorios y casos escritos a mano.
 #   - Si la VM da un error del analizador (mensaje de ast::ErrorKind), el
 #     texto del nativo debe ser idéntico.
@@ -14,6 +14,9 @@ import os
 import random
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 hir = len(sys.argv) > 4 and sys.argv[4] in ('hir', 'todo')
@@ -150,6 +153,15 @@ def run(prog, path):
     return out.stdout.split('\n')
 
 
+def run_vm(nombre, path):
+    # Lado VM: la VM de bytecode del port (titan build + titan exec).
+    out = vm_run(__file__, nombre, path, capture_output=True, text=True, timeout=3600)
+    if out.returncode != 0:
+        print('fallo al ejecutar la VM', out.stderr[-2000:])
+        sys.exit(1)
+    return out.stdout.split('\n')
+
+
 pats = list(MANUAL) if seed == 0 else []
 while len(pats) < count:
     pats.append(rpat())
@@ -157,7 +169,7 @@ path = '/tmp/rx_fuzz_%d.txt' % seed
 with open(path, 'w') as f:
     for p in pats:
         f.write(p.encode('utf-8').hex() + '\n')
-vm = run(['zett', 'run', os.path.join(here, 'vm_parse.titan')], path)
+vm = run_vm('vm_parse.titan', path)
 na = run([nat], path)
 bad = 0
 nerr = 0

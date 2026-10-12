@@ -707,6 +707,7 @@ fn native_table() -> [string] {
         "std::dirs::current  -> String",
         "std::process::run String -> Map",
         "std::process::run_with_input String,Bytes -> Map",
+        "std::process::run_inherit Array -> Int",
         "std::process::shell String -> Map",
         "std::process::pipe Array -> Map",
         "std::process::spawn String -> Int",

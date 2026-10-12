@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-# Prueba diferencial de std::router: prueba.titan en la VM de Rust (zett run)
-# contra el mismo programa compilado con el backend nativo, con rutas y
-# caminos aleatorios. Uso: python3 fuzz.py NATIVO SEMILLA CANTIDAD
+# Prueba diferencial de std::router: prueba.titan en la VM de bytecode del port
+# (titan build + titan exec) contra el mismo programa compilado con el backend
+# nativo, con rutas y caminos aleatorios. Uso: python3 fuzz.py NATIVO SEMILLA CANTIDAD
 import os
 import random
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rnd = random.Random(seed)
@@ -75,7 +78,7 @@ for rs, ps in cases:
 data = f'/tmp/router_fuzz_{seed}.txt'
 open(data, 'w').write('\n'.join(lines) + '\n')
 
-vm = subprocess.run(['zett', 'run', os.path.join(here, 'prueba.titan'), data], capture_output=True, text=True)
+vm = vm_run(__file__, 'prueba.titan', data, capture_output=True, text=True)
 nv = subprocess.run([nat, data], capture_output=True, text=True)
 if vm.returncode != 0 or nv.returncode != 0:
     print('código de salida VM', vm.returncode, 'nativo', nv.returncode)

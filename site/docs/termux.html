@@ -107,7 +107,11 @@ Termux de 32 bits) el binario aarch64 arranca (<code>titan version</code> sí co
 arquitectura para esos Termux de 32 bits (antes el compilador creía estar en una PC y pedía un binario que no era).</p>
 </blockquote>
 <h2 id="antes-de-instalar-tu-termux-corre-el-binario-de-64-bits">Antes de instalar: ¿tu Termux corre el binario de 64 bits?</h2>
-<p>Titan solo tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>); no existe versión para ARM de 32 bits. Pero cuidado:
+<p>El <strong>compilador</strong> tiene versión para <strong>ARM de 64 bits</strong> (<code>aarch64</code>) y, desde el 2026-10-12, también para <strong>ARM de
+32 bits</strong> (<code>armv7</code>, paquete <code>zett_…_armhf.deb</code> o <code>zett_…_arm.termux.deb</code>), que en un teléfono de 32 bits de
+verdad todavía no se ha probado: lo comprobado es que el binario del paquete arranca bajo el emulador de ARM32
+(ver «Paquetes oficiales <code>zett</code>» en <a href="estado.html"><code>../selfhost/ESTADO.md</code></a>).
+Lo que sí existe es el destino <code>armv7</code> (ver abajo). Pero cuidado:
 <strong>un Termux de 32 bits puede estar en un teléfono con núcleo de 64 bits</strong>, y ahí el binario aarch64 corre igual.
 La prueba de verdad es intentarlo (el instalador lo hace al final):</p>
 <pre><code class="language-sh">uname -m                              # a | aarch64 → estupendo; armv8l / armv7l → mira abajo
@@ -119,11 +123,27 @@ getprop ro.product.cpu.abilist        # dato orientativo, no definitivo
   tu teléfono ejecuta los binarios de 64 bits y <strong>todo funciona</strong> (caso del Redmi 9C, aunque <code>abilist</code> solo
   traiga <code>armeabi-v7a</code> y <code>armeabi</code>). Si ves «Exec format error», tu teléfono es de 32 bits de verdad: instala
   el Termux de 64 bits (APK <code>arm64-v8a</code>, de F-Droid o del GitHub oficial de Termux) <strong>si tu teléfono lo admite</strong>;
-  si no lo admite, no hay versión posible (hace falta un generador de código para ARM de 32 bits, que no existe).</li>
+  si no lo admite, usa el paquete de ARM de 32 bits (<code>zett_…_arm.termux.deb</code>, del 2026-10-12). También hay el
+  <strong>destino</strong> <code>armv7</code> desde el 2026-10-11: compilando en otra máquina (x86-64 o ARM64) con
+  <code>titan compile PROGRAMA.titan -o salida --target
+  armv7</code> se obtiene un ELF32 estático que ese teléfono ejecuta directamente. Detalles y límites, en
+  <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «ARM de 32 bits».</li>
 <li>Alternativa recomendada si puedes: instalar el Termux de 64 bits desde el principio. Desinstalar el Termux
   actual borra sus datos: guarda antes lo que quieras conservar.</li>
 </ul>
 <h2 id="1-instalar">1. Instalar</h2>
+<h3 id="opcion-recomendada-el-paquete-zett-se-instala-con-pkg">Opción recomendada: el paquete <code>zett</code> (se instala con <code>pkg</code>)</h3>
+<p>El paquete del gestor de paquetes de Termux (<code>pkg</code>, que por dentro es <code>apt</code>) deja <code>titan</code> y <code>zett</code> en el
+<code>PATH</code> en un solo paso:</p>
+<pre><code class="language-sh">pkg install ./zett_aarch64.termux.deb    # Android ARM64 (lo normal hoy)
+pkg install ./zett_arm.termux.deb        # Android ARM de 32 bits (menos común)
+titan version &amp;&amp; zett version
+</code></pre>
+<p>Se descarga de <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">GitHub Releases</a> (el <code>.deb</code>
+del flujo <code>Linux ARM64 (Termux)</code>); el paquete de ARM64 se prueba en una máquina ARM64 real y el de ARM de 32
+bits con el emulador, y no se ha probado en un teléfono de 32 bits de verdad. También hay un repositorio apt
+propio (rama <code>zett-repo</code>, carpeta <code>termux/</code>) para actualizar con <code>pkg upgrade</code>.</p>
+<h3 id="o-con-el-targz-y-el-instalador-automatico">O con el tar.gz y el instalador automático</h3>
 <p>Necesitas el paquete <code>titan-linux-aarch64.tar.gz</code> de la última versión publicada en <a href="https://github.com/alexsndersoto04-source/aio/releases/latest">GitHub Releases</a> (generado y verificado por el flujo <code>Linux ARM64 (Termux)</code> de GitHub Actions).</p>
 <p>Con la release publicada (descarga e instalación automática):</p>
 <pre><code class="language-sh">pkg install -y curl

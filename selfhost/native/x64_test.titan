@@ -1,6 +1,9 @@
 // Emite cada forma de instrucción del ensamblador con varias combinaciones
-// de registros y escribe (1) los bytes en ARGS[3] y (2) el texto esperado,
-// en sintaxis Intel de objdump, en ARGS[4]. verify_x64.sh los compara.
+// de registros y escribe (1) los bytes y (2) el texto esperado, en sintaxis
+// Intel de objdump, en los DOS ÚLTIMOS argumentos (verify_x64.sh los pasa así).
+// Antes se leían en posiciones fijas (args[3] y args[4]) porque la VM de Rust
+// daba el argv crudo del proceso ("zett", "run", programa, …); con el port
+// args[0] es el propio ejecutable, así que lo robusto es mirar desde el final.
 import x64
 
 fn rn(r: int) -> string {
@@ -140,10 +143,11 @@ fn main() {
     want = std::array::push(want, "syscall")
     code = std::array::concat(code, x_ret())
     want = std::array::push(want, "ret")
-    std::fs::write_bytes(args[3], std::bytes::from_array(code))
+    let n = len(args)
+    std::fs::write_bytes(args[n - 2], std::bytes::from_array(code))
     let mut text = ""
     for w in want {
         text += w + "\n"
     }
-    std::fs::write_text(args[4], text)
+    std::fs::write_text(args[n - 1], text)
 }

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-# Casos aleatorios para std::url: genera N líneas, las pasa por la VM de Rust
-# (zett run fuzz.titan) y por el ejecutable nativo, y compara línea a línea.
-# Uso: python3 fuzz.py NATIVO SEMILLA CANTIDAD
+# Casos aleatorios para std::url: genera N líneas, las pasa por la VM de bytecode
+# del port (titan build + titan exec) y por el ejecutable nativo, y compara línea
+# a línea. Uso: python3 fuzz.py NATIVO SEMILLA CANTIDAD
+import os
 import random
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rnd = random.Random(seed)
@@ -101,8 +105,7 @@ for _ in range(count):
         q = '&'.join(label() + rnd.choice(['=', '', '==']) + label() for _ in range(rnd.randint(0, 5)))
         lines.append(('Q', clean(rnd.choice(['', '?']) + q.replace('%', rnd.choice(['%', '+', '%2'])))))
 open('/tmp/url_fuzz_in.txt', 'w', encoding='utf-8').write(''.join(x + '\n' for c in lines for x in c))
-vm = subprocess.run(['zett', 'run', 'selfhost/native/url/fuzz.titan', '/tmp/url_fuzz_in.txt'],
-                    capture_output=True)
+vm = vm_run(__file__, 'fuzz.titan', '/tmp/url_fuzz_in.txt', capture_output=True)
 na = subprocess.run([nat, '/tmp/url_fuzz_in.txt'], capture_output=True)
 a = vm.stdout.split(b'\n')
 b = na.stdout.split(b'\n')

@@ -266,6 +266,21 @@ titan compile examples/guia/02_control.titan -o factoriales # deja un ejecutable
 titan wasm examples/guia/02_control.titan                   # módulo WebAssembly
 ```
 
+`titan run` y `titan exec` capturan la salida del programa para imprimirla al
+terminar (y le dan `/dev/null` como entrada), así que un programa que use la
+terminal —prompts de `std::readline`, teclas de `std::term`, barras de
+`std::progress`— necesita `--tty`:
+
+```bash
+titan run --tty ejemplos/con_prompt.titan
+titan exec --tty programa.tbc
+```
+
+Con `--tty` el programa conserva la entrada, la salida y el error del proceso: no
+hay captura, ni tope de 4 MiB, y las teclas y el tamaño de la ventana llegan
+bien. `titan test` sigue capturando, para poder informar el detalle de cada
+prueba.
+
 El ejecutable de este ejemplo pesa unos 1,1 MB, no necesita nada instalado
 para correr y arranca sin máquina virtual.
 

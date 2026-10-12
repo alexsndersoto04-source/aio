@@ -23,6 +23,7 @@ Create and use a project:
 
 ```bash
 titan new hello
+titan new hello --path /tmp/apps   # el proyecto queda en /tmp/apps/hello
 cd hello
 titan check
 titan run
@@ -84,7 +85,7 @@ A dependency entry loads `shared/src/lib.titan`; `import shared::models` loads a
 
 ## Tests
 
-Every `.titan` file under `tests/` is an independent test program with its own `fn main()`. A successful return is a pass; a compile error, runtime error, failed native assertion, or denied capability is a failure.
+Every `.titan` file under `tests/` is an independent test program with its own `fn main()`. A successful return is a pass; a compile error, a runtime error, a non-zero exit code, or a failed `std::testing` assertion is a failure.
 
 ```titan
 import math
@@ -99,6 +100,33 @@ Run recursively and deterministically:
 ```bash
 titan test
 ```
+
+```text
+test tests/math.titan ... ok
+
+test result: ok. 1 passed; 0 failed
+```
+
+Two rules that follow from "every file is a program":
+
+- A file with **no `fn main()`** is not a test — it is an auxiliary module meant to be imported by
+  the others. `titan test` reports it as `skipped (no entry point 'main'; auxiliary module)` and it
+  does not count as a failure; the summary then adds `; N skipped`.
+- A test may import **both** the project's `src/` modules and its siblings in `tests/`. Both
+  directories are import roots, and the most specific one containing the importing file wins: from
+  `tests/math.titan`, `import util` resolves to `tests/util.titan` if it exists and to
+  `src/util.titan` otherwise. Neither root lets an import escape the project.
+
+`std::testing::assert(condición, mensaje)` and `std::testing::assert_eq(izq, der, mensaje)` abort the
+program with a runtime error that names the values, so the failing test reports which assertion
+broke:
+
+```text
+test tests/math.titan ... FAILED
+  RUNTIME ERROR: native function 'std::testing::assert_eq' failed: assertion failed: double should multiply by two; left=21, right=42
+```
+
+`titan test` exits 0 only when no test failed.
 
 ## Current namespace rule
 

@@ -11,7 +11,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT"
-TITAN="${TITAN:-selfhost/titan}"
+TITAN="${1:-${TITAN:-selfhost/titan}}"
 
 if [ ! -x "$TITAN" ]; then
   echo "probar.sh: no se encuentra $TITAN (ejecuta antes: bash selfhost/bootstrap.sh)" >&2

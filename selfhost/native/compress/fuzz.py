@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 # Prueba diferencial de la descompresión de std::compress: prueba.titan en la
-# VM de Rust (zett run) contra el mismo programa compilado con el backend
+# VM de bytecode del port (titan build + titan exec) contra el mismo programa compilado con el backend
 # nativo. Uso: python3 fuzz.py NATIVO SEMILLA CANTIDAD
 #
-# La VM local es la versión de Rust ANTERIOR a la corrección, con dos
-# defectos (ver compress_mod.rs): deflate/zlib truncados daban "ok" con lo
-# que hubiera salido, y una distancia a antes del principio daba ceros
-# inventados. Cada caso tiene que cumplir las dos cosas: VM == modelo con
-# los defectos, y nativo == modelo corregido (ref() abajo). Así el modelo
-# queda contrastado con el Rust real y las únicas diferencias VM/nativo son
-# exactamente los dos defectos.
+# Historia: la comparación original era contra la VM de Rust ANTERIOR a la
+# corrección, con dos defectos (ver compress_mod.rs): deflate/zlib truncados
+# daban "ok" con lo que hubiera salido, y una distancia a antes del principio
+# daba ceros inventados. Entonces se exigía VM == modelo con los defectos y
+# nativo == modelo corregido. Ahora el lado VM es la VM del port (ya
+# corregida), así que los dos lados tienen que dar el modelo corregido (ref()
+# abajo) y, además, coincidir entre ellos: el modelo de Python sigue siendo
+# independiente de los dos.
 import os, random, subprocess, sys, zlib
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vm_port import vm_run
 
 nat, seed, count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rnd = random.Random(seed)
 here = os.path.dirname(os.path.abspath(__file__))
-ZETT = os.path.expanduser('~/.local/bin/zett')
+
 
 
 class Bits:
@@ -394,23 +398,25 @@ cases = [case() for _ in range(count)]
 path = f'/tmp/cz_fuzz_{seed}.txt'
 with open(path, 'w') as f:
     for m, s in cases: f.write(f'{m} {s.hex()}\n')
-vm = subprocess.run([ZETT, 'run', os.path.join(here, 'prueba.titan'), path], capture_output=True, text=True)
+vm = vm_run(__file__, 'prueba.titan', path, capture_output=True, text=True)
 na = subprocess.run([nat, path], capture_output=True, text=True)
 if vm.returncode or na.returncode:
     print('fallo al ejecutar', vm.returncode, na.returncode, vm.stderr[-500:], na.stderr[-500:]); sys.exit(1)
 a, b = vm.stdout.splitlines(), na.stdout.splitlines()
 assert len(a) == len(b) == count, (len(a), len(b))
-stats = {'igual': 0, 'ok': 0, 'err': 0, 'defecto_corregido': 0}
+stats = {'igual': 0, 'ok': 0, 'err': 0, 'vm_distinta_del_nativo': 0}
 bad = 0
 for (m, s), x, y in zip(cases, a, b):
-    old, new = ref(m, s, False), ref(m, s, True)
-    if x != old or y != new:
+    new = ref(m, s, True)
+    if x != new or y != new:
         bad += 1
         if bad <= 8:
-            print('DIFERENCIA', m, s.hex()[:300], '\n  VM   :', x[:160], '\n  model:', old[:160],
+            print('DIFERENCIA', m, s.hex()[:300], '\n  VM   :', x[:160],
                   '\n  nat  :', y[:160], '\n  model:', new[:160], '\n  zlib :', zinfo(m, s))
         continue
-    if x == y: stats['igual'] += 1; stats['ok' if x.startswith('ok') else 'err'] += 1
-    else: stats['defecto_corregido'] += 1
+    if x == y:
+        stats['igual'] += 1; stats['ok' if x.startswith('ok') else 'err'] += 1
+    else:
+        stats['vm_distinta_del_nativo'] += 1
 print(stats, 'fuera del modelo:', bad)
 sys.exit(1 if bad else 0)
