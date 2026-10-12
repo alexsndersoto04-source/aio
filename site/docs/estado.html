@@ -2751,7 +2751,12 @@ comprueba). Para publicarlos, <code>.github/workflows/arm64.yml</code> construye
 los índices, prueba el de x86-64 en la CI, prueba el de ARM64 en la máquina ARM64 real y, al etiquetar una
 versión, sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).
 Después de tocar el emulador, <code>bash selfhost/tests/arm32_diff.sh</code> (muestra corta) sigue en <strong>20 idénticos,
-0 distintos</strong>: los arreglos no cambiaron ninguna salida.</p>
+0 distintos</strong>: los arreglos no cambiaron ninguna salida. Esa misma muestra, pero con los programas de ARM
+compilados <strong>por el camino de la CI</strong> (<code>--target=armv7-linux-gnueabihf</code> con clang + lld, coma flotante por
+hardware, en vez del <code>arm-linux-none</code> del clang de zig), también da <strong>20 idénticos, 0 distintos</strong>; y la CI
+corre dos de esos programas (<code>decimales.titan</code> y <code>basico.titan</code>) en cada construcción, porque en ese camino
+un error de ABI en los ayudantes <code>__aeabi_*</code> no rompe el enlazado: solo da números mal (ver el changelog del
+2026-10-12 (f)).</p>
 <p><strong>En el emulador de ARM32 (dos fallos de verdad corregidos).</strong> <code>native/arm32/correr.py</code> se tragaba cualquier
 argumento del programa que empezara por <code>--</code> (así <code>titan compile x --target armv7</code> corría sin <code>--target</code>), y
 contestaba <code>/proc/self/exe</code> con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
@@ -2960,8 +2965,11 @@ byte)</code>. El DAP queda en <strong>20 casos, 0 fallan</strong> y el LSP en <s
    habla con el núcleo por <code>svc</code>. Lo genera el backend LLVM, que ya sabía hacer x86-64 y ARM64; para ARM
    de 32 bits añade tres cosas: las tablas estáticas con direcciones se rellenan al arrancar (<code>lv_parches</code>;
    un <code>i64</code> no puede llevar la dirección de un puntero de 32 bits en un inicializador), los ayudantes que en
-   32 bits no son instrucciones (<code>__udivsi3</code>, <code>__divsi3</code>, <code>__umodsi3</code>, <code>__modsi3</code>, <code>__aeabi_*</code>, <code>__floatdidf</code>,
-   <code>__fixdfdi</code>, …) los escribe el propio backend en el <code>.ll</code> (no hay libgcc ni compiler-rt), y <code>fma</code> se
+   32 bits no son instrucciones (<code>__udivsi3</code>, <code>__divsi3</code>, <code>__umodsi3</code>, <code>__modsi3</code>, <code>__floatdidf</code>,
+   <code>__fixdfdi</code>, <code>__aeabi_l2d</code>, <code>__aeabi_ul2d</code>, <code>__aeabi_d2lz</code>, <code>__aeabi_d2ulz</code>, <code>__aeabi_uldivmod</code>,
+   <code>__aeabi_ldivmod</code>, <code>__aeabi_uidiv</code>, <code>__aeabi_idiv</code>, …) los escribe el propio backend en el <code>.ll</code> (no hay
+   libgcc ni compiler-rt) —los que llevan <code>double</code> con <code>arm_aapcscc</code>, la ABI base de ARM, que es la que clang
+   les da cuando los llama; ver el changelog del 2026-10-12 (f)—, y <code>fma</code> se
    sustituye por multiplicación + suma (dos redondeos) porque ARMv7 sin VFPv4 no tiene esa instrucción.</li>
 <li><strong><code>sys_arm32.titan</code></strong> (runtime): traduce las llamadas al sistema de Linux x86-64 —las que usa todo el
    runtime— a las de ARM de 32 bits (EABI: número en <code>r7</code>, argumentos en <code>r0</code>-<code>r5</code>), incluidas las que

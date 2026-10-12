@@ -97,6 +97,18 @@ jobs:
           zett keygen /tmp/k.key
           (cd /tmp/proy && zett pack --key /tmp/k.key --output /tmp/p.tpkg)
           test -s /tmp/p.tpkg
+      - name: Los programas de ARM de 32 bits dan lo mismo que en x86-64 (emulador de ARM32)
+        run: |
+          # El binario de ARM 32 bits lo enlaza clang/lld de verdad, con coma
+          # flotante por hardware: aquí se comprueban programas reales de
+          # números. Los ayudantes de la RTABI (__aeabi_l2d, __aeabi_d2lz,
+          # __aeabi_uldivmod...) los escribe el backend en el .ll, y si su ABI
+          # no es la que clang espera el enlazado no se queja: solo salen
+          # números mal. Esta prueba es la que lo ve.
+          python3 -m pip install --quiet unicorn capstone
+          bash selfhost/tests/arm32_diff.sh \
+            selfhost/tests/native/decimales.titan \
+            selfhost/tests/native/basico.titan
       - uses: actions/upload-artifact@v4
         with:
           name: arm64-entrada

@@ -1749,6 +1749,28 @@ fn lv_arm32_rt_helpers() -> array {
     l = std::array::push(l, d + "double @__floatdidf(i64 %x) " + lv_br("\nentry:\n  %neg = icmp slt i64 %x, 0\n  %nx = sub i64 0, %x\n  %u = select i1 %neg, i64 %nx, i64 %x\n  %d = call double @__floatundidf(i64 %u)\n  %nd = fsub double -0.000000e+00, %d\n  %r = select i1 %neg, double %nd, double %d\n  ret double %r\n"))
     l = std::array::push(l, d + "i64 @__fixunsdfdi(double %x) " + lv_br("\nentry:\n  %chico = fcmp olt double %x, 2147483648.0\n  br i1 %chico, label %simple, label %partir\nsimple:\n  %i = fptoui double %x to i32\n  %z = zext i32 %i to i64\n  ret i64 %z\npartir:\n  %esc = fmul double %x, 2.3283064365386963e-10\n  %hit = fptoui double %esc to i32\n  %dh = uitofp i32 %hit to double\n  %p = fmul double %dh, 4294967296.0\n  %resto = fsub double %x, %p\n  %lot = fptoui double %resto to i32\n  %hz = zext i32 %hit to i64\n  %lz = zext i32 %lot to i64\n  %hs = shl i64 %hz, 32\n  %r = or i64 %hs, %lz\n  ret i64 %r\n"))
     l = std::array::push(l, d + "i64 @__fixdfdi(double %x) " + lv_br("\nentry:\n  %neg = fcmp olt double %x, 0.000000e+00\n  %nx = fsub double -0.000000e+00, %x\n  %u = select i1 %neg, double %nx, double %x\n  %v = call i64 @__fixunsdfdi(double %u)\n  %nv = sub i64 0, %v\n  %r = select i1 %neg, i64 %nv, i64 %v\n  ret i64 %r\n"))
+    // --- los nombres de la RTABI (la ABI de ARM) para todo lo anterior. clang
+    //     los pide con estos nombres cuando enlaza para `armv7-linux-gnu*`
+    //     (no con los «clásicos» de compiler-rt), y sin compiler-rt ni libgcc
+    //     —lo normal al enlazar en una x86-64 con clang y lld, como hace la
+    //     CI— quedaban como símbolos sin definir: el enlazado fallaba con
+    //     `undefined symbol: __aeabi_l2d` y compañía. Con el `zig cc`
+    //     (arm-linux-none, coma flotante por software) no se veía: ahí la ABI
+    //     del módulo ya es la base de ARM y su compiler-rt pone el resto.
+    // Estas cuatro llevan `arm_aapcscc` (la ABI base de ARM) y no la del
+    // módulo: clang los llama así. En un módulo con coma flotante por
+    // hardware (armv7-linux-gnueabihf, lo que enlaza la CI con clang y lld)
+    // la ABI del módulo devuelve los `double` en el registro d0, pero la
+    // RTABI de ARM dice que los ayudantes __aeabi_* pasan y devuelven los
+    // `double` por los registros normales (r0/r1). Sin esto el llamante leía
+    // r0/r1 creyendo que era un double y salían números basura —los bits del
+    // entero tal cual— sin que el enlazado se quejara.
+    l = std::array::push(l, d + "arm_aapcscc double @__aeabi_l2d(i64 %x) " + lv_br("\n  %d = call double @__floatdidf(i64 %x)\n  ret double %d\n"))
+    l = std::array::push(l, d + "arm_aapcscc double @__aeabi_ul2d(i64 %x) " + lv_br("\n  %d = call double @__floatundidf(i64 %x)\n  ret double %d\n"))
+    l = std::array::push(l, d + "arm_aapcscc i64 @__aeabi_d2lz(double %x) " + lv_br("\n  %v = call i64 @__fixdfdi(double %x)\n  ret i64 %v\n"))
+    l = std::array::push(l, d + "arm_aapcscc i64 @__aeabi_d2ulz(double %x) " + lv_br("\n  %v = call i64 @__fixunsdfdi(double %x)\n  ret i64 %v\n"))
+    l = std::array::push(l, d + "%V @__aeabi_uldivmod(i64 %a, i64 %b) " + lv_br("\n  %v = call %V @lv_udivmod64(i64 %a, i64 %b)\n  ret %V %v\n"))
+    l = std::array::push(l, d + "%V @__aeabi_ldivmod(i64 %a, i64 %b) " + lv_br("\nentry:\n  %as = icmp slt i64 %a, 0\n  %bs = icmp slt i64 %b, 0\n  %na = sub i64 0, %a\n  %nb = sub i64 0, %b\n  %ua = select i1 %as, i64 %na, i64 %a\n  %ub = select i1 %bs, i64 %nb, i64 %b\n  %v = call %V @lv_udivmod64(i64 %ua, i64 %ub)\n  %q = extractvalue %V %v, 0\n  %r = extractvalue %V %v, 1\n  %nq = sub i64 0, %q\n  %nr = sub i64 0, %r\n  %distinto = xor i1 %as, %bs\n  %qq = select i1 %distinto, i64 %nq, i64 %q\n  %rr = select i1 %as, i64 %nr, i64 %r\n  %v0 = insertvalue %V undef, i64 %qq, 0\n  %v1 = insertvalue %V %v0, i64 %rr, 1\n  ret %V %v1\n"))
     l
 }
 

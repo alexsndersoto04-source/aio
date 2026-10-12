@@ -104,6 +104,30 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
+<h2 id="sin-publicar-2026-10-12-f-arm-de-32-bits-los-ayudantes-de-la-rtabi-con-la-abi-de-clang">Sin publicar — 2026-10-12 (f) — ARM de 32 bits: los ayudantes de la RTABI, con la ABI de clang</h2>
+<p><strong>El lenguaje no cambia.</strong> Cambia lo que el backend escribe en el <code>.ll</code> para ARM de 32 bits, y una prueba
+nueva en la CI. Los dos fallos solo se veían con clang y lld de verdad: con el clang de zig (destino
+<code>arm-linux-none</code>, coma flotante por software) la ABI del módulo <em>es</em> la base de ARM y el <code>compiler-rt</code> de zig
+aporta lo que faltaba.</p>
+<ul>
+<li><strong>Faltaban tres nombres de la ABI de ARM.</strong> El backend escribe en el <code>.ll</code> sus propios ayudantes para lo
+  que en 32 bits no es una instrucción. Estaban los de toda la vida (<code>__udivsi3</code>, <code>__floatdidf</code>,
+  <code>__fixdfdi</code>…) y los de la RTABI para la división (<code>__aeabi_uidiv</code>, <code>__aeabi_idivmod</code>…), pero no
+  <code>__aeabi_l2d</code> (entero de 64 → double), <code>__aeabi_ul2d</code>, <code>__aeabi_d2lz</code> (double → entero de 64),
+  <code>__aeabi_d2ulz</code>, <code>__aeabi_uldivmod</code> ni <code>__aeabi_ldivmod</code>. Los pide clang al bajar <code>sitofp i64 → double</code>,
+  <code>fptosi double → i64</code> y las divisiones de 64 bits, así que el enlazado moría con
+  <code>ld.lld: error: undefined symbol: __aeabi_l2d</code>.</li>
+<li><strong>Y los que tocaban <code>double</code> llevaban la ABI del módulo, no la base de ARM.</strong> La RTABI dice que los
+  ayudantes <code>__aeabi_*</code> pasan y devuelven los <code>double</code> por los registros normales (<code>r0</code>/<code>r1</code>); en un módulo
+  con coma flotante por hardware (<code>armv7-linux-gnueabihf</code>, lo que enlaza la CI) la ABI del módulo los
+  devuelve en <code>d0</code>. Ahora esas cuatro funciones llevan <code>arm_aapcscc</code> y el llamante encuentra el número donde
+  lo busca. Sin esto el enlazado <strong>no se queja</strong> y los números salen mal: <code>parse_float("1")</code> devolvía
+  <code>5e-324</code> (los bits del entero, sin convertir) en vez de <code>1</code>.</li>
+<li><strong>Prueba nueva en la CI</strong>: <code>selfhost/tests/arm32_diff.sh decimales.titan basico.titan</code> compila esos
+  programas para ARM de 32 bits con el camino real (clang + lld) y compara byte a byte su salida con la del
+  mismo programa en x86-64, ya dentro del emulador de ARM32. Aquí, en esta máquina, la muestra corta entera
+  por ese camino da <strong>20 idénticos, 0 distintos</strong>.</li>
+</ul>
 <h2 id="sin-publicar-2026-10-12-e-paquetes-oficiales-zett-para-debianubuntu-y-termux">Sin publicar — 2026-10-12 (e) — paquetes oficiales <code>zett</code> para Debian/Ubuntu y Termux</h2>
 <p><strong>El lenguaje y el compilador no cambian</strong> (nada del compilador: solo herramientas de empaquetado y pruebas).
 Detalle y resultados, en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «Paquetes oficiales <code>zett</code> para los tres

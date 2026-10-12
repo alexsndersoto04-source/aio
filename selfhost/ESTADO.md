@@ -1968,7 +1968,12 @@ comprueba). Para publicarlos, `.github/workflows/arm64.yml` construye los seis p
 los índices, prueba el de x86-64 en la CI, prueba el de ARM64 en la máquina ARM64 real y, al etiquetar una
 versión, sube los `.deb` a la release y publica el repositorio en la rama `zett-repo` (`sistema/` y `termux/`).
 Después de tocar el emulador, `bash selfhost/tests/arm32_diff.sh` (muestra corta) sigue en **20 idénticos,
-0 distintos**: los arreglos no cambiaron ninguna salida.
+0 distintos**: los arreglos no cambiaron ninguna salida. Esa misma muestra, pero con los programas de ARM
+compilados **por el camino de la CI** (`--target=armv7-linux-gnueabihf` con clang + lld, coma flotante por
+hardware, en vez del `arm-linux-none` del clang de zig), también da **20 idénticos, 0 distintos**; y la CI
+corre dos de esos programas (`decimales.titan` y `basico.titan`) en cada construcción, porque en ese camino
+un error de ABI en los ayudantes `__aeabi_*` no rompe el enlazado: solo da números mal (ver el changelog del
+2026-10-12 (f)).
 
 **En el emulador de ARM32 (dos fallos de verdad corregidos).** `native/arm32/correr.py` se tragaba cualquier
 argumento del programa que empezara por `--` (así `titan compile x --target armv7` corría sin `--target`), y
@@ -2112,8 +2117,11 @@ byte)`. El DAP queda en **20 casos, 0 fallan** y el LSP en **110 comprobaciones,
    habla con el núcleo por `svc`. Lo genera el backend LLVM, que ya sabía hacer x86-64 y ARM64; para ARM
    de 32 bits añade tres cosas: las tablas estáticas con direcciones se rellenan al arrancar (`lv_parches`;
    un `i64` no puede llevar la dirección de un puntero de 32 bits en un inicializador), los ayudantes que en
-   32 bits no son instrucciones (`__udivsi3`, `__divsi3`, `__umodsi3`, `__modsi3`, `__aeabi_*`, `__floatdidf`,
-   `__fixdfdi`, …) los escribe el propio backend en el `.ll` (no hay libgcc ni compiler-rt), y `fma` se
+   32 bits no son instrucciones (`__udivsi3`, `__divsi3`, `__umodsi3`, `__modsi3`, `__floatdidf`,
+   `__fixdfdi`, `__aeabi_l2d`, `__aeabi_ul2d`, `__aeabi_d2lz`, `__aeabi_d2ulz`, `__aeabi_uldivmod`,
+   `__aeabi_ldivmod`, `__aeabi_uidiv`, `__aeabi_idiv`, …) los escribe el propio backend en el `.ll` (no hay
+   libgcc ni compiler-rt) —los que llevan `double` con `arm_aapcscc`, la ABI base de ARM, que es la que clang
+   les da cuando los llama; ver el changelog del 2026-10-12 (f)—, y `fma` se
    sustituye por multiplicación + suma (dos redondeos) porque ARMv7 sin VFPv4 no tiene esa instrucción.
 2. **`sys_arm32.titan`** (runtime): traduce las llamadas al sistema de Linux x86-64 —las que usa todo el
    runtime— a las de ARM de 32 bits (EABI: número en `r7`, argumentos en `r0`-`r5`), incluidas las que

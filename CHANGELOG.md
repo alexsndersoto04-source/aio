@@ -5,6 +5,31 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar — 2026-10-12 (f) — ARM de 32 bits: los ayudantes de la RTABI, con la ABI de clang
+
+**El lenguaje no cambia.** Cambia lo que el backend escribe en el `.ll` para ARM de 32 bits, y una prueba
+nueva en la CI. Los dos fallos solo se veían con clang y lld de verdad: con el clang de zig (destino
+`arm-linux-none`, coma flotante por software) la ABI del módulo *es* la base de ARM y el `compiler-rt` de zig
+aporta lo que faltaba.
+
+- **Faltaban tres nombres de la ABI de ARM.** El backend escribe en el `.ll` sus propios ayudantes para lo
+  que en 32 bits no es una instrucción. Estaban los de toda la vida (`__udivsi3`, `__floatdidf`,
+  `__fixdfdi`…) y los de la RTABI para la división (`__aeabi_uidiv`, `__aeabi_idivmod`…), pero no
+  `__aeabi_l2d` (entero de 64 → double), `__aeabi_ul2d`, `__aeabi_d2lz` (double → entero de 64),
+  `__aeabi_d2ulz`, `__aeabi_uldivmod` ni `__aeabi_ldivmod`. Los pide clang al bajar `sitofp i64 → double`,
+  `fptosi double → i64` y las divisiones de 64 bits, así que el enlazado moría con
+  `ld.lld: error: undefined symbol: __aeabi_l2d`.
+- **Y los que tocaban `double` llevaban la ABI del módulo, no la base de ARM.** La RTABI dice que los
+  ayudantes `__aeabi_*` pasan y devuelven los `double` por los registros normales (`r0`/`r1`); en un módulo
+  con coma flotante por hardware (`armv7-linux-gnueabihf`, lo que enlaza la CI) la ABI del módulo los
+  devuelve en `d0`. Ahora esas cuatro funciones llevan `arm_aapcscc` y el llamante encuentra el número donde
+  lo busca. Sin esto el enlazado **no se queja** y los números salen mal: `parse_float("1")` devolvía
+  `5e-324` (los bits del entero, sin convertir) en vez de `1`.
+- **Prueba nueva en la CI**: `selfhost/tests/arm32_diff.sh decimales.titan basico.titan` compila esos
+  programas para ARM de 32 bits con el camino real (clang + lld) y compara byte a byte su salida con la del
+  mismo programa en x86-64, ya dentro del emulador de ARM32. Aquí, en esta máquina, la muestra corta entera
+  por ese camino da **20 idénticos, 0 distintos**.
+
 ## Sin publicar — 2026-10-12 (e) — paquetes oficiales `zett` para Debian/Ubuntu y Termux
 
 **El lenguaje y el compilador no cambian** (nada del compilador: solo herramientas de empaquetado y pruebas).
