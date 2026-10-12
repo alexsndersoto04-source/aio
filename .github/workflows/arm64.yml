@@ -36,6 +36,8 @@ jobs:
         run: bash selfhost/bootstrap.sh
       - name: Compilar titan para ARM64 (LLVM, cruzado)
         run: selfhost/titan compile selfhost/titan.titan -o titan-aarch64 --target aarch64
+      - name: Compilar titan para ARM de 32 bits (LLVM, cruzado)
+        run: selfhost/titan compile selfhost/titan.titan -o titan-armv7 --target armv7
       - name: Salidas del compilador x86-64 (referencia)
         run: bash selfhost/tests/arm64_diff.sh generar selfhost/titan x86out
       - name: Paquetes
@@ -43,8 +45,6 @@ jobs:
           bash selfhost/empaquetar.sh selfhost/titan x86_64 paquetes
           bash selfhost/empaquetar.sh titan-aarch64 aarch64 paquetes
           bash selfhost/empaquetar.sh titan-armv7 armv7 paquetes
-      - name: Compilar titan para ARM de 32 bits (LLVM, cruzado)
-        run: selfhost/titan compile selfhost/titan.titan -o titan-armv7 --target armv7
       - name: Paquetes .deb (sistema y Termux) y repositorio apt
         run: |
           VER="$(grep -o 'v[0-9][0-9.]*' <(selfhost/titan version) | head -1 | sed 's/^v//')"
