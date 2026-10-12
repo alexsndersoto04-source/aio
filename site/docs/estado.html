@@ -712,7 +712,7 @@ afirma paridad para las funciones solo cubiertas estáticamente.</p>
 <tr>
 <td>std::onnx (9/14 cuerpos Titan; faltan las 5 <code>*_bert*</code>)</td>
 <td><code>std_onnx.titan</code>, <code>std_onnx_engine.titan</code></td>
-<td>motor propio de inferencia (subconjunto de 39 operadores, rechazo explícito del resto); comparado con onnxruntime y con tract; ver «std::onnx en Titan»</td>
+<td>motor propio de inferencia (subconjunto de 39 operadores, rechazo explícito del resto); comparado con onnxruntime y con tract; ver «std::onnx en Titan». <code>tests/onnx/run.sh</code> ya no necesita el Rust: sin <code>zett</code> compara solo con onnxruntime (35 modelos, 70 comprobaciones) y con <code>zett</code> añade tract</td>
 </tr>
 <tr>
 <td>std::termux (23/23 cuerpos Titan; paridad conductual aún parcial)</td>
@@ -1420,6 +1420,19 @@ dimensión &gt; 4 194 304, handle tras <code>close</code>, ids 1-5 sin reutiliza
 dan texto <strong>idéntico</strong> al de Rust (tract). Archivos truncados, vacíos, basura y con operador
 no soportado fallan siempre con error (nunca abortan ni devuelven handle). Una red
 tipo MNIST tarda 0,1 s en el nativo.</p>
+<p><strong>Sin el Rust (2026-10-12).</strong> El oráculo principal de este arnés (onnxruntime) no es
+Rust, así que <code>run.sh</code> ya no lo pide: <code>compare.py</code> acepta el <code>zett</code> como argumento
+opcional y, si no está, compara solo con onnxruntime y lo dice en cada línea
+(<code>sin zett: no se comparó con tract</code>); la sección de errores, que sí comparaba con
+tract línea a línea, comprueba entonces la forma de la salida nativa (14 líneas, 11
+errores con mensaje nativo y 3 handles). Corrido así en esta máquina: <strong>35 modelos,
+70 comprobaciones idénticas a onnxruntime, 0 fallas</strong>, <code>ONNX: TODO OK</code>. Y con el
+<code>zett</code> de la rama <code>binaries</code> (sha256 comprobado, <code>titan 1.0.0</code>; arrancado con una
+<code>libasound.so.2</code> de prueba porque aquí no hay ALSA y el sonido no se usa): <strong>70
+comprobaciones idénticas a onnxruntime y a tract</strong> (3 de ellas sin tract porque no
+las ejecuta: <code>embed_ids [load_shape]</code>, <code>op_erf_gelu</code> y su <code>load_shape</code>), <code>errors.titan</code>
+14 líneas idénticas, archivos inválidos con error, <code>ONNX: TODO OK</code>. <code>run_bert.sh</code>
+sigue pidiendo <code>zett</code> (y torch/transformers/onnxscript) para su parte de tract.</p>
 <p><strong>Diferencias con la versión de Rust, a propósito:</strong>
 - Archivo de modelo ≤ 64 MiB (Rust: 256 MiB): los tensores son arrays de Titan, 16
   bytes por elemento.

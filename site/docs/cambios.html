@@ -104,6 +104,22 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
+<h2 id="sin-publicar-2026-10-12-d-stdonnx-verificado-sin-el-rust">Sin publicar — 2026-10-12 (d) — <code>std::onnx</code> verificado sin el Rust</h2>
+<p><strong>El lenguaje y el compilador no cambian</strong> (no se toca nada del runtime salvo pruebas): el punto fijo sigue
+siendo <code>02110549…bded8f</code>. Detalle en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «std::onnx en Titan».</p>
+<ul>
+<li><strong><code>tests/onnx/run.sh</code> ya no necesita el <code>zett</code> de Rust.</strong> Su oráculo principal es onnxruntime, que no es
+  Rust: <code>compare.py</code> toma el <code>zett</code> como argumento opcional y, si no lo hay, compara solo con onnxruntime
+  (diciéndolo en cada línea) y comprueba la forma de la salida nativa de <code>errors.titan</code> en vez de compararla
+  línea a línea con tract. Con <code>zett</code> todo sigue como antes, incluidos los 14 mensajes idénticos.</li>
+<li><strong>Resultado real, las dos formas:</strong> sin <code>zett</code>, 35 modelos (cada uno con y sin <code>load_shape</code>), <strong>70
+  comprobaciones idénticas a onnxruntime, 0 fallas</strong>, <code>ONNX: TODO OK</code>; con el <code>zett</code> de la rama <code>binaries</code>
+  (sha256 comprobado, <code>titan 1.0.0</code>, arrancado con una <code>libasound.so.2</code> de prueba porque aquí no hay ALSA y
+  el sonido no se usa), <strong>las 70 también idénticas a tract</strong> (3 sin tract por no ejecutarlas), los mensajes
+  de error idénticos y <code>ONNX: TODO OK</code>. La receta del apaño de ALSA queda en <code>tests/LEEME.md</code>.</li>
+<li><code>run_bert.sh</code> (BERT) sigue pidiendo <code>zett</code>, <code>torch</code>, <code>transformers</code> y <code>onnxscript</code>; no es objeto de este
+  cambio.</li>
+</ul>
 <h2 id="sin-publicar-2026-10-12-c-stdnet-frente-a-glibc-de-verdad-sin-el-rust">Sin publicar — 2026-10-12 (c) — <code>std::net</code> frente a glibc de verdad, sin el Rust</h2>
 <p><strong>El lenguaje no cambia</strong> y el punto fijo tampoco (no se toca nada del compilador):
 <code>titanc1 == titanc2 == titanc3</code>, SHA-256

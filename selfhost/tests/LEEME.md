@@ -21,7 +21,7 @@ Lo que **no** necesita Rust y sigue funcionando tal cual:
 Los que **sí** siguen necesitando el `zett` de Rust (porque su oráculo son los volcados de Rust o porque
 lo usan para construir la herramienta): `verify_lexer.sh`, `verify_parser.sh`, `verify_typechecker.sh`,
 `verify_codegen.sh`, `tests/tbc_diff`, `tests/server_diff`, `tests/repl`, `tests/debug`,
-`tests/lsp/contraste_zett.py`, `tests/mysql/comparar.sh`, `tests/onnx/*`, `tests/audio/verificar.sh`,
+`tests/lsp/contraste_zett.py`, `tests/mysql/comparar.sh`, `tests/audio/verificar.sh`,
 `tests/native/tokenize_dev/*` y `tests/pkg_diff`.
 (`native/profile.py` solo lo nombra en un comentario: es una herramienta de desarrollo.)
 - `bash selfhost/native/verify_json.sh` (97 casos de JSON, errores con línea y columna incluidos) y
@@ -35,8 +35,18 @@ lo usan para construir la herramienta): `verify_lexer.sh`, `verify_parser.sh`, `
   omitidos, imports desde `src/` y `tests/`, fallo reportado) y `pkg/registro/estatico.sh`
   (registro estático de paquetes por HTTPS: publicar, resolver, verificar la firma y rechazar un
   archivo alterado; necesita `openssl` y `python3`).
-- `onnx/run.sh` y `onnx/run_bert.sh` (comparan con onnxruntime y con el tract de la VM; sin la VM comparan solo
-  con onnxruntime si se desactiva la parte `ZETT`).
+- `onnx/run.sh`: el oráculo principal es **onnxruntime**, que no es Rust, así que corre sin `zett` (compara
+  el motor propio con onnxruntime y avisa de que no hay tract). Con `zett` en `ZETT=` o en el PATH compara
+  además con tract (la implementación de Rust de siempre) y exige que los mensajes de `errors.titan` sean
+  idénticos a los suyos. `run_bert.sh` (BERT) sí sigue pidiendo el `zett` de Rust para su parte de tract,
+  además de `torch`/`transformers`/`onnxscript`.
+  En un entorno sin `libasound.so.2` (el `zett` la pide al cargar) se puede arrancar igual con una biblioteca
+  de prueba que no hace nada de sonido: `readelf --dyn-syms -W zett | awk '$7=="UND"' | grep -o 'snd_[a-z0-9_]*@[A-Za-z0-9_.]*' | sort -u`
+  da los 48 símbolos con sus versiones (`ALSA_0.9`, `ALSA_0.9.0rc4`, `ALSA_0.9.0rc8`); se compila una
+  `libasound.so.2` con esas firmas devolviendo -1 y una `--version-script` con esos nodos, y se corre con
+  `LD_LIBRARY_PATH=`. No cambia ningún resultado: aquí el sonido no se usa. Con eso,
+  `LD_LIBRARY_PATH=/tmp/al ZETT=/ruta/a/zett bash tests/onnx/run.sh` sobre 35 modelos da `ONNX: TODO OK`
+  (70 comprobaciones idénticas a onnxruntime, 3 de ellas sin tract porque no las ejecuta).
 - `bash native/net/comparar.sh EJECUTABLE` (`std::net::http_get` frente a glibc de verdad): la referencia es
   `native/net/oraculo_glibc.py` (getaddrinfo por ctypes y sockets reales), no la VM de Rust, porque `std::net`
   de Rust llamaba a esas mismas funciones de glibc. Necesita `sudo`, `native/net/dns_falso.py` en 127.0.0.53 y

@@ -5,6 +5,23 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar — 2026-10-12 (d) — `std::onnx` verificado sin el Rust
+
+**El lenguaje y el compilador no cambian** (no se toca nada del runtime salvo pruebas): el punto fijo sigue
+siendo `02110549…bded8f`. Detalle en [`selfhost/ESTADO.md`](selfhost/ESTADO.md), «std::onnx en Titan».
+
+- **`tests/onnx/run.sh` ya no necesita el `zett` de Rust.** Su oráculo principal es onnxruntime, que no es
+  Rust: `compare.py` toma el `zett` como argumento opcional y, si no lo hay, compara solo con onnxruntime
+  (diciéndolo en cada línea) y comprueba la forma de la salida nativa de `errors.titan` en vez de compararla
+  línea a línea con tract. Con `zett` todo sigue como antes, incluidos los 14 mensajes idénticos.
+- **Resultado real, las dos formas:** sin `zett`, 35 modelos (cada uno con y sin `load_shape`), **70
+  comprobaciones idénticas a onnxruntime, 0 fallas**, `ONNX: TODO OK`; con el `zett` de la rama `binaries`
+  (sha256 comprobado, `titan 1.0.0`, arrancado con una `libasound.so.2` de prueba porque aquí no hay ALSA y
+  el sonido no se usa), **las 70 también idénticas a tract** (3 sin tract por no ejecutarlas), los mensajes
+  de error idénticos y `ONNX: TODO OK`. La receta del apaño de ALSA queda en `tests/LEEME.md`.
+- `run_bert.sh` (BERT) sigue pidiendo `zett`, `torch`, `transformers` y `onnxscript`; no es objeto de este
+  cambio.
+
 ## Sin publicar — 2026-10-12 (c) — `std::net` frente a glibc de verdad, sin el Rust
 
 **El lenguaje no cambia** y el punto fijo tampoco (no se toca nada del compilador):
