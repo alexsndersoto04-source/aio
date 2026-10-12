@@ -27,7 +27,31 @@ código fuente (.titan)
 
 ## Descargas e instalación
 
-### Opción A: Paquetes precompilados (Linux x86-64 y ARM64)
+### Opción A: paquete `zett` con el gestor del sistema (Debian/Ubuntu y Termux)
+
+Cada release publica paquetes `.deb` con el nombre **`zett`** (dentro va el compilador `titan` y, con ese
+nombre, el gestor de paquetes de Titan) más un repositorio apt propio:
+
+```bash
+# Debian / Ubuntu (x86-64, ARM64 o ARM de 32 bits)
+wget https://github.com/alexsndersoto04-source/aio/releases/latest/download/zett_1.3.0_amd64.deb
+sudo apt install ./zett_1.3.0_amd64.deb      # deja titan y zett en el PATH
+titan version && zett version
+
+# Termux (Android: x86_64, aarch64, arm) — usa pkg, que es apt con su prefijo
+pkg install ./zett_1.3.0_aarch64.termux.deb
+
+# Repositorio apt (rama zett-repo), para actualizar con apt en vez de a mano:
+#   deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/sistema ./
+#   deb [trusted=yes] https://raw.githubusercontent.com/alexsndersoto04-source/aio/zett-repo/termux ./
+```
+
+Los paquetes los construye la CI (`selfhost/empaquetar_deb.sh`, `selfhost/repo_apt.sh`), que además prueba el
+de x86-64 en la propia CI y el de ARM64 en una máquina ARM64 real; el de ARM de 32 bits y los de Termux se
+comprueban con el emulador de ARM32 y extrayéndolos en un prefijo. Detalles y resultados en
+[`selfhost/ESTADO.md`](selfhost/ESTADO.md), «Paquetes oficiales `zett`».
+
+### Opción B: Paquetes precompilados (Linux x86-64 y ARM64)
 
 En [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/latest) se publican paquetes precompilados para ambas arquitecturas de Linux, con el ejecutable `titan`, el gestor de paquetes `zett` y el runtime nativo (`native/`):
 
@@ -35,7 +59,7 @@ En [GitHub Releases](https://github.com/alexsndersoto04-source/aio/releases/late
 - **Linux ARM64 (`aarch64` / Termux):** [`titan-linux-aarch64.tar.gz`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/titan-linux-aarch64.tar.gz)
 - **Sumas de verificación:** [`SHA256SUMS.txt`](https://github.com/alexsndersoto04-source/aio/releases/latest/download/SHA256SUMS.txt)
 
-### Opción B: Construir desde las fuentes (Linux x86-64)
+### Opción C: Construir desde las fuentes (Linux x86-64)
 
 Titan se construye desde las fuentes en **Linux x86-64**, con `bash` y `gzip`. El repositorio incluye una **semilla**: el compilador ya compilado (7,7 MB, `selfhost/semilla/`) que compila el compilador escrito en Titan. Después el compilador se compila a sí mismo dos veces y se comprueba que el resultado sea idéntico byte a byte (punto fijo). Tarda unos 2–3 minutos.
 
@@ -54,9 +78,11 @@ ln -s "$PWD/selfhost/titan" ~/.local/bin/titan
 
 ### ARM64 y Termux
 
-> **ARM de 64 bits.** No existe versión para ARM de 32 bits. Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`) en un
-> teléfono con núcleo de 64 bits **sí puede usar este Titan** (el binario aarch64 corre; caso probado: Redmi 9C). El instalador
-> lo comprueba de verdad al final. Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
+> **ARM de 32 bits.** Desde el 2026-10-12 hay paquete `armhf`/`arm` (Debian/Termux) con el compilador
+> compilado para ARM de 32 bits, comprobado con el emulador de ARM32; en un aparato de 32 bits de verdad no se
+> ha probado todavía. Un Termux de 32 bits (`uname -m` dice `armv7l` o `armv8l`) en un teléfono con núcleo de
+> 64 bits **sí puede usar el paquete de 64 bits** (el binario aarch64 corre; caso probado: Redmi 9C).
+> Ver [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md).
 
 El flujo `Linux ARM64 (Termux)` de GitHub Actions construye `titan-linux-aarch64.tar.gz` y lo verifica en una máquina ARM64 real: 95 programas dan la misma salida que con x86-64. En ARM64, `titan` requiere `clang` y `lld` instalados. Guía e instrucciones detalladas: [`docs/GUIA_TERMUX.md`](docs/GUIA_TERMUX.md); instalador automático: [`selfhost/instalar-termux.sh`](selfhost/instalar-termux.sh).
 

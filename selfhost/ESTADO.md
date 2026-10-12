@@ -1273,7 +1273,7 @@ local de prueba, con la CLI `titan`); con el ejecutable `zett` empaquetado se co
 `pack` (dos empaquetados idénticos byte a byte), los mensajes de uso con el nombre `zett` y que `titan run` funciona invocado solo por
 el `PATH`. El registro público es ahora estático (`registro/` del repositorio, servido por GitHub; `selfhost/registro_agregar.titan` añade versiones; prueba local `selfhost/tests/pkg/registro/estatico.sh`); antes la dirección por defecto (`registry.titan-lang.org`) no existía. Sin probar en ARM64 real. Guía: `docs/ZETT.md`.
 
-**ARM de 32 bits no soportado.** Un Termux de 32 bits (`armv7l`/`armv8l`, ABIs `armeabi-v7a`) no puede usar los paquetes: solo hay generador de código para x86-64 y ARM64. El Zett anterior (Rust, paquete `.deb` `arm` de la rama `zett-repo`) sí era de 32 bits y ya no se reconstruye. Caso real: teléfono con `abilist` = `armeabi-v7a,armeabi`.
+**ARM de 32 bits: hay paquete propio (2026-10-12).** El Zett anterior (Rust, `.deb` `arm` de la rama `zett-repo`) era de 32 bits y no se reconstruye; desde el 2026-10-11 sí existe el destino `armv7` del backend LLVM y desde el 2026-10-12 el **compilador completo compilado para ARM de 32 bits** (`titan compile selfhost/titan.titan -o titan-armv7 --target armv7`, 7,7 MB) dentro del paquete `zett_…_armhf.deb` (Debian/Ubuntu) y `zett_…_arm.termux.deb` (Termux). Verificado aquí ejecutando el binario del paquete bajo el emulador de ARM32 (`native/arm32/correr.py`): `titan version` y `zett version` responden. En un aparato de 32 bits de verdad **no se ha probado**; compilar *en* el aparato para armv7 usa clang y lld (el paquete los declara como dependencia). Caso real de referencia: teléfono con `abilist` = `armeabi-v7a,armeabi`.
 
 **Corrección (v1.2.0):** `titan` calculaba la ruta de `native/` a partir de `argv[0]`; invocado solo por nombre (`titan run x.titan`
 con el ejecutable en el `PATH`) fallaba con `std::path::canonical … No such file or directory`. Desde v1.2.0 usa `/proc/self/exe`.
@@ -1925,6 +1925,53 @@ genera una CA y un certificado de servidor firmado por ella.
 (`Resource temporarily unavailable (os error 11)`), igual en HTTP simple que en HTTPS; la referencia de Rust
 decía `timed out`. El plazo se aplica (medido: 0,105 s con plazo de 100 ms contra un servidor que tarda
 0,5 s, y el servidor ve el corte), así que queda solo como diferencia de mensaje, sin tocar.
+
+## Paquetes oficiales `zett` para los tres binarios (2026-10-12)
+
+Hasta aquí, «oficial» era el tar.gz de la release (y, para Termux, `instalar-termux.sh`). Ahora cada binario
+tiene su **paquete del gestor del sistema**, con el nombre `zett` (dentro va el compilador `titan` y el enlace
+`zett`), y un **repositorio apt** propio, como el `zett-repo` del Zett de Rust pero hecho con el Titan actual:
+
+| Sistema | Paquete | Gestor | Prueba real hecha aquí |
+|---|---|---|---|
+| Debian/Ubuntu x86-64 | `zett_1.3.0_amd64.deb` | `apt`/`dpkg` | `apt-get install zett` desde el repositorio local: `titan version`, `zett version`, `titan run` (respuesta 42), `zett keygen` y `zett pack` (`.tpkg` firmado) |
+| Debian/Ubuntu ARM64 | `zett_1.3.0_arm64.deb` | `apt`/`dpkg` | compilado cruzado (4,6 MB) y el paquete comprobado aquí (control, 228 entradas, binario idéntico al compilado); **ejecutarlo toca a la CI en un ARM64 real** |
+| Debian/Ubuntu ARM 32 bits | `zett_1.3.0_armhf.deb` | `apt`/`dpkg` | compilado cruzado (7,7 MB) y el binario del paquete ejecutado bajo el emulador de ARM32: `titan version` y `zett version` |
+| Termux x86-64 / ARM64 / ARM | `zett_1.3.0_{x86_64,aarch64,arm}.termux.deb` | `pkg`/`apt` | extraídos en un prefijo falso: el binario de x86_64 corre, el de ARM bajo el emulador, el de ARM64 queda para la CI |
+
+**Cómo se arma.** `selfhost/empaquetar_deb.sh EJECUTABLE {amd64|arm64|armhf} SALIDA [--termux] [--version V]`
+escribe el `.deb` completo (control con `Provides: titan`, `Depends: clang, lld` en ARM, licencia, `LEEME.txt`,
+`/usr/bin/{titan,zett}` → `../lib/zett/titan`, runtime en `/usr/lib/zett/native/`); en Termux el prefijo es
+`/data/data/com.termux/files/usr`. Es determinista (`SOURCE_DATE_EPOCH` = fecha del último commit). El
+x86_64 es el único que no declara dependencias: no necesita nada externo. Aviso honesto: al construir el de
+Termux `x86_64` sobre Debian, su `dpkg-deb` avisa de que `x86_64` no es un nombre de arquitectura válido (el
+`dpkg` de Termux sí lo acepta); el paquete sale igual y su contenido es el correcto.
+
+`selfhost/repo_apt.sh DIRECTORIO [--termux]` escribe `Packages`, `Packages.gz` y `Release` (con hashes y
+tamaños en el orden correcto: primero el hash), firma el `Release` si se le da `GPG_KEY` y **comprueba con el
+apt de verdad** que el repositorio se lee (`apt-get update` contra `deb [trusted=yes] file:…` y
+`apt-cache policy`). Los dos repositorios van separados porque los nombres de arquitectura son distintos:
+`repo/` (amd64, arm64, armhf) y `repo-termux/` (x86_64, aarch64, arm).
+
+`selfhost/probar_paquetes.sh [SALIDA]` hace la prueba completa de una vez: arma los seis `.deb` (compilando
+cruzado lo que falte), comprueba que el binario de dentro es el compilado (sha256), escribe los dos
+repositorios, instala con `apt` desde el repositorio, usa el paquete instalado (compilar y ejecutar, `keygen`,
+`pack`), ejecuta los binarios de ARM bajo el emulador y comprueba los de Termux en un prefijo falso.
+**Resultado de la corrida real en esta máquina**: `pasan 23, fallan 0, no comprobados aquí 2` (los dos que
+necesitan un ARM64 de verdad). Para publicarlos, `.github/workflows/arm64.yml` construye los seis paquetes y
+los índices, prueba el de x86-64 en la CI, prueba el de ARM64 en la máquina ARM64 real y, al etiquetar una
+versión, sube los `.deb` a la release y publica el repositorio en la rama `zett-repo` (`sistema/` y `termux/`).
+
+**En el emulador de ARM32 (dos fallos de verdad corregidos).** `native/arm32/correr.py` se tragaba cualquier
+argumento del programa que empezara por `--` (así `titan compile x --target armv7` corría sin `--target`), y
+contestaba `/proc/self/exe` con la ruta del intérprete: el compilador creía ser Python y buscaba el runtime
+`native/` al lado de Python. Ahora `/proc/self/exe` y `/proc/<pid>/exe` son el programa emulado (lo mismo que
+hace qemu-user) y solo `--codigo` y `--max-passos N` son del ejecutor. Con eso, el **compilador del paquete
+armhf compila de verdad** bajo el emulador: `python3 native/arm32/correr.py <paquete>/usr/lib/zett/titan
+compile hola.titan -o hola_por_arm --target x86_64` terminó en **39m56s** con
+`COMPILE: hola.titan -> hola_por_arm`, dejó un ejecutable de 1,1 MB y ese ejecutable, ya fuera del emulador,
+imprime `respuesta 42` en esta máquina. (Lento, sí: es un ARMv7 emulado instrucción a instrucción con las
+llamadas al sistema en Python; para eso está.)
 
 ## Los fuzzers diferenciales sin el Rust (2026-10-11)
 

@@ -248,6 +248,9 @@ class Proceso:
         self.salida = salida
         self.error = error
         self.max_passos = max_passos
+        # Ruta absoluta del programa emulado: es lo que se contesta en
+        # /proc/self/exe (qemu-user hace lo mismo con el binario que ejecuta).
+        self.ruta_programa = os.path.abspath(camino)
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         try:
             from unicorn import UC_CPU_ARM_CORTEX_A15
@@ -491,8 +494,24 @@ class Proceso:
                 h |= host
         return h
 
+    def ruta_de_proc(self, ruta):
+        """Como qemu-user: el `/proc/.../exe` de este proceso es el programa
+        emulado, no el intérprete (Python).
+
+        Hacen falta las dos formas porque el runtime canonicaliza
+        `/proc/self/exe` a mano: lee el enlace `/proc/self` (el núcleo contesta
+        el pid del ejecutor), lo sigue y acaba preguntando por
+        `/proc/<pid>/exe`. Sin esto, el compilador creía ser el intérprete y
+        buscaba el runtime `native/` al lado de Python."""
+        if ruta == "/proc/self/exe" or ruta == "/proc/%d/exe" % os.getpid():
+            return self.ruta_programa
+        return None
+
     def sys_openat(self, dirfd, p, flags, modo):
         ruta = os.fsdecode(self.cadena(p))
+        propio = self.ruta_de_proc(ruta)
+        if propio is not None:
+            ruta = propio
         d = self.s32(dirfd)
         extra = {}
         if d != -100:
@@ -967,7 +986,12 @@ class Proceso:
                 return -9
             extra["dir_fd"] = host
         try:
-            destino = os.readlink(os.fsdecode(self.cadena(p)), **extra)
+            # /proc/self/exe (y /proc/<pid>/exe): la ruta del programa emulado.
+            propio = self.ruta_de_proc(os.fsdecode(self.cadena(p)))
+            if propio is not None and self.s32(dirfd) == -100:
+                destino = propio
+            else:
+                destino = os.readlink(os.fsdecode(self.cadena(p)), **extra)
         except OSError as error:
             return -error.errno
         datos = os.fsencode(destino)
@@ -1450,7 +1474,11 @@ class Proceso:
 
 
 def main():
-    # Las banderas pueden ir antes o después del programa.
+    # Las banderas del ejecutor (--codigo y --max-passos N) pueden ir antes o
+    # después del programa; cualquier otra cosa, incluidos los argumentos que
+    # empiezan por `--`, es del programa. Antes cualquier `--` se lo quedaba el
+    # ejecutor y no llegaba al programa: `titan compile x --target armv7` corría
+    # sin `--target` (y decidía la arquitectura por su cuenta).
     codigo = "--codigo" in sys.argv
     maximo = 200_000_000
     if "--max-passos" in sys.argv:
@@ -1461,7 +1489,7 @@ def main():
         if sys.argv[i] == "--max-passos":
             i += 2
             continue
-        if sys.argv[i].startswith("--"):
+        if sys.argv[i] == "--codigo":
             i += 1
             continue
         libres.append(sys.argv[i])

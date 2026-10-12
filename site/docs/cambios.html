@@ -104,6 +104,36 @@ etiquetas de las releases de GitHub (<code>v1.0.x</code> del prototipo; <code>v1
 Titan. Varias cosas que mencionan ya no existen (por ejemplo <code>std::audio::cloud_*</code>, <code>--sandbox</code>, <code>spawn_quota</code>, la VM).
 El estado real y vigente está en <code>selfhost/ESTADO.md</code>.</p>
 </blockquote>
+<h2 id="sin-publicar-2026-10-12-e-paquetes-oficiales-zett-para-debianubuntu-y-termux">Sin publicar — 2026-10-12 (e) — paquetes oficiales <code>zett</code> para Debian/Ubuntu y Termux</h2>
+<p><strong>El lenguaje y el compilador no cambian</strong> (nada del compilador: solo herramientas de empaquetado y pruebas).
+Detalle y resultados, en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «Paquetes oficiales <code>zett</code> para los tres
+binarios».</p>
+<ul>
+<li><strong>Nuevo <code>selfhost/empaquetar_deb.sh</code></strong>: arma el paquete con el nombre <strong><code>zett</code></strong> (dentro, <code>titan</code> y el enlace
+  <code>zett</code>) para Debian/Ubuntu (<code>amd64</code>, <code>arm64</code>, <code>armhf</code>) y para Termux (<code>x86_64</code>, <code>aarch64</code>, <code>arm</code>), con el
+  runtime <code>native/</code> incluido y el <code>control</code> completo (<code>Provides: titan</code>, <code>Depends: clang, lld</code> en ARM).
+  Determinista (fecha del último commit).</li>
+<li><strong>Nuevo <code>selfhost/repo_apt.sh</code></strong>: escribe <code>Packages</code>, <code>Packages.gz</code> y <code>Release</code> (con sus hashes y tamaños) y
+  comprueba con el <code>apt</code> de verdad que el repositorio se lee; firma el <code>Release</code> si se le da <code>GPG_KEY</code>.</li>
+<li><strong>Nuevo <code>selfhost/probar_paquetes.sh</code></strong>: prueba los seis paquetes de una vez. En esta máquina: <strong>pasan 23,
+  fallan 0</strong>, y los 2 que no se pueden probar aquí (ejecutar el paquete de ARM64) los prueba la CI en una
+  máquina ARM64 real. Se instaló con <code>apt</code> desde el repositorio, y el paquete instalado compiló y ejecutó un
+  programa, generó su clave y firmó un <code>.tpkg</code>.</li>
+<li><strong>ARM de 32 bits ya tiene paquete</strong>: <code>titan</code> compilado para <code>armv7</code> (7,7 MB) dentro de <code>zett_…_armhf.deb</code> y
+  <code>zett_…_arm.termux.deb</code>. El binario del paquete responde bajo el emulador de ARM32 y, con los dos fallos del
+  emulador corregidos, <strong>compiló de verdad un programa</strong> ahí dentro (39m56s bajo emulación): dejó un ejecutable
+  que imprime <code>respuesta 42</code>. En un aparato de 32 bits de verdad no se ha probado todavía, y así queda escrito.</li>
+<li><strong>Dos fallos corregidos en el emulador de ARM32</strong> (<code>native/arm32/correr.py</code>): se tragaba los argumentos del
+  programa que empezaran por <code>--</code> (así <code>titan compile x --target armv7</code> perdía el <code>--target</code>) y contestaba
+  <code>/proc/self/exe</code> con la ruta del intérprete (el compilador creía ser Python y buscaba el runtime al lado de
+  Python). Ahora solo <code>--codigo</code> y <code>--max-passos N</code> son del ejecutor, y <code>/proc/self/exe</code> (y <code>/proc/&lt;pid&gt;/exe</code>)
+  es el programa emulado, como con qemu-user.</li>
+<li><strong>CI</strong> (<code>.github/workflows/arm64.yml</code>): construye los seis paquetes y los dos índices, prueba el de x86-64 en
+  la CI, el de ARM64 en la máquina ARM64 real y el de ARM de 32 bits con el emulador; al etiquetar una versión
+  sube los <code>.deb</code> a la release y publica el repositorio en la rama <code>zett-repo</code> (<code>sistema/</code> y <code>termux/</code>).</li>
+<li>README, <code>docs/GUIA_TERMUX.md</code> y <code>selfhost/ESTADO.md</code> al día (incluida la frase que decía que ARM de 32 bits
+  no estaba soportado, que ya no es cierta).</li>
+</ul>
 <h2 id="sin-publicar-2026-10-12-d-stdonnx-verificado-sin-el-rust">Sin publicar — 2026-10-12 (d) — <code>std::onnx</code> verificado sin el Rust</h2>
 <p><strong>El lenguaje y el compilador no cambian</strong> (no se toca nada del runtime salvo pruebas): el punto fijo sigue
 siendo <code>02110549…bded8f</code>. Detalle en <a href="estado.html"><code>selfhost/ESTADO.md</code></a>, «std::onnx en Titan».</p>

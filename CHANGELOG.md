@@ -5,6 +5,37 @@
 > Titan. Varias cosas que mencionan ya no existen (por ejemplo `std::audio::cloud_*`, `--sandbox`, `spawn_quota`, la VM).
 > El estado real y vigente está en `selfhost/ESTADO.md`.
 
+## Sin publicar — 2026-10-12 (e) — paquetes oficiales `zett` para Debian/Ubuntu y Termux
+
+**El lenguaje y el compilador no cambian** (nada del compilador: solo herramientas de empaquetado y pruebas).
+Detalle y resultados, en [`selfhost/ESTADO.md`](selfhost/ESTADO.md), «Paquetes oficiales `zett` para los tres
+binarios».
+
+- **Nuevo `selfhost/empaquetar_deb.sh`**: arma el paquete con el nombre **`zett`** (dentro, `titan` y el enlace
+  `zett`) para Debian/Ubuntu (`amd64`, `arm64`, `armhf`) y para Termux (`x86_64`, `aarch64`, `arm`), con el
+  runtime `native/` incluido y el `control` completo (`Provides: titan`, `Depends: clang, lld` en ARM).
+  Determinista (fecha del último commit).
+- **Nuevo `selfhost/repo_apt.sh`**: escribe `Packages`, `Packages.gz` y `Release` (con sus hashes y tamaños) y
+  comprueba con el `apt` de verdad que el repositorio se lee; firma el `Release` si se le da `GPG_KEY`.
+- **Nuevo `selfhost/probar_paquetes.sh`**: prueba los seis paquetes de una vez. En esta máquina: **pasan 23,
+  fallan 0**, y los 2 que no se pueden probar aquí (ejecutar el paquete de ARM64) los prueba la CI en una
+  máquina ARM64 real. Se instaló con `apt` desde el repositorio, y el paquete instalado compiló y ejecutó un
+  programa, generó su clave y firmó un `.tpkg`.
+- **ARM de 32 bits ya tiene paquete**: `titan` compilado para `armv7` (7,7 MB) dentro de `zett_…_armhf.deb` y
+  `zett_…_arm.termux.deb`. El binario del paquete responde bajo el emulador de ARM32 y, con los dos fallos del
+  emulador corregidos, **compiló de verdad un programa** ahí dentro (39m56s bajo emulación): dejó un ejecutable
+  que imprime `respuesta 42`. En un aparato de 32 bits de verdad no se ha probado todavía, y así queda escrito.
+- **Dos fallos corregidos en el emulador de ARM32** (`native/arm32/correr.py`): se tragaba los argumentos del
+  programa que empezaran por `--` (así `titan compile x --target armv7` perdía el `--target`) y contestaba
+  `/proc/self/exe` con la ruta del intérprete (el compilador creía ser Python y buscaba el runtime al lado de
+  Python). Ahora solo `--codigo` y `--max-passos N` son del ejecutor, y `/proc/self/exe` (y `/proc/<pid>/exe`)
+  es el programa emulado, como con qemu-user.
+- **CI** (`.github/workflows/arm64.yml`): construye los seis paquetes y los dos índices, prueba el de x86-64 en
+  la CI, el de ARM64 en la máquina ARM64 real y el de ARM de 32 bits con el emulador; al etiquetar una versión
+  sube los `.deb` a la release y publica el repositorio en la rama `zett-repo` (`sistema/` y `termux/`).
+- README, `docs/GUIA_TERMUX.md` y `selfhost/ESTADO.md` al día (incluida la frase que decía que ARM de 32 bits
+  no estaba soportado, que ya no es cierta).
+
 ## Sin publicar — 2026-10-12 (d) — `std::onnx` verificado sin el Rust
 
 **El lenguaje y el compilador no cambian** (no se toca nada del runtime salvo pruebas): el punto fijo sigue
