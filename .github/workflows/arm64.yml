@@ -9,6 +9,11 @@ on:
     branches: [ main, "arena/**" ]
     tags: [ "v*" ]
   workflow_dispatch:
+    inputs:
+      etiqueta:
+        description: "Etiqueta (vX.Y.Z) cuya release hay que (re)publicar con los paquetes. Combínala con .github/arm64-reuse-run para publicar una construcción ya hecha y probada."
+        required: false
+        default: ""
 
 jobs:
   origen:
@@ -16,12 +21,23 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       reusar: ${{ steps.r.outputs.reusar }}
+      etiqueta: ${{ steps.r.outputs.etiqueta }}
     steps:
       - uses: actions/checkout@v4
       - id: r
+        env:
+          ENTRADA_ETIQUETA: ${{ inputs.etiqueta }}
         run: |
           # Si existe .github/arm64-reuse-run (con un id de ejecución), se reutiliza esa construcción en vez de rehacerla.
           if [ -f .github/arm64-reuse-run ]; then echo "reusar=$(tr -dc 0-9 < .github/arm64-reuse-run)" >> "$GITHUB_OUTPUT"; else echo "reusar=" >> "$GITHUB_OUTPUT"; fi
+          # Etiqueta cuya release hay que publicar: la del push de etiqueta; si no, la entrada
+          # "etiqueta" de workflow_dispatch; si no, el archivo .github/publicar-etiqueta (para
+          # re-publicar una release que quedó sin archivos, sin necesidad de mover la etiqueta).
+          ET=""
+          case "$GITHUB_REF" in refs/tags/v*) ET="$GITHUB_REF_NAME" ;; esac
+          [ -n "$ET" ] || ET="${ENTRADA_ETIQUETA:-}"
+          if [ -z "$ET" ] && [ -f .github/publicar-etiqueta ]; then ET="$(tr -d ' \t\r\n' < .github/publicar-etiqueta)"; fi
+          echo "etiqueta=$ET" >> "$GITHUB_OUTPUT"
   construir:
     name: construir (x86-64 -> ARM64 cruzado)
     needs: origen
@@ -214,16 +230,23 @@ jobs:
 
   publicar:
     name: publicar los paquetes (solo en etiquetas v*)
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    needs: [construir, probar]
+    # Corre con una etiqueta (push de tag, entrada de workflow_dispatch o .github/publicar-etiqueta)
+    # y con las pruebas en ARM64 real en verde. «!cancelled()» permite publicar también cuando
+    # «construir» se saltó por reutilizar una construcción anterior (.github/arm64-reuse-run).
+    if: ${{ !cancelled() && needs.probar.result == 'success' && needs.origen.outputs.etiqueta != '' }}
+    needs: [origen, construir, probar]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.origen.outputs.etiqueta }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: paquetes
           path: paquetes
+          run-id: ${{ needs.origen.outputs.reusar || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -235,16 +258,24 @@ jobs:
           cp titan-*-linux-armv7.tar.gz titan-linux-armv7.tar.gz
           cp repo/*.deb repo-termux/*.deb . 2> /dev/null || true
           # Copias sin versión: las páginas y el README enlazan siempre «latest/download/zett_amd64.deb».
-          cp "zett_${GITHUB_REF_NAME#v}_amd64.deb" zett_amd64.deb 2> /dev/null || true
-          cp "zett_${GITHUB_REF_NAME#v}_arm64.deb" zett_arm64.deb 2> /dev/null || true
-          cp "zett_${GITHUB_REF_NAME#v}_armhf.deb" zett_armhf.deb 2> /dev/null || true
-          cp "zett_${GITHUB_REF_NAME#v}_x86_64.termux.deb" zett_x86_64.termux.deb 2> /dev/null || true
-          cp "zett_${GITHUB_REF_NAME#v}_aarch64.termux.deb" zett_aarch64.termux.deb 2> /dev/null || true
-          cp "zett_${GITHUB_REF_NAME#v}_arm.termux.deb" zett_arm.termux.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_amd64.deb" zett_amd64.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_arm64.deb" zett_arm64.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_armhf.deb" zett_armhf.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_x86_64.termux.deb" zett_x86_64.termux.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_aarch64.termux.deb" zett_aarch64.termux.deb 2> /dev/null || true
+          cp "zett_${TAG#v}_arm.termux.deb" zett_arm.termux.deb 2> /dev/null || true
           sha256sum titan-linux-*.tar.gz zett_*.deb > SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Titan $GITHUB_REF_NAME" \
-            --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes .deb para Debian/Ubuntu (amd64, arm64, armhf) y para Termux (x86_64, aarch64, arm): se instalan con apt, que deja titan y zett en el PATH; el repositorio apt se publica en la rama zett-repo (sistema/ y termux/). El paquete de ARM64 se probó en un servidor ARM64 real (no en un teléfono) y el de ARM de 32 bits bajo el emulador; el de x86-64 en la propia CI. También están los tar.gz de siempre, que no necesitan instalación. SHA256SUMS.txt trae las sumas de verificación." \
-            SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-linux-armv7.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz titan-*-linux-armv7.tar.gz zett_*.deb
+          ARCHIVOS=(SHA256SUMS.txt titan-linux-aarch64.tar.gz titan-linux-x86_64.tar.gz titan-linux-armv7.tar.gz titan-*-linux-aarch64.tar.gz titan-*-linux-x86_64.tar.gz titan-*-linux-armv7.tar.gz zett_*.deb)
+          # Si la release ya existe (por ejemplo, creada a mano en la web antes de que la CI
+          # terminara, justo lo que dejó v1.3.0 sin archivos), se le suben los paquetes encima
+          # (--clobber reemplaza los de igual nombre) en vez de fallar con «release already exists».
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${ARCHIVOS[@]}"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Titan $TAG" \
+              --notes "Construida con el compilador escrito en Titan, sin Rust (las versiones 1.0.x son del prototipo en Rust). Incluye zett, el gestor de paquetes (enlace a titan). Paquetes .deb para Debian/Ubuntu (amd64, arm64, armhf) y para Termux (x86_64, aarch64, arm): se instalan con apt, que deja titan y zett en el PATH; el repositorio apt se publica en la rama zett-repo (sistema/ y termux/). El paquete de ARM64 se probó en un servidor ARM64 real (no en un teléfono) y el de ARM de 32 bits bajo el emulador; el de x86-64 en la propia CI. También están los tar.gz de siempre, que no necesitan instalación. SHA256SUMS.txt trae las sumas de verificación." \
+              "${ARCHIVOS[@]}"
+          fi
       - name: Publicar el repositorio apt en la rama zett-repo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -267,5 +298,5 @@ jobs:
           cp paquetes/repo-termux/* repo-branch/termux/
           cd repo-branch
           git add -A
-          git commit -m "Paquetes zett ${GITHUB_REF_NAME:-$GITHUB_SHA}" || echo "el repositorio no cambió"
+          git commit -m "Paquetes zett ${TAG:-$GITHUB_SHA}" || echo "el repositorio no cambió"
           git push origin HEAD:zett-repo
