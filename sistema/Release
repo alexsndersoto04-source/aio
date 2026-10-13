@@ -1,0 +1,14 @@
+Origin: Titan
+Label: Titan
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64 armhf
+Components: main
+Description: Paquetes de Titan (el compilador que se compila a sí mismo) y su gestor zett
+Date: Mon, 12 Oct 2026 17:18:55 +0000
+MD5Sum:
+ 2ff224396647cd7a7cc16a4744a60f12 2712 Packages
+ 01be9f9a76ba6bac0a709a3a2e689165 752 Packages.gz
+SHA256:
+ ae665d0a0e33c4603dca2cd8d43d3be201f13b729554181c8e1365ff65f223a2 2712 Packages
+ 1c8ae55810c531cd404551fad07f297cd6bdbde11785b3cbd77e539650a23a12 752 Packages.gz

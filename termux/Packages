@@ -1,0 +1,62 @@
+Package: zett
+Version: 1.3.0
+Architecture: aarch64
+Maintainer: alexsndersoto04-source <266633823+alexsndersoto04-source@users.noreply.github.com>
+Installed-Size: 10151
+Section: devel
+Priority: optional
+Homepage: https://github.com/alexsndersoto04-source/aio
+Provides: titan
+Depends: clang, lld
+Description: Titan: compilador que se compila a sí mismo, y zett (su gestor de paquetes)
+ Titan es un lenguaje de programación con su compilador escrito en Titan
+ (autoalojado, punto fijo titanc1 == titanc2 == titanc3), sin libc y sin
+ dependencias en tiempo de ejecución: el ejecutable habla con el núcleo.
+ Este paquete instala el compilador (titan) y, con el nombre zett, su
+ gestor de paquetes (add, fetch, install, update, keygen, pack, publish).
+ Compilar para ARM (64 o 32 bits) usa clang y lld.
+Filename: ./zett_1.3.0_aarch64.termux.deb
+Size: 2296630
+SHA256: 2dad9afa2a3599dffac969aef807443172918eeedf958a3b31182d87778ef015
+
+Package: zett
+Version: 1.3.0
+Architecture: arm
+Maintainer: alexsndersoto04-source <266633823+alexsndersoto04-source@users.noreply.github.com>
+Installed-Size: 13114
+Section: devel
+Priority: optional
+Homepage: https://github.com/alexsndersoto04-source/aio
+Provides: titan
+Depends: clang, lld
+Description: Titan: compilador que se compila a sí mismo, y zett (su gestor de paquetes)
+ Titan es un lenguaje de programación con su compilador escrito en Titan
+ (autoalojado, punto fijo titanc1 == titanc2 == titanc3), sin libc y sin
+ dependencias en tiempo de ejecución: el ejecutable habla con el núcleo.
+ Este paquete instala el compilador (titan) y, con el nombre zett, su
+ gestor de paquetes (add, fetch, install, update, keygen, pack, publish).
+ Compilar para ARM (64 o 32 bits) usa clang y lld.
+Filename: ./zett_1.3.0_arm.termux.deb
+Size: 3137998
+SHA256: 5c4582da3772d6bfd82be2cdf7df919cd8de013d6d73bc84d164f29a68ad89bb
+
+Package: zett
+Version: 1.3.0
+Architecture: x86_64
+Maintainer: alexsndersoto04-source <266633823+alexsndersoto04-source@users.noreply.github.com>
+Installed-Size: 22232
+Section: devel
+Priority: optional
+Homepage: https://github.com/alexsndersoto04-source/aio
+Provides: titan
+Recommends: clang, lld
+Description: Titan: compilador que se compila a sí mismo, y zett (su gestor de paquetes)
+ Titan es un lenguaje de programación con su compilador escrito en Titan
+ (autoalojado, punto fijo titanc1 == titanc2 == titanc3), sin libc y sin
+ dependencias en tiempo de ejecución: el ejecutable habla con el núcleo.
+ Este paquete instala el compilador (titan) y, con el nombre zett, su
+ gestor de paquetes (add, fetch, install, update, keygen, pack, publish).
+Filename: ./zett_1.3.0_x86_64.termux.deb
+Size: 1983944
+SHA256: 4d0df067d1d16bddd5a8d73b69536c8baa9dcedf4e57a1a20f72f90c0d5f7865
+
